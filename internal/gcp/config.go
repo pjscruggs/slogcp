@@ -1,0 +1,168 @@
+package gcp
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
+	"strings"
+
+	"cloud.google.com/go/compute/metadata"
+)
+
+// Config holds configuration values for the slogcp logger.
+// These values are typically loaded from environment variables or set via
+// functional options during logger initialization.
+type Config struct {
+	// InitialLevel specifies the minimum level of log entries that will be processed.
+	InitialLevel slog.Level
+
+	// AddSource determines whether source code location (file, line, function)
+	// is added to log entries. Enabling this incurs a performance cost.
+	AddSource bool
+
+	// ProjectID is the Google Cloud Project ID used by the Cloud Logging client.
+	// This field is required for operation.
+	ProjectID string
+
+	// ServiceName is the name of the Cloud Run service, typically read from K_SERVICE.
+	// It may be used for associating logs with the service resource.
+	ServiceName string
+
+	// RevisionName is the name of the Cloud Run revision, typically read from K_REVISION.
+	// It may be used for associating logs with the service resource.
+	RevisionName string
+
+	// StackTraceEnabled determines whether stack traces should be captured
+	// and included for logs at or above StackTraceLevel.
+	StackTraceEnabled bool
+
+	// StackTraceLevel specifies the minimum level at which stack traces
+	// should be captured if StackTraceEnabled is true.
+	StackTraceLevel slog.Level
+}
+
+// Environment variable names used for configuration.
+const (
+	envLogLevel          = "LOG_LEVEL"               // Sets the initial logging level (e.g., "DEBUG", "INFO", "NOTICE").
+	envLogSourceLocation = "LOG_SOURCE_LOCATION"     // Enables source location logging if "true" or "1".
+	envProjectID         = "GOOGLE_CLOUD_PROJECT"    // Specifies the GCP project ID (required).
+	envService           = "K_SERVICE"               // Cloud Run service name (optional).
+	envRevision          = "K_REVISION"              // Cloud Run revision name (optional).
+	envStackTraceEnabled = "LOG_STACK_TRACE_ENABLED" // Enables stack trace logging if "true" or "1".
+	envStackTraceLevel   = "LOG_STACK_TRACE_LEVEL"   // Sets the minimum level for stack traces (e.g., "ERROR").
+
+	// Default values used if environment variables are missing or invalid.
+	defaultLevel           = slog.LevelInfo  // Default logging level is INFO.
+	defaultAddSource       = false           // Source location is disabled by default.
+	defaultStackTrace      = false           // Stack traces disabled by default.
+	defaultStackTraceLevel = slog.LevelError // Stack traces only for ERROR+ by default.
+)
+
+// LoadConfig reads configuration from environment variables, applying defaults
+// for unspecified or invalid values.
+//
+// It determines the ProjectID by first checking the GOOGLE_CLOUD_PROJECT
+// environment variable. If that is not set, it attempts to retrieve the project ID
+// from the GCP metadata server (if running in a GCP environment).
+// It returns an error wrapping ErrProjectIDMissing if a project ID cannot be
+// determined through either method.
+func LoadConfig() (Config, error) {
+	projectID := os.Getenv(envProjectID)
+
+	// If the environment variable is not set, attempt to fetch from metadata server.
+	if projectID == "" {
+		// Check if running in a GCP environment where metadata server is available.
+		if metadata.OnGCE() {
+			metadataProjectID, err := metadata.ProjectID()
+			// Use the metadata project ID if successfully retrieved.
+			if err == nil && metadataProjectID != "" {
+				projectID = metadataProjectID
+				// Log informational message to stderr as logger isn't ready yet.
+				fmt.Fprintf(os.Stderr, "[slogcp config] INFO: Using project ID %q from metadata server\n", projectID)
+			} else if err != nil {
+				// Log failure to retrieve from metadata but continue, as env var might be set later or explicitly.
+				fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Failed to get project ID from metadata server: %v\n", err)
+			}
+		}
+	}
+
+	// If no project ID could be determined, return an error.
+	if projectID == "" {
+		return Config{}, fmt.Errorf("slogcp: %s environment variable is not set and metadata lookup failed: %w", envProjectID, ErrProjectIDMissing)
+	}
+
+	// Populate the config struct using parsed environment variables or defaults.
+	cfg := Config{
+		InitialLevel:      parseLevel(os.Getenv(envLogLevel)),
+		AddSource:         parseBool(os.Getenv(envLogSourceLocation), defaultAddSource, envLogSourceLocation),
+		ProjectID:         projectID,
+		ServiceName:       os.Getenv(envService),
+		RevisionName:      os.Getenv(envRevision),
+		StackTraceEnabled: parseBool(os.Getenv(envStackTraceEnabled), defaultStackTrace, envStackTraceEnabled),
+		StackTraceLevel:   parseLevelWithDefault(os.Getenv(envStackTraceLevel), defaultStackTraceLevel, envStackTraceLevel),
+	}
+
+	return cfg, nil
+}
+
+// parseLevel interprets the log level string from the environment, falling back
+// to the package default (slog.LevelInfo) if empty or invalid.
+func parseLevel(levelStr string) slog.Level {
+	return parseLevelWithDefault(levelStr, defaultLevel, envLogLevel)
+}
+
+// parseLevelWithDefault interprets the log level string from the environment,
+// falling back to a specified default level if the input is empty or invalid.
+// It logs a warning to stderr if the input string is non-empty but invalid.
+func parseLevelWithDefault(levelStr string, defaultLvl slog.Level, envVarName string) slog.Level {
+	trimmedLevelStr := strings.ToLower(strings.TrimSpace(levelStr))
+	if trimmedLevelStr == "" {
+		return defaultLvl // Use provided default if empty.
+	}
+
+	// Map known level strings (case-insensitive) to slog.Level values.
+	switch trimmedLevelStr {
+	case "default":
+		return internalLevelDefault
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "notice":
+		return internalLevelNotice
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	case "critical":
+		return internalLevelCritical
+	case "alert":
+		return internalLevelAlert
+	case "emergency":
+		return internalLevelEmergency
+	default:
+		// Log warning for unrecognized level string.
+		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid %s value %q, defaulting to %v\n", envVarName, levelStr, defaultLvl)
+		return defaultLvl
+	}
+}
+
+// parseBool interprets a boolean string from the environment, falling back to a
+// specified default value if the input is empty or invalid.
+// It logs a warning to stderr if the input string is non-empty but invalid.
+func parseBool(boolStr string, defaultVal bool, envVarName string) bool {
+	trimmedBoolStr := strings.TrimSpace(boolStr)
+	if trimmedBoolStr == "" {
+		return defaultVal // Use provided default if empty.
+	}
+
+	// Attempt to parse the string as a boolean.
+	val, err := strconv.ParseBool(trimmedBoolStr)
+	if err != nil {
+		// Log warning for unrecognized boolean string.
+		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid %s value %q, defaulting to %v\n", envVarName, boolStr, defaultVal)
+		return defaultVal
+	}
+	return val
+}
