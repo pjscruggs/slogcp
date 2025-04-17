@@ -175,12 +175,11 @@ func TestResolveSlogValue(t *testing.T) {
 	}
 }
 
-// Note: stackError type and newStackError function are defined in common_test.go
-// and are accessible within this package.
-
-// TestFormatErrorForReporting verifies error formatting and conditional stack trace generation.
+// TestFormatErrorForReporting verifies error formatting and origin stack trace extraction.
+// Note: Fallback stack generation is now tested via TestGcpHandler_Handle.
 func TestFormatErrorForReporting(t *testing.T) {
 	basicErr := errors.New("a basic error")
+	// Use the updated newStackError which captures PCs for the interface
 	stackErr := newStackError("error with stack", "myFunc()\n\t/path/to/file.go:10\nmain.main()\n\t/path/to/main.go:20")
 	wrappedStackErr := fmt.Errorf("wrapped: %w", stackErr)
 	wrappedBasicErr := fmt.Errorf("wrapping basic: %w", basicErr)
@@ -188,107 +187,68 @@ func TestFormatErrorForReporting(t *testing.T) {
 	testCases := []struct {
 		name              string
 		err               error
-		level             slog.Level // Level of the log record
-		stackTraceEnabled bool
-		stackTraceLevel   slog.Level // Threshold for generating stack
 		wantFormattedErr  formattedError
-		wantStackNonEmpty bool
-		wantStackContains string // Substring to check in stack (if non-empty)
+		wantStackNonEmpty bool   // Checks if origin stack was found
+		wantStackContains string // Substring to check in origin stack (if non-empty)
 	}{
 		{
-			name: "Nil error",
-			err:  nil, level: slog.LevelError, stackTraceEnabled: true, stackTraceLevel: slog.LevelError,
+			name:              "Nil error",
+			err:               nil,
 			wantFormattedErr:  formattedError{Message: "<nil error>", Type: ""},
 			wantStackNonEmpty: false,
 		},
 		{
-			name: "Basic error, stack disabled",
-			err:  basicErr, level: slog.LevelError, stackTraceEnabled: false, stackTraceLevel: slog.LevelError,
+			name:              "Basic error (no origin stack)",
+			err:               basicErr,
 			wantFormattedErr:  formattedError{Message: "a basic error", Type: "*errors.errorString"},
-			wantStackNonEmpty: false,
+			wantStackNonEmpty: false, // No stackTracer interface
 		},
 		{
-			name: "Basic error, stack enabled, level below threshold",
-			err:  basicErr, level: slog.LevelWarn, stackTraceEnabled: true, stackTraceLevel: slog.LevelError, // Level < Threshold
-			wantFormattedErr:  formattedError{Message: "a basic error", Type: "*errors.errorString"},
-			wantStackNonEmpty: false,
-		},
-		{
-			name: "Basic error, stack enabled, level meets threshold (fallback stack)",
-			err:  basicErr, level: slog.LevelError, stackTraceEnabled: true, stackTraceLevel: slog.LevelError, // Level == Threshold
-			wantFormattedErr:  formattedError{Message: "a basic error", Type: "*errors.errorString"},
+			name:              "Stack error (interface provides stack)",
+			err:               stackErr,
+			wantFormattedErr:  formattedError{Message: "error with stack", Type: "*gcp.stackError"},
 			wantStackNonEmpty: true,
-			wantStackContains: "runtime.Callers", // Check for runtime call in fallback
+			// Expect stack from the error itself, starting with the helper function
+			wantStackContains: "newStackError",
 		},
 		{
-			name: "Basic error, stack enabled, level above threshold (fallback stack)",
-			err:  basicErr, level: internalLevelCritical, stackTraceEnabled: true, stackTraceLevel: slog.LevelError, // Level > Threshold
-			wantFormattedErr:  formattedError{Message: "a basic error", Type: "*errors.errorString"},
-			wantStackNonEmpty: true,
-			wantStackContains: "runtime.Callers",
-		},
-		{
-			name: "Stack error (%+v), stack enabled, level meets threshold",
-			err:  stackErr, level: slog.LevelError, stackTraceEnabled: true, stackTraceLevel: slog.LevelError,
-			wantFormattedErr:  formattedError{Message: "error with stack", Type: "*gcp.stackError"}, // Type comes from common_test.go now
-			wantStackNonEmpty: true,
-			wantStackContains: "myFunc()", // Expect stack from error itself via %+v
-		},
-		{
-			name: "Wrapped stack error (%+v), stack enabled, level meets threshold",
-			err:  wrappedStackErr, level: slog.LevelError, stackTraceEnabled: true, stackTraceLevel: slog.LevelError,
+			name:              "Wrapped stack error (interface provides stack)",
+			err:               wrappedStackErr,
 			wantFormattedErr:  formattedError{Message: "wrapped: error with stack", Type: "*fmt.wrapError"}, // Type is wrapper
 			wantStackNonEmpty: true,
-			wantStackContains: "myFunc()", // Expect stack from underlying error via %+v
+			// Expect stack from underlying error via interface
+			wantStackContains: "newStackError",
 		},
 		{
-			name: "Wrapped basic error, stack enabled (fallback stack)",
-			err:  wrappedBasicErr, level: slog.LevelError, stackTraceEnabled: true, stackTraceLevel: slog.LevelError,
+			name:              "Wrapped basic error (no origin stack)",
+			err:               wrappedBasicErr,
 			wantFormattedErr:  formattedError{Message: "wrapping basic: a basic error", Type: "*fmt.wrapError"}, // Type is wrapper
-			wantStackNonEmpty: true,
-			wantStackContains: "runtime.Callers", // Basic error doesn't provide stack via %+v, use fallback
-		},
-		{
-			name: "Stack error (%+v), stack disabled",
-			err:  stackErr, level: slog.LevelError, stackTraceEnabled: false, stackTraceLevel: slog.LevelError,
-			wantFormattedErr:  formattedError{Message: "error with stack", Type: "*gcp.stackError"},
-			wantStackNonEmpty: false, // Stack disabled
-		},
-		{
-			name: "Stack error (%+v), stack enabled, level below threshold",
-			err:  stackErr, level: slog.LevelWarn, stackTraceEnabled: true, stackTraceLevel: slog.LevelError, // Level < Threshold
-			wantFormattedErr:  formattedError{Message: "error with stack", Type: "*gcp.stackError"},
-			wantStackNonEmpty: false, // Stack not generated due to level
+			wantStackNonEmpty: false,                                                                            // Basic error doesn't provide stack via interface
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotFormattedErr, gotStackTrace := formatErrorForReporting(
-				tc.err,
-				tc.level,
-				tc.stackTraceEnabled,
-				tc.stackTraceLevel,
-			)
+			// Call the simplified formatErrorForReporting
+			gotFormattedErr, gotOriginStackTrace := formatErrorForReporting(tc.err)
 
 			// Compare formattedError struct using cmp.Diff.
 			if diff := cmp.Diff(tc.wantFormattedErr, gotFormattedErr); diff != "" {
 				t.Errorf("formattedError mismatch (-want +got):\n%s", diff)
 			}
 
-			// Verify stack trace presence/absence.
-			gotStackNonEmpty := gotStackTrace != ""
+			// Verify origin stack trace presence/absence.
+			gotStackNonEmpty := gotOriginStackTrace != ""
 			if gotStackNonEmpty != tc.wantStackNonEmpty {
-				t.Errorf("Stack trace presence mismatch: got non-empty=%v, want non-empty=%v.\nStack:\n%s",
-					gotStackNonEmpty, tc.wantStackNonEmpty, gotStackTrace)
+				t.Errorf("Origin stack trace presence mismatch: got non-empty=%v, want non-empty=%v.\nStack:\n%s",
+					gotStackNonEmpty, tc.wantStackNonEmpty, gotOriginStackTrace)
 			}
 
-			// If stack trace expected, perform basic content check using substring matching.
-			// Exact stack trace content is fragile and depends on runtime/build details.
+			// If origin stack trace expected, perform basic content check.
 			if tc.wantStackNonEmpty && tc.wantStackContains != "" {
-				if !strings.Contains(gotStackTrace, tc.wantStackContains) {
-					t.Errorf("Stack trace mismatch: expected to contain %q, but got:\n%s",
-						tc.wantStackContains, gotStackTrace)
+				if !strings.Contains(gotOriginStackTrace, tc.wantStackContains) {
+					t.Errorf("Origin stack trace mismatch: expected to contain %q, but got:\n%s",
+						tc.wantStackContains, gotOriginStackTrace)
 				}
 			}
 		})
