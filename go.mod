@@ -1,3 +1,3 @@
-module github.com/pjscruggs/slogcp0
+module github.com/pjscruggs/slogcp
 
-go 1.21.0
+go 1.21
