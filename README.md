@@ -1,5 +1,7 @@
 # slogcp
 
+<img src="logo.svg" width="50%" alt="slogcp logo">
+
 GCP-native structured logging for Go (slog) microservices on Cloud Run, with built-in gRPC interceptors.
 
 ## Installation
