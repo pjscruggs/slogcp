@@ -1,0 +1,61 @@
+name: Go Dependency Updates
+
+# Workflow Triggers
+on:
+  # Run weekly on Mondays at 4:00 UTC
+  schedule:
+    - cron: '0 4 * * 1'
+  # Allow manual triggering from the GitHub Actions UI
+  workflow_dispatch:
+
+# Permissions needed for direct commits
+permissions:
+  contents: write # Needed for checkout and commits
+
+jobs:
+  update-dependencies:
+    name: Update Go Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      # Step 1: Check out the repository code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up the Go environment
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # Step 3: Update direct and transitive Go dependencies
+      - name: Update Dependencies
+        id: update_deps
+        run: |
+          # Update all direct and transitive dependencies
+          go get -u -t ./...
+          go mod tidy
+          # Check if go.mod or go.sum changed
+          if git diff --quiet --exit-code go.mod go.sum; then
+            echo "No dependency changes detected."
+            echo "changes_detected=false" >> $GITHUB_OUTPUT
+          else
+            echo "Dependency changes detected."
+            echo "changes_detected=true" >> $GITHUB_OUTPUT
+          fi
+
+      # Step 4: Run tests to verify updates don't break anything
+      - name: Run Tests
+        if: steps.update_deps.outputs.changes_detected == 'true'
+        run: go test ./... -v
+
+      # Step 5: Commit changes directly if tests pass
+      - name: Commit Changes
+        if: steps.update_deps.outputs.changes_detected == 'true'
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: GitHub Dependency Bot
+          author_email: actions@github.com
+          message: "chore(deps): update Go dependencies"
+          add: "go.mod go.sum"
+          # No push needed - EndBug/add-and-commit handles this automatically

@@ -17,105 +17,63 @@ on:
   # Allow manual triggering from the GitHub Actions UI
   workflow_dispatch:
 
-# Permissions required by the jobs. Start with least privilege.
-# contents: write is needed for peter-evans/create-pull-request
-# pull-requests: read is needed for golangci-lint-action with only-new-issues on PRs
-# security-events: write is needed for uploading SARIF files to Code Scanning
+# Permissions required by the jobs
 permissions:
-  contents: write # Needed for checkout and peter-evans/create-pull-request
+  contents: write # Needed for checkout and direct commits
   pull-requests: read # Needed for golangci-lint only-new-issues
   security-events: write # Needed for github/codeql-action/upload-sarif
 
 jobs:
-  # Job to lint the Go code
-  lint:
-    name: Lint Code
+  # Job to coordinate all maintenance tasks
+  maintenance:
+    name: Coordinate Maintenance Tasks
     runs-on: ubuntu-latest
     steps:
-      # Step 1: Check out the repository code
-      - name: Checkout Code
-        uses: actions/checkout@v4 
-        with:
-          # Required for golangci-lint-action with only-new-issues on merge_group events
-          # Set fetch-depth to 0 to fetch all history for all branches and tags.
-          fetch-depth: ${{ github.event_name == 'merge_group' && 0 || 1 }}
-
-      # Step 2: Set up the Go environment, using the version from go.mod
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: 'go.mod'
-          cache: true
-
-      # Step 3: Run golangci-lint
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v7
-        with:
-          version: latest
-          args: --config=.golangci.yml
-          only-new-issues: ${{ github.event_name == 'pull_request' }}
-
-  # Job to perform security scans
-  security:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    steps:
-      # Step 1: Check out the repository code
       - name: Checkout Code
         uses: actions/checkout@v4
-
-      # Step 2: Set up the Go environment
+        with:
+          fetch-depth: 0  # Full history for license dates
+      
+      # Call license header workflow to handle license notices
+      - name: Update License Headers
+        uses: ./.github/workflows/license-header.yml
+      
+      # Tests are a critical step - fail the workflow if they don't pass
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
-
-      # Step 3: Run gosec SAST scanner and output results to SARIF
-      # Use -no-fail so the workflow continues and uploads the report
+      
+      - name: Run All Tests
+        id: tests
+        run: go test ./... -v
+      
+      # Run security scans and quality checks
       - name: Run Gosec Scanner
-        uses: securego/gosec@master # Or pin to a specific tag
+        uses: securego/gosec@master
         with:
           args: '-no-fail -fmt sarif -out results.sarif ./...'
-
-      # Step 4: Run govulncheck to find known vulnerabilities in dependencies
-      - name: Run Govulncheck
-        uses: golang/govulncheck-action@v1
-        with:
-          go-version-file: 'go.mod'
-
-      # Step 5: Upload gosec SARIF results to GitHub Code Scanning
+      
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
-        # Only upload if the file exists (gosec ran successfully)
-        if: success() || failure() # Run even if gosec found issues (due to -no-fail)
-
-  # Job to check for and update Go module dependencies
-  dependency-update:
-    name: Update Dependencies
-    runs-on: ubuntu-latest
-    # Only run this job on the scheduled trigger or manual dispatch, not on PRs
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    steps:
-      # Step 1: Check out the repository code
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      # Step 2: Set up the Go environment
-      - name: Set up Go
-        uses: actions/setup-go@v5
+        if: success() || failure() # Run even if gosec found issues
+      
+      - name: Run Govulncheck
+        uses: golang/govulncheck-action@v1
         with:
           go-version-file: 'go.mod'
-          cache: true
-
-      # Step 3: Update Go dependencies
+      
+      # Update dependencies if this is a scheduled run or manual trigger
       - name: Update Dependencies
         id: update_deps
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           go get -u -t ./...
           go mod tidy
+          
           # Check if go.mod or go.sum changed
           if git diff --quiet --exit-code go.mod go.sum; then
             echo "No dependency changes detected."
@@ -124,24 +82,18 @@ jobs:
             echo "Dependency changes detected."
             echo "changes_detected=true" >> $GITHUB_OUTPUT
           fi
-
-      # Step 4: Create Pull Request if dependencies were updated
-      - name: Create Pull Request
+      
+      # Re-run tests if dependencies were updated
+      - name: Verify Tests After Update
         if: steps.update_deps.outputs.changes_detected == 'true'
-        uses: peter-evans/create-pull-request@v6
+        run: go test ./... -v
+      
+      # Directly commit dependency updates if tests pass
+      - name: Commit Dependency Updates
+        if: steps.update_deps.outputs.changes_detected == 'true'
+        uses: EndBug/add-and-commit@v9
         with:
-          token: ${{ secrets.GITHUB_TOKEN }} # Or a PAT with repo write access
-          commit-message: "chore(deps): update Go module dependencies"
-          title: "Update Go Module Dependencies"
-          body: |
-            Automated dependency update via GitHub Actions.
-
-            Updates Go module dependencies to their latest minor/patch versions using `go get -u -t ./...` and tidies `go.mod` and `go.sum`.
-
-            Please review and merge if all checks pass.
-          branch: "chore/go-dependency-updates" # Branch name for the PR
-          delete-branch: true # Delete the branch after merging/closing PR
-          labels: dependencies, automated pr
-          assignees: ${{ github.actor }} # Assign the user who triggered the workflow (if manual)
-
- 
+          author_name: Maintenance Bot
+          author_email: actions@github.com
+          message: "chore(deps): update Go module dependencies"
+          add: "go.mod go.sum"
