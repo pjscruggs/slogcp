@@ -1,0 +1,30 @@
+header:
+  license:
+    spdx-id: Apache-2.0
+    copyright-owner: "Patrick J. Scruggs"
+    copyright-year: "2025"
+    software-name: "slogcp"
+  
+  paths:
+    - '**/*.go'
+    - '**/*.js'
+    - '**/*.ts'
+    - '**/*.java'
+    - '**/*.py'
+    - '**/*.sh'
+
+  paths-ignore:
+    - 'dist'
+    - 'vendor'
+    - 'node_modules'
+    - '**/*.md'
+    - '**/*.yml'
+    - '**/*.yaml'
+    - 'LICENSE'
+    - 'go.mod'
+    - 'go.sum'
+    - '.gitignore'
+  
+  comment: on-failure
+
+  license-location-threshold: 200

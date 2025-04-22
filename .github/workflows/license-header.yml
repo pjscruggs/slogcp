@@ -1,0 +1,31 @@
+name: License Header Management
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual triggers
+
+jobs:
+  license-header:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for proper file dating
+      
+      - name: Fix License Headers
+        uses: apache/skywalking-eyes/header@v0.5.0  # Using specific version for stability
+        with:
+          mode: fix  # Auto-fix mode
+          config: .licenserc.yaml
+          
+      - name: Commit changes if needed
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: License Bot
+          author_email: license-bot@github.com
+          message: 'chore: Update license headers'
+          add: '.'
