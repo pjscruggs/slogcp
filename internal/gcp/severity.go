@@ -6,14 +6,14 @@ import (
 	"cloud.google.com/go/logging"
 )
 
-// Internal constants mirroring `slogcp/levels.go` values, used for level
-// comparisons during severity mapping to avoid import cycles.
+// Internal constants defining additional log severity levels beyond standard slog levels.
+// These extend the slog.Level system to fully support Google Cloud Logging's severity scale.
 const (
-	internalLevelDefault   slog.Level = -8 // Corresponds to slogcp.LevelDefault
-	internalLevelNotice    slog.Level = 2  // Corresponds to slogcp.LevelNotice
-	internalLevelCritical  slog.Level = 12 // Corresponds to slogcp.LevelCritical
-	internalLevelAlert     slog.Level = 16 // Corresponds to slogcp.LevelAlert
-	internalLevelEmergency slog.Level = 20 // Corresponds to slogcp.LevelEmergency
+	internalLevelDefault   slog.Level = -8 // DEFAULT severity, lower than Debug
+	internalLevelNotice    slog.Level = 2  // NOTICE severity, between Info and Warn
+	internalLevelCritical  slog.Level = 12 // CRITICAL severity, above Error
+	internalLevelAlert     slog.Level = 16 // ALERT severity, above Critical
+	internalLevelEmergency slog.Level = 20 // EMERGENCY severity, highest level
 )
 
 // mapSlogLevelToGcpSeverity converts an slog.Level to the corresponding

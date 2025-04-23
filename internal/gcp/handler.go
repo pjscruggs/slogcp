@@ -201,7 +201,7 @@ func (h *gcpHandler) Handle(ctx context.Context, r slog.Record) error {
 			pcs := make([]uintptr, maxStackFrames)
 			// Skip runtime.Callers, this Handle method, and the slog.Logger method that called Handle.
 			// Adjust skip count if Handle's internal structure changes significantly.
-			num := runtime.Callers(3, pcs)
+			num := runtime.Callers(2, pcs)
 			if num > 0 {
 				// Format the captured PCs (no prefix skipping needed here).
 				finalStackTrace = formatPCsToStackString(pcs[:num])

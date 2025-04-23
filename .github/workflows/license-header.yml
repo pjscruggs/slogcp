@@ -5,7 +5,14 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:  # Allow manual triggers
+  merge_group:
+    types: [ checks_requested ]
+  workflow_dispatch:
+  workflow_call:
+
+# Apply least privilege principle
+permissions:
+  contents: read
 
 jobs:
   license-header:
@@ -16,16 +23,17 @@ jobs:
         with:
           fetch-depth: 0  # Full history for proper file dating
       
-      - name: Fix License Headers
-        uses: apache/skywalking-eyes/header@v0.5.0  # Using specific version for stability
+      - name: Check License Headers
+        id: check-license
+        uses: apache/skywalking-eyes/header@v0.5.0
         with:
-          mode: fix  # Auto-fix mode
+          mode: check
           config: .licenserc.yaml
-          
-      - name: Commit changes if needed
-        uses: EndBug/add-and-commit@v9
-        with:
-          author_name: License Bot
-          author_email: license-bot@github.com
-          message: 'chore: Update license headers'
-          add: '.'
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only output license issues for pull requests
+      - name: Output License Issues
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        run: |
+          echo "::error::License header validation failed. Run 'license-fix' job locally or in your branch."
+          exit 1

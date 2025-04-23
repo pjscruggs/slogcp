@@ -1,0 +1,26 @@
+run:
+  timeout: 5m
+  go: '1.23'
+
+linters:
+  enable:
+    - gofmt
+    - goimports
+    - gosimple
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+    - revive
+    - errcheck
+    - gosec
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/pjscruggs/slogcp
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true

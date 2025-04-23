@@ -2,7 +2,7 @@
 
 <img src="logo.svg" width="50%" alt="slogcp logo">
 
-GCP-native structured logging for Go (slog) microservices on Cloud Run, with built-in gRPC interceptors.
+A "batteries included" structured logging module for Google Cloud with built-in HTTP and gRPC interceptors.
 
 ## Installation
 
@@ -10,55 +10,19 @@ GCP-native structured logging for Go (slog) microservices on Cloud Run, with bui
 go get github.com/pjscruggs/slogcp
 ```
 
-# Features
+## Features
 
-## Cloud Logging Integration
-- Structured JSON logging using the official Cloud Logging API
-- Automatic mapping of Go log levels to GCP severity levels 
-- Configurable batching and buffering of log entries
-- Full support for GCP's monitored resource detection and configuration
+## Features
 
-## Extended Severity Levels
-- Extends standard `slog` levels with all Google Cloud Logging severities
-- Adds `LevelDefault`, `LevelNotice`, `LevelCritical`, `LevelAlert`, and `LevelEmergency`
-- Preserves numeric compatibility with standard `slog.Level`
-- Convenience methods for each level (e.g., `NoticeContext`, `CriticalContext`)
-
-## Trace Context Support
-- Automatic extraction of trace data from `context.Context`
-- Log correlation with Cloud Trace and Error Reporting
-- Works with OpenTelemetry spans out of the box
-- Formats trace IDs for proper linking in GCP console
-
-## HTTP and gRPC Integration
-- HTTP middleware with request/response details structured for Cloud Logging
-- gRPC client and server interceptors for automatic log correlation
-- Support for metadata and payload logging in gRPC
-- Automatic panic recovery and logging in gRPC handlers
-
-## Error Handling
-- Automatic stack trace capture for errors at configurable levels
-- Proper formatting for Cloud Error Reporting integration
-- Smart error unwrapping to extract original stack traces
-- Source location resolution (file, line, function) when enabled
-
-## Configuration Options
-- Environment variable support for deployments
-- Programmatic configuration with functional options
-- Dynamic log level control via `SetLevel()`
-- Auto-detection of Google Cloud Project ID
-
-## Performance Features
-- Connection pooling through the Cloud Logging client
-- Configurable buffer size and flush thresholds
-- Maximum payload size limits for high-throughput applications
-- Proper cleanup with `Close()` and `Flush()` methods
-
-## Operational Features
-- Graceful handling of initialization failures
-- Background error reporting
-- Fallback logging to stderr for critical failures
-- Service and revision name detection for Cloud Run environments
+- {🪵} **Structured JSON logging** for powerful filtering and analysis in Cloud Logging
+- ☁️🔗🛡️ **Direct GCP Cloud Logging API integration** for increased reliability and throughput over `stdout` / `stderr`
+- **Complete GCP severity level support** (DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY)
+- 📡 **Automatic trace context extraction** that correlates logs with Cloud Trace spans with zero configuration
+- **Ready-to-use HTTP and gRPC middleware** with optimized GCP-friendly log structuring
+- **Dynamic log level control** without application restart
+- **Error logging with optional stack traces** for efficient debugging
+- **Automatic Cloud Run metadata detection** for proper resource association
+- **Graceful shutdown handling** with automatic buffered log flushing
 
 # Configuration
 
@@ -109,10 +73,10 @@ Configuration can also be set via environment variables:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID (required if not auto-detected) | Auto-detected on GCP |
-| `LOG_LEVEL` | Minimum log level (`DEFAULT`, `DEBUG`, `INFO`, `NOTICE`, `WARN`, `ERROR`, `CRITICAL`, `ALERT`, `EMERGENCY`) | `INFO` |
+| `LOG_LEVEL` | Minimum log level (named or numeric: `DEBUG`/`-4`, `INFO`/`0`, `ERROR`/`8`, etc.) | `INFO` |
 | `LOG_SOURCE_LOCATION` | Enable source location (`true`, `1`) | `false` |
 | `LOG_STACK_TRACE_ENABLED` | Enable stack traces (`true`, `1`) | `false` |
-| `LOG_STACK_TRACE_LEVEL` | Minimum level for stack traces | `ERROR` |
+| `LOG_STACK_TRACE_LEVEL` | Minimum level for stack traces (named or numeric) | `ERROR` |
 | `K_SERVICE` | Cloud Run service name | Auto-set in Cloud Run |
 | `K_REVISION` | Cloud Run revision name | Auto-set in Cloud Run |
 

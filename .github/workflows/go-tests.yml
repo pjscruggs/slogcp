@@ -5,8 +5,14 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  # Also run when referenced from other workflows
+  merge_group:
+    types: [ checks_requested ]
+  workflow_dispatch:
   workflow_call:
+
+# Apply least privilege principle
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -23,4 +29,9 @@ jobs:
           cache: true
       
       - name: Run Go Tests
-        run: go test ./... -v
+        run: go test -race -coverprofile=coverage.txt ./...
+      
+      - name: Run Go Vulnerability Check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

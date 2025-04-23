@@ -53,11 +53,9 @@ func formatPCsToStackString(pcs []uintptr) string {
 
 	var sb strings.Builder
 	frames := runtime.CallersFrames(pcs)
-	frameCount := 0 // Keep track for potential debugging, though not used in logic
 
 	for {
 		frame, more := frames.Next()
-		frameCount++ // Increment frame count
 
 		if frame.PC == 0 {
 			break // End of frames
@@ -66,7 +64,7 @@ func formatPCsToStackString(pcs []uintptr) string {
 		funcName := frame.Function
 
 		// Stop processing *before* formatting runtime exit frames.
-		if funcName == "runtime.goexit" {
+		if funcName == "runtime.goexit" || strings.HasPrefix(funcName, "testing.") {
 			break
 		}
 

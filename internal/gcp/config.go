@@ -1,6 +1,8 @@
+// internal/gcp/config.go
 package gcp
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -44,13 +46,13 @@ type Config struct {
 
 // Environment variable names used for configuration.
 const (
-	envLogLevel          = "LOG_LEVEL"               // Sets the initial logging level (e.g., "DEBUG", "INFO", "NOTICE").
+	envLogLevel          = "LOG_LEVEL"               // Sets the initial logging level (e.g., "DEBUG", "-4", "INFO", "0").
 	envLogSourceLocation = "LOG_SOURCE_LOCATION"     // Enables source location logging if "true" or "1".
-	envProjectID         = "GOOGLE_CLOUD_PROJECT"    // Specifies the GCP project ID (required).
-	envService           = "K_SERVICE"               // Cloud Run service name (optional).
-	envRevision          = "K_REVISION"              // Cloud Run revision name (optional).
+	envProjectID         = "GOOGLE_CLOUD_PROJECT"    // Specifies the GCP project ID.
+	envService           = "K_SERVICE"               // Cloud Run service name.
+	envRevision          = "K_REVISION"              // Cloud Run revision name.
 	envStackTraceEnabled = "LOG_STACK_TRACE_ENABLED" // Enables stack trace logging if "true" or "1".
-	envStackTraceLevel   = "LOG_STACK_TRACE_LEVEL"   // Sets the minimum level for stack traces (e.g., "ERROR").
+	envStackTraceLevel   = "LOG_STACK_TRACE_LEVEL"   // Sets the minimum level for stack traces (e.g., "ERROR" or "8").
 
 	// Default values used if environment variables are missing or invalid.
 	defaultLevel           = slog.LevelInfo  // Default logging level is INFO.
@@ -74,7 +76,8 @@ func LoadConfig() (Config, error) {
 	if projectID == "" {
 		// Check if running in a GCP environment where metadata server is available.
 		if metadata.OnGCE() {
-			metadataProjectID, err := metadata.ProjectID()
+			ctx := context.Background()
+			metadataProjectID, err := metadata.ProjectIDWithContext(ctx)
 			// Use the metadata project ID if successfully retrieved.
 			if err == nil && metadataProjectID != "" {
 				projectID = metadataProjectID
@@ -108,6 +111,8 @@ func LoadConfig() (Config, error) {
 
 // parseLevel interprets the log level string from the environment, falling back
 // to the package default (slog.LevelInfo) if empty or invalid.
+// Supports both named level strings (e.g., "DEBUG", "ERROR") and numerical
+// values (e.g., "-4", "8") that correspond directly to slog.Level integers.
 func parseLevel(levelStr string) slog.Level {
 	return parseLevelWithDefault(levelStr, defaultLevel, envLogLevel)
 }
@@ -115,6 +120,8 @@ func parseLevel(levelStr string) slog.Level {
 // parseLevelWithDefault interprets the log level string from the environment,
 // falling back to a specified default level if the input is empty or invalid.
 // It logs a warning to stderr if the input string is non-empty but invalid.
+// Supports both named level strings (e.g., "DEBUG", "ERROR") and numerical
+// values (e.g., "-4", "8") that correspond directly to slog.Level integers.
 func parseLevelWithDefault(levelStr string, defaultLvl slog.Level, envVarName string) slog.Level {
 	trimmedLevelStr := strings.ToLower(strings.TrimSpace(levelStr))
 	if trimmedLevelStr == "" {
@@ -142,6 +149,11 @@ func parseLevelWithDefault(levelStr string, defaultLvl slog.Level, envVarName st
 	case "emergency":
 		return internalLevelEmergency
 	default:
+		// Try to parse as a numerical value
+		if levelVal, err := strconv.Atoi(trimmedLevelStr); err == nil {
+			return slog.Level(levelVal)
+		}
+
 		// Log warning for unrecognized level string.
 		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid %s value %q, defaulting to %v\n", envVarName, levelStr, defaultLvl)
 		return defaultLvl

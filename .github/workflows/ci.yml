@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  merge_group:
+    types: [ checks_requested ]
+  workflow_dispatch:
+
+# Apply least privilege principle
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  license-header:
+    name: License Check
+    uses: ./.github/workflows/license-header.yml
+
+  format-lint:
+    name: Format & Lint
+    needs: [license-header]
+    uses: ./.github/workflows/go-format-lint.yml
+
+  test:
+    name: Tests
+    needs: [format-lint]
+    uses: ./.github/workflows/go-tests.yml
+
+  aggregate-checks:
+    name: All Checks
+    if: always()
+    needs: [license-header, format-lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check workflow results
+        run: |
+          echo "License Header: ${{ needs.license-header.result }}"
+          echo "Format & Lint: ${{ needs.format-lint.result }}"
+          echo "Tests: ${{ needs.test.result }}"
+          if [[ "${{ needs.license-header.result }}" == "success" && "${{ needs.format-lint.result }}" == "success" && "${{ needs.test.result }}" == "success" ]]; then
+            echo "All checks passed successfully!"
+            exit 0
+          else
+            echo "One or more checks failed."
+            exit 1
+          fi

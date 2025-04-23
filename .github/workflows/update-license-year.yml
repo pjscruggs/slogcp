@@ -2,8 +2,12 @@ name: Update License Year
 
 on:
   schedule:
-    - cron: '0 0 2 1 *'
+    - cron: '0 0 2 1 *' # Run on January 2nd each year
   workflow_dispatch:
+
+# Need write permissions to create commits
+permissions:
+  contents: write
 
 jobs:
   update-year:

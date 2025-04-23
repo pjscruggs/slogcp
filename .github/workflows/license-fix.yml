@@ -1,0 +1,31 @@
+name: Fix License Headers
+
+on:
+  workflow_dispatch:
+
+# Need write permissions to create commits
+permissions:
+  contents: write
+
+jobs:
+  fix-license-headers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Fix License Headers
+        uses: apache/skywalking-eyes/header@v0.5.0
+        with:
+          mode: fix
+          config: .licenserc.yaml
+          
+      - name: Commit changes if needed
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: License Bot
+          author_email: license-bot@github.com
+          message: 'chore: Update license headers'
+          add: '.'

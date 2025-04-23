@@ -1,8 +1,6 @@
 name: Go Format and Lint
 
-# Workflow Triggers
 on:
-  # Run on pull requests targeting the main branch
   pull_request:
     branches: [ main ]
     paths:
@@ -11,19 +9,20 @@ on:
       - 'go.sum'
       - '.github/workflows/go-format-lint.yml'
       - '.golangci.yml'
-  # Run on pushes to main
   push:
     branches: [ main ]
     paths:
       - '**.go'
       - 'go.mod'
       - 'go.sum'
-  # Allow manual triggering
+  merge_group:
+    types: [ checks_requested ]
   workflow_dispatch:
+  workflow_call:
 
-# Permissions
+# Apply least privilege principle
 permissions:
-  contents: write  # Needed for commits
+  contents: read
   pull-requests: read  # Needed for golangci-lint on PRs
 
 jobs:
@@ -45,23 +44,17 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      # Step 3: Auto-format Go code
-      - name: Format Go Code
-        id: gofmt
+      # Step 3: Check if Go code needs formatting
+      - name: Check Go Formatting
+        id: gofmt-check
         run: |
-          # Install goimports which handles both imports and formatting
+          # Install goimports
           go install golang.org/x/tools/cmd/goimports@latest
           
-          # Run goimports and capture if any changes were made
-          goimports -local $(go list -m) -w $(find . -type f -name '*.go' | grep -v /vendor/)
-          
-          # Check if any files were changed
-          if git diff --quiet --exit-code; then
-            echo "No formatting changes needed."
-            echo "format_changes=false" >> $GITHUB_OUTPUT
-          else
-            echo "Code formatting applied."
-            echo "format_changes=true" >> $GITHUB_OUTPUT
+          # Check if any files would be changed by goimports
+          if [ -n "$(goimports -l $(find . -type f -name '*.go' | grep -v /vendor/))" ]; then
+            echo "::error::Code formatting issues found. Please run 'goimports -local github.com/pjscruggs/slogcp -w .' locally."
+            exit 1
           fi
 
       # Step 4: Run golangci-lint
@@ -71,13 +64,3 @@ jobs:
           version: latest
           args: --config=.golangci.yml
           only-new-issues: ${{ github.event_name == 'pull_request' }}
-
-      # Step 5: Commit formatting changes if any
-      - name: Commit Formatting Changes
-        if: steps.gofmt.outputs.format_changes == 'true'
-        uses: EndBug/add-and-commit@v9
-        with:
-          author_name: Code Formatter Bot
-          author_email: actions@github.com
-          message: "style: apply Go code formatting"
-          add: "*.go"

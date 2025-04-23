@@ -37,30 +37,30 @@ func (e *stackError) Format(s fmt.State, verb rune) {
 	fmt.Fprint(s, e.msg)
 }
 
-// StackTrace implements the stackTracer interface.
-func (e *stackError) StackTrace() []uintptr {
-	// Return the stored program counters, or capture if nil
-	if e.pcs == nil {
-		// Capture a minimal stack trace if none was provided during creation.
-		// Skip runtime.Callers, this method, and potentially the caller (newStackError).
-		pcs := make([]uintptr, 10) // Small buffer is likely sufficient
-		n := runtime.Callers(3, pcs)
-		e.pcs = pcs[:n]
-	}
-	return e.pcs
-}
-
 // newStackError is a constructor for the stackError helper type.
-// It now captures program counters automatically for the StackTrace method.
+// It captures program counters automatically for the StackTrace method.
 func newStackError(msg, stack string) error {
 	// Capture program counters for the StackTrace() method.
 	// Skip runtime.Callers, this function (newStackError).
 	pcs := make([]uintptr, maxStackFrames) // Use maxStackFrames from payload.go
-	n := runtime.Callers(2, pcs)
+	n := runtime.Callers(1, pcs)
 
 	return &stackError{
 		msg:   msg,
 		stack: stack,   // For %+v formatting
 		pcs:   pcs[:n], // For StackTrace() interface
 	}
+}
+
+// StackTrace implements the stackTracer interface.
+func (e *stackError) StackTrace() []uintptr {
+	// Return the stored program counters, or capture if nil
+	if e.pcs == nil {
+		// Capture a minimal stack trace if none was provided during creation.
+		// Skip runtime.Callers, and this function (StackTrace).
+		pcs := make([]uintptr, 10)
+		n := runtime.Callers(2, pcs)
+		e.pcs = pcs[:n]
+	}
+	return e.pcs
 }

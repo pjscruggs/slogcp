@@ -41,8 +41,12 @@ func TestParseLevelWithDefault(t *testing.T) {
 		{"Invalid string uses custom default", "verbose", customDefaultLevel, "TEST_LEVEL", customDefaultLevel},
 		{"Invalid string uses package default", "verbose", defaultLevel, "LOG_LEVEL", defaultLevel}, // Test package default
 		{"Partial match uses default", "inf", customDefaultLevel, "TEST_LEVEL", customDefaultLevel},
-		{"Number string uses default", "1", customDefaultLevel, "TEST_LEVEL", customDefaultLevel},
 		{"String with spaces", " info ", customDefaultLevel, "TEST_LEVEL", slog.LevelInfo},
+		{"Numerical Level 0", "0", customDefaultLevel, "TEST_LEVEL", slog.Level(0)},
+		{"Numerical Level -4", "-4", customDefaultLevel, "TEST_LEVEL", slog.Level(-4)},
+		{"Numerical Level 8", "8", customDefaultLevel, "TEST_LEVEL", slog.Level(8)},
+		{"Numerical Level with spaces", " 12 ", customDefaultLevel, "TEST_LEVEL", slog.Level(12)},
+		{"Invalid Numerical Level", "1.5", customDefaultLevel, "TEST_LEVEL", customDefaultLevel},
 	}
 
 	for _, tc := range testCases {
@@ -70,6 +74,8 @@ func TestParseLevel(t *testing.T) {
 		{"Valid INFO", "info", slog.LevelInfo},
 		{"Valid NOTICE", "notice", internalLevelNotice},
 		{"Invalid uses default INFO", "invalid", slog.LevelInfo},
+		{"Numerical Level -4", "-4", slog.Level(-4)},
+		{"Numerical Level 8", "8", slog.Level(8)},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -277,7 +277,7 @@ func processOptions(opts ...Option) *options {
 
 			// Include nanosecond timestamp for randomization across calls.
 			timeNs := time.Now().UnixNano()
-			_, _ = h.Write([]byte(fmt.Sprintf("%d", timeNs)))
+			_, _ = h.Write(fmt.Appendf(nil, "%d", timeNs))
 
 			// Convert hash to a float between 0.0 and 1.0.
 			hashFloat := float64(h.Sum32()) / float64(math.MaxUint32)
