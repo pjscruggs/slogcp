@@ -15,14 +15,14 @@ go get github.com/pjscruggs/slogcp
 ## Features
 
 - {🪵} **Structured JSON logging** for powerful filtering and analysis in Cloud Logging
-- ☁️🔗🛡️ **Direct GCP Cloud Logging API integration** for increased reliability and throughput over `stdout` / `stderr`
-- **Complete GCP severity level support** (DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY)
-- 📡 **Automatic trace context extraction** that correlates logs with Cloud Trace spans with zero configuration
-- **Ready-to-use HTTP and gRPC middleware** with optimized GCP-friendly log structuring
-- **Dynamic log level control** without application restart
-- **Error logging with optional stack traces** for efficient debugging
-- **Automatic Cloud Run metadata detection** for proper resource association
-- **Graceful shutdown handling** with automatic buffered log flushing
+-  ☁️  **GCP Cloud Logging API integration** for increased reliability and throughput over `stdout` / `stderr`
+-  🌈  **Complete GCP severity level support** (DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY)
+-  📡  **Automatic trace context extraction** that correlates logs with Cloud Trace spans with zero configuration
+-  🧩  **Ready-to-use HTTP and gRPC middleware** with optimized GCP-friendly log structuring
+-  🎚️  **Dynamic log level control** without application restart
+-  🐛  **Error logging with optional stack traces** for efficient debugging
+-  🏷️  **Automatic Cloud Run metadata detection** for proper resource association
+-  🪂  **Graceful shutdown handling** with automatic buffered log flushing
 
 # Configuration
 
