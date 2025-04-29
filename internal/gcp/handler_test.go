@@ -53,12 +53,37 @@ func (m *mockEntryLogger) Reset() {
 	m.entries = nil
 }
 
-// getHandlerTestPC gets the program counter for source location tests.
-// It skips frames to point to the caller of the test helper.
+// getHandlerTestPC returns the program counter for source-location tests.
+// It walks the call stack, skipping this helper, the runtime, and testing
+// framework frames, landing on the actual invocation in your *_test.go.
 func getHandlerTestPC() uintptr {
-	pcs := make([]uintptr, 1)
-	runtime.Callers(2, pcs) // Skip runtime.Callers and this helper frame
-	return pcs[0]
+	// grab a handful of PCs (should be enough to skip wrappers)
+	pcs := make([]uintptr, 10)
+	n := runtime.Callers(2, pcs) // skip runtime.Callers + this function
+	frames := runtime.CallersFrames(pcs[:n])
+
+	for {
+		frame, more := frames.Next()
+		fn := frame.Function
+
+		// skip:
+		//  - our own helper
+		//  - anything in runtime.*
+		//  - anything in testing.*
+		if strings.Contains(fn, "internal/gcp.getHandlerTestPC") ||
+			strings.HasPrefix(fn, "runtime.") ||
+			strings.HasPrefix(fn, "testing.") {
+			if !more {
+				break
+			}
+			continue
+		}
+
+		return frame.PC
+	}
+
+	// fallback if nothing found
+	return 0
 }
 
 // contextWithTrace creates a context containing trace information for testing.

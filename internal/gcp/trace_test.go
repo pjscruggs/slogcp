@@ -109,21 +109,31 @@ func TestExtractTraceSpan(t *testing.T) {
 	}
 }
 
-// getTestPC is a helper function to get the program counter of its caller.
+// getTestPC returns the program counter of the test call site.
+// It skips this helper plus any runtime.* and testing.* frames.
 func getTestPC() uintptr {
-	pcs := make([]uintptr, 1)
-	// Skip 2 frames: runtime.Callers and getTestPC itself.
-	runtime.Callers(2, pcs)
-	return pcs[0]
-}
+	pcs := make([]uintptr, 10)
+	n := runtime.Callers(2, pcs) // skip runtime.Callers + this function
+	frames := runtime.CallersFrames(pcs[:n])
 
-// nestedGetTestPC retrieves the program counter (PC) of its caller in the test,
-// skipping over its own frame and the runtime.Callers call.
-func nestedGetTestPC() uintptr {
-    pcs := make([]uintptr, 1)
-    // Skip 2 frames: runtime.Callers and nestedGetTestPC itself.
-    runtime.Callers(2, pcs)
-    return pcs[0]
+	for {
+		frame, more := frames.Next()
+		fn := frame.Function
+
+		// Skip this helper, runtime and testing frames.
+		if strings.Contains(fn, "internal/gcp.getTestPC") ||
+			strings.HasPrefix(fn, "runtime.") ||
+			strings.HasPrefix(fn, "testing.") {
+			if !more {
+				break
+			}
+			continue
+		}
+
+		return frame.PC
+	}
+
+	return 0
 }
 
 // TestResolveSourceLocation verifies conversion of PC to source file/line/function.
@@ -164,7 +174,7 @@ func TestResolveSourceLocation(t *testing.T) {
 	})
 
 	t.Run("ValidPC_NestedFunc", func(t *testing.T) {
-		pc := nestedGetTestPC() // PC of the line calling this in the test function
+		pc := getTestPC() // PC of the line calling this in the test function
 		if pc == 0 {
 			t.Skip("Could not get valid PC for test")
 		}
@@ -179,7 +189,7 @@ func TestResolveSourceLocation(t *testing.T) {
 		if !strings.HasSuffix(got.File, wantFileSuffix) {
 			t.Errorf("SourceLocation.File mismatch: got %q, want suffix %q", got.File, wantFileSuffix)
 		}
-		// Function name should be the *caller* of nestedGetTestPC, which is the t.Run func.
+		// Function name should be the *caller* of getTestPC, which is the t.Run func.
 		wantFuncSubstring := "TestResolveSourceLocation"
 		if !strings.Contains(got.Function, wantFuncSubstring) {
 			t.Errorf("SourceLocation.Function mismatch: got %q, want substring %q", got.Function, wantFuncSubstring)
