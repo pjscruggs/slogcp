@@ -19,11 +19,12 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 // UnaryServerInterceptor returns a new unary server interceptor ([grpc.UnaryServerInterceptor])

@@ -19,9 +19,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/pjscruggs/slogcp"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 // logPayload handles the logic for marshalling, truncating, and logging a message payload.

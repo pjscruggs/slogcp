@@ -19,12 +19,13 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 // NewUnaryClientInterceptor creates a gRPC unary client interceptor that logs RPC calls
