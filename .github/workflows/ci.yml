@@ -9,7 +9,6 @@ on:
     types: [ checks_requested ]
   workflow_dispatch:
 
-# Apply least privilege principle
 permissions:
   contents: read
   pull-requests: read
@@ -47,3 +46,36 @@ jobs:
             echo "One or more checks failed."
             exit 1
           fi
+
+  build:
+    name: Build
+    needs: aggregate-checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Determine version
+        id: get_version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            git fetch --tags --force
+            echo "version=$(git describe --tags --abbrev=0)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build with injected version
+        run: |
+          go build \
+            -ldflags="-X 'github.com/pjscruggs/slogcp.Version=${{ steps.get_version.outputs.version }}'" \
+            -o slogcp ./cmd/slogcp

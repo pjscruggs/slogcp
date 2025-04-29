@@ -2,7 +2,10 @@ header:
   license:
     spdx-id: Apache-2.0
     copyright-owner: "Patrick J. Scruggs"
-    copyright-year: "2025"
+
+    first-publication-year: &fp_year "2025"
+    copyright-year: *fp_year 
+
     software-name: "slogcp"
   
   paths:

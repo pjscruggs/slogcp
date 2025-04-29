@@ -1,0 +1,63 @@
+name: Update Version for Dependency Changes
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-version:
+    name: Update Version for Dependency Changes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for dependency-only changes
+        id: check-deps
+        run: |
+          DEPS_CHANGED=$(git diff --name-only HEAD^ HEAD | grep 'go.mod\|go.sum' || true)
+          VERSION_CHANGED=$(git diff --name-only HEAD^ HEAD | grep 'version.go' || true)
+          if [ -n "$DEPS_CHANGED" ] && [ -z "$VERSION_CHANGED" ]; then
+            echo "DEPS_ONLY=true" >> $GITHUB_OUTPUT
+          else
+            echo "DEPS_ONLY=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Calculate next version
+        if: steps.check-deps.outputs.DEPS_ONLY == 'true'
+        id: calc_version
+        run: |
+          git fetch --tags --force
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          VERSION_CORE=${LATEST_TAG#v}
+          if [[ "$VERSION_CORE" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-alpha\.([0-9]+)$ ]]; then
+            BASE=${BASH_REMATCH[1]}
+            ALPHA=${BASH_REMATCH[2]}
+            NEXT_ALPHA=$((ALPHA + 1))
+            NEXT="v${BASE}-alpha.${NEXT_ALPHA}"
+          else
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_CORE"
+            NEXT="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+          echo "next_version=$NEXT" >> $GITHUB_OUTPUT
+
+      - name: Create and push Git tag
+        if: steps.check-deps.outputs.DEPS_ONLY == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.calc_version.outputs.next_version }}" -m "Release ${{ steps.calc_version.outputs.next_version }}"
+          git push origin "${{ steps.calc_version.outputs.next_version }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
