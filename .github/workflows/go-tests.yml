@@ -15,36 +15,36 @@ permissions:
 
 jobs:
   test:
-    name: 🧪 Run & Report Tests
+    name: 🧪📊 Run & Report Tests
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 Checkout Code
+      - name: 🛒 Checkout Code
         uses: actions/checkout@v4
 
-      - name: ⚙️ Set up Go
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.x'
           cache: true
 
-      - name: 🔍 Run Go Tests
+      - name: 🧪 Run Go Tests
         id: go-test
         run: |
           go test -v -count=1 -race -coverprofile=coverage.txt ./...
         # always capture the exit code
         continue-on-error: true
 
-      - name: ❌ Tests Failed
+      - name: ❌🧪 Tests Failed
         if: steps.go-test.outcome == 'failure'
         run: |
-          echo "❌ Tests did not pass on ${{ github.ref }}. Review the logs above for details."
+          echo "❌🧪 Tests did not pass on ${{ github.ref }}. Review the logs above for details."
 
-      - name: ✅ Tests Passed
+      - name: ✅🧪 Tests Passed
         if: steps.go-test.outcome == 'success'
         run: |
-          echo "✅ All tests passed on ${{ github.ref }}!"
+          echo "✅🧪 All tests passed on ${{ github.ref }}!"
 
-      - name: 🔒 Run Vulnerability Check
+      - name: 🛡️🔍 Run Vulnerability Check
         if: steps.go-test.outcome == 'success'
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest

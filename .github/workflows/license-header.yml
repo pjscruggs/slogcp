@@ -1,4 +1,4 @@
-name: 🛡️ License Header Management
+name: 📄⚙️ License Header Management
 
 on:
   push:
@@ -16,15 +16,15 @@ permissions:
 
 jobs:
   license-header:
-    name: 🛡️ Apply License Headers
+    name: 📄✍️ Apply License Headers
     runs-on: ubuntu-latest
     steps:
-      - name: 🔄 Checkout code
+      - name: 🛒 Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history for proper file dating
 
-      - name: 🛠️ Fix License Headers
+      - name: 📄🩹 Fix License Headers
         id: fix-license
         uses: apache/skywalking-eyes/header@v0.7.0
         with:
@@ -32,7 +32,7 @@ jobs:
           config: .licenserc.yaml
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 💾 Commit header fixes
+      - name: 📄💾 Commit header fixes
         uses: EndBug/add-and-commit@v9
         with:
           author_name: "License Bot"

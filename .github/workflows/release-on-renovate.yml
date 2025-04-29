@@ -1,4 +1,4 @@
-name: Release on Renovate Merge
+name: 🚀🤖 Release on Renovate Merge
 
 on:
   push:
@@ -10,23 +10,24 @@ permissions:
 
 jobs:
   release:
+    name: 🚀🤖 Release on Renovate Merge
     if: github.actor == 'renovate[bot]'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: 🛒 Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Get latest tag
+      - name: 🔖 Get latest tag
         id: get_tag
         run: |
           git fetch --tags --force
           LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           echo "latest_tag=$LATEST" >> $GITHUB_OUTPUT
 
-      - name: Calculate next version
+      - name: 🏷️➕ Calculate next version
         id: calc_version
         run: |
           # Grab the raw tag (e.g. "v1.2.3" or "v1.2.3-alpha.4")
@@ -46,7 +47,7 @@ jobs:
 
           echo "next_version=$NEXT" >> $GITHUB_OUTPUT
 
-      - name: Create and push tag
+      - name: 🔖🚀 Create and push tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

@@ -9,20 +9,21 @@ permissions:
 
 jobs:
   fix-license-headers:
+    name: 📄🩹 Fix License Headers
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: 🛒 Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
       
-      - name: Fix License Headers
+      - name: 📄🩹 Fix License Headers
         uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
         with:
           mode: fix
           config: .licenserc.yaml
           
-      - name: Commit changes if needed
+      - name: 💾❔ Commit changes if needed
         uses: EndBug/add-and-commit@v9
         with:
           author_name: License Bot

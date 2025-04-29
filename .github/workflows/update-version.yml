@@ -1,4 +1,4 @@
-name: Update Version for Dependency Changes
+name: 📦⬆️ Update Version for Dependency Changes
 
 on:
   push:
@@ -13,16 +13,16 @@ permissions:
 
 jobs:
   update-version:
-    name: Update Version for Dependency Changes
+    name: 📦⬆️ Update Version for Dependency Changes
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: 🛒 Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Check for dependency-only changes
+      - name: 📦🔍 Check for dependency-only changes
         id: check-deps
         run: |
           DEPS_CHANGED=$(git diff --name-only HEAD^ HEAD | grep 'go.mod\|go.sum' || true)
@@ -33,7 +33,7 @@ jobs:
             echo "DEPS_ONLY=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Calculate next version
+      - name: 🏷️➕ Calculate next version
         if: steps.check-deps.outputs.DEPS_ONLY == 'true'
         id: calc_version
         run: |
@@ -51,7 +51,7 @@ jobs:
           fi
           echo "next_version=$NEXT" >> $GITHUB_OUTPUT
 
-      - name: Create and push Git tag
+      - name: 🔖🚀 Create and push Git tag
         if: steps.check-deps.outputs.DEPS_ONLY == 'true'
         run: |
           git config user.name "github-actions[bot]"
@@ -60,4 +60,3 @@ jobs:
           git push origin "${{ steps.calc_version.outputs.next_version }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

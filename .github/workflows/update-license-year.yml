@@ -1,4 +1,4 @@
-name: Update License Year
+name: 📄📅 Update License Year
 
 on:
   schedule:
@@ -11,29 +11,30 @@ permissions:
 
 jobs:
   update-year:
+    name: 📄📅 Update License Year
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: 🛒 Checkout code
         uses: actions/checkout@v4
       
-      - name: Get current year in US Central Time
+      - name: 📅🕰️ Get current year in US Central Time
         id: year
         run: |
           # Get current year in US Central Time
           YEAR=$(TZ='America/Chicago' date +%Y)
           echo "YEAR=$YEAR" >> $GITHUB_OUTPUT
       
-      - name: Update license year in config
+      - name: 📄⚙️📅 Update license year in config
         run: |
           # Only update if year is after 2025
           if [ "${{ steps.year.outputs.YEAR }}" -gt "2025" ]; then
             sed -i 's/copyright-year: .*/copyright-year: "2025-${{ steps.year.outputs.YEAR }}"/g' .licenserc.yaml
-            echo "Updated year to 2025-${{ steps.year.outputs.YEAR }}"
+            echo "📅⬆️ Updated year to 2025-${{ steps.year.outputs.YEAR }}"
           else
-            echo "Keeping year as 2025"
+            echo "📅✅ Keeping year as 2025"
           fi
       
-      - name: Commit config change
+      - name: ⚙️💾 Commit config change
         uses: EndBug/add-and-commit@v9
         with:
           author_name: License Year Bot
@@ -41,13 +42,13 @@ jobs:
           message: 'chore: Update license year to 2025-${{ steps.year.outputs.YEAR }}'
           add: '.licenserc.yaml'
       
-      - name: Run license header fix
+      - name: 📄🩹 Run license header fix
         uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
         with:
           mode: fix
           config: .licenserc.yaml
       
-      - name: Commit header updates
+      - name: 📄💾 Commit header updates
         uses: EndBug/add-and-commit@v9
         with:
           author_name: License Bot

@@ -26,30 +26,30 @@ permissions:
 
 jobs:
   format-and-lint:
-    name: 🧹 Format and Lint Code
+    name: ✨🧹 Format and Lint Code
     runs-on: ubuntu-latest
     steps:
-      - name: 🔄 Checkout Code
+      - name: 🛒 Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
 
-      - name: 🛠 Set up Go
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: 🔍 Check Go Formatting
+      - name: ✨ Check Go Formatting
         id: gofmt-check
         run: |
           go install golang.org/x/tools/cmd/goimports@latest
           if [ -n "$(goimports -l $(find . -type f -name '*.go' | grep -v /vendor/))" ]; then
-            echo "::error::Code formatting issues found. Please run 'goimports -local github.com/pjscruggs/slogcp -w .' locally."
+            echo "✨⚠️ Code formatting issues found. Please run 'goimports -local github.com/pjscruggs/slogcp -w .' locally."
             exit 1
           fi
 
-      - name: 🚨 Run golangci-lint
+      - name: 🧹 Run golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: latest
