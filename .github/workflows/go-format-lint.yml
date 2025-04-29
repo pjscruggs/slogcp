@@ -20,45 +20,36 @@ on:
   workflow_dispatch:
   workflow_call:
 
-# Apply least privilege principle
 permissions:
   contents: read
-  pull-requests: read  # Needed for golangci-lint on PRs
+  pull-requests: read
 
 jobs:
   format-and-lint:
-    name: Format and Lint Code
+    name: 🧹 Format and Lint Code
     runs-on: ubuntu-latest
     steps:
-      # Step 1: Check out the repository code
-      - name: Checkout Code
+      - name: 🔄 Checkout Code
         uses: actions/checkout@v4
         with:
-          # Required for golangci-lint with only-new-issues on PRs
           fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
 
-      # Step 2: Set up the Go environment
-      - name: Set up Go
+      - name: 🛠 Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
 
-      # Step 3: Check if Go code needs formatting
-      - name: Check Go Formatting
+      - name: 🔍 Check Go Formatting
         id: gofmt-check
         run: |
-          # Install goimports
           go install golang.org/x/tools/cmd/goimports@latest
-          
-          # Check if any files would be changed by goimports
           if [ -n "$(goimports -l $(find . -type f -name '*.go' | grep -v /vendor/))" ]; then
             echo "::error::Code formatting issues found. Please run 'goimports -local github.com/pjscruggs/slogcp -w .' locally."
             exit 1
           fi
 
-      # Step 4: Run golangci-lint
-      - name: Run golangci-lint
+      - name: 🚨 Run golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
           version: latest
