@@ -11,8 +11,8 @@ var Version = "v0.0.0-dev"
 var UserAgent string
 
 func init() {
-    // Initialize UserAgent using the (possibly injected) Version
-    UserAgent = fmt.Sprintf("slogcp/%s", Version)
+	// Initialize UserAgent using the (possibly injected) Version
+	UserAgent = fmt.Sprintf("slogcp/%s", Version)
 }
 
 func GetVersion() string { return Version }

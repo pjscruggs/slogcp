@@ -117,10 +117,13 @@ func getTestPC() uintptr {
 	return pcs[0]
 }
 
-// nestedGetTestPC calls getTestPC from a nested function context.
+// nestedGetTestPC retrieves the program counter (PC) of its caller in the test,
+// skipping over its own frame and the runtime.Callers call.
 func nestedGetTestPC() uintptr {
-	// The PC returned by getTestPC will be for the line where nestedGetTestPC is called.
-	return getTestPC()
+    pcs := make([]uintptr, 1)
+    // Skip 2 frames: runtime.Callers and nestedGetTestPC itself.
+    runtime.Callers(2, pcs)
+    return pcs[0]
 }
 
 // TestResolveSourceLocation verifies conversion of PC to source file/line/function.

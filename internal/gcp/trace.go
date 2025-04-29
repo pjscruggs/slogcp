@@ -70,38 +70,30 @@ func ExtractTraceSpan(ctx context.Context, projectID string) (traceID, spanID st
 // and function name).
 //
 // It returns a *loggingpb.LogEntrySourceLocation suitable for populating the
-// corresponding field in a Cloud Logging entry. If the PC is 0 or cannot be
+// corresponding field in a Cloud Logging entry. If the PC is zero or cannot be
 // resolved to a valid file and function, it returns nil.
 func resolveSourceLocation(pc uintptr) *loggingpb.LogEntrySourceLocation {
-	// A PC of 0 indicates source location was not requested or unavailable
-	// during slog.Record creation.
-	if pc == 0 {
+	// A PC of zero indicates source location was not requested or unavailable.
+	if pc < 1 {
+		return nil
+	}
+	// The PC from Record.PC is a return address; subtract 1 to land on the call site.
+	pc--
+
+	// Drive the single-PC slice through CallersFrames to handle inlining
+	// and instrumentation correctly.
+	frames := runtime.CallersFrames([]uintptr{pc})
+	frame, _ := frames.Next()
+
+	// If File or Function is empty, we couldn't resolve it.
+	if frame.File == "" || frame.Function == "" {
 		return nil
 	}
 
-	// runtime.FuncForPC retrieves the function containing the given PC.
-	fn := runtime.FuncForPC(pc)
-	if fn == nil {
-		// If no function information is available for the PC, we cannot resolve.
-		return nil
-	}
-
-	// fn.FileLine retrieves the file path and line number for the PC within that function.
-	file, line := fn.FileLine(pc)
-	if file == "" {
-		// If no file location could be resolved (e.g., for certain runtime internals
-		// or stripped binaries), we cannot populate the source location fully.
-		return nil
-	}
-
-	// fn.Name retrieves the name of the function.
-	funcName := fn.Name()
-
-	// Construct and return the source location protobuf message.
-	// The 'Line' field in the proto is int64.
+	// Assemble and return the source location message.
 	return &loggingpb.LogEntrySourceLocation{
-		File:     file,
-		Line:     int64(line),
-		Function: funcName,
+		File:     frame.File,
+		Line:     int64(frame.Line),
+		Function: frame.Function,
 	}
 }
