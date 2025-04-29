@@ -14,44 +14,52 @@ permissions:
   pull-requests: read
 
 jobs:
+  format-lint-1:
+    name: 🧹 Initial Format & Lint
+    uses: ./.github/workflows/go-format-lint.yml
+
   license-header:
-    name: License Check
+    name: 🛡️ Fix License Headers
+    needs: [format-lint-1]
     uses: ./.github/workflows/license-header.yml
 
-  format-lint:
-    name: Format & Lint
+  format-lint-2:
+    name: 🧹 Re-run Format & Lint
     needs: [license-header]
     uses: ./.github/workflows/go-format-lint.yml
 
   test:
-    name: Tests
-    needs: [format-lint]
+    name: 🧪 Run & Report Tests
+    needs: [format-lint-2]
     uses: ./.github/workflows/go-tests.yml
 
   aggregate-checks:
-    name: All Checks
+    name: ✅ All Checks
     if: always()
-    needs: [license-header, format-lint, test]
+    needs: [format-lint-1, license-header, format-lint-2, test]
     runs-on: ubuntu-latest
     steps:
-      - name: Check workflow results
+      - name: Summary
         run: |
-          echo "License Header: ${{ needs.license-header.result }}"
-          echo "Format & Lint: ${{ needs.format-lint.result }}"
-          echo "Tests: ${{ needs.test.result }}"
-          if [[ "${{ needs.license-header.result }}" == "success" && "${{ needs.format-lint.result }}" == "success" && "${{ needs.test.result }}" == "success" ]]; then
-            echo "All checks passed successfully!"
+          echo "Initial Format & Lint: ${{ needs.format-lint-1.result }}"
+          echo "License Headers:       ${{ needs.license-header.result }}"
+          echo "Re-run Format & Lint:  ${{ needs.format-lint-2.result }}"
+          echo "Tests:                 ${{ needs.test.result }}"
+          if [[ "${{ needs.format-lint-1.result }}" == "success" \
+            && "${{ needs.license-header.result }}" == "success" \
+            && "${{ needs.format-lint-2.result }}" == "success" \
+            && "${{ needs.test.result }}" == "success" ]]; then
+            echo "🎉 All checks passed!"
             exit 0
           else
-            echo "One or more checks failed."
+            echo "❗ One or more steps failed."
             exit 1
           fi
 
   build:
-    name: Build
-    needs: aggregate-checks
+    name: 📦 Build
+    needs: [aggregate-checks]
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
