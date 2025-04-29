@@ -42,7 +42,7 @@ jobs:
           add: '.licenserc.yaml'
       
       - name: Run license header fix
-        uses: apache/skywalking-eyes/header@v0.5.0
+        uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
         with:
           mode: fix
           config: .licenserc.yaml
