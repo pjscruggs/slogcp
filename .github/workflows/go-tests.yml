@@ -10,7 +10,6 @@ on:
   workflow_dispatch:
   workflow_call:
 
-# Apply least privilege principle
 permissions:
   contents: read
 
@@ -25,7 +24,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: 'go.mod'
+          go-version: '1.24.x'
           cache: true
       
       - name: Run Go Tests
