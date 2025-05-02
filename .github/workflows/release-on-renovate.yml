@@ -1,0 +1,58 @@
+name: Release on Renovate Merge
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 🚀🤖 Release on Renovate Merge
+    if: github.actor == 'renovate[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🛒 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔖 Get latest tag
+        id: get_tag
+        run: |
+          git fetch --tags --force
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest_tag=$LATEST" >> $GITHUB_OUTPUT
+
+      - name: 🏷️➕ Calculate next version
+        id: calc_version
+        run: |
+          # Grab the raw tag (e.g. "v1.2.3" or "v1.2.3-alpha.4")
+          LATEST_TAG="${{ steps.get_tag.outputs.latest_tag }}"
+
+          # Strip the leading "v" in shell
+          VERSION_CORE="${LATEST_TAG#v}"
+
+          if [[ "$VERSION_CORE" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-alpha\.([0-9]+)$ ]]; then
+            BASE="${BASH_REMATCH[1]}"
+            ALPHA="${BASH_REMATCH[2]}"
+            NEXT="v${BASE}-alpha.$((ALPHA+1))"
+          else
+            IFS='.' read -r MAJ MIN PATCH <<< "$VERSION_CORE"
+            NEXT="v${MAJ}.${MIN}.$((PATCH+1))"
+          fi
+
+          echo "next_version=$NEXT" >> $GITHUB_OUTPUT
+
+      - name: 🔖🚀 Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.calc_version.outputs.next_version }}" \
+                  -m "Release ${{ steps.calc_version.outputs.next_version }} (automated)"
+          git push origin "${{ steps.calc_version.outputs.next_version }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

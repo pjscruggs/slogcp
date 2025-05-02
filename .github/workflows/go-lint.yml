@@ -1,0 +1,39 @@
+name: Go Lint
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  golangci-fix:
+    name: 🧐 Go Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛒 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: 🛠️ Install specific golangci-lint version
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.1.5
+          install-mode: goinstall
+
+      - name: ✨ Apply Lint Fixes
+        run: golangci-lint run --fix ./...
+        continue-on-error: true
+
+      - name: 💾 Commit Lint Fixes
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: Go Lint Fix Bot
+          author_email: go-lint-fix-bot@users.noreply.github.com
+          message: 'chore: apply golangci-lint fixes'
+          add: '.'

@@ -1,0 +1,100 @@
+name: Go Format
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  format-and-license:
+    name: ✨📄 Format and License
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛒 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # Initial formatting
+      - name: ✨ Initial Go Formatting
+        run: |
+          go install golang.org/x/tools/cmd/goimports@latest
+          gofmt -w .
+          goimports -local github.com/pjscruggs/slogcp -w .
+
+      - name: 💾 Commit Initial Formatting
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: Go Formatting Bot
+          author_email: go-format-bot@users.noreply.github.com
+          message: 'chore: apply initial gofmt and goimports formatting'
+          add: '.'
+          push: true
+
+      # License year update
+      - name: 📅🕰️ Get current year in US Central Time
+        id: year
+        run: |
+          # Get current year in US Central Time
+          YEAR=$(TZ='America/Chicago' date +%Y)
+          echo "YEAR=$YEAR" >> $GITHUB_OUTPUT
+      
+      - name: 📄⚙️📅 Update license year in config
+        run: |
+          # Only update if year is after 2025
+          if [ "${{ steps.year.outputs.YEAR }}" -gt "2025" ]; then
+            sed -i 's/copyright-year: .*/copyright-year: "2025-${{ steps.year.outputs.YEAR }}"/g' .licenserc.yaml
+            echo "📅⬆️ Updated year to 2025-${{ steps.year.outputs.YEAR }}"
+          else
+            echo "📅✅ Keeping year as 2025"
+          fi
+      
+      - name: ⚙️💾 Commit config change
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: License Year Bot
+          author_email: license-bot@github.com
+          message: 'chore: Update license year to 2025-${{ steps.year.outputs.YEAR }}'
+          add: '.licenserc.yaml'
+          push: true
+
+      # Apply license headers
+      - name: 📄🩹 Fix License Headers
+        id: fix-license
+        uses: apache/skywalking-eyes/header@v0.7.0
+        with:
+          mode: fix
+          config: .licenserc.yaml
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📄💾 Commit header fixes
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: "License Bot"
+          author_email: "license-bot@github.com"
+          message: "chore: apply license header fixes"
+          add: "."
+          push: true
+
+      # Secondary formatting (after license headers)
+      - name: ✨ Secondary Go Formatting
+        run: |
+          gofmt -w .
+          goimports -local github.com/pjscruggs/slogcp -w .
+
+      - name: 💾 Commit Secondary Formatting
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: Go Formatting Bot
+          author_email: go-format-bot@users.noreply.github.com
+          message: 'chore: apply secondary gofmt and goimports formatting'
+          add: '.'
+          push: true

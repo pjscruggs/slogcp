@@ -1,0 +1,43 @@
+name: Validate Go Version Update
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/**.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-go-update:
+    name: 🚀 Validate Proposed Go Version
+    runs-on: ubuntu-latest
+    if: github.actor == 'renovate[bot]' && (startsWith(github.head_ref, 'renovate/go') || startsWith(github.head_ref, 'renovate/golang'))
+
+    steps:
+      - name: 🛒 Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: 🏗️ Set up Go (using version from PR)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: ✨🧹 Call Format & Lint Workflow
+        uses: ./.github/workflows/go-format.yml
+
+      - name: 🧐 Call Lint Workflow
+        uses: ./.github/workflows/go-lint.yml
+
+      - name: 🧪📊 Call Tests Workflow
+        uses: ./.github/workflows/go-tests.yml
+
+      - name: 🏗️ Verify Build
+        run: go build ./...
