@@ -16,20 +16,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
-
+      
       # Initial formatting
       - name: ✨ Initial Go Formatting
         run: |
           go install golang.org/x/tools/cmd/goimports@latest
           gofmt -w .
           goimports -local github.com/pjscruggs/slogcp -w .
-
       - name: 💾 Commit Initial Formatting
         uses: EndBug/add-and-commit@v9
         with:
@@ -38,7 +37,7 @@ jobs:
           message: 'chore: apply initial gofmt and goimports formatting'
           add: '.'
           push: true
-
+      
       # License year update
       - name: 📅🕰️ Get current year in US Central Time
         id: year
@@ -65,7 +64,7 @@ jobs:
           message: 'chore: Update license year to 2025-${{ steps.year.outputs.YEAR }}'
           add: '.licenserc.yaml'
           push: true
-
+      
       # Apply license headers
       - name: 📄🩹 Fix License Headers
         id: fix-license
@@ -74,7 +73,7 @@ jobs:
           mode: fix
           config: .licenserc.yaml
           token: ${{ secrets.GITHUB_TOKEN }}
-
+      
       - name: 📄💾 Commit header fixes
         uses: EndBug/add-and-commit@v9
         with:
@@ -83,13 +82,12 @@ jobs:
           message: "chore: apply license header fixes"
           add: "."
           push: true
-
+      
       # Secondary formatting (after license headers)
       - name: ✨ Secondary Go Formatting
         run: |
           gofmt -w .
           goimports -local github.com/pjscruggs/slogcp -w .
-
       - name: 💾 Commit Secondary Formatting
         uses: EndBug/add-and-commit@v9
         with:
