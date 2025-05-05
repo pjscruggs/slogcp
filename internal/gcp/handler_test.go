@@ -1019,4 +1019,114 @@ func TestGcpHandler_WithGroupAndAttrsInteraction(t *testing.T) {
 			t.Errorf("Payload mismatch (-want +got):\n%s", diff)
 		}
 	})
+
+}
+
+// TestGcpHandler_ReplaceAttr verifies that the handler correctly passes
+// group paths as string slices to the replacer function.
+func TestGcpHandler_ReplaceAttr(t *testing.T) {
+	mockLogger := &mockEntryLogger{}
+
+	// Track calls to replaceAttr for verification
+	var capturedGroups [][]string
+	var capturedAttrs []slog.Attr
+
+	replaceAttrFunc := func(groups []string, attr slog.Attr) slog.Attr {
+		// Capture the groups and attr for later verification
+		capturedGroups = append(capturedGroups, append([]string(nil), groups...))
+		capturedAttrs = append(capturedAttrs, attr)
+
+		// For testing, modify attributes with "sensitive" in the key
+		if strings.Contains(attr.Key, "sensitive") {
+			return slog.String(attr.Key, "REDACTED")
+		}
+
+		// Add group path info to specific test attributes
+		if attr.Key == "test_attr" {
+			groupPath := strings.Join(groups, ".")
+			return slog.String(attr.Key, attr.Value.String()+"-"+groupPath)
+		}
+
+		return attr
+	}
+
+	cfg := Config{
+		ProjectID:       "test-proj",
+		ReplaceAttrFunc: replaceAttrFunc,
+	}
+
+	handler := NewGcpHandler(cfg, mockLogger, slog.LevelInfo)
+
+	// Create a handler with nested groups
+	nestedHandler := handler.WithGroup("g1").WithGroup("g2")
+
+	// Create a record with various attributes
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "test message", 0)
+	record.AddAttrs(
+		slog.String("normal_attr", "value"),
+		slog.String("sensitive_data", "secret"),
+		slog.String("test_attr", "original"),
+	)
+
+	// Handle the record
+	err := nestedHandler.Handle(context.Background(), record)
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+
+	// Verify the replacer was called with correct group paths
+	if len(capturedGroups) == 0 {
+		t.Fatal("ReplaceAttr function was not called")
+	}
+
+	// Check handler attribute groups
+	foundNestedGroup := false
+	for i, groups := range capturedGroups {
+		attr := capturedAttrs[i]
+
+		// Verify that nested group attributes have the correct group path
+		if len(groups) >= 2 && groups[0] == "g1" && groups[1] == "g2" {
+			foundNestedGroup = true
+			if attr.Key == "test_attr" && attr.Value.Kind() == slog.KindString {
+				// This attribute should have been handled by our replacer
+			}
+		}
+	}
+
+	if !foundNestedGroup {
+		t.Error("No attributes with the expected nested group path ['g1', 'g2'] were processed")
+	}
+
+	// Verify the output contains modified attributes
+	entry, logged := mockLogger.GetLastEntry()
+	if !logged {
+		t.Fatal("No log entry was recorded")
+	}
+
+	payload, ok := entry.Payload.(map[string]any)
+	if !ok {
+		t.Fatal("Payload is not map[string]any")
+	}
+
+	// Check that nested structure contains our modified values
+	g1Map, ok := payload["g1"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected g1 map in payload, got: %v", payload)
+	}
+
+	g2Map, ok := g1Map["g2"].(map[string]any)
+	if !ok {
+		t.Fatalf("Expected g2 map in g1, got: %v", g1Map)
+	}
+
+	// Verify redacted value
+	if sensitiveVal, ok := g2Map["sensitive_data"].(string); !ok || sensitiveVal != "REDACTED" {
+		t.Errorf("Expected sensitive_data to be REDACTED, got: %v", g2Map["sensitive_data"])
+	}
+
+	// Verify group path was added to test_attr
+	expectedTestAttrValue := "original-g1.g2"
+	if testAttrVal, ok := g2Map["test_attr"].(string); !ok || testAttrVal != expectedTestAttrValue {
+		t.Errorf("Expected test_attr to be %q, got: %v", expectedTestAttrValue, testAttrVal)
+	}
 }

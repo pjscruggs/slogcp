@@ -85,6 +85,9 @@ type Config struct {
 
 	// LogTarget specifies the destination for log output (GCP, stdout, stderr).
 	LogTarget LogTarget
+
+	// ReplaceAttrFunc allows custom attribute replacement or masking
+	ReplaceAttrFunc func([]string, slog.Attr) slog.Attr
 }
 
 // Environment variable names used for configuration.

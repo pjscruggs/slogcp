@@ -44,7 +44,7 @@ type groupedAttr struct {
 //
 // It handles GCP-specific field mapping (severity, trace context, source location),
 // structured payload creation, error formatting (including optional stack traces),
-// and management of attributes added via WithAttrs/WithGroup.
+// attribute transformation, and management of attributes added via WithAttrs/WithGroup.
 type gcpHandler struct {
 	// mu protects access to handler-level state (groupedAttrs, groups)
 	// which can be modified by WithAttrs/WithGroup concurrently.
@@ -66,6 +66,13 @@ type gcpHandler struct {
 	// groups holds the current group stack for this specific handler instance,
 	// built up by calls to WithGroup. Record attributes are nested under these groups.
 	groups []string
+
+	// replaceAttr is an optional function that modifies attributes before they are logged.
+	// It can be used to mask sensitive data, rename keys, or transform values.
+	// If non-nil, this function is called for each non-group attribute during log processing.
+	// The groups parameter contains the current group stack, and the function should
+	// return the potentially modified attribute.
+	replaceAttr func([]string, slog.Attr) slog.Attr
 }
 
 // NewGcpHandler creates a GCP-specific slog handler.
@@ -80,6 +87,7 @@ func NewGcpHandler(cfg Config, logger entryLogger, leveler slog.Leveler) *gcpHan
 		cfg:          cfg,
 		entryLog:     logger,
 		leveler:      leveler,
+		replaceAttr:  cfg.ReplaceAttrFunc,
 		groupedAttrs: make([]groupedAttr, 0), // Initialize slices.
 		groups:       make([]string, 0),
 	}
@@ -150,6 +158,11 @@ func (h *gcpHandler) Handle(ctx context.Context, r slog.Record) error {
 			return // Ignore attributes with empty keys.
 		}
 
+		// Apply custom replacer if provided
+		if h.replaceAttr != nil {
+			ga.attr = h.replaceAttr(ga.groups, ga.attr)
+		}
+
 		// Handle the special httpRequestKey used by the http middleware.
 		if ga.attr.Key == httpRequestKey {
 			if maybeReq, ok := ga.attr.Value.Any().(*logging.HTTPRequest); ok {
@@ -214,7 +227,6 @@ func (h *gcpHandler) Handle(ctx context.Context, r slog.Record) error {
 			// Capture stack trace at the logging site.
 			pcs := make([]uintptr, maxStackFrames)
 			// Skip runtime.Callers, this Handle method, and the slog.Logger method that called Handle.
-			// Adjust skip count if Handle's internal structure changes significantly.
 			num := runtime.Callers(2, pcs)
 			if num > 0 {
 				// Format the captured PCs (no prefix skipping needed here).
@@ -306,9 +318,10 @@ func (h *gcpHandler) WithGroup(name string) slog.Handler {
 func (h *gcpHandler) clone() *gcpHandler {
 	h2 := &gcpHandler{
 		// Copy configuration and interface references.
-		cfg:      h.cfg,
-		entryLog: h.entryLog,
-		leveler:  h.leveler,
+		cfg:         h.cfg,
+		entryLog:    h.entryLog,
+		leveler:     h.leveler,
+		replaceAttr: h.replaceAttr,
 		// Create new slices with the same capacity as the original.
 		groupedAttrs: make([]groupedAttr, len(h.groupedAttrs), cap(h.groupedAttrs)),
 		groups:       make([]string, len(h.groups), cap(h.groups)),

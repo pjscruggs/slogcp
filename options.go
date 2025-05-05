@@ -41,6 +41,10 @@ const (
 // or settings derived from environment variables.
 type Option func(*options)
 
+// Middleware transforms the handler chain.
+// Each middleware wraps the handler returned by the previous middleware.
+type Middleware = func(slog.Handler) slog.Handler
+
 // options holds the configurable settings for the Logger.
 // This is an internal struct used by the functional options pattern.
 // Fields are pointers to allow differentiating between an explicitly set
@@ -59,6 +63,8 @@ type options struct {
 	monitoredResource            *mrpb.MonitoredResource
 	addCloudRunPayloadAttributes *bool
 	logTarget                    *LogTarget
+	replaceAttr                  func([]string, slog.Attr) slog.Attr
+	middlewares                  []Middleware
 }
 
 // WithLogTarget returns an Option that explicitly sets the logging destination.
@@ -204,3 +210,27 @@ func WithCloudRunPayloadAttributes(enabled bool) Option {
 		o.addCloudRunPayloadAttributes = &crpa
 	}
 }
+
+// WithReplaceAttr returns an Option that sets a function to replace or modify
+// attributes before they are logged. This can be used for masking sensitive data
+// or transforming attributes.
+func WithReplaceAttr(fn func([]string, slog.Attr) slog.Attr) Option {
+	return func(o *options) {
+		o.replaceAttr = fn
+	}
+}
+
+// WithMiddleware registers a middleware that decorates the Handler returned by
+// New. The middleware receives the next slog.Handler in the chain and must
+// return a Handler that forwards records when appropriate.
+// Passing nil is a no‑op.
+func WithMiddleware(mw Middleware) Option {
+	return func(o *options) {
+		if mw == nil {
+			return
+		}
+		o.middlewares = append(o.middlewares, mw)
+	}
+}
+
+
