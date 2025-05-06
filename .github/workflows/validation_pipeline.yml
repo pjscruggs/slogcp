@@ -1,54 +1,58 @@
-name: Go Format
+name: Validation Pipeline
 
 on:
-  workflow_call:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  merge_group:
+    branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: read
+  security-events: write
 
 jobs:
-  format-and-license:
-    name: ✨📄 Format and License
+  validation:
+    name: Go Format, Lint, Test & Vulnerability Check
     runs-on: ubuntu-latest
     steps:
       - name: 🛒 Checkout Code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
-      - name: Set up Go
-        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
+
+      - name: 🏗️ Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
-      
-      # Initial formatting
+
       - name: ✨ Initial Go Formatting
         run: |
           go install golang.org/x/tools/cmd/goimports@latest
           gofmt -w .
           goimports -local github.com/pjscruggs/slogcp -w .
+
       - name: 💾 Commit Initial Formatting
-        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
+        uses: EndBug/add-and-commit@v9
         with:
           author_name: Go Formatting Bot
           author_email: go-format-bot@users.noreply.github.com
           message: 'chore: apply initial gofmt and goimports formatting'
           add: '.'
           push: true
-      
-      # License year update
+
       - name: 📅🕰️ Get current year in US Central Time
         id: year
         run: |
-          # Get current year in US Central Time
           YEAR=$(TZ='America/Chicago' date +%Y)
           echo "YEAR=$YEAR" >> $GITHUB_OUTPUT
       
       - name: 📄⚙️📅 Update license year in config
         run: |
-          # Only update if year is after 2025
           if [ "${{ steps.year.outputs.YEAR }}" -gt "2025" ]; then
             sed -i 's/copyright-year: .*/copyright-year: "2025-${{ steps.year.outputs.YEAR }}"/g' .licenserc.yaml
             echo "📅⬆️ Updated year to 2025-${{ steps.year.outputs.YEAR }}"
@@ -57,42 +61,93 @@ jobs:
           fi
       
       - name: ⚙️💾 Commit config change
-        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
+        uses: EndBug/add-and-commit@v9
         with:
           author_name: License Year Bot
           author_email: license-bot@github.com
           message: 'chore: Update license year to 2025-${{ steps.year.outputs.YEAR }}'
           add: '.licenserc.yaml'
           push: true
-      
-      # Apply license headers
+
       - name: 📄🩹 Fix License Headers
         id: fix-license
-        uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
+        uses: apache/skywalking-eyes/header@v0.7.0
         with:
           mode: fix
           config: .licenserc.yaml
           token: ${{ secrets.GITHUB_TOKEN }}
-      
+
       - name: 📄💾 Commit header fixes
-        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
+        uses: EndBug/add-and-commit@v9
         with:
           author_name: "License Bot"
           author_email: "license-bot@github.com"
           message: "chore: apply license header fixes"
           add: "."
           push: true
-      
-      # Secondary formatting (after license headers)
+
       - name: ✨ Secondary Go Formatting
         run: |
           gofmt -w .
           goimports -local github.com/pjscruggs/slogcp -w .
+
       - name: 💾 Commit Secondary Formatting
-        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
+        uses: EndBug/add-and-commit@v9
         with:
           author_name: Go Formatting Bot
           author_email: go-format-bot@users.noreply.github.com
           message: 'chore: apply secondary gofmt and goimports formatting'
           add: '.'
           push: true
+
+      - name: 🛠️ Install specific golangci-lint version
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.1.5
+          install-mode: goinstall
+
+      - name: 🧐 Apply Lint Fixes
+        run: golangci-lint run --fix ./...
+        continue-on-error: true
+
+      - name: 💾 Commit Lint Fixes
+        uses: EndBug/add-and-commit@v9
+        with:
+          author_name: Go Lint Fix Bot
+          author_email: go-lint-fix-bot@users.noreply.github.com
+          message: 'chore: apply golangci-lint fixes'
+          add: '.'
+
+      - name: 🧪 Run Go Tests
+        id: go-test
+        run: |
+          go test -v -race -tags='!e2e' -coverprofile=coverage.txt ./...
+
+      - name: 📄 Print Coverage Report
+        if: steps.go-test.outcome == 'success' || steps.go-test.outcome == 'failure'
+        run: |
+          echo "--- Test Coverage ---"
+          if [ -f coverage.txt ]; then
+            cat coverage.txt
+          else
+            echo "Coverage file (coverage.txt) not found."
+          fi
+          echo "---------------------"
+
+      - name: ❌ Check Test Execution Status
+        if: steps.go-test.outcome == 'failure'
+        run: |
+          echo "❌ Go tests failed. Review logs above."
+          exit 1
+
+      - name: ✅ Report Test Success
+        if: steps.go-test.outcome == 'success'
+        run: |
+          echo "✅ All Go tests passed!"
+
+      - name: 🛡️🔍 Run Vulnerability Check
+        if: steps.go-test.outcome == 'success'
+        run: |
+          echo "Running vulnerability check..."
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
