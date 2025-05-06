@@ -1079,22 +1079,31 @@ func TestGcpHandler_ReplaceAttr(t *testing.T) {
 		t.Fatal("ReplaceAttr function was not called")
 	}
 
-	// Check handler attribute groups
+	// Use the existing foundNestedGroup variable
 	foundNestedGroup := false
+	// Add a new variable to track the test_attr specifically
+	foundTestAttrInNestedGroup := false
+
 	for i, groups := range capturedGroups {
 		attr := capturedAttrs[i]
 
 		// Verify that nested group attributes have the correct group path
 		if len(groups) >= 2 && groups[0] == "g1" && groups[1] == "g2" {
 			foundNestedGroup = true
+
+			// Now track if we specifically found the test_attr in this group context
 			if attr.Key == "test_attr" && attr.Value.Kind() == slog.KindString {
-				// This attribute should have been handled by our replacer
+				foundTestAttrInNestedGroup = true
 			}
 		}
 	}
 
 	if !foundNestedGroup {
 		t.Error("No attributes with the expected nested group path ['g1', 'g2'] were processed")
+	}
+
+	if !foundTestAttrInNestedGroup {
+		t.Error("The test_attr was not processed in the nested group context")
 	}
 
 	// Verify the output contains modified attributes
