@@ -61,8 +61,10 @@ type options struct {
 	levelFunc          CodeToLevel        // Function to map gRPC code to slog level for the final log entry.
 	shouldLogFunc      ShouldLogFunc      // Function to filter which calls get logged.
 	logPayloads        bool               // Flag to enable request/response payload logging.
+	panicRecovery      bool               // Flag to enable panic recovery and error logging.
 	maxPayloadLogSize  int                // Max size in bytes for logged payloads (0 means no limit).
 	logMetadata        bool               // Flag to enable request/response metadata logging.
+	autoStackTrace     bool               // Flag to enable automatic stack trace injection for errors.
 	metadataFilterFunc MetadataFilterFunc // Function to filter metadata keys before logging.
 	skipPaths          []string           // Method paths to exclude from logging (e.g., health checks).
 	samplingRate       float64            // 0.0-1.0, percentage of requests to log.
@@ -234,6 +236,27 @@ func WithMetadataFilter(f MetadataFilterFunc) Option {
 	}
 }
 
+// WithPanicRecovery controls whether slogcp’s gRPC interceptors do their own panic‑to-error
+// conversion & logging. Should be set to false when using a third‑party interceptor that
+// already does this, such as grpc-ecosystem/go-grpc-middleware/recovery.
+// Default is true.
+func WithPanicRecovery(enabled bool) Option {
+	return func(o *options) {
+		o.panicRecovery = enabled
+	}
+}
+
+// WithAutoStackTrace controls whether slogcp’s gRPC interceptors automatically attach
+// stack traces to logged errors. This applies to both panic recovery and error-level logs
+// that contain errors. Should be set to true only if stack trace injection is desired
+// directly from slogcp, rather than from upstream libraries or custom error wrappers.
+// Default is false.
+func WithAutoStackTrace(enabled bool) Option {
+	return func(o *options) {
+		o.autoStackTrace = enabled
+	}
+}
+
 // processOptions creates a new internal options struct initialized with default values,
 // then iterates through the provided Option functions, applying each one to potentially
 // override the defaults. It returns the final configured options struct, including
@@ -243,6 +266,8 @@ func processOptions(opts ...Option) *options {
 	opt := &options{
 		levelFunc:          defaultCodeToLevel,
 		shouldLogFunc:      defaultShouldLog,
+		panicRecovery:      true,
+		autoStackTrace:     false,
 		logPayloads:        false,
 		maxPayloadLogSize:  defaultMaxPayloadLogSize,
 		logMetadata:        false,
