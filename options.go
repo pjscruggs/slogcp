@@ -232,5 +232,3 @@ func WithMiddleware(mw Middleware) Option {
 		o.middlewares = append(o.middlewares, mw)
 	}
 }
-
-
