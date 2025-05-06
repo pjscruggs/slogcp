@@ -145,6 +145,9 @@ func New(opts ...Option) (*Logger, error) {
 	if o.projectID != nil {
 		cfg.ProjectID = *o.projectID
 	}
+	if o.replaceAttr != nil {
+		cfg.ReplaceAttrFunc = o.replaceAttr
+	}
 
 	if finalLogTarget == LogTargetGCP && cfg.ProjectID == "" {
 		err = fmt.Errorf("GCP Project ID is missing: provide via WithProjectID option, GOOGLE_CLOUD_PROJECT env var, or run on GCP infrastructure (required for GCP target): %w", gcp.ErrProjectIDMissing)
@@ -155,8 +158,8 @@ func New(opts ...Option) (*Logger, error) {
 	levelVar := new(slog.LevelVar)
 	levelVar.Set(cfg.InitialLevel)
 
-	var baseLogger *slog.Logger
 	var clientMgr clientManagerInterface // Use the interface type
+	var handler slog.Handler
 
 	if finalLogTarget == LogTargetStdout || finalLogTarget == LogTargetStderr {
 		var writer io.Writer = os.Stdout
@@ -166,12 +169,24 @@ func New(opts ...Option) (*Logger, error) {
 		fmt.Fprintf(os.Stderr, "[slogcp] INFO: Logging configured for target: %s\n", cfg.LogTarget.String())
 
 		handlerOpts := slog.HandlerOptions{
-			AddSource:   cfg.AddSource,
-			Level:       levelVar,
-			ReplaceAttr: replaceAttrForFallback,
+			AddSource: cfg.AddSource,
+			Level:     levelVar,
 		}
-		fallbackHandler := slog.NewJSONHandler(writer, &handlerOpts)
-		baseLogger = slog.New(fallbackHandler)
+
+		// If custom replaceAttr is provided, chain it with our standard attribute replacer
+		if o.replaceAttr != nil {
+			originalReplace := o.replaceAttr
+			handlerOpts.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+				// First apply custom replacer
+				a = originalReplace(groups, a)
+				// Then apply the standard slogcp severity mapping
+				return replaceAttrForFallback(groups, a)
+			}
+		} else {
+			handlerOpts.ReplaceAttr = replaceAttrForFallback
+		}
+
+		handler = slog.NewJSONHandler(writer, &handlerOpts)
 		// clientMgr remains nil
 
 	} else { // LogTargetGCP
@@ -189,12 +204,24 @@ func New(opts ...Option) (*Logger, error) {
 			fmt.Fprintf(os.Stderr, "[slogcp] WARNING: Failed to initialize Cloud Logging client: %v. Falling back to structured logging on stdout.\n", initErr)
 
 			handlerOpts := slog.HandlerOptions{
-				AddSource:   cfg.AddSource,
-				Level:       levelVar,
-				ReplaceAttr: replaceAttrForFallback,
+				AddSource: cfg.AddSource,
+				Level:     levelVar,
 			}
-			fallbackHandler := slog.NewJSONHandler(os.Stdout, &handlerOpts)
-			baseLogger = slog.New(fallbackHandler)
+
+			// If custom replaceAttr is provided, chain it with our standard attribute replacer
+			if o.replaceAttr != nil {
+				originalReplace := o.replaceAttr
+				handlerOpts.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+					// First apply custom replacer
+					a = originalReplace(groups, a)
+					// Then apply the standard slogcp severity mapping
+					return replaceAttrForFallback(groups, a)
+				}
+			} else {
+				handlerOpts.ReplaceAttr = replaceAttrForFallback
+			}
+
+			handler = slog.NewJSONHandler(os.Stdout, &handlerOpts)
 			clientMgr = nil // Ensure clientMgr is nil in fallback mode
 
 		} else {
@@ -214,10 +241,19 @@ func New(opts ...Option) (*Logger, error) {
 				return nil, fmt.Errorf("failed to get leveler after initialization")
 			}
 			// Create the GCP handler using the logger API and leveler.
-			gcpHandler := gcp.NewGcpHandler(cfg, loggerAPI, leveler)
-			baseLogger = slog.New(gcpHandler)
+			handler = gcp.NewGcpHandler(cfg, loggerAPI, leveler)
 		}
 	}
+
+	// Apply middleware functions in order (if any)
+	if len(o.middlewares) > 0 {
+		for _, middleware := range o.middlewares {
+			handler = middleware(handler)
+		}
+	}
+
+	// Create the base logger with the final handler (potentially transformed by middleware)
+	baseLogger := slog.New(handler)
 
 	// Apply initial attributes provided via functional options.
 	if len(o.initialAttrs) > 0 {

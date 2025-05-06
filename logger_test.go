@@ -224,6 +224,40 @@ func captureOutput(t *testing.T, stream **os.File, action func()) string {
 	return <-outC
 }
 
+// middlewareTestHandler is a handler wrapper for testing middleware functionality.
+// It wraps an existing handler and allows injecting additional behavior.
+type middlewareTestHandler struct {
+	next    slog.Handler
+	addAttr func(*slog.Record)
+}
+
+func (h *middlewareTestHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.next.Enabled(ctx, level)
+}
+
+func (h *middlewareTestHandler) Handle(ctx context.Context, r slog.Record) error {
+	// Apply the middleware transformation
+	if h.addAttr != nil {
+		h.addAttr(&r)
+	}
+	// Delegate to the next handler
+	return h.next.Handle(ctx, r)
+}
+
+func (h *middlewareTestHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &middlewareTestHandler{
+		next:    h.next.WithAttrs(attrs),
+		addAttr: h.addAttr,
+	}
+}
+
+func (h *middlewareTestHandler) WithGroup(name string) slog.Handler {
+	return &middlewareTestHandler{
+		next:    h.next.WithGroup(name),
+		addAttr: h.addAttr,
+	}
+}
+
 // TestNewLogger verifies the New function's behavior under different configurations.
 func TestNewLogger(t *testing.T) {
 	// Store original factory and restore it after tests modifying it.
@@ -496,6 +530,61 @@ func TestNewLogger(t *testing.T) {
 			t.Errorf("Stdout log with initial attrs/group mismatch (-want +got):\n%s", diff)
 		}
 	})
+
+	t.Run("WithReplaceAttr", func(t *testing.T) {
+		// Set up to capture what happens with the replacer
+		var capturedGroups [][]string
+		var capturedAttrs []slog.Attr
+
+		// Define a custom replacer that records its inputs
+		customReplacer := func(groups []string, a slog.Attr) slog.Attr {
+			capturedGroups = append(capturedGroups, groups)
+			capturedAttrs = append(capturedAttrs, a)
+
+			// Modify a specific attribute for verification
+			if a.Key == slog.LevelKey && len(groups) == 0 {
+				return slog.String("test_severity", "TEST")
+			}
+			return a
+		}
+
+		// Use a real stdout capture to verify the replacer's effect
+		output := captureOutput(t, &os.Stdout, func() {
+			logger, err := New(
+				WithLogTarget(LogTargetStdout),
+				WithReplaceAttr(customReplacer),
+			)
+			if err != nil {
+				t.Fatalf("New() with custom replacer failed: %v", err)
+			}
+
+			// Log something to trigger the replacer
+			logger.Info("test message")
+		})
+
+		// Verify the replacer was called with the expected parameters
+		if len(capturedGroups) == 0 {
+			t.Fatal("ReplaceAttr function was never called")
+		}
+
+		// Check that at least one call had the level attribute with empty group slice
+		levelFound := false
+		for i, attr := range capturedAttrs {
+			if attr.Key == slog.LevelKey && len(capturedGroups[i]) == 0 {
+				levelFound = true
+				break
+			}
+		}
+		if !levelFound {
+			t.Error("ReplaceAttr was never called with the level attribute and empty groups slice")
+		}
+
+		// Verify the output shows our modified attribute
+		if !strings.Contains(output, "test_severity") {
+			t.Errorf("Expected modified attribute in output, got: %s", output)
+		}
+	})
+
 }
 
 // TestLogger_CloseFlush verifies Close and Flush behavior.
@@ -703,4 +792,170 @@ func TestLogger_ConvenienceMethods(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLogger_Middleware verifies that middleware functions transform log
+// output correctly across configurations and that nil middleware values are
+// safely ignored.
+func TestLogger_Middleware(t *testing.T) {
+	// Preserve the original factory and restore after tests.
+	originalFactory := newClientManagerFunc
+	t.Cleanup(func() { newClientManagerFunc = originalFactory })
+
+	// attributeMiddleware returns a Middleware that adds key/value to all
+	// handled records.
+	attributeMiddleware := func(key, value string) Middleware {
+		return func(h slog.Handler) slog.Handler {
+			return &middlewareTestHandler{
+				next: h,
+				addAttr: func(r *slog.Record) {
+					r.AddAttrs(slog.String(key, value))
+				},
+			}
+		}
+	}
+
+	t.Run("StdoutTarget", func(t *testing.T) {
+		mw := attributeMiddleware("mw_key", "mw_value")
+
+		output := captureOutput(t, &os.Stdout, func() {
+			logger, err := New(
+				WithLogTarget(LogTargetStdout),
+				WithMiddleware(mw),
+			)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			logger.Info("middleware test")
+		})
+
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &parsed); err != nil {
+			t.Fatalf("Failed to parse log output: %v\nOutput: %s", err, output)
+		}
+		if val, ok := parsed["mw_key"]; !ok || val != "mw_value" {
+			t.Errorf("Middleware attribute missing or incorrect: %v", parsed)
+		}
+	})
+
+	t.Run("GCPTarget", func(t *testing.T) {
+		mockMgr := newMockClientManager(nil)
+		newClientManagerFunc = func(cfg gcp.Config, ua string, co gcp.ClientOptions, lv *slog.LevelVar) clientManagerInterface {
+			return mockMgr
+		}
+
+		mw := attributeMiddleware("gcp_mw_key", "gcp_mw_value")
+
+		logger, err := New(
+			WithProjectID("test-project-id"),
+			WithMiddleware(mw),
+		)
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		logger.Info("gcp middleware test")
+
+		entries := mockMgr.GetCapturedEntries()
+		if len(entries) != 1 {
+			t.Fatalf("Expected 1 log entry, got %d", len(entries))
+		}
+
+		payload, ok := entries[0].Payload.(map[string]any)
+		if !ok {
+			t.Fatalf("Entry payload type is %T, want map[string]any", entries[0].Payload)
+		}
+		if val, ok := payload["gcp_mw_key"].(string); !ok || val != "gcp_mw_value" {
+			t.Errorf("Middleware attribute missing or incorrect in GCP entry: %v", payload)
+		}
+	})
+
+	t.Run("GCPTarget_Fallback", func(t *testing.T) {
+		mockMgr := newMockClientManager(nil)
+		mockMgr.initErr = errors.New("forced init failure")
+		newClientManagerFunc = func(cfg gcp.Config, ua string, co gcp.ClientOptions, lv *slog.LevelVar) clientManagerInterface {
+			return mockMgr
+		}
+
+		mw := attributeMiddleware("fallback_key", "fallback_value")
+
+		var stdoutOutput string
+		_ = captureOutput(t, &os.Stderr, func() { // suppress warnings
+			stdoutOutput = captureOutput(t, &os.Stdout, func() {
+				logger, err := New(
+					WithProjectID("fallback-proj"),
+					WithMiddleware(mw),
+				)
+				if err != nil {
+					t.Fatalf("New() error = %v", err)
+				}
+				logger.Info("fallback test")
+			})
+		})
+
+		var logData map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(stdoutOutput)), &logData); err != nil {
+			t.Fatalf("Failed to parse fallback log JSON: %v\nOutput: %s", err, stdoutOutput)
+		}
+		if val, ok := logData["fallback_key"]; !ok || val != "fallback_value" {
+			t.Errorf("Middleware attribute missing or incorrect in fallback mode: %v", logData)
+		}
+	})
+
+	t.Run("MultipleMiddleware", func(t *testing.T) {
+		mw1 := attributeMiddleware("mw1_key", "mw1_value")
+		mw2 := attributeMiddleware("mw2_key", "mw2_value")
+
+		output := captureOutput(t, &os.Stdout, func() {
+			logger, err := New(
+				WithLogTarget(LogTargetStdout),
+				WithMiddleware(mw1),
+				WithMiddleware(mw2),
+			)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			logger.Info("multiple middleware test")
+		})
+
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &parsed); err != nil {
+			t.Fatalf("Failed to parse log output: %v\nOutput: %s", err, output)
+		}
+		if val, ok := parsed["mw1_key"]; !ok || val != "mw1_value" {
+			t.Errorf("First middleware attribute missing or incorrect: %v", parsed)
+		}
+		if val, ok := parsed["mw2_key"]; !ok || val != "mw2_value" {
+			t.Errorf("Second middleware attribute missing or incorrect: %v", parsed)
+		}
+	})
+
+	t.Run("MultipleMiddleware_WithNilInMiddle", func(t *testing.T) {
+		mw1 := attributeMiddleware("mw1_key", "mw1_value")
+		var nilMiddleware Middleware // intentionally nil
+		mw2 := attributeMiddleware("mw2_key", "mw2_value")
+
+		output := captureOutput(t, &os.Stdout, func() {
+			logger, err := New(
+				WithLogTarget(LogTargetStdout),
+				WithMiddleware(mw1),
+				WithMiddleware(nilMiddleware),
+				WithMiddleware(mw2),
+			)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			logger.Info("nil middleware chain test")
+		})
+
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &parsed); err != nil {
+			t.Fatalf("Failed to parse log output: %v\nOutput: %s", err, output)
+		}
+		if val, ok := parsed["mw1_key"]; !ok || val != "mw1_value" {
+			t.Errorf("First middleware attribute missing or incorrect: %v", parsed)
+		}
+		if val, ok := parsed["mw2_key"]; !ok || val != "mw2_value" {
+			t.Errorf("Second middleware attribute missing or incorrect: %v", parsed)
+		}
+	})
 }

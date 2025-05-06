@@ -15,6 +15,7 @@
 package gcp
 
 import (
+	"fmt"
 	"log/slog"
 	"testing"
 )
@@ -142,5 +143,88 @@ func TestParseBool(t *testing.T) {
 					tc.boolStr, tc.defaultVal, tc.envVarName, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestConfigReplaceAttrFunc verifies that the ReplaceAttrFunc field
+// in the Config struct correctly accepts the updated function signature
+// using []string for groups instead of string.
+func TestConfigReplaceAttrFunc(t *testing.T) {
+	// Create a simple replacer function that records the groups it receives
+	var receivedGroups [][]string
+	var receivedAttrs []slog.Attr
+
+	replacer := func(groups []string, attr slog.Attr) slog.Attr {
+		// Make a copy of the groups slice to avoid aliasing issues
+		groupsCopy := make([]string, len(groups))
+		copy(groupsCopy, groups)
+
+		receivedGroups = append(receivedGroups, groupsCopy)
+		receivedAttrs = append(receivedAttrs, attr)
+
+		// Simple transformation for testing: append group count to string values
+		if attr.Value.Kind() == slog.KindString {
+			return slog.String(attr.Key, attr.Value.String()+fmt.Sprintf("-%d", len(groups)))
+		}
+		return attr
+	}
+
+	// Create a config with only our test replacer
+	cfg := Config{
+		ReplaceAttrFunc: replacer,
+	}
+
+	// Verify the replacer was stored correctly
+	if cfg.ReplaceAttrFunc == nil {
+		t.Fatal("Expected ReplaceAttrFunc to be set in Config")
+	}
+
+	// Test the replacer with different group paths
+	testGroups := [][]string{
+		{},                   // No groups
+		{"group1"},           // Single group
+		{"group1", "group2"}, // Multiple groups
+	}
+
+	testAttr := slog.String("test", "value")
+
+	// Call the stored replacer with different group paths
+	for _, groups := range testGroups {
+		result := cfg.ReplaceAttrFunc(groups, testAttr)
+
+		// Verify result contains the expected transformation
+		if result.Value.Kind() != slog.KindString {
+			t.Errorf("Expected string value, got %v", result.Value.Kind())
+			continue
+		}
+
+		expectedValue := "value-" + fmt.Sprintf("%d", len(groups))
+		if result.Value.String() != expectedValue {
+			t.Errorf("For groups %v: expected value %q, got %q",
+				groups, expectedValue, result.Value.String())
+		}
+	}
+
+	// Verify all test cases were processed
+	if len(receivedGroups) != len(testGroups) {
+		t.Errorf("Expected %d replacer calls, got %d", len(testGroups), len(receivedGroups))
+	}
+
+	// Verify groups were passed correctly (as slices, not just strings)
+	for i, expected := range testGroups {
+		if i >= len(receivedGroups) {
+			break
+		}
+		received := receivedGroups[i]
+		if len(received) != len(expected) {
+			t.Errorf("Case %d: wrong group path length: got %v, want %v", i, received, expected)
+			continue
+		}
+		for j, name := range expected {
+			if received[j] != name {
+				t.Errorf("Case %d: group path mismatch at index %d: got %q, want %q",
+					i, j, received[j], name)
+			}
+		}
 	}
 }
