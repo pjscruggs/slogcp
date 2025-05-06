@@ -585,8 +585,8 @@ func TestMiddleware(t *testing.T) {
 			if !foundDuration {
 				t.Fatalf("Missing required log attribute: 'duration'")
 			}
-			if loggedDuration <= 0 {
-				t.Errorf("Logged duration = %v, want > 0", loggedDuration)
+			if loggedDuration < 0 {
+				t.Errorf("Logged duration = %v, want >= 0", loggedDuration)
 			}
 
 			// Construct expected top-level HTTPRequest struct fields

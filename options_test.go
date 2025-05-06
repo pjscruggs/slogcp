@@ -16,6 +16,7 @@ package slogcp
 
 import (
 	"log/slog"
+	"reflect"
 	"testing"
 	"time"
 
@@ -323,5 +324,156 @@ func TestOptionsApplication(t *testing.T) {
 		if *optsFalse.addCloudRunPayloadAttributes {
 			t.Error("WithCloudRunPayloadAttributes(false): got *opts.addCloudRunPayloadAttributes = true, want false")
 		}
+	})
+
+	// Test WithReplaceAttr
+	t.Run("WithReplaceAttr", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a replacer function with the new signature (using []string for groups)
+		testReplacer := func(groups []string, a slog.Attr) slog.Attr {
+			// Simple test implementation that modifies attributes with a specific key
+			if a.Key == "sensitive" {
+				return slog.String("masked", "****")
+			}
+			return a
+		}
+
+		// Apply the WithReplaceAttr option
+		opts := applyOptions(WithReplaceAttr(testReplacer))
+
+		// Verify the replacer function was stored
+		if opts.replaceAttr == nil {
+			t.Fatal("WithReplaceAttr(): opts.replaceAttr is nil, want non-nil function")
+		}
+
+		// Test the function behavior to ensure it's the one we provided
+		testAttr := slog.String("sensitive", "password123")
+		result := opts.replaceAttr([]string{}, testAttr)
+
+		// Verify the attribute was transformed as expected
+		if result.Key != "masked" || result.Value.String() != "****" {
+			t.Errorf("Stored replaceAttr function did not transform the attribute as expected: got %v", result)
+		}
+
+		// Also test with a non-matching attribute
+		normalAttr := slog.String("normal", "value")
+		result2 := opts.replaceAttr([]string{}, normalAttr)
+
+		// Verify non-matching attributes are returned unchanged
+		if result2.Key != normalAttr.Key || result2.Value.String() != normalAttr.Value.String() {
+			t.Errorf("Stored replaceAttr function modified a non-matching attribute: got %v, want %v", result2, normalAttr)
+		}
+
+		// Test with a non-empty group slice
+		groupsAttr := slog.String("sensitive", "secret")
+		result3 := opts.replaceAttr([]string{"group1", "subgroup"}, groupsAttr)
+
+		// Verify the function handles group slices correctly
+		if result3.Key != "masked" || result3.Value.String() != "****" {
+			t.Errorf("Stored replaceAttr function did not handle group slice correctly: got %v", result3)
+		}
+	})
+
+	// Test WithMiddleware
+	t.Run("WithMiddleware", func(t *testing.T) {
+		t.Parallel()
+
+		// Define some test middleware functions for testing
+		middleware1 := func(h slog.Handler) slog.Handler {
+			// Identity middleware that returns the handler unchanged
+			return h
+		}
+
+		middleware2 := func(h slog.Handler) slog.Handler {
+			// Another identity middleware
+			return h
+		}
+
+		// Test single middleware application
+		t.Run("SingleMiddleware", func(t *testing.T) {
+			t.Parallel()
+			opts := applyOptions(WithMiddleware(middleware1))
+
+			if len(opts.middlewares) != 1 {
+				t.Fatalf("WithMiddleware(): got %d middlewares, want 1", len(opts.middlewares))
+			}
+
+			// Can't directly compare functions, but we can ensure it's not nil
+			if opts.middlewares[0] == nil {
+				t.Fatalf("WithMiddleware(): stored middleware is nil")
+			}
+		})
+
+		// Test multiple middlewares (should accumulate in order)
+		t.Run("MultipleMiddlewares", func(t *testing.T) {
+			t.Parallel()
+			opts := applyOptions(
+				WithMiddleware(middleware1),
+				WithMiddleware(middleware2),
+			)
+
+			if len(opts.middlewares) != 2 {
+				t.Fatalf("WithMiddleware() multiple calls: got %d middlewares, want 2",
+					len(opts.middlewares))
+			}
+		})
+
+		// Test middleware application order
+		t.Run("ApplicationOrder", func(t *testing.T) {
+			t.Parallel()
+
+			// Create two distinct middleware functions we can identify
+			var identifiers []string
+
+			middleware1 := func(h slog.Handler) slog.Handler {
+				identifiers = append(identifiers, "mw1")
+				return h
+			}
+
+			middleware2 := func(h slog.Handler) slog.Handler {
+				identifiers = append(identifiers, "mw2")
+				return h
+			}
+
+			// Apply both middleware options
+			opts := applyOptions(
+				WithMiddleware(middleware1),
+				WithMiddleware(middleware2),
+			)
+
+			// Check correct number of middlewares stored
+			if len(opts.middlewares) != 2 {
+				t.Fatalf("Expected 2 middlewares to be stored, got %d", len(opts.middlewares))
+			}
+
+			// Call each stored middleware with nil just to verify identity
+			// (We're only verifying they're stored in the right order)
+			for _, mw := range opts.middlewares {
+				// This just triggers the side effect of appending to identifiers
+				_ = mw(nil)
+			}
+
+			// Verify the middlewares were called in the expected order
+			expectedOrder := []string{"mw1", "mw2"}
+			if !reflect.DeepEqual(identifiers, expectedOrder) {
+				t.Errorf("Middleware storage order incorrect: got %v, want %v",
+					identifiers, expectedOrder)
+			}
+		})
+
+		// Verify behavior with nil middleware function
+		t.Run("NilMiddleware", func(t *testing.T) {
+			t.Parallel()
+
+			var nilMiddleware Middleware
+			opts := applyOptions(WithMiddleware(nilMiddleware))
+
+			// Check if nil middleware is properly handled
+			if len(opts.middlewares) > 0 {
+				t.Errorf("WithMiddleware(nil): expected no middleware to be stored, got %d middlewares",
+					len(opts.middlewares))
+			}
+		})
 	})
 }
