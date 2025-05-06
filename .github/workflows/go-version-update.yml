@@ -13,31 +13,48 @@ permissions:
   contents: read
 
 jobs:
-  validate-go-update:
-    name: 🚀 Validate Proposed Go Version
+  setup:
+    name: 🔍 Validate Proposed Go Version
     runs-on: ubuntu-latest
     if: github.actor == 'renovate[bot]' && (startsWith(github.head_ref, 'renovate/go') || startsWith(github.head_ref, 'renovate/golang'))
-
     steps:
       - name: 🛒 Checkout PR code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: 🏗️ Set up Go (using version from PR)
-        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
+      - name: 🔧 Set up Go (using version from PR)
+        uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
+    outputs:
+      pr_sha: ${{ github.event.pull_request.head.sha }}
 
-      - name: ✨🧹 Call Format & Lint Workflow
-        uses: ./.github/workflows/go-format.yml
+  validation:
+    name: Run Validation Pipeline
+    needs: setup
+    uses: ./.github/workflows/validation_pipeline.yml
+    permissions:
+      contents: write
+      pull-requests: read
+      security-events: write
 
-      - name: 🧐 Call Lint Workflow
-        uses: ./.github/workflows/go-lint.yml
+  build:
+    name: Verify Build
+    needs: validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛒 Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: 🧪📊 Call Tests Workflow
-        uses: ./.github/workflows/go-tests.yml
+      - name: 🔧 Set up Go (using version from PR)
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
 
       - name: 🏗️ Verify Build
         run: go build ./...
