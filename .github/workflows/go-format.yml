@@ -13,12 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 🛒 Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -30,7 +30,7 @@ jobs:
           gofmt -w .
           goimports -local github.com/pjscruggs/slogcp -w .
       - name: 💾 Commit Initial Formatting
-        uses: EndBug/add-and-commit@v9
+        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
         with:
           author_name: Go Formatting Bot
           author_email: go-format-bot@users.noreply.github.com
@@ -57,7 +57,7 @@ jobs:
           fi
       
       - name: ⚙️💾 Commit config change
-        uses: EndBug/add-and-commit@v9
+        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
         with:
           author_name: License Year Bot
           author_email: license-bot@github.com
@@ -68,14 +68,14 @@ jobs:
       # Apply license headers
       - name: 📄🩹 Fix License Headers
         id: fix-license
-        uses: apache/skywalking-eyes/header@v0.7.0
+        uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
         with:
           mode: fix
           config: .licenserc.yaml
           token: ${{ secrets.GITHUB_TOKEN }}
       
       - name: 📄💾 Commit header fixes
-        uses: EndBug/add-and-commit@v9
+        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
         with:
           author_name: "License Bot"
           author_email: "license-bot@github.com"
@@ -89,7 +89,7 @@ jobs:
           gofmt -w .
           goimports -local github.com/pjscruggs/slogcp -w .
       - name: 💾 Commit Secondary Formatting
-        uses: EndBug/add-and-commit@v9
+        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
         with:
           author_name: Go Formatting Bot
           author_email: go-format-bot@users.noreply.github.com
