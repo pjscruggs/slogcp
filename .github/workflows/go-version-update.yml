@@ -19,12 +19,12 @@ jobs:
     if: github.actor == 'renovate[bot]' && (startsWith(github.head_ref, 'renovate/go') || startsWith(github.head_ref, 'renovate/golang'))
     steps:
       - name: 🛒 Checkout PR code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: 🔧 Set up Go (using version from PR)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
         with:
           go-version-file: 'go.mod'
           cache: true
@@ -46,12 +46,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 🛒 Checkout PR code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: 🔧 Set up Go (using version from PR)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
         with:
           go-version-file: 'go.mod'
           cache: true
