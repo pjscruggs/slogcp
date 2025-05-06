@@ -28,3 +28,11 @@ jobs:
     name: Test Go & Vuln Check
     needs: [lint_go]
     uses: ./.github/workflows/go-tests.yml
+    
+  completion:
+    name: CI Completion
+    needs: [test_and_vuln_check]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark CI as complete
+        run: echo "CI workflow completed successfully"
