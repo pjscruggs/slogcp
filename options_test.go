@@ -470,13 +470,9 @@ func TestOptionsApplication(t *testing.T) {
 			opts := applyOptions(WithMiddleware(nilMiddleware))
 
 			// Check if nil middleware is properly handled
-			if len(opts.middlewares) == 0 {
-				// Implementation chose not to store nil middleware
-				return
-			}
-
-			if opts.middlewares[0] != nil {
-				t.Errorf("WithMiddleware(nil): stored non-nil value: %v", opts.middlewares[0])
+			if len(opts.middlewares) > 0 {
+				t.Errorf("WithMiddleware(nil): expected no middleware to be stored, got %d middlewares",
+					len(opts.middlewares))
 			}
 		})
 	})
