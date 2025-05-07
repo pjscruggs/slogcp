@@ -155,5 +155,7 @@ jobs:
       - name: 🛡️🔍 Run Vulnerability Check
         if: steps.go-test.outcome == 'success'
         run: |
+          echo "Installing govulncheck..."
+          go install golang.org/x/vuln/cmd/govulncheck@latest
           echo "Running vulnerability check..."
           govulncheck ./...
