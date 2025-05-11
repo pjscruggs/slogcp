@@ -22,32 +22,30 @@ import (
 )
 
 // stackTracer defines an interface errors can implement to provide their own stack trace
-// in the form of program counters. This signature is compatible with several common
-// error wrapping libraries that capture stack traces.
+// in the form of program counters. Compatible with github.com/pkg/errors.
 type stackTracer interface {
 	StackTrace() []uintptr
 }
 
 // extractAndFormatOriginStack attempts to get a stack trace via the stackTracer interface
-// implemented by the error (or one it wraps) and formats it.
-//
-// It returns the formatted stack trace string if the interface is found and provides
-// program counters. Otherwise, it returns an empty string.
+// implemented by the error (or one it wraps) and formats it according to Go standards.
+// It returns an empty string if the interface is not found or provides no PCs.
 func extractAndFormatOriginStack(err error) string {
-	// Use errors.As which properly walks the entire error chain
-	// and finds the first error that implements the stackTracer interface
 	var st stackTracer
+	// Use errors.As to find the first error in the chain implementing the interface.
 	if errors.As(err, &st) {
 		pcs := st.StackTrace()
 		if len(pcs) > 0 {
+			// Format the program counters obtained from the error.
 			return formatPCsToStackString(pcs)
 		}
 	}
-	return ""
+	return "" // No stack trace available from the error itself.
 }
 
-// formatPCsToStackString formats program counters (pcs) into a standard Go stack trace string.
-// It stops formatting frames once it encounters runtime exit frames.
+// formatPCsToStackString formats program counters (pcs) into a standard Go stack trace string,
+// suitable for inclusion in logs and recognized by Cloud Error Reporting.
+// It skips runtime exit frames.
 func formatPCsToStackString(pcs []uintptr) string {
 	if len(pcs) == 0 {
 		return ""
@@ -59,21 +57,20 @@ func formatPCsToStackString(pcs []uintptr) string {
 	for {
 		frame, more := frames.Next()
 
+		// Basic frame validity check.
 		if frame.PC == 0 {
-			break // End of frames
+			break // Should not happen with valid pcs, but safeguard.
 		}
 
-		funcName := frame.Function
-
-		// Skip both runtime.goexit and testing.tRunner frames
-		if funcName == "runtime.goexit" || strings.HasPrefix(funcName, "testing.") {
+		// Skip runtime finalizers or exit points.
+		if frame.Function == "runtime.goexit" {
 			if !more {
 				break
-			}
-			continue // Skip this frame but continue processing
+			} // Stop if it's the last frame
+			continue // Skip this frame and continue if more exist
 		}
 
-		// Format the relevant frame
+		// Format the frame in standard Go stack trace format.
 		sb.WriteString(frame.Function)
 		sb.WriteByte('\n')
 		sb.WriteByte('\t')
@@ -83,9 +80,10 @@ func formatPCsToStackString(pcs []uintptr) string {
 		sb.WriteByte('\n')
 
 		if !more {
-			break
+			break // No more frames to process.
 		}
 	}
 
+	// Return the built string, removing the final newline.
 	return strings.TrimSuffix(sb.String(), "\n")
 }

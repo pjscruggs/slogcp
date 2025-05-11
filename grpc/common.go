@@ -16,7 +16,6 @@ package grpc
 
 import (
 	"context"
-
 	"log/slog"
 	"path"
 	"runtime"
@@ -28,71 +27,106 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// Constants defining attribute keys used within this package for logging
-// gRPC call details. These keys provide structure to the log entries.
+// Attribute keys used within gRPC interceptors to structure log entries.
+// These keys form a consistent schema for logs in both client and server
+// interceptors, making it easier to query and analyze gRPC traffic patterns.
 const (
-	// Attribute keys used for logging general gRPC call details.
-	grpcServiceKey  = "grpc.service"  // Full gRPC service name (e.g., package.MyService).
-	grpcMethodKey   = "grpc.method"   // gRPC method name (e.g., MyMethod).
-	grpcCodeKey     = "grpc.code"     // String representation of the final gRPC status code (e.g., "OK", "Internal").
-	grpcDurationKey = "grpc.duration" // Duration of the RPC call.
-	peerAddressKey  = "peer.address"  // Client's network address (from server interceptor).
+	// Core gRPC call identification and results
+	grpcServiceKey  = "grpc.service"  // Service name from the full method path (e.g., "myapp.UserService")
+	grpcMethodKey   = "grpc.method"   // Method name from the full path (e.g., "GetUser")
+	grpcCodeKey     = "grpc.code"     // Final status code as a string (e.g., "OK", "NotFound")
+	grpcDurationKey = "grpc.duration" // Total call duration as a time.Duration
+	peerAddressKey  = "peer.address"  // Remote endpoint address (IP:port or UDS path)
 
-	// Attribute keys used for logging gRPC metadata (if enabled).
-	grpcRequestMetadataKey = "grpc.request.metadata" // Key for request metadata group (server incoming, client outgoing).
-	grpcResponseHeaderKey  = "grpc.response.header"  // Key for response header group (client incoming).
-	grpcResponseTrailerKey = "grpc.response.trailer" // Key for response trailer group (client incoming).
-	metadataValuesKey      = "values"                // Key within metadata group for the actual MD map.
+	// Metadata logging keys - used when metadata logging is enabled
+	grpcRequestMetadataKey = "grpc.request.metadata" // Contains filtered request headers
+	grpcResponseHeaderKey  = "grpc.response.header"  // Contains filtered response headers
+	grpcResponseTrailerKey = "grpc.response.trailer" // Contains filtered trailers
+	metadataValuesKey      = "values"                // Used within metadata groups to hold the actual values
 
-	// Attribute keys used specifically for panic recovery logging.
-	panicValueKey = "panic.value" // Key for the value recovered from panic().
-	panicStackKey = "panic.stack" // Key for the stack trace captured during panic recovery.
+	// Panic recovery logging - used when a handler panics
+	panicValueKey = "panic.value" // The value recovered from the panic
+	panicStackKey = "panic.stack" // Formatted stack trace from the panic site
 
-	// defaultPanicStackBufSize defines the default buffer size allocated for
-	// capturing the stack trace during panic recovery.
+	// Buffer size for stack trace capture during panic recovery
+	// 8KB is typically sufficient for capturing the relevant part of deep stacks
 	defaultPanicStackBufSize = 8192
 
-	// Attribute keys used specifically for payload logging (in payload.go).
-	payloadDirectionKey    = "grpc.payload.direction"     // "sent" or "received"
-	payloadTypeKey         = "grpc.payload.type"          // Go type of the payload message.
-	payloadKey             = "grpc.payload.content"       // Key for the full payload content (as JSON string).
-	payloadPreviewKey      = "grpc.payload.preview"       // Key for truncated payload content.
-	payloadTruncatedKey    = "grpc.payload.truncated"     // Boolean indicating if payload was truncated.
-	payloadOriginalSizeKey = "grpc.payload.original_size" // Original size before truncation.
+	// Payload logging keys - used when payload logging is enabled
+	// These keys are used in payload.go for request/response body logging
+	payloadDirectionKey    = "grpc.payload.direction"     // Either "sent" or "received"
+	payloadTypeKey         = "grpc.payload.type"          // Go type of the message (e.g., "*mypb.UserRequest")
+	payloadKey             = "grpc.payload.content"       // Full JSON representation of non-truncated payload
+	payloadPreviewKey      = "grpc.payload.preview"       // Truncated content when payload exceeds size limit
+	payloadTruncatedKey    = "grpc.payload.truncated"     // Boolean flag indicating truncation
+	payloadOriginalSizeKey = "grpc.payload.original_size" // Original size in bytes before truncation
 
-	// categoryKey is used when WithLogCategory option is provided.
-	categoryKey = "log.category"
+	// Miscellaneous
+	categoryKey = "log.category" // Optional grouping category from WithLogCategory
 )
 
-// splitMethodName splits a full gRPC method name (e.g., "/package.Service/Method")
-// into service and method parts.
+// splitMethodName parses a gRPC full method name into service and method components.
+//
+// gRPC method names are formatted as "/package.Service/Method". This function
+// extracts the service part ("package.Service") and method part ("Method"),
+// handling edge cases like missing slashes or empty components.
+//
+// For example:
+//   - "/users.UserService/GetUser" → "users.UserService", "GetUser"
+//   - "users.UserService/GetUser" → "users.UserService", "GetUser" (handles missing leading slash)
+//   - "/GetUser" → "unknown", "GetUser" (handles missing service component)
+//
+// The service name is used for grouping related methods in logs, and the method name
+// identifies the specific RPC operation being performed.
 func splitMethodName(fullMethodName string) (service, method string) {
 	fullMethodName = strings.TrimPrefix(fullMethodName, "/")
 	service = path.Dir(fullMethodName)
 	method = path.Base(fullMethodName)
 
-	// Represent root-level methods clearly.
+	// Handle root-level methods (no service component)
 	if service == "." || service == "" {
 		service = "unknown"
 	}
 	return service, method
 }
 
-// defaultMetadataFilter provides a default deny-list for common sensitive headers.
-// It returns true if the key should be logged, false otherwise.
-// Filtering is case-insensitive.
+// defaultMetadataFilter provides basic filtering of sensitive metadata.
+// It returns true for keys that should be included in logs, false for keys
+// that should be excluded for security or privacy reasons.
+//
+// This filter blocks common authentication and security headers:
+//   - "authorization": Contains credentials, tokens, or passwords
+//   - "cookie"/"set-cookie": May contain session tokens or other sensitive data
+//   - "x-csrf-token": Security token for preventing CSRF attacks
+//   - "grpc-trace-bin": Binary trace data that's handled separately by the tracer
+//
+// All other headers are allowed by default. This filter is case-insensitive
+// to handle variations in header casing.
+//
+// Applications with stricter requirements should provide a custom filter
+// using the WithMetadataFilter option.
 func defaultMetadataFilter(key string) bool {
 	switch strings.ToLower(key) {
 	case "authorization", "cookie", "set-cookie", "x-csrf-token", "grpc-trace-bin":
-		return false // Deny common sensitive headers and binary trace data.
+		return false // Exclude sensitive headers
 	default:
-		return true // Allow other headers by default.
+		return true // Include all other headers
 	}
 }
 
-// filterMetadata applies the filter function to the metadata, returning a new
-// MD containing only the keys for which the filter returned true.
-// Returns nil if the input MD is nil/empty or if filtering results in an empty MD.
+// filterMetadata applies a filtering function to gRPC metadata.
+// It creates a new metadata.MD containing only the key-value pairs where
+// the filter function returns true for the key.
+//
+// The filter is applied to each key in the original metadata. If the filter
+// returns true, the values for that key are copied to a new slice to prevent
+// aliasing issues, and added to the result.
+//
+// If filterFunc is nil, defaultMetadataFilter is used.
+// If the input metadata is empty or all keys are filtered out, nil is returned.
+//
+// This function is used internally by the interceptors to safely log a subset
+// of metadata without exposing sensitive values.
 func filterMetadata(md metadata.MD, filterFunc MetadataFilterFunc) metadata.MD {
 	if filterFunc == nil {
 		filterFunc = defaultMetadataFilter
@@ -103,7 +137,7 @@ func filterMetadata(md metadata.MD, filterFunc MetadataFilterFunc) metadata.MD {
 	filtered := metadata.MD{}
 	for k, v := range md {
 		if filterFunc(k) {
-			// Copy the slice to prevent aliasing issues.
+			// Deep copy the value slice to avoid aliasing with the original
 			valsCopy := make([]string, len(v))
 			copy(valsCopy, v)
 			filtered[k] = valsCopy
@@ -115,10 +149,24 @@ func filterMetadata(md metadata.MD, filterFunc MetadataFilterFunc) metadata.MD {
 	return filtered
 }
 
-// assembleFinishAttrs creates common attributes for the "finish" log event.
-// peerAddr should be empty for client-side logs.
-// It uses the string "error" for the error attribute key, allowing the slogcp.Handler
-// to detect and potentially add stack traces automatically based on configuration.
+// assembleFinishAttrs creates a standard set of attributes for RPC completion logs.
+// This function centralizes the creation of common attributes used in the final
+// log entry when a gRPC call completes, ensuring consistent structure across
+// both client and server interceptors.
+//
+// Parameters:
+//   - duration: The total time taken for the RPC call
+//   - err: The error returned by the handler or received from the server
+//   - peerAddr: The remote endpoint address (should be empty for client-side logs)
+//
+// The returned attributes include:
+//   - grpc.duration: Call duration as a time.Duration
+//   - grpc.code: Final status code as a string (from the error if present)
+//   - peer.address: Client address (for server logs only)
+//   - error: The original error object if one occurred
+//
+// The "error" attribute uses the standard key name, allowing the slogcp handler
+// to apply special formatting and extract stack traces based on configuration.
 func assembleFinishAttrs(duration time.Duration, err error, peerAddr string) []slog.Attr {
 	grpcStatus := status.Code(err)
 	attrs := []slog.Attr{
@@ -129,42 +177,58 @@ func assembleFinishAttrs(duration time.Duration, err error, peerAddr string) []s
 		attrs = append(attrs, slog.String(peerAddressKey, peerAddr))
 	}
 	if err != nil {
-		// Use the standard "error" key. The slogcp handler will recognize this
-		// and apply special formatting (like stack traces) if configured.
+		// Using the standard "error" key allows the slogcp handler to recognize this
+		// as an error and potentially add stack traces automatically
 		attrs = append(attrs, slog.Any("error", err))
 	}
 	return attrs
 }
 
-// handlePanic recovers from a panic, logs the panic details immediately using
-// the provided logger and context, captures the stack trace, and returns
-// a standard codes.Internal error.
-// It's intended for use in server interceptor defer functions.
+// handlePanic recovers from a panic during a gRPC call, logs detailed information,
+// and returns an appropriate error to the client.
+//
+// When a panic occurs in a gRPC handler, this function:
+// 1. Captures a stack trace at the point of the panic
+// 2. Logs the panic value and stack trace at CRITICAL level
+// 3. Returns a standard Internal error to the client
+//
+// The panic is logged immediately with details useful for debugging, but the client
+// receives only a generic error message to avoid leaking implementation details.
+// This maintains security while providing operators with the information they need
+// to investigate the issue.
+//
+// The context is passed to logging to preserve trace correlation.
+// The function is intended to be called from defer blocks in interceptors.
+//
+// Returns:
+//   - isPanic: true if a panic was recovered, false otherwise
+//   - err: a gRPC Internal error if a panic occurred, nil otherwise
 func handlePanic(ctx context.Context, logger *slog.Logger, recoveredValue any) (isPanic bool, err error) {
 	if recoveredValue == nil {
-		return false, nil // No panic occurred.
+		return false, nil // No panic occurred
 	}
 
 	isPanic = true
-	stackBuf := make([]byte, defaultPanicStackBufSize)
-	stackBytesWritten := runtime.Stack(stackBuf, false) // Capture stack trace.
 
-	// Log the panic immediately at CRITICAL level using the provided logger and context.
-	// The slogcp.Handler will automatically handle trace correlation from the context
-	// and potentially format the panic value/stack according to its rules.
-	logger.LogAttrs(ctx, internalLevelCritical, // Use internal critical level.
+	// Capture the stack trace at the point of panic
+	stackBuf := make([]byte, defaultPanicStackBufSize)
+	stackBytesWritten := runtime.Stack(stackBuf, false)
+
+	// Log the panic immediately with all available details
+	// The CRITICAL level ensures operators are alerted to the issue
+	logger.LogAttrs(ctx, internalLevelCritical,
 		"Recovered panic during gRPC call",
 		slog.Any(panicValueKey, recoveredValue),
 		slog.String(panicStackKey, string(stackBuf[:stackBytesWritten])),
 	)
 
-	// Return a standard Internal error to the client.
+	// Return a sanitized error to the client that doesn't expose internal details
 	err = status.Errorf(codes.Internal, "internal server error caused by panic")
 	return isPanic, err
 }
 
-// These are needed within this package to avoid import cycles if slogcp.Level
-// constants were used directly, especially in handlePanic.
+// Internal level constant used for panic logging.
+// This avoids a package import cycle with the main slogcp package.
 const (
-	internalLevelCritical slog.Level = 12 // Corresponds to slogcp.LevelCritical.
+	internalLevelCritical slog.Level = 12 // Corresponds to slogcp.LevelCritical
 )

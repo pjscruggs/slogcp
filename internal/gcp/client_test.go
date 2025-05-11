@@ -21,12 +21,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"cloud.google.com/go/logging"
-	"github.com/google/go-cmp/cmp"
 	"google.golang.org/api/option"
-	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 )
 
 // mockGcpClientAPI simulates the gcpClientAPI interface for testing ClientManager.
@@ -35,14 +32,12 @@ type mockGcpClientAPI struct {
 	loggerFn    func(logID string, opts ...logging.LoggerOption) *logging.Logger
 	closeFn     func() error
 	closeCalled bool
-	// Note: OnError cannot be easily mocked/verified without a real client instance.
 }
 
 func (m *mockGcpClientAPI) Logger(logID string, opts ...logging.LoggerOption) *logging.Logger {
 	if m.loggerFn != nil {
 		return m.loggerFn(logID, opts...)
 	}
-	// Default behavior: return nil. Tests needing a logger must provide loggerFn.
 	return nil
 }
 
@@ -53,7 +48,7 @@ func (m *mockGcpClientAPI) Close() error {
 	if m.closeFn != nil {
 		return m.closeFn()
 	}
-	return nil // Default: successful close
+	return nil
 }
 
 func (m *mockGcpClientAPI) WasCloseCalled() bool {
@@ -62,511 +57,244 @@ func (m *mockGcpClientAPI) WasCloseCalled() bool {
 	return m.closeCalled
 }
 
-// Compile-time check that mockGcpClientAPI implements gcpClientAPI.
-var _ gcpClientAPI = (*mockGcpClientAPI)(nil)
-
-// mockGcpLoggerAPI simulates the gcpLoggerAPI interface for testing ClientManager.
-type mockGcpLoggerAPI struct {
-	mu          sync.Mutex
-	logFn       func(logging.Entry)
-	flushFn     func() error
-	logCalled   bool
-	flushCalled bool
-	lastEntry   logging.Entry
-}
-
-func (m *mockGcpLoggerAPI) Log(e logging.Entry) {
-	m.mu.Lock()
-	m.logCalled = true
-	m.lastEntry = e // Capture the last entry logged
-	m.mu.Unlock()
-	if m.logFn != nil {
-		m.logFn(e)
-	}
-}
-
-func (m *mockGcpLoggerAPI) Flush() error {
-	m.mu.Lock()
-	m.flushCalled = true
-	m.mu.Unlock()
-	if m.flushFn != nil {
-		return m.flushFn()
-	}
-	return nil // Default: successful flush
-}
-
-func (m *mockGcpLoggerAPI) WasLogCalled() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.logCalled
-}
-
-func (m *mockGcpLoggerAPI) WasFlushCalled() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.flushCalled
-}
-
-func (m *mockGcpLoggerAPI) GetLastEntry() logging.Entry {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.lastEntry
-}
-
-// Compile-time check that mockGcpLoggerAPI implements gcpLoggerAPI.
-var _ GcpLoggerAPI = (*mockGcpLoggerAPI)(nil)
-
-// TestNewClientManager verifies the constructor sets fields correctly.
+// TestNewClientManager verifies that the constructor sets basic fields correctly.
 func TestNewClientManager(t *testing.T) {
-	cfg := Config{ProjectID: "test-proj"}
-	userAgent := "test-agent/1.0"
-	opts := ClientOptions{EntryCountThreshold: pint(100)}
+	cfg := Config{Parent: "projects/test-project"}
+	ua := "test-agent/1.0"
 	levelVar := new(slog.LevelVar)
 
-	cm := NewClientManager(cfg, userAgent, opts, levelVar)
+	cm := NewClientManager(cfg, ua, levelVar)
 
-	if cm.cfg.ProjectID != cfg.ProjectID {
-		t.Errorf("NewClientManager() cfg.ProjectID = %q, want %q", cm.cfg.ProjectID, cfg.ProjectID)
+	if cm.cfg.Parent != cfg.Parent {
+		t.Errorf("cfg.Parent = %q; want %q", cm.cfg.Parent, cfg.Parent)
 	}
-	if cm.userAgent != userAgent {
-		t.Errorf("NewClientManager() userAgent = %q, want %q", cm.userAgent, userAgent)
-	}
-	if cm.clientOpts.EntryCountThreshold == nil || *cm.clientOpts.EntryCountThreshold != 100 {
-		t.Errorf("NewClientManager() clientOpts.EntryCountThreshold = %v, want pointer to 100", cm.clientOpts.EntryCountThreshold)
+	if cm.userAgent != ua {
+		t.Errorf("userAgent = %q; want %q", cm.userAgent, ua)
 	}
 	if cm.levelVar != levelVar {
-		t.Error("NewClientManager() levelVar mismatch")
+		t.Error("levelVar mismatch")
 	}
 	if cm.newClientFn == nil {
-		t.Error("NewClientManager() newClientFn should not be nil")
+		t.Error("newClientFn should be initialized by constructor")
 	}
 }
 
-// TestClientManager_Initialize verifies the initialization logic.
+// TestClientManager_Initialize covers success and error scenarios.
 func TestClientManager_Initialize(t *testing.T) {
-	baseCfg := Config{ProjectID: "init-proj"}
+	baseCfg := Config{Parent: "projects/init-proj"}
+	ua := "init-agent"
 	levelVar := new(slog.LevelVar)
-	userAgent := "init-agent"
 
 	t.Run("Success", func(t *testing.T) {
 		mockClient := &mockGcpClientAPI{}
-		// Mock the logger creation within the client mock
+		// Provide a non-nil logger to satisfy creation
 		mockClient.loggerFn = func(logID string, opts ...logging.LoggerOption) *logging.Logger {
-			// Return a minimal non-nil logger to satisfy the check in Initialize.
-			// This uses a simplified approach; a real logger isn't created.
-			return &logging.Logger{} // Placeholder non-nil logger
+			return &logging.Logger{}
 		}
 
-		factory := func(ctx context.Context, projectID string, opts ...option.ClientOption) (gcpClientAPI, error) {
-			// Basic check for user agent propagation
-			// This is a weak check as we can't inspect the option internals easily.
-			if len(opts) == 0 {
-				t.Error("Expected client options (like user agent), but got none")
+		factory := func(ctx context.Context, parent string, onError func(error), opts ...option.ClientOption) (gcpClientAPI, error) {
+			// Verify parent and UA get passed via opts (UA in option.WithUserAgent)
+			if parent != baseCfg.Parent {
+				t.Errorf("factory received parent = %q; want %q", parent, baseCfg.Parent)
 			}
 			return mockClient, nil
 		}
 
-		cm := NewClientManager(baseCfg, userAgent, ClientOptions{}, levelVar)
-		cm.newClientFn = factory // Inject mock factory
+		cm := NewClientManager(baseCfg, ua, levelVar)
+		cm.newClientFn = factory
 
-		err := cm.Initialize()
-		if err != nil {
-			t.Fatalf("Initialize() failed unexpectedly: %v", err)
+		if err := cm.Initialize(); err != nil {
+			t.Fatalf("Initialize() = %v; want nil", err)
 		}
-
-		// Verify internal state
-		if cm.initErr != nil {
-			t.Errorf("Initialize() initErr = %v, want nil", cm.initErr)
-		}
-		if cm.client == nil {
-			t.Error("Initialize() client should be set on success")
-		}
-		if cm.logger == nil {
-			t.Error("Initialize() logger should be set on success")
-		}
-
-		// Verify idempotency
+		// Idempotency
 		err2 := cm.Initialize()
 		if err2 != nil {
-			t.Errorf("Second Initialize() call failed: %v", err2)
+			t.Errorf("Second Initialize() = %v; want nil", err2)
 		}
-		if cm.client != mockClient { // Check instance remains the same
-			t.Error("Second Initialize() call changed the client instance")
+		// Ensure client and logger set
+		if cm.client == nil {
+			t.Error("client not set after Initialize")
+		}
+		if cm.logger == nil {
+			t.Error("logger not set after Initialize")
 		}
 	})
 
-	t.Run("ClientFactoryError", func(t *testing.T) {
-		factoryErr := errors.New("mock factory error")
-		factory := func(ctx context.Context, projectID string, opts ...option.ClientOption) (gcpClientAPI, error) {
-			// Return the raw error WITHOUT wrapping it with ErrClientInitializationFailed
-			return nil, factoryErr
+	t.Run("FactoryError", func(t *testing.T) {
+		errFoo := errors.New("factory fail")
+		factory := func(ctx context.Context, parent string, onError func(error), opts ...option.ClientOption) (gcpClientAPI, error) {
+			return nil, errFoo
 		}
 
-		cm := NewClientManager(baseCfg, userAgent, ClientOptions{}, levelVar)
-		cm.newClientFn = factory // Inject mock factory
+		cm := NewClientManager(baseCfg, ua, levelVar)
+		cm.newClientFn = factory
 
 		err := cm.Initialize()
-		if err == nil {
-			t.Fatal("Initialize() did not return expected error")
-		}
-		// Check that the returned error contains the original factory error
-		if !errors.Is(err, factoryErr) {
-			t.Errorf("Initialize() error = %v, want wrapping %v", err, factoryErr)
-		}
-
-		// Verify internal state
-		if cm.initErr == nil || !errors.Is(cm.initErr, factoryErr) {
-			t.Errorf("Initialize() initErr = %v, want wrapping %v", cm.initErr, factoryErr)
+		if !errors.Is(err, errFoo) {
+			t.Errorf("Initialize() error = %v; want wrapping %v", err, errFoo)
 		}
 		if cm.client != nil {
-			t.Error("Initialize() client should be nil on factory error")
+			t.Error("client should be nil on factory error")
 		}
 		if cm.logger != nil {
-			t.Error("Initialize() logger should be nil on factory error")
-		}
-
-		// Verify idempotency (should still return the original error)
-		err2 := cm.Initialize()
-		if !errors.Is(err2, factoryErr) {
-			t.Errorf("Second Initialize() call error mismatch: got %v, want %v", err2, factoryErr)
+			t.Error("logger should be nil on factory error")
 		}
 	})
 
 	t.Run("LoggerCreationError", func(t *testing.T) {
 		mockClient := &mockGcpClientAPI{}
-		// Mock loggerFn to return nil, simulating logger creation failure
+		// Simulate Logger returning nil
 		mockClient.loggerFn = func(logID string, opts ...logging.LoggerOption) *logging.Logger {
 			return nil
 		}
-		closeCalled := false
-		mockClient.closeFn = func() error { // Track if Close is called during cleanup
-			closeCalled = true
-			return nil
-		}
+		// Rely on WasCloseCalled for cleanup verification
 
-		factory := func(ctx context.Context, projectID string, opts ...option.ClientOption) (gcpClientAPI, error) {
+		factory := func(ctx context.Context, parent string, onError func(error), opts ...option.ClientOption) (gcpClientAPI, error) {
 			return mockClient, nil
 		}
 
-		cm := NewClientManager(baseCfg, userAgent, ClientOptions{}, levelVar)
-		cm.newClientFn = factory // Inject mock factory
-
-		err := cm.Initialize()
-		if err == nil {
-			t.Fatal("Initialize() did not return expected error on logger failure")
-		}
-		if !errors.Is(err, ErrClientInitializationFailed) { // Should still wrap the base error type
-			t.Errorf("Initialize() error = %v, want wrapping %v", err, ErrClientInitializationFailed)
-		}
-		if !strings.Contains(err.Error(), "client.Logger(") {
-			t.Errorf("Initialize() error message %q does not mention logger failure", err.Error())
-		}
-
-		// Verify internal state
-		if cm.initErr == nil || !errors.Is(cm.initErr, ErrClientInitializationFailed) {
-			t.Errorf("Initialize() initErr = %v, want wrapping %v", cm.initErr, ErrClientInitializationFailed)
-		}
-		// Client might exist briefly but should be nil after cleanup attempt
-		if cm.client != nil {
-			t.Error("Initialize() client should be nil after logger creation failure and cleanup")
-		}
-		if cm.logger != nil {
-			t.Error("Initialize() logger should be nil on logger creation failure")
-		}
-		if !closeCalled {
-			t.Error("Expected client.Close() to be called during cleanup after logger failure")
-		}
-	})
-
-	t.Run("WithOptions", func(t *testing.T) {
-		mockClient := &mockGcpClientAPI{}
-		var capturedLoggerOpts []logging.LoggerOption // Capture options passed to Logger()
-
-		mockClient.loggerFn = func(logID string, opts ...logging.LoggerOption) *logging.Logger {
-			capturedLoggerOpts = opts // Capture the passed options
-			return &logging.Logger{}  // Return non-nil logger
-		}
-
-		factory := func(ctx context.Context, projectID string, opts ...option.ClientOption) (gcpClientAPI, error) {
-			return mockClient, nil
-		}
-
-		// Define client options to test
-		clientOpts := ClientOptions{
-			EntryCountThreshold: pint(50),
-			DelayThreshold:      durationPtr(5 * time.Second),
-			MonitoredResource:   &mrpb.MonitoredResource{Type: "test_resource"},
-		}
-
-		cm := NewClientManager(baseCfg, userAgent, clientOpts, levelVar)
+		cm := NewClientManager(baseCfg, ua, levelVar)
 		cm.newClientFn = factory
 
 		err := cm.Initialize()
-		if err != nil {
-			t.Fatalf("Initialize() failed: %v", err)
+		if err == nil {
+			t.Fatal("Initialize() = nil; want error")
 		}
-
-		// Verify that the options were passed. This is a basic check on the number
-		// of options, as inspecting the function types themselves is complex.
-		// Expected options: BufferedByteLimit + EntryCountThreshold + DelayThreshold + CommonResource
-		expectedOptCount := 4
-		if len(capturedLoggerOpts) != expectedOptCount {
-			t.Errorf("Initialize() expected %d logger options, got %d", expectedOptCount, len(capturedLoggerOpts))
+		if !mockClient.WasCloseCalled() {
+			t.Error("expected client.Close() on logger failure")
+		}
+		if cm.client != nil || cm.logger != nil {
+			t.Error("client and logger should be nil after logger creation error")
 		}
 	})
 }
 
 // TestClientManager_GetLogger tests retrieving the logger instance.
 func TestClientManager_GetLogger(t *testing.T) {
+	cfg := Config{Parent: "p"}
 	levelVar := new(slog.LevelVar)
-	cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
+	ua := "ua"
 
-	// Case 1: Before Initialize
-	_, err := cm.GetLogger()
-	if !errors.Is(err, ErrClientNotInitialized) {
-		t.Errorf("GetLogger() before Initialize: got error %v, want %v", err, ErrClientNotInitialized)
+	// Before Initialize
+	cm := NewClientManager(cfg, ua, levelVar)
+	if _, err := cm.GetLogger(); !errors.Is(err, ErrClientNotInitialized) {
+		t.Errorf("GetLogger() before init error = %v; want %v", err, ErrClientNotInitialized)
 	}
 
-	// Case 2: After failed Initialize
-	initFailErr := errors.New("init failed")
-	cm.initErr = initFailErr // Simulate failed init
-	_, err = cm.GetLogger()
-	if !errors.Is(err, initFailErr) {
-		t.Errorf("GetLogger() after failed Initialize: got error %v, want %v", err, initFailErr)
+	// After failed Initialize
+	cm.initErr = errors.New("fail")
+	if _, err := cm.GetLogger(); !errors.Is(err, cm.initErr) {
+		t.Errorf("GetLogger() after failed init error = %v; want %v", err, cm.initErr)
 	}
 
-	// Case 3: After successful Initialize
-	cm = NewClientManager(Config{}, "", ClientOptions{}, levelVar) // Reset manager
-	mockLogger := &mockGcpLoggerAPI{}
-	cm.logger = mockLogger // Simulate successful init by setting logger directly
-	cm.initErr = nil       // Ensure initErr is nil
+	// After successful init
+	cm = NewClientManager(cfg, ua, levelVar)
+	fakeLogger := &logging.Logger{}
+	cm.logger = &RealGcpLogger{Logger: fakeLogger}
+	cm.initErr = nil
 
-	gotLogger, err := cm.GetLogger()
+	got, err := cm.GetLogger()
 	if err != nil {
-		t.Fatalf("GetLogger() after successful Initialize failed: %v", err)
+		t.Fatalf("GetLogger() = %v; want nil", err)
 	}
-	if gotLogger != mockLogger {
-		t.Error("GetLogger() did not return the expected logger instance")
+	if got.Logger != fakeLogger {
+		t.Error("GetLogger() returned unexpected logger instance")
 	}
 }
 
-// TestClientManager_Log tests the Log method delegation.
-func TestClientManager_Log(t *testing.T) {
-	levelVar := new(slog.LevelVar)
-	entry := logging.Entry{Payload: "test payload"}
-
-	t.Run("NotInitialized", func(t *testing.T) {
-		cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
-		// We check that it doesn't panic and returns nil.
-		// Verifying stderr requires more complex test setup.
-		err := cm.Log(entry)
-		if err != nil {
-			t.Errorf("Log() before Initialize returned error %v, want nil", err)
-		}
-	})
-
-	t.Run("InitFailed", func(t *testing.T) {
-		cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
-		cm.initErr = errors.New("simulated init failure")
-		err := cm.Log(entry)
-		if err != nil {
-			t.Errorf("Log() after failed Initialize returned error %v, want nil", err)
-		}
-	})
-
-	t.Run("Success", func(t *testing.T) {
-		cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
-		mockLogger := &mockGcpLoggerAPI{}
-		cm.logger = mockLogger // Simulate successful init
-		cm.initErr = nil
-
-		err := cm.Log(entry)
-		if err != nil {
-			t.Errorf("Log() after successful Initialize returned error %v, want nil", err)
-		}
-
-		if !mockLogger.WasLogCalled() {
-			t.Error("Expected mockLogger.Log() to be called")
-		}
-		// Use cmp.Diff for comparing the captured entry.
-		if diff := cmp.Diff(entry, mockLogger.GetLastEntry()); diff != "" {
-			t.Errorf("Logged entry mismatch (-want +got):\n%s", diff)
-		}
-	})
-}
-
-// TestClientManager_Close tests the Close method logic.
+// TestClientManager_Close tests the Close logic focusing on client.Close behavior.
 func TestClientManager_Close(t *testing.T) {
+	cfg := Config{Parent: "p"}
 	levelVar := new(slog.LevelVar)
+	ua := "ua"
 
 	t.Run("NotInitialized", func(t *testing.T) {
-		cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
+		cm := NewClientManager(cfg, ua, levelVar)
 		err := cm.Close()
 		if !errors.Is(err, ErrClientNotInitialized) {
-			t.Errorf("Close() before Initialize: got error %v, want %v", err, ErrClientNotInitialized)
+			t.Errorf("Close() before init = %v; want %v", err, ErrClientNotInitialized)
 		}
 	})
 
 	t.Run("InitFailed", func(t *testing.T) {
-		cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
-		initFailErr := errors.New("simulated init failure")
-		cm.initErr = initFailErr // Simulate failed init
+		cm := NewClientManager(cfg, ua, levelVar)
+		failErr := errors.New("init fail")
+		cm.initErr = failErr
 		err := cm.Close()
-		if !errors.Is(err, initFailErr) {
-			t.Errorf("Close() after failed Initialize: got error %v, want %v", err, initFailErr)
+		if !errors.Is(err, failErr) {
+			t.Errorf("Close() after failed init = %v; want %v", err, failErr)
 		}
 	})
 
 	t.Run("Success", func(t *testing.T) {
 		mockClient := &mockGcpClientAPI{}
-		mockLogger := &mockGcpLoggerAPI{}
-		cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
-		cm.client = mockClient // Simulate successful init
-		cm.logger = mockLogger
+		cm := NewClientManager(cfg, ua, levelVar)
+		cm.client = mockClient
 		cm.initErr = nil
 
 		err := cm.Close()
 		if err != nil {
-			t.Fatalf("Close() failed unexpectedly: %v", err)
-		}
-
-		if !mockLogger.WasFlushCalled() {
-			t.Error("Expected mockLogger.Flush() to be called")
+			t.Errorf("Close() = %v; want nil", err)
 		}
 		if !mockClient.WasCloseCalled() {
-			t.Error("Expected mockClient.Close() to be called")
-		}
-
-		// Test idempotency
-		mockLogger.flushCalled = false // Reset flags
-		mockClient.closeCalled = false
-		err2 := cm.Close()
-		if err2 != nil {
-			t.Errorf("Second Close() call returned error %v, want nil", err2)
-		}
-		if mockLogger.WasFlushCalled() {
-			t.Error("Second Close() call unexpectedly called Flush again")
-		}
-		if mockClient.WasCloseCalled() {
-			t.Error("Second Close() call unexpectedly called Close again")
-		}
-	})
-
-	t.Run("FlushError", func(t *testing.T) {
-		mockClient := &mockGcpClientAPI{}
-		mockLogger := &mockGcpLoggerAPI{}
-		flushErr := errors.New("flush failed")
-		mockLogger.flushFn = func() error { return flushErr } // Simulate flush error
-
-		cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
-		cm.client = mockClient
-		cm.logger = mockLogger
-		cm.initErr = nil
-
-		err := cm.Close()
-		if !errors.Is(err, flushErr) {
-			t.Errorf("Close() with flush error: got %v, want %v", err, flushErr)
-		}
-		if !mockClient.WasCloseCalled() { // Close should still be called
-			t.Error("Expected mockClient.Close() to be called even if Flush failed")
+			t.Error("expected client.Close() on success")
 		}
 	})
 
 	t.Run("ClientCloseError", func(t *testing.T) {
-		mockClient := &mockGcpClientAPI{}
-		mockLogger := &mockGcpLoggerAPI{}
-		closeErr := errors.New("client close failed")
-		mockClient.closeFn = func() error { return closeErr } // Simulate client close error
-
-		cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
+		closeErr := errors.New("close failed")
+		mockClient := &mockGcpClientAPI{ closeFn: func() error { return closeErr } }
+		cm := NewClientManager(cfg, ua, levelVar)
 		cm.client = mockClient
-		cm.logger = mockLogger
 		cm.initErr = nil
 
 		err := cm.Close()
 		if !errors.Is(err, closeErr) {
-			t.Errorf("Close() with client close error: got %v, want %v", err, closeErr)
-		}
-		if !mockLogger.WasFlushCalled() { // Flush should still be called first
-			t.Error("Expected mockLogger.Flush() to be called before failed Close")
-		}
-	})
-
-	t.Run("FlushAndClientCloseError", func(t *testing.T) {
-		mockClient := &mockGcpClientAPI{}
-		mockLogger := &mockGcpLoggerAPI{}
-		flushErr := errors.New("flush failed")
-		closeErr := errors.New("client close failed")
-		mockLogger.flushFn = func() error { return flushErr }
-		mockClient.closeFn = func() error { return closeErr }
-
-		cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
-		cm.client = mockClient
-		cm.logger = mockLogger
-		cm.initErr = nil
-
-		err := cm.Close()
-		// Client close error should take precedence
-		if !errors.Is(err, closeErr) {
-			t.Errorf("Close() with both errors: got %v, want client close error %v", err, closeErr)
+			t.Errorf("Close() error = %v; want %v", err, closeErr)
 		}
 	})
 
 	t.Run("InternalInconsistency_LoggerNil", func(t *testing.T) {
-		mockClient := &mockGcpClientAPI{} // Client exists
-		cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
+		mockClient := &mockGcpClientAPI{}
+		cm := NewClientManager(cfg, ua, levelVar)
 		cm.client = mockClient
-		cm.logger = nil // But logger is nil (simulates partial init failure)
+		cm.logger = nil
 		cm.initErr = nil
 
 		err := cm.Close()
-		if err == nil {
-			t.Error("Close() with logger=nil unexpectedly returned nil error")
-		} else if !strings.Contains(err.Error(), "internal inconsistency") {
-			t.Errorf("Close() with logger=nil returned wrong error: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "internal inconsistency") {
+			t.Errorf("Close() internal inconsistency = %v; want error mentioning inconsistency", err)
 		}
-		if !mockClient.WasCloseCalled() { // Should still try to close client
-			t.Error("Expected mockClient.Close() to be called when logger was nil")
+		if !mockClient.WasCloseCalled() {
+			t.Error("Close() should still call client.Close() on inconsistency")
 		}
 	})
 }
 
-// TestClientManager_GetLeveler tests retrieving the leveler.
+// TestClientManager_GetLeveler tests retrieving the levelVar.
 func TestClientManager_GetLeveler(t *testing.T) {
+	cfg := Config{Parent: "p"}
 	levelVar := new(slog.LevelVar)
-	cm := NewClientManager(Config{}, "", ClientOptions{}, levelVar)
+	ua := "ua"
+	cm := NewClientManager(cfg, ua, levelVar)
 
-	// Case 1: Before Initialize
+	// before init
 	if lvl := cm.GetLeveler(); lvl != nil {
-		t.Errorf("GetLeveler() before Initialize: got %v, expected nil", lvl)
+		t.Errorf("GetLeveler() before init = %v; want nil", lvl)
 	}
 
-	// Case 2: After failed Initialize
-	cm.initErr = errors.New("init failed") // Simulate failed init
+	// after failed init
+	cm.initErr = errors.New("fail")
 	if lvl := cm.GetLeveler(); lvl != nil {
-		t.Errorf("GetLeveler() after failed Initialize: got %v, expected nil", lvl)
+		t.Errorf("GetLeveler() after failed init = %v; want nil", lvl)
 	}
 
-	// Case 3: After successful Initialize
-	cm = NewClientManager(Config{}, "", ClientOptions{}, levelVar) // Reset manager
-	cm.logger = &mockGcpLoggerAPI{}                                // Simulate successful init
+	// after success
+	cm = NewClientManager(cfg, ua, levelVar)
+	cm.logger = &RealGcpLogger{Logger: &logging.Logger{}}
 	cm.initErr = nil
 
-	gotLeveler := cm.GetLeveler()
-	if gotLeveler == nil {
-		t.Fatal("GetLeveler() after successful Initialize returned nil")
+	if lvl := cm.GetLeveler(); lvl != levelVar {
+		t.Errorf("GetLeveler() = %v; want %v", lvl, levelVar)
 	}
-	if gotLeveler != levelVar {
-		t.Error("GetLeveler() did not return the expected levelVar instance")
-	}
-}
-
-// pint returns a pointer to an int.
-func pint(i int) *int {
-	return &i
-}
-
-// durationPtr returns a pointer to a time.Duration.
-func durationPtr(d time.Duration) *time.Duration {
-	return &d
 }

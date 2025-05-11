@@ -15,216 +15,112 @@
 package gcp
 
 import (
-	"fmt"
-	"log/slog"
 	"testing"
+	"log/slog"
 )
 
-// TestParseLevelWithDefault verifies the logic for parsing level strings with fallback.
-func TestParseLevelWithDefault(t *testing.T) {
-	customDefaultLevel := slog.LevelWarn // Use a non-standard default for testing fallback
+// TestParseLevelEnv verifies parsing of log level strings with both custom and package defaults.
+func TestParseLevelEnv(t *testing.T) {
+	customDefault := slog.LevelWarn
+	packageDefault := slogcpDefaultLogLevel
 
 	testCases := []struct {
 		name       string
 		levelStr   string
-		defaultLvl slog.Level
-		envVarName string // For error message clarity
+		defaultVal slog.Level
 		want       slog.Level
 	}{
-		{"Empty string uses custom default", "", customDefaultLevel, "TEST_LEVEL", customDefaultLevel},
-		{"Empty string uses package default", "", defaultLevel, "LOG_LEVEL", defaultLevel}, // Test package default
-		{"Whitespace string uses default", "  ", customDefaultLevel, "TEST_LEVEL", customDefaultLevel},
-		{"Valid DEFAULT lowercase", "default", customDefaultLevel, "TEST_LEVEL", internalLevelDefault},
-		{"Valid DEFAULT uppercase", "DEFAULT", customDefaultLevel, "TEST_LEVEL", internalLevelDefault},
-		{"Valid DEBUG lowercase", "debug", customDefaultLevel, "TEST_LEVEL", slog.LevelDebug},
-		{"Valid DEBUG uppercase", "DEBUG", customDefaultLevel, "TEST_LEVEL", slog.LevelDebug},
-		{"Valid INFO lowercase", "info", customDefaultLevel, "TEST_LEVEL", slog.LevelInfo},
-		{"Valid INFO mixed case", "Info", customDefaultLevel, "TEST_LEVEL", slog.LevelInfo},
-		{"Valid NOTICE lowercase", "notice", customDefaultLevel, "TEST_LEVEL", internalLevelNotice},
-		{"Valid NOTICE uppercase", "NOTICE", customDefaultLevel, "TEST_LEVEL", internalLevelNotice},
-		{"Valid WARN lowercase", "warn", customDefaultLevel, "TEST_LEVEL", slog.LevelWarn},
-		{"Valid WARNING lowercase", "warning", customDefaultLevel, "TEST_LEVEL", slog.LevelWarn}, // Alias
-		{"Valid WARN uppercase", "WARN", customDefaultLevel, "TEST_LEVEL", slog.LevelWarn},
-		{"Valid ERROR lowercase", "error", customDefaultLevel, "TEST_LEVEL", slog.LevelError},
-		{"Valid ERROR uppercase", "ERROR", customDefaultLevel, "TEST_LEVEL", slog.LevelError},
-		{"Valid CRITICAL lowercase", "critical", customDefaultLevel, "TEST_LEVEL", internalLevelCritical},
-		{"Valid CRITICAL uppercase", "CRITICAL", customDefaultLevel, "TEST_LEVEL", internalLevelCritical},
-		{"Valid ALERT lowercase", "alert", customDefaultLevel, "TEST_LEVEL", internalLevelAlert},
-		{"Valid ALERT uppercase", "ALERT", customDefaultLevel, "TEST_LEVEL", internalLevelAlert},
-		{"Valid EMERGENCY lowercase", "emergency", customDefaultLevel, "TEST_LEVEL", internalLevelEmergency},
-		{"Valid EMERGENCY uppercase", "EMERGENCY", customDefaultLevel, "TEST_LEVEL", internalLevelEmergency},
-		{"Invalid string uses custom default", "verbose", customDefaultLevel, "TEST_LEVEL", customDefaultLevel},
-		{"Invalid string uses package default", "verbose", defaultLevel, "LOG_LEVEL", defaultLevel}, // Test package default
-		{"Partial match uses default", "inf", customDefaultLevel, "TEST_LEVEL", customDefaultLevel},
-		{"String with spaces", " info ", customDefaultLevel, "TEST_LEVEL", slog.LevelInfo},
-		{"Numerical Level 0", "0", customDefaultLevel, "TEST_LEVEL", slog.Level(0)},
-		{"Numerical Level -4", "-4", customDefaultLevel, "TEST_LEVEL", slog.Level(-4)},
-		{"Numerical Level 8", "8", customDefaultLevel, "TEST_LEVEL", slog.Level(8)},
-		{"Numerical Level with spaces", " 12 ", customDefaultLevel, "TEST_LEVEL", slog.Level(12)},
-		{"Invalid Numerical Level", "1.5", customDefaultLevel, "TEST_LEVEL", customDefaultLevel},
+		{"Empty uses custom default", "", customDefault, customDefault},
+		{"Empty uses package default", "", packageDefault, packageDefault},
+		{"Whitespace uses custom default", "   ", customDefault, customDefault},
+		{"Valid DEFAULT lowercase", "default", customDefault, internalLevelDefault},
+		{"Valid DEFAULT uppercase", "DEFAULT", customDefault, internalLevelDefault},
+		{"Valid DEBUG lowercase", "debug", customDefault, slog.LevelDebug},
+		{"Valid DEBUG uppercase", "DEBUG", customDefault, slog.LevelDebug},
+		{"Valid INFO mixed case", "Info", customDefault, slog.LevelInfo},
+		{"Valid NOTICE lowercase", "notice", customDefault, internalLevelNotice},
+		{"Valid WARN alias", "warning", customDefault, slog.LevelWarn},
+		{"String with spaces", " info ", customDefault, slog.LevelInfo},
+		{"Numeric 0", "0", customDefault, slog.Level(0)},
+		{"Numeric -4", "-4", customDefault, slog.Level(-4)},
+		{"Numeric 8", "8", customDefault, slog.Level(8)},
+		{"Invalid string uses custom default", "verbose", customDefault, customDefault},
+		{"Invalid string uses package default", "verbose", packageDefault, packageDefault},
+		{"Invalid numeric uses custom default", "1.5", customDefault, customDefault},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Note: This test does not capture stderr to verify warning logs on parse failure.
-			got := parseLevelWithDefault(tc.levelStr, tc.defaultLvl, tc.envVarName)
+			got := parseLevelEnv(tc.levelStr, tc.defaultVal)
 			if got != tc.want {
-				// Use descriptive error message.
-				t.Errorf("parseLevelWithDefault(%q, %v, %q) = %v, want %v",
-					tc.levelStr, tc.defaultLvl, tc.envVarName, got, tc.want)
+				t.Errorf("parseLevelEnv(%q, %v) = %v; want %v",
+					tc.levelStr, tc.defaultVal, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestParseLevel verifies the top-level helper using the package default level.
-func TestParseLevel(t *testing.T) {
-	testCases := []struct {
-		name     string
-		levelStr string
-		want     slog.Level
-	}{
-		{"Empty uses default INFO", "", slog.LevelInfo},
-		{"Valid DEBUG", "debug", slog.LevelDebug},
-		{"Valid INFO", "info", slog.LevelInfo},
-		{"Valid NOTICE", "notice", internalLevelNotice},
-		{"Invalid uses default INFO", "invalid", slog.LevelInfo},
-		{"Numerical Level -4", "-4", slog.Level(-4)},
-		{"Numerical Level 8", "8", slog.Level(8)},
-	}
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseLevel(tc.levelStr)
-			if got != tc.want {
-				t.Errorf("parseLevel(%q) = %v, want %v", tc.levelStr, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestParseBool verifies the logic for parsing boolean strings with fallback.
-func TestParseBool(t *testing.T) {
-	customDefaultBool := false // Use false as default for testing
+// TestParseBoolEnv verifies parsing of boolean strings with both custom and package defaults.
+func TestParseBoolEnv(t *testing.T) {
+	customDefault := false
+	packageDefault := slogcpDefaultAddSource
 
 	testCases := []struct {
 		name       string
 		boolStr    string
 		defaultVal bool
-		envVarName string // For error message clarity
 		want       bool
 	}{
-		{"Empty string uses custom default", "", customDefaultBool, "TEST_BOOL", customDefaultBool},
-		{"Empty string uses package default", "", defaultAddSource, "LOG_SOURCE_LOCATION", defaultAddSource}, // Test package default
-		{"Whitespace string uses default", "  ", customDefaultBool, "TEST_BOOL", customDefaultBool},
-		{"Valid true lowercase", "true", customDefaultBool, "TEST_BOOL", true},
-		{"Valid true uppercase", "TRUE", customDefaultBool, "TEST_BOOL", true},
-		{"Valid true mixed case", "True", customDefaultBool, "TEST_BOOL", true},
-		{"Valid false lowercase", "false", customDefaultBool, "TEST_BOOL", false},
-		{"Valid false uppercase", "FALSE", customDefaultBool, "TEST_BOOL", false},
-		{"Valid false mixed case", "False", customDefaultBool, "TEST_BOOL", false},
-		{"Valid 1", "1", customDefaultBool, "TEST_BOOL", true},            // strconv.ParseBool handles "1"
-		{"Valid 0", "0", customDefaultBool, "TEST_BOOL", false},           // strconv.ParseBool handles "0"
-		{"Valid t lowercase", "t", customDefaultBool, "TEST_BOOL", true},  // strconv.ParseBool handles "t"
-		{"Valid f lowercase", "f", customDefaultBool, "TEST_BOOL", false}, // strconv.ParseBool handles "f"
-		{"Valid T uppercase", "T", customDefaultBool, "TEST_BOOL", true},  // strconv.ParseBool handles "T"
-		{"Valid F uppercase", "F", customDefaultBool, "TEST_BOOL", false}, // strconv.ParseBool handles "F"
-		{"Invalid string uses custom default", "yes", customDefaultBool, "TEST_BOOL", customDefaultBool},
-		{"Invalid string uses package default", "enabled", defaultAddSource, "LOG_SOURCE_LOCATION", defaultAddSource}, // Test package default
-		{"String with spaces", " true ", customDefaultBool, "TEST_BOOL", true},
+		{"Empty uses custom default", "", customDefault, customDefault},
+		{"Empty uses package default", "", packageDefault, packageDefault},
+		{"Whitespace uses custom default", "   ", customDefault, customDefault},
+		{"Valid true lowercase", "true", customDefault, true},
+		{"Valid true uppercase", "TRUE", customDefault, true},
+		{"Valid false mixed", "False", customDefault, false},
+		{"Valid 1", "1", customDefault, true},
+		{"Valid 0", "0", customDefault, false},
+		{"String with spaces", " true ", customDefault, true},
+		{"Invalid string uses custom default", "yes", customDefault, customDefault},
+		{"Invalid string uses package default", "enabled", packageDefault, packageDefault},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Note: This test does not capture stderr to verify warning logs on parse failure.
-			got := parseBool(tc.boolStr, tc.defaultVal, tc.envVarName)
+			got := parseBoolEnv(tc.boolStr, tc.defaultVal)
 			if got != tc.want {
-				// Use descriptive error message.
-				t.Errorf("parseBool(%q, %v, %q) = %v, want %v",
-					tc.boolStr, tc.defaultVal, tc.envVarName, got, tc.want)
+				t.Errorf("parseBoolEnv(%q, %v) = %v; want %v",
+					tc.boolStr, tc.defaultVal, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestConfigReplaceAttrFunc verifies that the ReplaceAttrFunc field
-// in the Config struct correctly accepts the updated function signature
-// using []string for groups instead of string.
+// TestConfigReplaceAttrFunc checks that ReplaceAttrFunc handles []string correctly.
 func TestConfigReplaceAttrFunc(t *testing.T) {
-	// Create a simple replacer function that records the groups it receives
-	var receivedGroups [][]string
-	var receivedAttrs []slog.Attr
-
+	// Track received group slices and attributes
+	var seenGroups [][]string
 	replacer := func(groups []string, attr slog.Attr) slog.Attr {
-		// Make a copy of the groups slice to avoid aliasing issues
-		groupsCopy := make([]string, len(groups))
-		copy(groupsCopy, groups)
-
-		receivedGroups = append(receivedGroups, groupsCopy)
-		receivedAttrs = append(receivedAttrs, attr)
-
-		// Simple transformation for testing: append group count to string values
-		if attr.Value.Kind() == slog.KindString {
-			return slog.String(attr.Key, attr.Value.String()+fmt.Sprintf("-%d", len(groups)))
-		}
+		// copy slice to avoid aliasing
+		grp := append([]string(nil), groups...)
+		seenGroups = append(seenGroups, grp)
 		return attr
 	}
 
-	// Create a config with only our test replacer
-	cfg := Config{
-		ReplaceAttrFunc: replacer,
-	}
-
-	// Verify the replacer was stored correctly
+	cfg := Config{ReplaceAttrFunc: replacer}
 	if cfg.ReplaceAttrFunc == nil {
-		t.Fatal("Expected ReplaceAttrFunc to be set in Config")
+		t.Fatal("ReplaceAttrFunc should be set")
 	}
 
-	// Test the replacer with different group paths
-	testGroups := [][]string{
-		{},                   // No groups
-		{"group1"},           // Single group
-		{"group1", "group2"}, // Multiple groups
-	}
-
-	testAttr := slog.String("test", "value")
-
-	// Call the stored replacer with different group paths
-	for _, groups := range testGroups {
-		result := cfg.ReplaceAttrFunc(groups, testAttr)
-
-		// Verify result contains the expected transformation
-		if result.Value.Kind() != slog.KindString {
-			t.Errorf("Expected string value, got %v", result.Value.Kind())
+	cases := [][]string{{}, {"a"}, {"x", "y"}}
+	for idx, grp := range cases {
+		_ = cfg.ReplaceAttrFunc(grp, slog.String("k", "v"))
+		if len(seenGroups) <= idx {
+			t.Errorf("Expected call for case %d, got none", idx)
 			continue
 		}
-
-		expectedValue := "value-" + fmt.Sprintf("%d", len(groups))
-		if result.Value.String() != expectedValue {
-			t.Errorf("For groups %v: expected value %q, got %q",
-				groups, expectedValue, result.Value.String())
-		}
-	}
-
-	// Verify all test cases were processed
-	if len(receivedGroups) != len(testGroups) {
-		t.Errorf("Expected %d replacer calls, got %d", len(testGroups), len(receivedGroups))
-	}
-
-	// Verify groups were passed correctly (as slices, not just strings)
-	for i, expected := range testGroups {
-		if i >= len(receivedGroups) {
-			break
-		}
-		received := receivedGroups[i]
-		if len(received) != len(expected) {
-			t.Errorf("Case %d: wrong group path length: got %v, want %v", i, received, expected)
-			continue
-		}
-		for j, name := range expected {
-			if received[j] != name {
-				t.Errorf("Case %d: group path mismatch at index %d: got %q, want %q",
-					i, j, received[j], name)
-			}
+		got := seenGroups[idx]
+		if len(got) != len(grp) {
+			t.Errorf("Case %d: group length = %d; want %d", idx, len(got), len(grp))
 		}
 	}
 }

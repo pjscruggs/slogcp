@@ -38,70 +38,57 @@ const (
 // ExtractTraceSpan extracts OpenTelemetry trace ID, span ID, and sampling status
 // from the provided context.Context. It formats the trace ID using the provided
 // projectID according to the format expected by Google Cloud Logging
-// (projects/PROJECT_ID/traces/TRACE_ID).
+// ("projects/PROJECT_ID/traces/TRACE_ID").
 //
-// If the context does not contain a valid OpenTelemetry SpanContext, or if the
-// projectID is empty, it returns empty strings for traceID and spanID, and
-// sampled will be false, indicating that trace information cannot be correlated.
-func ExtractTraceSpan(ctx context.Context, projectID string) (traceID, spanID string, sampled bool) {
-	// Retrieve the SpanContext associated with the Go context.
-	sCtx := trace.SpanContextFromContext(ctx)
+// It returns the formatted trace ID (if possible), the raw hex trace ID, the raw
+// hex span ID, the sampling decision, and the original OpenTelemetry SpanContext.
+// If the context does not contain a valid SpanContext, or if the projectID is
+// empty when needed for formatting, relevant return values will be empty strings
+// or false.
+func ExtractTraceSpan(ctx context.Context, projectID string) (formattedTraceID, rawTraceID, rawSpanID string, sampled bool, otelCtx trace.SpanContext) {
+	otelCtx = trace.SpanContextFromContext(ctx)
 
-	// A valid SpanContext must have non-zero TraceID and SpanID.
-	if !sCtx.IsValid() {
-		return "", "", false
+	// Return early if the context is invalid (no trace info).
+	if !otelCtx.IsValid() {
+		return "", "", "", false, otelCtx
 	}
 
-	// Extract the raw components from the valid SpanContext.
-	traceIDInternal := sCtx.TraceID()
-	spanIDInternal := sCtx.SpanID()
-	sampled = sCtx.IsSampled() // Get the sampling decision.
+	// Extract components from the valid SpanContext.
+	traceIDInternal := otelCtx.TraceID()
+	spanIDInternal := otelCtx.SpanID()
+	sampled = otelCtx.IsSampled()
+	rawTraceID = traceIDInternal.String()
+	rawSpanID = spanIDInternal.String()
 
-	// Format the traceID into the GCP required format.
-	// Correlation requires both a valid TraceID from the context and a non-empty projectID.
-	if traceIDInternal.IsValid() && projectID != "" {
-		traceID = fmt.Sprintf("projects/%s/traces/%s", projectID, traceIDInternal.String())
-	} else {
-		// If traceID is invalid or projectID is missing, clear all trace info
-		// as correlation is not possible without both.
-		return "", "", false
+	// Format the traceID into the GCP required format only if projectID is available.
+	if projectID != "" {
+		formattedTraceID = fmt.Sprintf("projects/%s/traces/%s", projectID, rawTraceID)
 	}
+	// If projectID is empty, formattedTraceID remains "", but raw IDs and sampled flag are still valid.
 
-	// Format the spanID if it's valid.
-	if spanIDInternal.IsValid() {
-		spanID = spanIDInternal.String()
-	} else {
-		// If spanID is invalid, clear it. The sampling decision remains valid
-		// as it pertains to the overall trace.
-		spanID = ""
-	}
-
-	return traceID, spanID, sampled
+	return formattedTraceID, rawTraceID, rawSpanID, sampled, otelCtx
 }
 
-// resolveSourceLocation converts a program counter (PC) value, typically obtained
-// from slog.Record.PC, into source code location details (file path, line number,
-// and function name).
-//
-// It returns a *loggingpb.LogEntrySourceLocation suitable for populating the
-// corresponding field in a Cloud Logging entry. If the PC is zero or cannot be
-// resolved to a valid file and function, it returns nil.
+// resolveSourceLocation converts a program counter (PC) value into source code
+// location details (file path, line number, and function name).
+// It returns a *loggingpb.LogEntrySourceLocation suitable for Cloud Logging.
+// Returns nil if the PC is zero or cannot be resolved.
 func resolveSourceLocation(pc uintptr) *loggingpb.LogEntrySourceLocation {
 	// A PC of zero indicates source location was not requested or unavailable.
-	if pc < 1 {
+	if pc == 0 { // Use == 0 check for clarity
 		return nil
 	}
-	// The PC from Record.PC is a return address; subtract 1 to land on the call site.
-	pc--
 
-	// Drive the single-PC slice through CallersFrames to handle inlining
-	// and instrumentation correctly.
+	// runtime.CallersFrames requires the PC of the caller.
+	// slog.Record.PC is the PC of the log statement itself.
+	// No adjustment (like pc--) is needed here as CallersFrames handles it.
 	frames := runtime.CallersFrames([]uintptr{pc})
-	frame, _ := frames.Next()
+	frame, more := frames.Next() // Get the first frame
 
-	// If File or Function is empty, we couldn't resolve it.
-	if frame.File == "" || frame.Function == "" {
-		return nil
+	// Check if frame resolution was successful.
+	// Also check 'more' although for a single PC it should usually be true if valid.
+	if !more || frame.File == "" || frame.Function == "" {
+		return nil // Could not resolve frame information.
 	}
 
 	// Assemble and return the source location message.

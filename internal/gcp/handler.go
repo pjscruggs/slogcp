@@ -1,22 +1,13 @@
-// Copyright 2025 Patrick J. Scruggs
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package gcp
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -25,312 +16,330 @@ import (
 	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
 )
 
-// entryLogger defines the minimal interface needed by gcpHandler to send log entries.
-// This typically wraps *logging.Logger but allows for testing.
+// entryLogger defines the minimal interface for sending log entries.
 type entryLogger interface {
-	Log(e logging.Entry)
+	Log(logging.Entry)
+	Flush() error
 }
 
-// groupedAttr holds a slog.Attr along with the group namespace active when
-// the attribute was added via logger.With(...).
+// groupedAttr holds an attribute along with its group context.
 type groupedAttr struct {
 	groups []string
 	attr   slog.Attr
 }
 
-// gcpHandler implements the slog.Handler interface. It formats slog.Record
-// objects into logging.Entry structs suitable for the Google Cloud Logging API
-// and sends them via an entryLogger.
-//
-// It handles GCP-specific field mapping (severity, trace context, source location),
-// structured payload creation, error formatting (including optional stack traces),
-// attribute transformation, and management of attributes added via WithAttrs/WithGroup.
+// gcpHandler formats slog.Records for Google Cloud Logging or JSON output.
 type gcpHandler struct {
-	// mu protects access to handler-level state (groupedAttrs, groups)
-	// which can be modified by WithAttrs/WithGroup concurrently.
-	mu sync.Mutex
+	mu             sync.Mutex
+	cfg            Config
+	entryLog       entryLogger
+	redirectWriter io.Writer
+	leveler        slog.Leveler
 
-	// cfg holds the configuration settings (ProjectID, AddSource, StackTrace config).
-	cfg Config
-
-	// entryLog is the interface used to send the final logging.Entry.
-	entryLog entryLogger
-
-	// leveler determines the minimum log level this handler will process.
-	leveler slog.Leveler
-
-	// groupedAttrs stores attributes added via WithAttrs, along with their group context.
-	// These attributes are prepended to the attributes from the slog.Record.
 	groupedAttrs []groupedAttr
-
-	// groups holds the current group stack for this specific handler instance,
-	// built up by calls to WithGroup. Record attributes are nested under these groups.
-	groups []string
-
-	// replaceAttr is an optional function that modifies attributes before they are logged.
-	// It can be used to mask sensitive data, rename keys, or transform values.
-	// If non-nil, this function is called for each non-group attribute during log processing.
-	// The groups parameter contains the current group stack, and the function should
-	// return the potentially modified attribute.
-	replaceAttr func([]string, slog.Attr) slog.Attr
+	groups       []string
 }
 
-// NewGcpHandler creates a GCP-specific slog handler.
-// It requires the application configuration, an initialized entryLogger (typically
-// from the ClientManager), and a slog.Leveler to control the minimum log level.
-// If leveler is nil, it defaults to slog.LevelInfo.
-func NewGcpHandler(cfg Config, logger entryLogger, leveler slog.Leveler) *gcpHandler {
+// NewGcpHandler returns a new gcpHandler configured for Google Cloud Logging or JSON output.
+func NewGcpHandler(
+	cfg Config,
+	gcpEntryLogger entryLogger,
+	leveler slog.Leveler,
+) *gcpHandler {
 	if leveler == nil {
-		leveler = slog.LevelInfo // Default level if none provided.
+		leveler = slog.LevelInfo
 	}
-	return &gcpHandler{
-		cfg:          cfg,
-		entryLog:     logger,
-		leveler:      leveler,
-		replaceAttr:  cfg.ReplaceAttrFunc,
-		groupedAttrs: make([]groupedAttr, 0), // Initialize slices.
-		groups:       make([]string, 0),
+	h := &gcpHandler{
+		cfg:            cfg,
+		entryLog:       gcpEntryLogger,
+		redirectWriter: cfg.RedirectWriter,
+		leveler:        leveler,
+		groupedAttrs:   make([]groupedAttr, 0, len(cfg.InitialAttrs)),
+		groups:         make([]string, 0, 1),
 	}
+	if cfg.InitialGroup != "" {
+		h.groups = append(h.groups, cfg.InitialGroup)
+	}
+	// Copy initial attributes
+	copyGroups := append([]string(nil), h.groups...)
+	for _, a := range cfg.InitialAttrs {
+		if a.Key == "" && a.Value.Any() == nil {
+			continue
+		}
+		h.groupedAttrs = append(h.groupedAttrs, groupedAttr{groups: copyGroups, attr: a})
+	}
+	return h
 }
 
-// Enabled implements slog.Handler. It checks if the given log level is
-// greater than or equal to the minimum level configured for this handler.
+// Enabled reports whether the given log level should be handled by this handler.
 func (h *gcpHandler) Enabled(_ context.Context, level slog.Level) bool {
-	min := slog.LevelInfo // Default minimum level.
+	min := slog.LevelInfo
 	if h.leveler != nil {
-		min = h.leveler.Level() // Get the dynamic level if available.
+		min = h.leveler.Level()
 	}
-	return level >= min // Check if the record's level meets the threshold.
+	return level >= min
 }
 
-// Handle implements slog.Handler. It transforms the slog.Record into a
-// logging.Entry and sends it via the configured entryLogger.
-// This method orchestrates severity mapping, trace extraction, source location
-// resolution, attribute processing, error formatting, and payload construction.
+// Handle processes a slog.Record and writes it to Google Cloud Logging or as JSON.
 func (h *gcpHandler) Handle(ctx context.Context, r slog.Record) error {
-	// Discard the record immediately if the level is not enabled.
 	if !h.Enabled(ctx, r.Level) {
 		return nil
 	}
 
-	// Map the slog level to the corresponding GCP severity constant.
-	severity := mapSlogLevelToGcpSeverity(r.Level)
+	// Resolve source location
+	sourceLoc := h.resolveSourceLocation(r)
 
-	// Extract trace information (Trace ID, Span ID, Sampled flag) from the context.
-	traceID, spanID, sampled := ExtractTraceSpan(ctx, h.cfg.ProjectID)
+	// Extract trace info
+	fmtTrace, rawTraceID, rawSpanID, sampled, _ := ExtractTraceSpan(ctx, h.cfg.ProjectID)
 
-	// Resolve source code location if configured and program counter is available.
-	var sourceLoc *loggingpb.LogEntrySourceLocation
-	if h.cfg.AddSource && r.PC != 0 {
-		sourceLoc = resolveSourceLocation(r.PC)
+	// Build payload and extract HTTP request, error and stack details
+	payload, httpReq, errType, errMsg, stackStr := h.buildPayload(r)
+
+	// Output mode
+	if h.cfg.LogTarget == LogTargetGCP {
+		return h.emitGCPEntry(r, payload, httpReq, sourceLoc, fmtTrace, rawSpanID, sampled)
 	}
+	return h.emitRedirectJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr)
+}
 
+// buildPayload assembles the structured payload, extracts HTTPRequest, error type/message, and stack trace.
+func (h *gcpHandler) buildPayload(r slog.Record) (
+	map[string]any,
+	*logging.HTTPRequest,
+	string, string, string,
+) {
+	// Capture base state
+	h.mu.Lock()
+	baseAttrs := append([]groupedAttr(nil), h.groupedAttrs...)
+	baseGroups := append([]string(nil), h.groups...)
+	h.mu.Unlock()
+
+	payload := make(map[string]any)
 	var httpReq *logging.HTTPRequest
 	var firstErr error
-	payload := make(map[string]any) // Map to hold the final JSON payload.
+	var stackStr string
 
-	// Helper to get or create nested maps for grouped attributes.
-	getNestedMap := func(groups []string) map[string]any {
-		curr := payload
-		for _, g := range groups {
-			if g == "" {
-				continue
-			}
-			sub, ok := curr[g]
-			var subMap map[string]any
-			if ok {
-				subMap, ok = sub.(map[string]any)
-			}
-			if !ok {
-				subMap = make(map[string]any)
-				curr[g] = subMap
-			}
-			curr = subMap
-		}
-		return curr
-	}
-
-	// Helper to process a single attribute, resolve its value, place it in the
-	// correct nested map, and extract special types (error, httpRequest).
-	// Implements "last wins" for duplicate keys within the same group level.
+	// processAttr applies replacer and fills payload
 	processAttr := func(ga groupedAttr) {
-		if ga.attr.Key == "" {
-			return // Ignore attributes with empty keys.
-		}
-
-		// Apply custom replacer if provided
-		if h.replaceAttr != nil {
-			ga.attr = h.replaceAttr(ga.groups, ga.attr)
-		}
-
-		// Handle the special httpRequestKey used by the http middleware.
-		if ga.attr.Key == httpRequestKey {
-			if maybeReq, ok := ga.attr.Value.Any().(*logging.HTTPRequest); ok {
-				if httpReq == nil { // Capture only the first one found.
-					httpReq = maybeReq
-				}
+		a := ga.attr
+		if h.cfg.ReplaceAttrFunc != nil {
+			a = h.cfg.ReplaceAttrFunc(ga.groups, a)
+			if a.Equal(slog.Attr{}) {
+				return
 			}
-			// Do not add this special attribute to the JSON payload itself.
+		}
+		if a.Key == httpRequestKey {
+			if req, ok := a.Value.Any().(*logging.HTTPRequest); ok && httpReq == nil {
+				httpReq = req
+			}
 			return
 		}
-
-		// Resolve the slog.Value to a standard Go type.
-		val := resolveSlogValue(ga.attr.Value)
-		if val == nil {
-			return // Skip nil resolved values (e.g., empty groups).
-		}
-
-		// Capture the first error encountered for potential stack trace logging.
+		val := resolveSlogValue(a.Value)
 		if errVal, ok := val.(error); ok && firstErr == nil {
 			firstErr = errVal
 		}
-
-		// Add the resolved value to the payload map, nested according to groups.
-		dstMap := getNestedMap(ga.groups)
-		dstMap[ga.attr.Key] = val
+		d := getNestedMap(payload, ga.groups)
+		d[a.Key] = val
 	}
 
-	// Snapshot handler state (attributes added via With, current group stack) safely.
-	h.mu.Lock()
-	handlerAttrs := append([]groupedAttr(nil), h.groupedAttrs...)
-	currentGroups := append([]string(nil), h.groups...)
-	h.mu.Unlock()
-
-	// Process handler-level attributes first.
-	for _, ha := range handlerAttrs {
-		processAttr(ha)
+	// initial attrs
+	for _, ga := range baseAttrs {
+		processAttr(ga)
 	}
 
-	// Process record-level attributes, applying the handler's current group stack.
+	// record attrs
 	r.Attrs(func(a slog.Attr) bool {
-		processAttr(groupedAttr{groups: currentGroups, attr: a})
-		return true // Continue processing attributes.
+		processAttr(groupedAttr{groups: baseGroups, attr: a})
+		return true
 	})
 
-	// Add the main log message if present.
-	if r.Message != "" {
-		payload[messageKey] = r.Message
-	}
-
-	// Format error details and potentially capture/format stack trace.
-	var finalStackTrace string
+	// extract errors
+	errType, errMsg := "", ""
 	if firstErr != nil {
-		// Get basic error info and attempt to get origin stack trace.
-		// Call the updated formatErrorForReporting with only the error.
-		formattedErr, originStackTrace := formatErrorForReporting(firstErr)
-		payload[errorTypeKey] = formattedErr.Type // Add error type.
-		finalStackTrace = originStackTrace        // Use origin stack if available.
-
-		// Check if fallback stack capture is needed.
-		needsFallbackStack := finalStackTrace == "" && h.cfg.StackTraceEnabled && r.Level >= h.cfg.StackTraceLevel
-		if needsFallbackStack {
-			// Capture stack trace at the logging site.
-			pcs := make([]uintptr, maxStackFrames)
-			// Skip runtime.Callers, this Handle method, and the slog.Logger method that called Handle.
-			num := runtime.Callers(2, pcs)
-			if num > 0 {
-				// Format the captured PCs (no prefix skipping needed here).
-				finalStackTrace = formatPCsToStackString(pcs[:num])
-			}
+		fe, origin := formatErrorForReporting(firstErr)
+		errType = fe.Type
+		errMsg = fe.Message
+		stackStr = origin
+		if stackStr == "" && h.cfg.StackTraceEnabled && r.Level >= h.cfg.StackTraceLevel {
+			stackStr = captureAndFormatFallbackStack(3)
 		}
 	}
 
-	// Add the final stack trace (origin or fallback) to the payload if available.
-	if finalStackTrace != "" {
-		payload[stackTraceKey] = finalStackTrace
-	}
+	return payload, httpReq, errType, errMsg, stackStr
+}
 
-	// Determine the final timestamp, defaulting to Now() if zero.
-	tstamp := r.Time
-	if tstamp.IsZero() {
-		tstamp = time.Now()
+// emitGCPEntry logs a structured Entry to Cloud Logging.
+func (h *gcpHandler) emitGCPEntry(
+	r slog.Record,
+	payload map[string]any,
+	httpReq *logging.HTTPRequest,
+	sourceLoc *loggingpb.LogEntrySourceLocation,
+	fmtTrace, spanID string,
+	sampled bool,
+) error {
+	sev := mapSlogLevelToGcpSeverity(r.Level)
+	ts := r.Time
+	if ts.IsZero() {
+		ts = time.Now()
 	}
-
+	if r.Message != "" {
+		payload[messageKey] = r.Message
+	}
 	entry := logging.Entry{
-		Timestamp:      tstamp,
-		Severity:       severity,
-		Payload:        payload, // The structured payload map.
-		Trace:          traceID,
+		Timestamp:      ts,
+		Severity:       sev,
+		Payload:        payload,
+		Trace:          fmtTrace,
 		SpanID:         spanID,
 		TraceSampled:   sampled,
-		SourceLocation: sourceLoc, // Populated if enabled and available.
-		HTTPRequest:    httpReq,   // Populated if provided via special attribute.
-		// Resource and Labels are typically set via CommonResource/CommonLabels
-		// options on the underlying logging.Logger instance.
+		SourceLocation: sourceLoc,
+		HTTPRequest:    httpReq,
 	}
-
-	// Send the entry asynchronously. Errors are handled by the client's OnError.
 	h.entryLog.Log(entry)
-
-	// Handle method completed its task of processing and queueing the record.
 	return nil
 }
 
-// WithAttrs implements slog.Handler. It returns a new handler instance
-// that includes the provided attributes, ensuring they are logged with
-// every subsequent record processed by the new handler. Attributes are
-// associated with the group context active when WithAttrs is called.
+// emitRedirectJSON writes a JSON log line to redirectWriter.
+func (h *gcpHandler) emitRedirectJSON(
+	r slog.Record,
+	jsonPayload map[string]any,
+	httpReq *logging.HTTPRequest,
+	sourceLoc *loggingpb.LogEntrySourceLocation,
+	fmtTrace, rawTrace, spanID string,
+	sampled bool,
+	errType, errMsg, stackStr string,
+) error {
+	if h.redirectWriter == nil {
+		return errors.New("slogcp: redirect mode but no writer configured")
+	}
+	jsonPayload["severity"] = levelToString(r.Level)
+	jsonPayload["message"] = r.Message
+	jsonPayload["time"] = r.Time.UTC().Format(time.RFC3339Nano)
+	if sourceLoc != nil {
+		jsonPayload["logging.googleapis.com/sourceLocation"] = sourceLoc
+	}
+	if fmtTrace != "" {
+		jsonPayload["logging.googleapis.com/trace"] = fmtTrace
+		jsonPayload["logging.googleapis.com/spanId"] = spanID
+		jsonPayload["logging.googleapis.com/trace_sampled"] = sampled
+	} else if rawTrace != "" {
+		jsonPayload["otel.trace_id"] = rawTrace
+		jsonPayload["otel.span_id"] = spanID
+		jsonPayload["otel.trace_sampled"] = sampled
+	}
+	if errType != "" {
+		jsonPayload["error_type"] = errType
+		jsonPayload["message"] = fmt.Sprintf("%s: %s", r.Message, errMsg)
+	}
+	if stackStr != "" {
+		jsonPayload["stack_trace"] = stackStr
+	}
+	if httpReq != nil {
+		if m := flattenHTTPRequestToMap(httpReq); m != nil {
+			jsonPayload["httpRequest"] = m
+		}
+	}
+	if len(h.cfg.GCPCommonLabels) > 0 {
+		jsonPayload["logging.googleapis.com/labels"] = h.cfg.GCPCommonLabels
+	}
+	enc := json.NewEncoder(h.redirectWriter)
+	enc.SetEscapeHTML(false)
+	err := enc.Encode(jsonPayload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[slogcp handler redirect] ERROR writing log entry: %v\n", err)
+		return err
+	}
+	return nil
+}
+
+// getNestedMap navigates or creates nested maps per group path.
+func getNestedMap(base map[string]any, groups []string) map[string]any {
+	curr := base
+	for _, g := range groups {
+		if g == "" {
+			continue
+		}
+		next, ok := curr[g]
+		if m, ok2 := next.(map[string]any); ok && ok2 {
+			curr = m
+			continue
+		}
+		newMap := make(map[string]any)
+		curr[g] = newMap
+		curr = newMap
+	}
+	return curr
+}
+
+// resolveSourceLocation turns a slog.Record into a LogEntrySourceLocation.
+func (h *gcpHandler) resolveSourceLocation(r slog.Record) *loggingpb.LogEntrySourceLocation {
+	if !h.cfg.AddSource || r.PC == 0 {
+		return nil
+	}
+	frames := runtime.CallersFrames([]uintptr{r.PC})
+	frame, more := frames.Next()
+	if !more || frame.Function == "" {
+		return nil
+	}
+	return &loggingpb.LogEntrySourceLocation{
+		File:     frame.File,
+		Line:     int64(frame.Line),
+		Function: frame.Function,
+	}
+}
+
+// WithAttrs returns a new handler with additional attributes.
 func (h *gcpHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	if len(attrs) == 0 {
-		return h // Optimization: return self if no attributes are added.
+		return h
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-
-	// Create a clone to ensure the original handler remains unmodified.
-	h2 := h.clone() // clone() safely copies internal slices.
-
-	// Append new attributes, capturing the current group stack for each.
+	h2 := h.cloneLocked()
+	copyGroups := append([]string(nil), h2.groups...)
 	for _, a := range attrs {
-		// Copy the group stack from the *new* handler instance (h2).
-		stackCopy := make([]string, len(h2.groups))
-		copy(stackCopy, h2.groups)
-		h2.groupedAttrs = append(h2.groupedAttrs, groupedAttr{
-			groups: stackCopy,
-			attr:   a,
-		})
+		if a.Key == "" && a.Value.Any() == nil {
+			continue
+		}
+		h2.groupedAttrs = append(h2.groupedAttrs, groupedAttr{groups: copyGroups, attr: a})
 	}
-	return h2 // Return the new handler with the added attributes.
-}
-
-// WithGroup implements slog.Handler. It returns a new handler instance
-// with the specified group name added to its group stack. Subsequent logs
-// and attributes added via the returned handler will be nested under this group.
-func (h *gcpHandler) WithGroup(name string) slog.Handler {
-	if name == "" {
-		return h // Optimization: return self if the group name is empty.
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	// Create a clone to ensure the original handler remains unmodified.
-	h2 := h.clone() // clone() safely copies internal slices.
-
-	// Append the new group name to the cloned handler's group stack.
-	h2.groups = append(h2.groups, name)
-	return h2 // Return the new handler with the added group context.
-}
-
-// clone creates a shallow copy of the handler. It specifically duplicates
-// the groupedAttrs and groups slices to ensure that modifications to the
-// new handler's state do not affect the original handler.
-// Assumes the caller holds the mutex (h.mu).
-func (h *gcpHandler) clone() *gcpHandler {
-	h2 := &gcpHandler{
-		// Copy configuration and interface references.
-		cfg:         h.cfg,
-		entryLog:    h.entryLog,
-		leveler:     h.leveler,
-		replaceAttr: h.replaceAttr,
-		// Create new slices with the same capacity as the original.
-		groupedAttrs: make([]groupedAttr, len(h.groupedAttrs), cap(h.groupedAttrs)),
-		groups:       make([]string, len(h.groups), cap(h.groups)),
-	}
-	// Copy the contents of the slices into the newly created slices.
-	copy(h2.groupedAttrs, h.groupedAttrs)
-	copy(h2.groups, h.groups)
 	return h2
 }
 
-// Compile-time check that gcpHandler implements slog.Handler.
+// WithGroup returns a new handler with nested group.
+func (h *gcpHandler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h2 := h.cloneLocked()
+	h2.groups = append(h2.groups, name)
+	return h2
+}
+
+// cloneLocked duplicates handler state; caller must hold h.mu.
+func (h *gcpHandler) cloneLocked() *gcpHandler {
+	h2 := &gcpHandler{
+		cfg:            h.cfg,
+		entryLog:       h.entryLog,
+		redirectWriter: h.redirectWriter,
+		leveler:        h.leveler,
+		groupedAttrs:   append([]groupedAttr(nil), h.groupedAttrs...),
+		groups:         append([]string(nil), h.groups...),
+	}
+	return h2
+}
+
+// captureAndFormatFallbackStack captures a stack trace for fallback.
+func captureAndFormatFallbackStack(skip int) string {
+	pcs := make([]uintptr, 64)
+	n := runtime.Callers(skip+1, pcs)
+	if n == 0 {
+		return ""
+	}
+	return formatPCsToStackString(pcs[:n])
+}
+
+// Ensure gcpHandler implements slog.Handler.
 var _ slog.Handler = (*gcpHandler)(nil)
