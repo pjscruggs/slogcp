@@ -16,17 +16,21 @@ package gcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/compute/metadata"
+	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 )
 
-// LogTarget defines the destination for log output.
-// This type is defined internally and aliased publicly in the parent package.
+// LogTarget defines the destination for log output. It determines where logs
+// will be sent: to Google Cloud Logging, stdout, stderr, or a file.
 type LogTarget int
 
 const (
@@ -36,9 +40,12 @@ const (
 	LogTargetStdout
 	// LogTargetStderr directs logs to standard error as structured JSON.
 	LogTargetStderr
+	// LogTargetFile directs logs to a specified file as structured JSON.
+	LogTargetFile
 )
 
 // String returns the string representation of the LogTarget.
+// This implements the fmt.Stringer interface for human-readable output.
 func (lt LogTarget) String() string {
 	switch lt {
 	case LogTargetGCP:
@@ -47,168 +54,331 @@ func (lt LogTarget) String() string {
 		return "stdout"
 	case LogTargetStderr:
 		return "stderr"
+	case LogTargetFile:
+		return "file"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(lt))
 	}
 }
 
-// Config holds configuration values for the slogcp logger.
-// These values are typically loaded from environment variables or set via
-// functional options during logger initialization.
-type Config struct {
-	// InitialLevel specifies the minimum level of log entries that will be processed.
-	InitialLevel slog.Level
-
-	// AddSource determines whether source code location (file, line, function)
-	// is added to log entries. Enabling this incurs a performance cost.
-	AddSource bool
-
-	// ProjectID is the Google Cloud Project ID used by the Cloud Logging client.
-	// This field is required for operation when LogTarget is LogTargetGCP.
-	ProjectID string
-
-	// ServiceName is the name of the Cloud Run service, typically read from K_SERVICE.
-	// It may be used for associating logs with the service resource.
-	ServiceName string
-
-	// RevisionName is the name of the Cloud Run revision, typically read from K_REVISION.
-	// It may be used for associating logs with the service resource.
-	RevisionName string
-
-	// StackTraceEnabled determines whether stack traces should be captured
-	// and included for logs at or above StackTraceLevel.
-	StackTraceEnabled bool
-
-	// StackTraceLevel specifies the minimum level at which stack traces
-	// should be captured if StackTraceEnabled is true.
-	StackTraceLevel slog.Level
-
-	// LogTarget specifies the destination for log output (GCP, stdout, stderr).
-	LogTarget LogTarget
-
-	// ReplaceAttrFunc allows custom attribute replacement or masking
-	ReplaceAttrFunc func([]string, slog.Attr) slog.Attr
-}
-
 // Environment variable names used for configuration.
+// These can be set in the runtime environment to control logger behavior.
 const (
-	envLogLevel          = "LOG_LEVEL"               // Sets the initial logging level (e.g., "DEBUG", "-4", "INFO", "0").
-	envLogSourceLocation = "LOG_SOURCE_LOCATION"     // Enables source location logging if "true" or "1".
-	envProjectID         = "GOOGLE_CLOUD_PROJECT"    // Specifies the GCP project ID.
-	envService           = "K_SERVICE"               // Cloud Run service name.
-	envRevision          = "K_REVISION"              // Cloud Run revision name.
-	envStackTraceEnabled = "LOG_STACK_TRACE_ENABLED" // Enables stack trace logging if "true" or "1".
-	envStackTraceLevel   = "LOG_STACK_TRACE_LEVEL"   // Sets the minimum level for stack traces (e.g., "ERROR" or "8").
-	envLogTarget         = "SLOGCP_LOG_TARGET"       // Sets the log destination ("gcp", "stdout", "stderr").
+	// SLOGCP specific config
+	envLogLevel                = "LOG_LEVEL"                      // Minimum log level to output
+	envLogSourceLocation       = "LOG_SOURCE_LOCATION"            // Whether to include source file info
+	envStackTraceEnabled       = "LOG_STACK_TRACE_ENABLED"        // Whether to capture stack traces
+	envStackTraceLevel         = "LOG_STACK_TRACE_LEVEL"          // Minimum level for stack traces
+	envLogTarget               = "SLOGCP_LOG_TARGET"              // Where logs should be sent
+	envRedirectAsJSONTarget    = "SLOGCP_REDIRECT_AS_JSON_TARGET" // "stdout", "stderr", "file:/path/to/file.log"
+	envSlogcpProjectIDOverride = "SLOGCP_PROJECT_ID"              // Override GCP project ID
 
-	// Default values used if environment variables are missing or invalid.
-	defaultLevel           = slog.LevelInfo  // Default logging level is INFO.
-	defaultAddSource       = false           // Source location is disabled by default.
-	defaultStackTrace      = false           // Stack traces disabled by default.
-	defaultStackTraceLevel = slog.LevelError // Stack traces only for ERROR+ by default.
-	defaultLogTarget       = LogTargetGCP    // Default log target is GCP.
+	// GCP Client passthroughs
+	envGCPParent       = "SLOGCP_GCP_PARENT"        // GCP resource parent
+	envGCPClientScopes = "SLOGCP_GCP_CLIENT_SCOPES" // OAuth scopes for GCP client
+	// GOOGLE_CLOUD_PROJECT is handled implicitly
+
+	// GCP Logger passthroughs
+	envGCPCommonLabelsJSON     = "SLOGCP_GCP_COMMON_LABELS_JSON"      // JSON map of common labels
+	envGCPCommonLabelPrefix    = "SLOGCP_GCP_CL_"                     // Prefix for common label env vars
+	envGCPResourceType         = "SLOGCP_GCP_RESOURCE_TYPE"           // Monitored resource type
+	envGCPResourceLabelPrefix  = "SLOGCP_GCP_RL_"                     // Prefix for resource label env vars
+	envGCPConcurrentWriteLimit = "SLOGCP_GCP_CONCURRENT_WRITE_LIMIT"  // Max concurrent requests
+	envGCPDelayThresholdMS     = "SLOGCP_GCP_DELAY_THRESHOLD_MS"      // Buffer time in milliseconds
+	envGCPEntryCountThreshold  = "SLOGCP_GCP_ENTRY_COUNT_THRESHOLD"   // Max entries before flush
+	envGCPEntryByteThreshold   = "SLOGCP_GCP_ENTRY_BYTE_THRESHOLD"    // Max bytes before flush
+	envGCPEntryByteLimit       = "SLOGCP_GCP_ENTRY_BYTE_LIMIT"        // Max bytes per entry
+	envGCPBufferedByteLimit    = "SLOGCP_GCP_BUFFERED_BYTE_LIMIT"     // Memory limit for buffering
+	envGCPContextFuncTimeoutMS = "SLOGCP_GCP_CONTEXT_FUNC_TIMEOUT_MS" // Context timeout
+	envGCPPartialSuccess       = "SLOGCP_GCP_PARTIAL_SUCCESS"         // Accept partial batch success
 )
 
-// LoadConfig reads configuration from environment variables, applying defaults
-// for unspecified or invalid values.
-//
-// It determines the ProjectID by first checking the GOOGLE_CLOUD_PROJECT
-// environment variable. If that is not set, it attempts to retrieve the project ID
-// from the GCP metadata server (if running in a GCP environment).
-// It returns an error wrapping ErrProjectIDMissing if a project ID cannot be
-// determined through either method and the target is GCP.
-func LoadConfig() (Config, error) {
-	projectID := os.Getenv(envProjectID)
-	logTarget := parseLogTarget(os.Getenv(envLogTarget))
+// Default values used if environment variables are missing or invalid.
+const (
+	slogcpDefaultLogLevel             = slog.LevelInfo
+	slogcpDefaultAddSource            = false
+	slogcpDefaultStackTraceEnabled    = false
+	slogcpDefaultStackTraceLevel      = slog.LevelError
+	slogcpDefaultLogTarget            = LogTargetGCP
+	EnvLogTarget                      = envLogTarget
+	EnvRedirectAsJSONTarget           = envRedirectAsJSONTarget
+	slogcpDefaultGCPBufferedByteLimit = 100 * 1024 * 1024 // 100 MiB
+	defaultClientInitTimeout          = 10 * time.Second
+)
 
-	// If the environment variable is not set and the target requires GCP,
-	// attempt to fetch from metadata server.
-	if projectID == "" && logTarget == LogTargetGCP {
-		// Check if running in a GCP environment where metadata server is available.
+// Config holds all resolved configuration values after processing defaults,
+// environment variables, and programmatic options. This is the central
+// configuration struct used throughout the library.
+type Config struct {
+	InitialLevel      slog.Level // Minimum log level to emit
+	AddSource         bool       // Include source file location in logs
+	StackTraceEnabled bool       // Capture stack traces for errors
+	StackTraceLevel   slog.Level // Minimum level for stack trace capture
+	LogTarget         LogTarget  // Where to send logs
+
+	// RedirectWriter is the io.Writer used when the LogTarget is not GCP.
+	// If logging to a file managed by slogcp (indicated by a non-empty
+	// OpenedFilePath), this field will hold an internal *gcp.SwitchableWriter.
+	// If a user provided a writer directly (e.g., a lumberjack.Logger via
+	// slogcp.WithRedirectWriter), this field will hold that user-provided writer.
+	RedirectWriter io.Writer
+
+	// ClosableUserWriter stores the user-provided io.Writer if it implements
+	// io.Closer. This allows slogcp.Logger.Close() to correctly
+	// close writers such as lumberjack.Logger instances that are passed
+	// via slogcp.WithRedirectWriter.
+	ClosableUserWriter io.Closer
+
+	OpenedFilePath  string                              // Path of the file slogcp opened itself (if configured via WithRedirectToFile).
+	ReplaceAttrFunc func([]string, slog.Attr) slog.Attr // For attribute transformation
+	Middlewares     []func(slog.Handler) slog.Handler   // Handler middleware chain
+	InitialAttrs    []slog.Attr                         // Initial attributes set by options
+	InitialGroup    string                              // Initial group name set by options
+
+	ProjectID string // Final resolved project ID - REQUIRED for trace formatting if trace exists
+	Parent    string // Final resolved parent - REQUIRED for GCP target
+
+	ClientScopes      []string    // nil means use GCP default
+	ClientOnErrorFunc func(error) // nil means use slogcp default (stderr)
+
+	GCPCommonLabels          map[string]string                // nil means use GCP default (none)
+	GCPMonitoredResource     *mrpb.MonitoredResource          // nil means use GCP default (auto-detect)
+	GCPConcurrentWriteLimit  *int                             // nil means use GCP default (1)
+	GCPDelayThreshold        *time.Duration                   // nil means use GCP default (1s)
+	GCPEntryCountThreshold   *int                             // nil means use GCP default (1000)
+	GCPEntryByteThreshold    *int                             // nil means use GCP default (8MiB)
+	GCPEntryByteLimit        *int                             // nil means use GCP default (0 = no limit)
+	GCPBufferedByteLimit     *int                             // nil means use *slogcp* default (100MiB)
+	GCPContextFunc           func() (context.Context, func()) // nil means use GCP default (context.Background)
+	GCPDefaultContextTimeout time.Duration                    // Used only if GCPContextFunc is nil & env var/option set
+	GCPPartialSuccess        *bool                            // nil means use GCP default (false)
+}
+
+// LoadConfig loads configuration from environment variables, applying defaults
+// for unspecified or invalid values. This provides the base configuration layer
+// before programmatic options are applied.
+//
+// It resolves settings from multiple sources in this order of precedence:
+//  1. Hard-coded defaults
+//  2. Environment variables
+//  3. GCP metadata server (for project ID, if running on GCP)
+//
+// If LogTarget is GCP and no project ID or parent can be resolved from any source,
+// it returns ErrProjectIDMissing. Other errors are returned for invalid redirect
+// targets or file operations.
+func LoadConfig() (Config, error) {
+	// Initialize with slogcp's hardcoded defaults
+	cfg := Config{
+		InitialLevel:         slogcpDefaultLogLevel,
+		AddSource:            slogcpDefaultAddSource,
+		StackTraceEnabled:    slogcpDefaultStackTraceEnabled,
+		StackTraceLevel:      slogcpDefaultStackTraceLevel,
+		LogTarget:            slogcpDefaultLogTarget,
+		GCPBufferedByteLimit: func() *int { b := slogcpDefaultGCPBufferedByteLimit; return &b }(),
+	}
+
+	// Process the log target and redirect target
+	envTargetStr := os.Getenv(envLogTarget)
+	cfg.LogTarget = parseLogTargetEnv(envTargetStr, slogcpDefaultLogTarget)
+
+	envRedirectTargetStr := os.Getenv(envRedirectAsJSONTarget)
+	// Only process SLOGCP_REDIRECT_AS_JSON_TARGET if LogTarget is not GCP.
+	// If LogTarget is GCP, redirect settings are ignored.
+	if cfg.LogTarget != LogTargetGCP {
+		switch {
+		case strings.HasPrefix(envRedirectTargetStr, "file:"):
+			filePath := strings.TrimPrefix(envRedirectTargetStr, "file:")
+			if filePath == "" {
+				return Config{}, fmt.Errorf("invalid redirect target: file path missing in %s=%s", envRedirectAsJSONTarget, envRedirectTargetStr)
+			}
+			// Store the path; actual file opening is deferred to initializeLogger.
+			cfg.OpenedFilePath = filePath
+			cfg.LogTarget = LogTargetFile // Ensure LogTarget is File if "file:" prefix is used.
+		case envRedirectTargetStr == "stdout":
+			cfg.RedirectWriter = os.Stdout
+			cfg.LogTarget = LogTargetStdout
+		case envRedirectTargetStr == "stderr":
+			cfg.RedirectWriter = os.Stderr
+			cfg.LogTarget = LogTargetStderr
+		case envRedirectTargetStr == "":
+			// If SLOGCP_REDIRECT_AS_JSON_TARGET is empty, but SLOGCP_LOG_TARGET indicated
+			// stdout or stderr, set the writer accordingly.
+			if cfg.LogTarget == LogTargetStdout {
+				cfg.RedirectWriter = os.Stdout
+			} else if cfg.LogTarget == LogTargetStderr {
+				cfg.RedirectWriter = os.Stderr
+			}
+			// If LogTarget was File but no path given via SLOGCP_REDIRECT_AS_JSON_TARGET,
+			// this will be an error, caught later in applyProgrammaticOptions or initializeLogger
+			// if no programmatic option provides a path or writer.
+		default:
+			// An unrecognized value for SLOGCP_REDIRECT_AS_JSON_TARGET.
+			return Config{}, fmt.Errorf("invalid redirect target specified in %s: %s", envRedirectAsJSONTarget, envRedirectTargetStr)
+		}
+	}
+
+	// Resolve project ID and parent from environment or metadata server
+	// Order of precedence: SLOGCP_GCP_PARENT > SLOGCP_PROJECT_ID > GOOGLE_CLOUD_PROJECT > metadata
+	envParent := os.Getenv(envGCPParent)
+	envSlogcpProjectIDOverride := os.Getenv(envSlogcpProjectIDOverride)
+	envGoogleCloudProject := os.Getenv("GOOGLE_CLOUD_PROJECT")
+
+	if envParent != "" {
+		cfg.Parent = envParent
+		if strings.HasPrefix(envParent, "projects/") {
+			cfg.ProjectID = strings.TrimPrefix(envParent, "projects/")
+		}
+	} else if envSlogcpProjectIDOverride != "" {
+		cfg.ProjectID = envSlogcpProjectIDOverride
+		cfg.Parent = "projects/" + envSlogcpProjectIDOverride
+	} else if envGoogleCloudProject != "" {
+		cfg.ProjectID = envGoogleCloudProject
+		cfg.Parent = "projects/" + envGoogleCloudProject
+	} else if cfg.LogTarget == LogTargetGCP {
+		// Try metadata server as last resort for GCP target
 		if metadata.OnGCE() {
-			ctx := context.Background()
-			metadataProjectID, err := metadata.ProjectIDWithContext(ctx)
-			// Use the metadata project ID if successfully retrieved.
-			if err == nil && metadataProjectID != "" {
-				projectID = metadataProjectID
-				// Log informational message to stderr as logger isn't ready yet.
-				fmt.Fprintf(os.Stderr, "[slogcp config] INFO: Using project ID %q from metadata server\n", projectID)
+			ctx := context.Background() // Use Background context for metadata calls
+			id, err := metadata.ProjectIDWithContext(ctx)
+			if err == nil && id != "" {
+				cfg.ProjectID = id
+				cfg.Parent = "projects/" + id
+				fmt.Fprintf(os.Stderr, "[slogcp config] INFO: Using project ID %q from metadata server\n", id)
 			} else if err != nil {
-				// Log failure to retrieve from metadata but continue, as env var might be set later or explicitly.
-				fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Failed to get project ID from metadata server: %v\n", err)
+				fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: OnGCE but failed to get project ID from metadata: %v\n", err)
 			}
 		}
 	}
 
-	// If no project ID could be determined and the target is GCP, return an error.
-	if projectID == "" && logTarget == LogTargetGCP {
-		return Config{}, fmt.Errorf("slogcp: %s environment variable is not set and metadata lookup failed (required for GCP target): %w", envProjectID, ErrProjectIDMissing)
+	// Process core logging settings
+	cfg.InitialLevel = parseLevelEnv(os.Getenv(envLogLevel), cfg.InitialLevel)
+	cfg.AddSource = parseBoolEnv(os.Getenv(envLogSourceLocation), cfg.AddSource)
+	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv(envStackTraceEnabled), cfg.StackTraceEnabled)
+	cfg.StackTraceLevel = parseLevelEnv(os.Getenv(envStackTraceLevel), cfg.StackTraceLevel)
+
+	// Process client scopes (comma-separated list)
+	if val := os.Getenv(envGCPClientScopes); val != "" {
+		scopes := strings.Split(val, ",")
+		trimmedScopes := make([]string, 0, len(scopes))
+		for _, s := range scopes {
+			trimmed := strings.TrimSpace(s)
+			if trimmed != "" {
+				trimmedScopes = append(trimmedScopes, trimmed)
+			}
+		}
+		if len(trimmedScopes) > 0 {
+			cfg.ClientScopes = trimmedScopes
+		}
 	}
 
-	// Populate the config struct using parsed environment variables or defaults.
-	cfg := Config{
-		InitialLevel:      parseLevel(os.Getenv(envLogLevel)),
-		AddSource:         parseBool(os.Getenv(envLogSourceLocation), defaultAddSource, envLogSourceLocation),
-		ProjectID:         projectID, // May be empty if target is not GCP
-		ServiceName:       os.Getenv(envService),
-		RevisionName:      os.Getenv(envRevision),
-		StackTraceEnabled: parseBool(os.Getenv(envStackTraceEnabled), defaultStackTrace, envStackTraceEnabled),
-		StackTraceLevel:   parseLevelWithDefault(os.Getenv(envStackTraceLevel), defaultStackTraceLevel, envStackTraceLevel),
-		LogTarget:         logTarget,
+	// Process Common Labels from both JSON and environment variables
+	// Labels from prefix env vars override those from JSON
+	labels := make(map[string]string)
+	if jsonStr := os.Getenv(envGCPCommonLabelsJSON); jsonStr != "" {
+		if err := json.Unmarshal([]byte(jsonStr), &labels); err != nil {
+			fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Failed to parse JSON from %s: %v\n", envGCPCommonLabelsJSON, err)
+		}
+	}
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, envGCPCommonLabelPrefix) {
+			parts := strings.SplitN(e, "=", 2)
+			key := strings.TrimPrefix(parts[0], envGCPCommonLabelPrefix)
+			if key != "" && len(parts) == 2 {
+				labels[key] = parts[1] // Prefix value overrides JSON value
+			}
+		}
+	}
+	if len(labels) > 0 {
+		cfg.GCPCommonLabels = labels
+	}
+
+	// Process Monitored Resource settings
+	envResourceType := os.Getenv(envGCPResourceType)
+	if envResourceType != "" {
+		resourceLabels := make(map[string]string)
+		prefix := envGCPResourceLabelPrefix
+		for _, e := range os.Environ() {
+			if strings.HasPrefix(e, prefix) {
+				parts := strings.SplitN(e, "=", 2)
+				key := strings.TrimPrefix(parts[0], prefix)
+				if key != "" && len(parts) == 2 {
+					resourceLabels[key] = parts[1]
+				}
+			}
+		}
+		cfg.GCPMonitoredResource = &mrpb.MonitoredResource{Type: envResourceType, Labels: resourceLabels}
+	}
+
+	// Process Cloud Logging client buffering and behavior options
+	cfg.GCPConcurrentWriteLimit = parseIntPtrEnv(os.Getenv(envGCPConcurrentWriteLimit))
+	cfg.GCPDelayThreshold = parseDurationPtrEnvMS(os.Getenv(envGCPDelayThresholdMS))
+	cfg.GCPEntryCountThreshold = parseIntPtrEnv(os.Getenv(envGCPEntryCountThreshold))
+	cfg.GCPEntryByteThreshold = parseIntPtrEnv(os.Getenv(envGCPEntryByteThreshold))
+	cfg.GCPEntryByteLimit = parseIntPtrEnv(os.Getenv(envGCPEntryByteLimit))
+	if valStr := os.Getenv(envGCPBufferedByteLimit); valStr != "" {
+		cfg.GCPBufferedByteLimit = parseIntPtrEnv(valStr) // Override slogcp default if set
+	}
+
+	// Process context timeout for background API operations
+	if valStr := os.Getenv(envGCPContextFuncTimeoutMS); valStr != "" {
+		if ms, err := strconv.Atoi(valStr); err == nil && ms > 0 {
+			cfg.GCPDefaultContextTimeout = time.Duration(ms) * time.Millisecond
+		} else if err != nil {
+			fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid integer value for %s: %s\n", envGCPContextFuncTimeoutMS, valStr)
+		}
+	}
+	cfg.GCPPartialSuccess = parseBoolPtrEnv(os.Getenv(envGCPPartialSuccess))
+
+	// Check for project ID missing error condition *after* parsing all potential sources
+	if cfg.LogTarget == LogTargetGCP && cfg.Parent == "" {
+		return cfg, fmt.Errorf("parent (e.g. projects/PROJECT_ID) is required for GCP target and could not be resolved from env vars or metadata: %w", ErrProjectIDMissing)
 	}
 
 	return cfg, nil
 }
 
-// parseLogTarget interprets the log target string from the environment.
-func parseLogTarget(targetStr string) LogTarget {
-	switch strings.ToLower(strings.TrimSpace(targetStr)) {
+// parseLogTargetEnv converts a string from the environment into a LogTarget enum.
+// It handles case-insensitive matching and falls back to the provided default
+// if the string is empty or unrecognized.
+func parseLogTargetEnv(valStr string, defaultVal LogTarget) LogTarget {
+	switch strings.ToLower(strings.TrimSpace(valStr)) {
+	case "gcp":
+		return LogTargetGCP
 	case "stdout":
 		return LogTargetStdout
 	case "stderr":
 		return LogTargetStderr
-	case "gcp":
-		return LogTargetGCP
+	case "file":
+		return LogTargetFile
+	case "": // Empty string means use default
+		return defaultVal
 	default:
-		// Empty string or unrecognized value defaults to GCP.
-		return defaultLogTarget
+		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid log target value %q in env var, defaulting to %v\n", valStr, defaultVal)
+		return defaultVal
 	}
 }
 
-// parseLevel interprets the log level string from the environment, falling back
-// to the package default (slog.LevelInfo) if empty or invalid.
-// Supports both named level strings (e.g., "DEBUG", "ERROR") and numerical
-// values (e.g., "-4", "8") that correspond directly to slog.Level integers.
-func parseLevel(levelStr string) slog.Level {
-	return parseLevelWithDefault(levelStr, defaultLevel, envLogLevel)
-}
-
-// parseLevelWithDefault interprets the log level string from the environment,
-// falling back to a specified default level if the input is empty or invalid.
-// It logs a warning to stderr if the input string is non-empty but invalid.
-// Supports both named level strings (e.g., "DEBUG", "ERROR") and numerical
-// values (e.g., "-4", "8") that correspond directly to slog.Level integers.
-func parseLevelWithDefault(levelStr string, defaultLvl slog.Level, envVarName string) slog.Level {
+// parseLevelEnv converts a level string from the environment into a slog.Level.
+// It handles standard slog levels, extended GCP levels, and numeric values.
+// Falls back to the provided default if the string is empty or invalid.
+func parseLevelEnv(levelStr string, defaultLvl slog.Level) slog.Level {
 	trimmedLevelStr := strings.ToLower(strings.TrimSpace(levelStr))
 	if trimmedLevelStr == "" {
-		return defaultLvl // Use provided default if empty.
+		return defaultLvl
 	}
 
-	// Map known level strings (case-insensitive) to slog.Level values.
-	// Use the internal level constants defined in severity.go
 	switch trimmedLevelStr {
-	case "default":
-		return internalLevelDefault
 	case "debug":
 		return slog.LevelDebug
 	case "info":
 		return slog.LevelInfo
-	case "notice":
-		return internalLevelNotice
 	case "warn", "warning":
 		return slog.LevelWarn
 	case "error":
 		return slog.LevelError
+	case "default":
+		return internalLevelDefault
+	case "notice":
+		return internalLevelNotice
 	case "critical":
 		return internalLevelCritical
 	case "alert":
@@ -216,32 +386,81 @@ func parseLevelWithDefault(levelStr string, defaultLvl slog.Level, envVarName st
 	case "emergency":
 		return internalLevelEmergency
 	default:
-		// Try to parse as a numerical value
 		if levelVal, err := strconv.Atoi(trimmedLevelStr); err == nil {
 			return slog.Level(levelVal)
 		}
-
-		// Log warning for unrecognized level string.
-		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid %s value %q, defaulting to %v\n", envVarName, levelStr, defaultLvl)
+		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid log level value %q in env var, defaulting to %v\n", levelStr, defaultLvl)
 		return defaultLvl
 	}
 }
 
-// parseBool interprets a boolean string from the environment, falling back to a
-// specified default value if the input is empty or invalid.
-// It logs a warning to stderr if the input string is non-empty but invalid.
-func parseBool(boolStr string, defaultVal bool, envVarName string) bool {
-	trimmedBoolStr := strings.TrimSpace(boolStr)
-	if trimmedBoolStr == "" {
-		return defaultVal // Use provided default if empty.
-	}
-
-	// Attempt to parse the string as a boolean.
-	val, err := strconv.ParseBool(trimmedBoolStr)
-	if err != nil {
-		// Log warning for unrecognized boolean string.
-		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid %s value %q, defaulting to %v\n", envVarName, boolStr, defaultVal)
+// parseBoolEnv converts a boolean string from the environment into a bool.
+// It understands various representations (true/false, yes/no, 1/0, on/off).
+// Falls back to the provided default if the string is empty or unrecognized.
+func parseBoolEnv(boolStr string, defaultVal bool) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(boolStr))
+	if trimmed == "" {
 		return defaultVal
 	}
-	return val
+	switch trimmed {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid boolean value %q in env var, defaulting to %v\n", boolStr, defaultVal)
+		return defaultVal
+	}
+}
+
+// parseIntPtrEnv converts an integer string from the environment into an *int.
+// Returns nil if the string is empty or invalid, which allows distinguishing
+// between unset values and explicit zeros in the configuration.
+func parseIntPtrEnv(valStr string) *int {
+	trimmed := strings.TrimSpace(valStr)
+	if trimmed == "" {
+		return nil
+	}
+	if i, err := strconv.Atoi(trimmed); err == nil {
+		return &i
+	}
+	fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid integer value %q in env var, ignoring\n", valStr)
+	return nil
+}
+
+// parseDurationPtrEnvMS converts a millisecond value from the environment into a *time.Duration.
+// Returns nil if the string is empty or invalid, or if the parsed value is negative.
+// This is used for timeout and threshold settings that require a duration.
+func parseDurationPtrEnvMS(valStr string) *time.Duration {
+	trimmed := strings.TrimSpace(valStr)
+	if trimmed == "" {
+		return nil
+	}
+	if ms, err := strconv.Atoi(trimmed); err == nil && ms >= 0 {
+		d := time.Duration(ms) * time.Millisecond
+		return &d
+	}
+	fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid non-negative millisecond value %q in env var, ignoring\n", valStr)
+	return nil
+}
+
+// parseBoolPtrEnv converts a boolean string from the environment into a *bool.
+// Returns nil if the string is empty or invalid, which allows distinguishing
+// between unset values and explicit false values in the configuration.
+func parseBoolPtrEnv(valStr string) *bool {
+	trimmed := strings.ToLower(strings.TrimSpace(valStr))
+	if trimmed == "" {
+		return nil
+	}
+	switch trimmed {
+	case "true", "1", "yes", "on":
+		b := true
+		return &b
+	case "false", "0", "no", "off":
+		b := false
+		return &b
+	default:
+		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid boolean value %q in env var, ignoring\n", valStr)
+		return nil
+	}
 }

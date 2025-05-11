@@ -113,7 +113,7 @@ func TestExtractTraceSpan(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotTraceID, gotSpanID, gotSampled := ExtractTraceSpan(tc.ctx, tc.projectID)
+			gotTraceID, _, gotSpanID, gotSampled, _ := ExtractTraceSpan(tc.ctx, tc.projectID)
 
 			// Verify all three return values match expectations.
 			if gotTraceID != tc.wantTraceID {

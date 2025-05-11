@@ -16,18 +16,17 @@ package gcp
 
 import "errors"
 
-// ErrProjectIDMissing indicates that the required GOOGLE_CLOUD_PROJECT
-// environment variable was not set when attempting to load the configuration.
-// The Cloud Logging client cannot be initialized without a project ID.
-var ErrProjectIDMissing = errors.New("gcp: GOOGLE_CLOUD_PROJECT environment variable not set")
+// ErrProjectIDMissing indicates that a GCP Project ID or Parent resource name
+// (required when the log target is GCP) could not be determined from configuration
+// options, environment variables, or the metadata server.
+var ErrProjectIDMissing = errors.New("gcp: parent resource (e.g., projects/PROJECT_ID) required for GCP target but not found")
 
 // ErrClientInitializationFailed indicates that an error occurred during the
-// creation of the underlying `cloud.google.com/go/logging` client, often
-// due to authentication issues or network problems connecting to GCP APIs.
+// creation or initialization of the underlying `cloud.google.com/go/logging` client.
 // The original error from the client library is typically wrapped.
 var ErrClientInitializationFailed = errors.New("gcp: cloud logging client initialization failed")
 
 // ErrClientNotInitialized indicates that an operation requiring an initialized
-// Cloud Logging client (like GetLogger or Flush via Close) was attempted
-// before the client was successfully initialized or after initialization failed.
+// Cloud Logging client (like GetLogger or Flush) was attempted before the
+// client was successfully initialized or after initialization failed.
 var ErrClientNotInitialized = errors.New("gcp: cloud logging client not initialized")

@@ -22,6 +22,7 @@ import "fmt"
 var Version = "v0.0.0-dev"
 
 // UserAgent is the string sent with Cloud Logging API requests, identifying this library.
+// Initialized based on the Version variable.
 var UserAgent string
 
 func init() {
@@ -29,4 +30,5 @@ func init() {
 	UserAgent = fmt.Sprintf("slogcp/%s", Version)
 }
 
+// GetVersion returns the current library version string.
 func GetVersion() string { return Version }
