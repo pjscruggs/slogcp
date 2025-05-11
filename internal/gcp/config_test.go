@@ -15,8 +15,8 @@
 package gcp
 
 import (
-	"testing"
 	"log/slog"
+	"testing"
 )
 
 // TestParseLevelEnv verifies parsing of log level strings with both custom and package defaults.

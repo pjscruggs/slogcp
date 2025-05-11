@@ -26,7 +26,6 @@ import (
 
 	"cloud.google.com/go/logging"
 	"go.opentelemetry.io/otel/trace"
-
 )
 
 // mockEntryLogger captures logging.Entry without sending to external service.
@@ -61,7 +60,6 @@ func (m *mockEntryLogger) Last() (logging.Entry, bool) {
 	return m.entries[len(m.entries)-1], true
 }
 
-
 // contextWithTrace builds a context with remote span information.
 func contextWithTrace(proj string) (context.Context, string, string, bool) {
 	id := "11111111111111112222222222222222"
@@ -87,7 +85,10 @@ func TestGcpHandler_Enabled(t *testing.T) {
 	mockLog := &mockEntryLogger{}
 	h := NewGcpHandler(Config{}, mockLog, lv)
 
-	tests := []struct{ hl, rl slog.Level; want bool }{
+	tests := []struct {
+		hl, rl slog.Level
+		want   bool
+	}{
 		{slog.LevelInfo, slog.LevelDebug, false},
 		{slog.LevelInfo, slog.LevelInfo, true},
 		{slog.LevelDebug, slog.LevelDebug, true},

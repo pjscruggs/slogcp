@@ -195,7 +195,7 @@ func TestConvenienceMethods(t *testing.T) {
 		t.Fatalf("New error: %v", err)
 	}
 
-	cases := []struct{
+	cases := []struct {
 		name string
 		fn   func()
 		want string
@@ -233,7 +233,7 @@ func TestMiddleware(t *testing.T) {
 	}
 
 	t.Run("StdoutMiddleware", func(t *testing.T) {
-		logger, err := New(WithLogTarget(LogTargetStdout), WithMiddleware(mw("x","v")))
+		logger, err := New(WithLogTarget(LogTargetStdout), WithMiddleware(mw("x", "v")))
 		if err != nil {
 			t.Fatalf("New error: %v", err)
 		}
