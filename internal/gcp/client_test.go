@@ -243,7 +243,7 @@ func TestClientManager_Close(t *testing.T) {
 
 	t.Run("ClientCloseError", func(t *testing.T) {
 		closeErr := errors.New("close failed")
-		mockClient := &mockGcpClientAPI{ closeFn: func() error { return closeErr } }
+		mockClient := &mockGcpClientAPI{closeFn: func() error { return closeErr }}
 		cm := NewClientManager(cfg, ua, levelVar)
 		cm.client = mockClient
 		cm.initErr = nil

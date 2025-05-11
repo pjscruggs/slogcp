@@ -218,10 +218,10 @@ func WithRedirectToFile(filePath string) Option {
 // This option is suitable for integrating with self-rotating log writers,
 // such as "gopkg.in/natefinch/lumberjack.v2". For example:
 //
-//  lj := &lumberjack.Logger{ /* ... lumberjack config ... */ }
-//  logger, err := slogcp.New(slogcp.WithRedirectWriter(lj))
-//  // ...
-//  defer logger.Close() // This will call lj.Close()
+//	lj := &lumberjack.Logger{ /* ... lumberjack config ... */ }
+//	logger, err := slogcp.New(slogcp.WithRedirectWriter(lj))
+//	// ...
+//	defer logger.Close() // This will call lj.Close()
 //
 // Using WithRedirectWriter implies a non-GCP log target. The logger.New function
 // determines the specific target based on the writer type and other configurations.
