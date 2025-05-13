@@ -4,6 +4,12 @@
 
 A "batteries included" structured logging module for Google Cloud Platform with built-in HTTP and gRPC interceptors.
 
+## ⚠️ EXPERIMENTAL: DO NOT USE IN PRODUCTION ⚠️
+
+This module is untested, and not recommended for any production use.
+
+I am currently working on creating end-to-end tests which will run in Google Cloud.
+
 ## Installation
 
 ```bash
@@ -171,4 +177,4 @@ For gRPC interceptors and more advanced middleware options, see the [Configurati
 
 ## Contributing
 
-Contributions are welcome! Please see our [Contribution Guidelines](CONTRIBUTING.md) for details.
+Contributions are welcome! Feel free to submit issues for bugs or feature requests. For code contributions, please fork the repository, create a feature branch, and submit a pull request with your changes.
