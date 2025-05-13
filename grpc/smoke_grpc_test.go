@@ -22,9 +22,10 @@ import (
 	"context"
 	"testing"
 
+	"google.golang.org/grpc"
+
 	"github.com/pjscruggs/slogcp"
 	slogcpgrpc "github.com/pjscruggs/slogcp/grpc"
-	"google.golang.org/grpc"
 )
 
 // newTestLogger returns a slogcp.Logger configured for local use.
