@@ -1,5 +1,4 @@
 name: Validation Pipeline
-
 on:
   pull_request:
     branches: [ main ]
@@ -8,67 +7,83 @@ on:
   merge_group:
     branches: [ main ]
   workflow_dispatch:
-
 permissions:
   contents: write
   pull-requests: read
   security-events: write
-
 jobs:
   validation:
-    name: Go Format, Lint, Test & Vulnerability Check
+    name: Go Format, Lint, Test, & Vulnerability Check
     runs-on: ubuntu-latest
     steps:
       - name: 🛒 Checkout Code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           fetch-depth: 0
-
+          # For PRs, check out the head of the PR branch instead of the merge commit
+          ref: ${{ github.event.pull_request.head.ref }}
+          # Only specify the repository for PR events
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          # Use token for cross-repository PRs
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 🔍 Determine branch name
+        id: get-branch
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "BRANCH_NAME=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+          else
+            echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+          fi
+      
       - name: 🏗️ Set up Go
         uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5
         with:
           go-version-file: 'go.mod'
           cache: true
-
-      - name: ✨ Initial Go Formatting
+      
+      # Apply formatting directly
+      - name: ✨ Apply Go Formatting
         run: |
           go install golang.org/x/tools/cmd/goimports@latest
           gofmt -w .
           goimports -local github.com/pjscruggs/slogcp -w .
-
-      - name: 💾 Commit Initial Formatting
-        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
-        with:
-          author_name: Go Formatting Bot
-          author_email: go-format-bot@users.noreply.github.com
-          message: 'chore: apply initial gofmt and goimports formatting'
-          add: '.'
-          push: true
-
+      
+      - name: 💾 Commit Formatting Changes
+        run: |
+          git config user.name "Go Formatting Bot"
+          git config user.email "go-format-bot@users.noreply.github.com"
+          git diff --quiet || {
+            git add .
+            git commit -m 'chore: apply gofmt and goimports formatting'
+            git push origin ${{ steps.get-branch.outputs.BRANCH_NAME }}
+          }
+      
+      # Get current year
       - name: 📅🕰️ Get current year in US Central Time
         id: year
         run: |
           YEAR=$(TZ='America/Chicago' date +%Y)
           echo "YEAR=$YEAR" >> $GITHUB_OUTPUT
       
+      # Update license year in config if needed
       - name: 📄⚙️📅 Update license year in config
         run: |
           if [ "${{ steps.year.outputs.YEAR }}" -gt "2025" ]; then
             sed -i 's/copyright-year: .*/copyright-year: "2025-${{ steps.year.outputs.YEAR }}"/g' .licenserc.yaml
+            git config user.name "License Year Bot"
+            git config user.email "license-bot@github.com"
+            git diff --quiet .licenserc.yaml || {
+              git add .licenserc.yaml
+              git commit -m "chore: Update license year to 2025-${{ steps.year.outputs.YEAR }}"
+              git push origin ${{ steps.get-branch.outputs.BRANCH_NAME }}
+            }
             echo "📅⬆️ Updated year to 2025-${{ steps.year.outputs.YEAR }}"
           else
             echo "📅✅ Keeping year as 2025"
           fi
       
-      - name: ⚙️💾 Commit config change
-        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
-        with:
-          author_name: License Year Bot
-          author_email: license-bot@github.com
-          message: 'chore: Update license year to 2025-${{ steps.year.outputs.YEAR }}'
-          add: '.licenserc.yaml'
-          push: true
-
+      # Fix license headers
       - name: 📄🩹 Fix License Headers
         id: fix-license
         uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
@@ -76,55 +91,60 @@ jobs:
           mode: fix
           config: .licenserc.yaml
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 📄💾 Commit header fixes
-        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
-        with:
-          author_name: "License Bot"
-          author_email: "license-bot@github.com"
-          message: "chore: apply license header fixes"
-          add: "."
-          push: true
-
-      - name: ✨ Secondary Go Formatting
+      
+      # Commit license header fixes
+      - name: 📄💾 Commit license header fixes
         run: |
-          gofmt -w .
-          goimports -local github.com/pjscruggs/slogcp -w .
-
-      - name: 💾 Commit Secondary Formatting
-        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
-        with:
-          author_name: Go Formatting Bot
-          author_email: go-format-bot@users.noreply.github.com
-          message: 'chore: apply secondary gofmt and goimports formatting'
-          add: '.'
-          push: true
-
+          git config user.name "License Bot"
+          git config user.email "license-bot@github.com"
+          # Ensure we're on a branch
+          if [[ -z "$(git symbolic-ref --short HEAD 2>/dev/null)" ]]; then
+            echo "Detected detached HEAD state, checking out branch explicitly"
+            git checkout ${{ steps.get-branch.outputs.BRANCH_NAME }}
+          fi
+          git diff --quiet || {
+            git add .
+            git commit -m "chore: apply license header fixes"
+            git push origin ${{ steps.get-branch.outputs.BRANCH_NAME }}
+          }
+      
+      # Install golangci-lint
       - name: 🛠️ Install specific golangci-lint version
         uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
           version: v2.1.5
           install-mode: goinstall
-
+      
+      # Apply lint fixes
       - name: 🧐 Apply Lint Fixes
         run: golangci-lint run --fix ./...
         continue-on-error: true
-
+      
+      # Commit lint fixes
       - name: 💾 Commit Lint Fixes
-        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
-        with:
-          author_name: Go Lint Fix Bot
-          author_email: go-lint-fix-bot@users.noreply.github.com
-          message: 'chore: apply golangci-lint fixes'
-          add: '.'
-
+        run: |
+          git config user.name "Go Lint Fix Bot"
+          git config user.email "go-lint-fix-bot@users.noreply.github.com"
+          # Ensure we're on a branch
+          if [[ -z "$(git symbolic-ref --short HEAD 2>/dev/null)" ]]; then
+            echo "Detected detached HEAD state, checking out branch explicitly"
+            git checkout ${{ steps.get-branch.outputs.BRANCH_NAME }}
+          fi
+          git diff --quiet || {
+            git add .
+            git commit -m "chore: apply golangci-lint fixes"
+            git push origin ${{ steps.get-branch.outputs.BRANCH_NAME }}
+          }
+      
+      # Run tests
       - name: 🧪 Run Go Tests
         id: go-test
         run: |
           go test -v -race -tags='!e2e' -coverprofile=coverage.txt ./...
-
+      
+      # Show test coverage
       - name: 📄 Print Coverage Report
-        if: steps.go-test.outcome == 'success' || steps.go-test.outcome == 'failure'
+        if: always()
         run: |
           echo "--- Test Coverage ---"
           if [ -f coverage.txt ]; then
@@ -133,21 +153,25 @@ jobs:
             echo "Coverage file (coverage.txt) not found."
           fi
           echo "---------------------"
-
+      
+      # Fail if tests failed
       - name: ❌ Check Test Execution Status
         if: steps.go-test.outcome == 'failure'
         run: |
           echo "❌ Go tests failed. Review logs above."
           exit 1
-
+      
+      # Success message
       - name: ✅ Report Test Success
         if: steps.go-test.outcome == 'success'
         run: |
           echo "✅ All Go tests passed!"
-
+      
+      # Vulnerability check
       - name: 🛡️🔍 Run Vulnerability Check
         if: steps.go-test.outcome == 'success'
         run: |
-          echo "Running vulnerability check..."
+          echo "Installing govulncheck..."
           go install golang.org/x/vuln/cmd/govulncheck@latest
+          echo "Running vulnerability check..."
           govulncheck ./...
