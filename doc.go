@@ -18,6 +18,8 @@
 // including automatic trace correlation, full GCP severity level support, and
 // robust error reporting.
 //
+// ⚠️ This module is untested, and not recommended for any production use. ⚠️
+//
 // The core of the package is the [Logger] type, which can be configured to
 // send structured JSON logs directly to the Cloud Logging API or to local
 // destinations like stdout, stderr, or a file. It intelligently detects
