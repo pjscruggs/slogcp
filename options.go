@@ -21,8 +21,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/pjscruggs/slogcp/internal/gcp"
 	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
+
+	"github.com/pjscruggs/slogcp/internal/gcp"
 )
 
 // LogTarget defines the destination for log output.
