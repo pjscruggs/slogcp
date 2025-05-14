@@ -203,9 +203,10 @@ func LoadConfig() (Config, error) {
 		case envRedirectTargetStr == "":
 			// If SLOGCP_REDIRECT_AS_JSON_TARGET is empty, but SLOGCP_LOG_TARGET indicated
 			// stdout or stderr, set the writer accordingly.
-			if cfg.LogTarget == LogTargetStdout {
+			switch cfg.LogTarget {
+			case LogTargetStdout:
 				cfg.RedirectWriter = os.Stdout
-			} else if cfg.LogTarget == LogTargetStderr {
+			case LogTargetStderr:
 				cfg.RedirectWriter = os.Stderr
 			}
 			// If LogTarget was File but no path given via SLOGCP_REDIRECT_AS_JSON_TARGET,
