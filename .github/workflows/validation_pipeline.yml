@@ -7,6 +7,7 @@ on:
   merge_group:
     branches: [ main ]
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: write
   pull-requests: read
