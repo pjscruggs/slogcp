@@ -27,7 +27,6 @@ import (
 	"google.golang.org/grpc"
 )
 
-// newTestLogger returns a slogcp.Logger configured for local use.
 func newTestLogger(t *testing.T) *slogcp.Logger {
 	t.Helper()
 
@@ -44,7 +43,11 @@ func TestUnaryServerInterceptorSmoke(t *testing.T) {
 	t.Parallel()
 
 	lg := newTestLogger(t)
-	defer lg.Close()
+	defer func() {
+		if err := lg.Close(); err != nil {
+			t.Errorf("Logger.Close() returned %v, want nil", err)
+		}
+	}()
 
 	interceptor := slogcpgrpc.UnaryServerInterceptor(lg)
 
