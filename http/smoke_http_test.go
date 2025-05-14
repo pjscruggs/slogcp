@@ -31,7 +31,6 @@ import (
 	slogcphttp "github.com/pjscruggs/slogcp/http"
 )
 
-// newTestLogger returns a slogcp.Logger configured to write to stdout only.
 func newTestLogger(t *testing.T) *slogcp.Logger {
 	t.Helper()
 
@@ -48,7 +47,11 @@ func TestHTTPMiddlewareSmoke(t *testing.T) {
 	t.Parallel()
 
 	lg := newTestLogger(t)
-	defer lg.Close()
+	defer func() {
+		if err := lg.Close(); err != nil {
+			t.Errorf("Logger.Close() returned %v, want nil", err)
+		}
+	}()
 
 	up := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
