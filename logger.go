@@ -175,10 +175,17 @@ func applyProgrammaticOptions(cfg *gcp.Config, builderState *options, baseConfig
 		cfg.RedirectWriter = nil     // Mark that slogcp needs to open it
 		cfg.ClosableUserWriter = nil // No user writer involved
 	} else if builderState.redirectWriter != nil {
+
 		// WithRedirectWriter was used
 		cfg.RedirectWriter = builderState.redirectWriter // User's writer
+
+		// Only store in ClosableUserWriter if it's NOT os.Stdout or os.Stderr
 		if c, ok := builderState.redirectWriter.(io.Closer); ok {
-			cfg.ClosableUserWriter = c
+			// Don't store standard output/error as closable writers
+			if builderState.redirectWriter != os.Stdout &&
+				builderState.redirectWriter != os.Stderr {
+				cfg.ClosableUserWriter = c
+			}
 		}
 		cfg.OpenedFilePath = "" // Mark that slogcp does not own the file path
 
