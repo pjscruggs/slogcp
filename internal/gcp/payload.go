@@ -18,45 +18,34 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"cloud.google.com/go/logging"
-)
-
-// Constants defining the maximum stack frames to capture.
-// Used when capturing the fallback stack trace in the handler.
-const (
-	maxStackFrames = 64
 )
 
 // Constants for standard keys used within the structured log payload (jsonPayload)
 // and for special attribute handling.
 const (
 	messageKey     = "message"     // Key for the main log message string.
-	errorKey       = "error"       // Default key for the *first* formatted error object.
-	errorTypeKey   = "type"        // Key within the error object for the Go error type.
+	errorKey       = "error"       // Key used in RedirectAsJSON for the error message.
+	errorTypeKey   = "type"        // Key within the GCP API payload for the Go error type.
 	stackTraceKey  = "stack_trace" // Key for the formatted stack trace string (for GCER).
 	httpRequestKey = "httpRequest" // Special key used to pass HTTPRequest struct to the handler.
 )
 
 // formattedError holds the processed error details for structured logging,
-// intended for consumption by Cloud Error Reporting. The handler adds these
-// fields alongside the stack_trace field to the main payload.
+// primarily for visibility within the log entry itself.
 type formattedError struct {
 	Message string `json:"message"` // Error message string (from err.Error()).
 	Type    string `json:"type"`    // Go type of the original error (e.g., "*errors.errorString").
 }
 
-// formatErrorForReporting prepares an error for Cloud Error Reporting by extracting
-// its type and message. It also attempts to extract and format an *origin* stack trace
-// if the error provides one via the stackTracer interface.
-//
-// It returns the basic formattedError struct (containing Type and Message) and
-// the formatted origin stack trace string separately. The stack trace string will be
-// empty if the error did not provide one via the interface. The decision to capture
-// a *fallback* stack trace is made by the caller (the handler).
+// formatErrorForReporting prepares an error by extracting its type and message.
+// It also attempts to extract an *origin* stack trace if the error provides one
+// via the stackTracer interface.
+// It returns the basic formattedError struct and the formatted origin stack trace string.
 func formatErrorForReporting(err error) (fe formattedError, originStackTrace string) {
-
 	if err == nil {
 		fe = formattedError{Message: "<nil error>", Type: ""}
 		return // Return empty struct and empty stack trace for nil error.
@@ -68,7 +57,7 @@ func formatErrorForReporting(err error) (fe formattedError, originStackTrace str
 		Type:    fmt.Sprintf("%T", err),
 	}
 
-	// Delegate origin stack trace extraction and formatting to the dedicated function.
+	// Delegate origin stack trace extraction and formatting.
 	originStackTrace = extractAndFormatOriginStack(err)
 
 	return fe, originStackTrace
@@ -76,11 +65,10 @@ func formatErrorForReporting(err error) (fe formattedError, originStackTrace str
 
 // resolveSlogValue converts an slog.Value into a Go type suitable for JSON
 // marshalling within the Cloud Logging entry's payload.
-//
 // It handles standard slog kinds, recursively resolves groups, and calls
 // LogValue() on slog.LogValuer implementations. Special types like error
-// and *logging.HTTPRequest are returned as-is for specific handling by the caller
-// (the gcpHandler.Handle method). It returns nil for empty groups or nil values.
+// are returned as-is for specific handling by the gcpHandler.
+// It returns nil for empty groups or nil values.
 func resolveSlogValue(v slog.Value) any {
 	// Resolve LogValuer implementations first. This allows types to customize
 	// their representation before standard kind handling.
@@ -137,25 +125,68 @@ func resolveSlogValue(v slog.Value) any {
 
 		// Check for special types that need specific handling by the caller (gcpHandler).
 		// We return them directly so the handler can process them appropriately
-		// (e.g., format errors, extract HTTPRequest).
-		switch v := val.(type) {
+		// (e.g., format errors). Other special types like HTTPRequest are handled
+		// via attribute key interception *before* calling this function.
+		switch vt := val.(type) {
 		case error:
-			return v // Return raw error for handler to format.
+			return vt // Return raw error for handler to format.
 		case *logging.HTTPRequest:
-			return v // Return raw HTTPRequest struct pointer for handler.
+			// If this function is called with an HTTPRequest value, it means
+			// the handler did not correctly intercept the httpRequestKey attribute.
+			// Return nil to prevent adding the raw struct to the general payload.
+			return nil
 		case *http.Request:
-			// Avoid logging the raw *http.Request in the general payload.
-			// Relevant info should be in the *logging.HTTPRequest.
+			// Never log the raw *http.Request struct.
 			return nil
 		}
 
-		// For other 'any' types, return the underlying value directly.
-		// It's the responsibility of the caller to ensure these types are
-		// suitable for JSON marshalling by the underlying logging client library.
 		// Return nil if the underlying value is nil itself.
 		if val == nil {
 			return nil
 		}
+		// Return other 'any' types directly. It's assumed these are
+		// suitable for JSON marshalling by the underlying logging client library
+		// or the Go JSON encoder in redirect mode.
 		return val
 	}
+}
+
+// flattenHTTPRequestToMap converts a *logging.HTTPRequest struct into a map
+// suitable for embedding within the `httpRequest` field of a structured JSON log entry,
+// following GCP's expected field names. Includes zero/false/empty values for consistency.
+func flattenHTTPRequestToMap(req *logging.HTTPRequest) map[string]any {
+	if req == nil {
+		return nil
+	}
+	m := make(map[string]any)
+	// Use keys expected by GCP structured logging for httpRequest
+	if req.Request != nil {
+		m["requestMethod"] = req.Request.Method // Empty string if not set
+		if req.Request.URL != nil {
+			m["requestUrl"] = req.Request.URL.String() // Empty string if not set
+		} else {
+			m["requestUrl"] = ""
+		}
+		m["userAgent"] = req.Request.UserAgent() // Empty string if not set
+		m["referer"] = req.Request.Referer()     // Empty string if not set
+		m["protocol"] = req.Request.Proto        // Empty string if not set
+	}
+	// GCP expects sizes as strings
+	m["requestSize"] = strconv.FormatInt(req.RequestSize, 10)   // "0" if zero
+	m["status"] = req.Status                                    // 0 if not set (though usually set)
+	m["responseSize"] = strconv.FormatInt(req.ResponseSize, 10) // "0" if zero
+	// GCP expects latency as "Ns" string (e.g., "3.5s")
+	if req.Latency > 0 { // Only include latency if positive
+		m["latency"] = fmt.Sprintf("%.9fs", req.Latency.Seconds())
+	}
+	m["remoteIp"] = req.RemoteIP // Empty string if not set
+	m["serverIp"] = req.LocalIP  // Empty string if not set
+	// Booleans are included directly
+	m["cacheHit"] = req.CacheHit
+	m["cacheValidatedWithOriginServer"] = req.CacheValidatedWithOriginServer
+	m["cacheFillBytes"] = strconv.FormatInt(req.CacheFillBytes, 10) // "0" if zero
+	m["cacheLookup"] = req.CacheLookup
+
+	// Return the map, even if it only contains default values.
+	return m
 }
