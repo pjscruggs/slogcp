@@ -136,21 +136,21 @@ jobs:
             git push origin ${{ steps.get-branch.outputs.BRANCH_NAME }}
           }
       
-      # Run tests
       - name: 🧪 Run Go Tests
         id: go-test
         run: |
-          go test -v -race -tags='!e2e' -coverprofile=coverage.txt ./...
+          go test -v -race -tags='!e2e' -coverprofile=coverage.out ./...
       
       # Show test coverage
       - name: 📄 Print Coverage Report
         if: always()
         run: |
           echo "--- Test Coverage ---"
-          if [ -f coverage.txt ]; then
-            cat coverage.txt
+          if [ -f coverage.out ]; then
+            cat coverage.out
+            rm coverage.out
           else
-            echo "Coverage file (coverage.txt) not found."
+            echo "Coverage file (coverage.out) not found."
           fi
           echo "---------------------"
       
