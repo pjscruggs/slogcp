@@ -17,9 +17,7 @@ package gcp
 import (
 	"context"
 	"fmt"
-	"runtime"
 
-	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
 	"go.opentelemetry.io/otel/trace"
 )
 
