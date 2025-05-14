@@ -18,6 +18,7 @@ import (
 	"log/slog"
 
 	"cloud.google.com/go/logging"
+
 	"github.com/pjscruggs/slogcp/internal/gcp"
 )
 
