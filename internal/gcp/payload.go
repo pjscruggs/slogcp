@@ -24,11 +24,6 @@ import (
 	"cloud.google.com/go/logging"
 )
 
-// Constants defining the maximum stack frames to capture for fallback traces.
-const (
-	maxStackFrames = 64
-)
-
 // Constants for standard keys used within the structured log payload (jsonPayload)
 // and for special attribute handling.
 const (

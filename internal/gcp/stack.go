@@ -21,6 +21,11 @@ import (
 	"strings"
 )
 
+// Constants defining the maximum stack frames to capture for fallback traces.
+const (
+	maxStackFrames = 64
+)
+
 // stackTracer defines an interface errors can implement to provide their own stack trace
 // in the form of program counters. Compatible with github.com/pkg/errors.
 type stackTracer interface {
@@ -36,6 +41,10 @@ func extractAndFormatOriginStack(err error) string {
 	if errors.As(err, &st) {
 		pcs := st.StackTrace()
 		if len(pcs) > 0 {
+			// Limit the number of program counters to maxStackFrames
+			if len(pcs) > maxStackFrames {
+				pcs = pcs[:maxStackFrames]
+			}
 			// Format the program counters obtained from the error.
 			return formatPCsToStackString(pcs)
 		}
