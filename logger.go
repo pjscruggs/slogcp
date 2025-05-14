@@ -184,9 +184,10 @@ func applyProgrammaticOptions(cfg *gcp.Config, builderState *options, baseConfig
 
 		// Infer target if not explicitly set by WithLogTarget
 		if builderState.logTarget == nil {
-			if builderState.redirectWriter == os.Stdout {
+			switch builderState.redirectWriter {
+			case os.Stdout:
 				cfg.LogTarget = gcp.LogTargetStdout
-			} else if builderState.redirectWriter == os.Stderr {
+			case os.Stderr:
 				cfg.LogTarget = gcp.LogTargetStderr
 			}
 			// If it's a custom writer, LogTarget might remain default (GCP) or be set by user.
