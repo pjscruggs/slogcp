@@ -68,33 +68,3 @@ func ExtractTraceSpan(ctx context.Context, projectID string) (formattedTraceID, 
 
 	return formattedTraceID, rawTraceID, rawSpanID, sampled, otelCtx
 }
-
-// resolveSourceLocation converts a program counter (PC) value into source code
-// location details (file path, line number, and function name).
-// It returns a *loggingpb.LogEntrySourceLocation suitable for Cloud Logging.
-// Returns nil if the PC is zero or cannot be resolved.
-func resolveSourceLocation(pc uintptr) *loggingpb.LogEntrySourceLocation {
-	// A PC of zero indicates source location was not requested or unavailable.
-	if pc == 0 { // Use == 0 check for clarity
-		return nil
-	}
-
-	// runtime.CallersFrames requires the PC of the caller.
-	// slog.Record.PC is the PC of the log statement itself.
-	// No adjustment (like pc--) is needed here as CallersFrames handles it.
-	frames := runtime.CallersFrames([]uintptr{pc})
-	frame, more := frames.Next() // Get the first frame
-
-	// Check if frame resolution was successful.
-	// Also check 'more' although for a single PC it should usually be true if valid.
-	if !more || frame.File == "" || frame.Function == "" {
-		return nil // Could not resolve frame information.
-	}
-
-	// Assemble and return the source location message.
-	return &loggingpb.LogEntrySourceLocation{
-		File:     frame.File,
-		Line:     int64(frame.Line),
-		Function: frame.Function,
-	}
-}
