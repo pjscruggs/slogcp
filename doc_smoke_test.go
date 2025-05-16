@@ -15,7 +15,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package slogcp_test contains black‑box smoke tests that ensure the public
-// API of the slogcp library builds and executes a minimal happy path without
-// contacting Google Cloud services.
+// Package slogcp_test contains black‑box tests for the slogcp library, including
+// both minimal smoke tests that verify basic API functionality and more comprehensive
+// unit tests that validate core logging behaviors. All tests are designed to run
+// without contacting Google Cloud services, ensuring they can be executed quickly
+// during development and CI pipelines without external dependencies.
 package slogcp_test
