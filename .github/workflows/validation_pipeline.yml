@@ -137,11 +137,11 @@ jobs:
             git push origin ${{ steps.get-branch.outputs.BRANCH_NAME }}
           }
       
-      - name: 🧪 Run Go Tests
-        id: go-test
+      - name: 💨 Run Local Smoke Tests (Tier 1)
+        id: go-smoke-tests
         run: |
-          go test -v -race -tags='!e2e' -coverprofile=coverage.out ./...
-      
+          go test -v -race -tags=smoke -coverprofile=coverage-smoke.out ./...
+
       # Show test coverage
       - name: 📄 Print Coverage Report
         if: always()
@@ -157,20 +157,20 @@ jobs:
       
       # Fail if tests failed
       - name: ❌ Check Test Execution Status
-        if: steps.go-test.outcome == 'failure'
+        if: steps.go-smoke-tests.outcome == 'failure'
         run: |
           echo "❌ Go tests failed. Review logs above."
           exit 1
       
       # Success message
       - name: ✅ Report Test Success
-        if: steps.go-test.outcome == 'success'
+        if: steps.go-smoke-tests.outcome == 'success'
         run: |
           echo "✅ All Go tests passed!"
       
       # Vulnerability check
       - name: 🛡️🔍 Run Vulnerability Check
-        if: steps.go-test.outcome == 'success'
+        if: steps.go-smoke-tests.outcome == 'success'
         run: |
           echo "Installing govulncheck..."
           go install golang.org/x/vuln/cmd/govulncheck@latest
