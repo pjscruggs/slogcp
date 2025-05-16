@@ -71,7 +71,7 @@ func captureOutput(t *testing.T, stream **os.File, action func()) string {
 	return <-outC
 }
 
-// TestStructuredJsonLogging verifies that the logger properly formats structured 
+// TestStructuredJsonLogging verifies that the logger properly formats structured
 // logs with the expected content and respects log level settings. It ensures
 // attributes are correctly grouped, levels control message filtering, and
 // that source location is included when enabled.
@@ -349,7 +349,7 @@ func TestDynamicLogLevels(t *testing.T) {
 			for j, checkLvl := range levels {
 				levelShouldAppear := j >= i // current level index >= test level index
 				levelName := strings.ToLower(checkLvl.name)
-				
+
 				found := false
 				for _, entry := range logEntries {
 					msg, _ := entry["message"].(string)
@@ -464,7 +464,7 @@ func TestFallbackMode(t *testing.T) {
 			t.Setenv("SLOGCP_GCP_PARENT", "")
 			t.Setenv("SLOGCP_PROJECT_ID", "")
 			t.Setenv("SLOGCP_LOG_TARGET", "")
-			
+
 			// Create logger without options - should attempt GCP and fall back
 			logger, err := slogcp.New()
 			if err != nil {
