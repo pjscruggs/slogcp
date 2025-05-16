@@ -106,8 +106,9 @@ func wasTargetExplicitlyConfigured(builderState *options, envLogTargetStr, envRe
 //   - Both specified (checks for consistency if both are project-based)
 //   - Neither specified (checks if required for GCP target)
 //
-// It modifies cfg.Parent and cfg.ProjectID in place and returns an error
-// if a required Parent for GCP target cannot be established.
+// It modifies cfg.Parent and cfg.ProjectID in place and allows the initialization
+// process to continue even when a Parent is missing for GCP target, enabling
+// automatic fallback to local logging.
 func resolveParentAndProjectID(cfg *gcp.Config, builderState *options, baseConfigLoadErr error) error {
 	// Apply programmatic Parent setting if provided
 	if builderState.parent != nil {
@@ -139,15 +140,8 @@ func resolveParentAndProjectID(cfg *gcp.Config, builderState *options, baseConfi
 		}
 	}
 
-	// For GCP target, ensure Parent is set
-	if cfg.LogTarget == gcp.LogTargetGCP && cfg.Parent == "" {
-		if errors.Is(baseConfigLoadErr, gcp.ErrProjectIDMissing) {
-			return baseConfigLoadErr // Preserve original error
-		}
-		return fmt.Errorf("GCP parent (e.g. projects/PROJECT_ID) is required for GCP target and could not be resolved: %w",
-			gcp.ErrProjectIDMissing)
-	}
-
+	// Don't return an error for missing parent - this allows fallback to happen
+	// The initialization will fail later with appropriate error, triggering fallback
 	return nil
 }
 
