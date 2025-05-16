@@ -2,8 +2,6 @@ name: Validation Pipeline
 on:
   pull_request:
     branches: [ main ]
-  push:
-    branches: [ main ]
   merge_group:
     branches: [ main ]
   workflow_dispatch:
@@ -170,7 +168,7 @@ jobs:
       
       # Vulnerability check
       - name: 🛡️🔍 Run Vulnerability Check
-        if: steps.go-smoke-tests.outcome == 'success'
+        if: steps.go-test.outcome == 'success'
         run: |
           echo "Installing govulncheck..."
           go install golang.org/x/vuln/cmd/govulncheck@latest
