@@ -21,8 +21,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/pjscruggs/slogcp/internal/gcp"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/pjscruggs/slogcp/internal/gcp"
 )
 
 // mustTraceID converts a 32‑character hexadecimal string into a trace.TraceID.
