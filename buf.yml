@@ -1,0 +1,21 @@
+version: v1
+# Module name following the convention buf.build/<owner>/<repo>
+name: buf.build/pjscruggs/slogcp
+# Specifies the directories Buf should search for Protobuf files.
+# '.' indicates the repository root.
+roots:
+  - .
+# Declares external Protobuf module dependencies.
+deps:
+  # Includes Google's well-known types (e.g., Empty, Wrappers) and common APIs.
+  - buf.build/googleapis/googleapis
+# Configures linting rules applied by 'buf lint'.
+lint:
+  # Enables the default set of lint rules recommended by Buf.
+  use:
+    - DEFAULT
+# Configures breaking change detection rules applied by 'buf breaking'.
+breaking:
+  # Enables the FILE rule set, checking for source-breaking changes.
+  use:
+    - FILE
