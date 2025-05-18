@@ -302,6 +302,21 @@ func applyProgrammaticOptions(cfg *gcp.Config, builderState *options, baseConfig
 	return nil
 }
 
+// sourceAwareHandler is a transparent wrapper that advertises
+// HasSource()==true to the slog.Logger constructor.  When slog detects this
+// method, it populates Record.PC automatically in newRecord, eliminating the
+// need for manual stack inspection.
+type sourceAwareHandler struct{ slog.Handler }
+
+// HasSource reports that sourceAwareHandler wants the slog runtime to capture
+// caller information.
+//
+// When this method returns true, slog populates each Record with the program
+// counter of the logging call before invoking the handler. That allows
+// handlers downstream—such as the GCP emitter—to resolve accurate file, line,
+// and function metadata without performing their own stack inspection.
+func (h sourceAwareHandler) HasSource() bool { return true }
+
 // initializeLogger creates a Logger instance with the provided configuration.
 //
 // It sets up the appropriate handler based on the log target (GCP or redirect),
@@ -356,12 +371,17 @@ func initializeLogger(cfg *gcp.Config, levelV *slog.LevelVar, userAgent string) 
 		slogHandler = gcp.NewGcpHandler(*cfg, nil, levelV) // Pass nil for gcpAPILogger
 	}
 
-	// Apply middlewares in reverse order (last wraps innermost)
+	// Apply middlewares in reverse order
 	baseHandler := slogHandler
 	for i := len(cfg.Middlewares) - 1; i >= 0; i-- {
 		if mw := cfg.Middlewares[i]; mw != nil {
 			baseHandler = mw(baseHandler)
 		}
+	}
+
+	// Inject PC‑capturing wrapper when the option is enabled.
+	if cfg.AddSource {
+		baseHandler = sourceAwareHandler{Handler: baseHandler}
 	}
 
 	slogCoreLogger := slog.New(baseHandler)

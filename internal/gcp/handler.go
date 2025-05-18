@@ -290,11 +290,14 @@ func (h *gcpHandler) resolveSourceLocation(r slog.Record) *loggingpb.LogEntrySou
 	if !h.cfg.AddSource || r.PC == 0 {
 		return nil
 	}
+
 	frames := runtime.CallersFrames([]uintptr{r.PC})
-	frame, more := frames.Next()
-	if !more || frame.Function == "" {
+	frame, _ := frames.Next() // more is irrelevant for a single frame
+
+	if frame.Function == "" { // defensive: runtime couldn't resolve symbol
 		return nil
 	}
+
 	return &loggingpb.LogEntrySourceLocation{
 		File:     frame.File,
 		Line:     int64(frame.Line),
