@@ -454,31 +454,31 @@ func TestLogTargets(t *testing.T) {
 // TestFallbackMode tests that the logger automatically falls back to stdout
 // logging when GCP logging cannot be initialized.
 func TestFallbackMode(t *testing.T) {
-    output := captureOutput(t, &os.Stdout, func() {
-        t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/dev/null/nonexistent.json")
-        t.Setenv("GOOGLE_CLOUD_PROJECT", "")
-        t.Setenv("SLOGCP_GCP_PARENT", "")
-        t.Setenv("SLOGCP_PROJECT_ID", "")
-        t.Setenv("SLOGCP_LOG_TARGET", "")
+	output := captureOutput(t, &os.Stdout, func() {
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/dev/null/nonexistent.json")
+		t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+		t.Setenv("SLOGCP_GCP_PARENT", "")
+		t.Setenv("SLOGCP_PROJECT_ID", "")
+		t.Setenv("SLOGCP_LOG_TARGET", "")
 
-        l, err := slogcp.New()
-        if err != nil {
-            t.Fatalf("create logger error: %v", err)
-        }
-        defer l.Close()
-        if !l.IsInFallbackMode() {
-            t.Error("IsInFallbackMode false, want true")
-        }
-        l.Info("fallback test message")
-        _ = l.Flush()
-    })
+		l, err := slogcp.New()
+		if err != nil {
+			t.Fatalf("create logger error: %v", err)
+		}
+		defer l.Close()
+		if !l.IsInFallbackMode() {
+			t.Error("IsInFallbackMode false, want true")
+		}
+		l.Info("fallback test message")
+		_ = l.Flush()
+	})
 
-    if !strings.Contains(output, "fallback test message") {
-        t.Errorf("fallback log message missing; got %q", output)
-    }
-    if !strings.Contains(output, "\"severity\":\"INFO\"") {
-        t.Error("log not recognized as structured JSON")
-    }
+	if !strings.Contains(output, "fallback test message") {
+		t.Errorf("fallback log message missing; got %q", output)
+	}
+	if !strings.Contains(output, "\"severity\":\"INFO\"") {
+		t.Error("log not recognized as structured JSON")
+	}
 }
 
 // TestLogLevelFromEnvironment verifies that log level can be set via environment variable
