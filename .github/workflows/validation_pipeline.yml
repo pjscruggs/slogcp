@@ -115,6 +115,12 @@ jobs:
         run: |
           go test -v -race -tags=smoke -coverprofile=coverage-smoke.out ./...
 
+      - name: 🧪 Run Unit Tests (Tier 2)
+        if: success()
+        id: go-unit-tests
+        run: |
+          go test -v -race -tags=unit -coverprofile=coverage-unit.out ./...
+
       - name: 📄 Print Coverage Report
         if: always()
         run: |
@@ -123,6 +129,10 @@ jobs:
             cat coverage-smoke.out
           else
             echo "Coverage file (coverage-smoke.out) not found."
+          fi
+          if [ -f coverage-unit.out ]; then
+            echo "--- Unit Test Coverage ---"
+            cat coverage-unit.out
           fi
           echo "---------------------"
       
