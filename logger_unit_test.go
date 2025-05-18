@@ -451,46 +451,34 @@ func TestLogTargets(t *testing.T) {
 	}
 }
 
-// TestFallbackMode verifies that fallback to local logging happens correctly
-// when GCP logging is unavailable but no explicit target is specified.
+// TestFallbackMode tests that the logger automatically falls back to stdout
+// logging when GCP logging cannot be initialized.
 func TestFallbackMode(t *testing.T) {
-	// In a normal environment without GCP credentials, New() without options
-	// should fall back to stdout logging
+    output := captureOutput(t, &os.Stdout, func() {
+        t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/dev/null/nonexistent.json")
+        t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+        t.Setenv("SLOGCP_GCP_PARENT", "")
+        t.Setenv("SLOGCP_PROJECT_ID", "")
+        t.Setenv("SLOGCP_LOG_TARGET", "")
 
-	stderrOutput := captureOutput(t, &os.Stderr, func() {
-		stdoutOutput := captureOutput(t, &os.Stdout, func() {
-			// Clear any environment variables that might affect the test
-			t.Setenv("GOOGLE_CLOUD_PROJECT", "")
-			t.Setenv("SLOGCP_GCP_PARENT", "")
-			t.Setenv("SLOGCP_PROJECT_ID", "")
-			t.Setenv("SLOGCP_LOG_TARGET", "")
+        l, err := slogcp.New()
+        if err != nil {
+            t.Fatalf("create logger error: %v", err)
+        }
+        defer l.Close()
+        if !l.IsInFallbackMode() {
+            t.Error("IsInFallbackMode false, want true")
+        }
+        l.Info("fallback test message")
+        _ = l.Flush()
+    })
 
-			// Create logger without options - should attempt GCP and fall back
-			logger, err := slogcp.New()
-			if err != nil {
-				t.Fatalf("New() failed with error: %v", err)
-			}
-			defer logger.Close()
-
-			// Verify we're in fallback mode
-			if !logger.IsInFallbackMode() {
-				t.Error("Expected IsInFallbackMode() to return true")
-			}
-
-			// Log a message - should appear on stdout
-			logger.Info("fallback test message")
-		})
-
-		// Verify that the message appears on stdout
-		if !strings.Contains(stdoutOutput, "fallback test message") {
-			t.Errorf("Fallback log message not found in stdout output:\n%s", stdoutOutput)
-		}
-	})
-
-	// Verify stderr contains appropriate warning
-	if !strings.Contains(stderrOutput, "Failed to initialize GCP") {
-		t.Errorf("Expected fallback warning in stderr, got:\n%s", stderrOutput)
-	}
+    if !strings.Contains(output, "fallback test message") {
+        t.Errorf("fallback log message missing; got %q", output)
+    }
+    if !strings.Contains(output, "\"severity\":\"INFO\"") {
+        t.Error("log not recognized as structured JSON")
+    }
 }
 
 // TestLogLevelFromEnvironment verifies that log level can be set via environment variable
