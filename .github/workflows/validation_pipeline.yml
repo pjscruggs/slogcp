@@ -10,6 +10,7 @@ permissions:
   contents: write
   pull-requests: read
   security-events: write
+  checks: write
 jobs:
   validation:
     name: Fix and Validate Code
@@ -142,3 +143,102 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           echo "Running vulnerability check..."
           govulncheck ./...
+
+  e2e_gatekeeper:
+    name: E2E Test Gatekeeper
+    needs: validation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      checks: write
+      contents: read
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      
+      - name: Create/Update E2E Check Run
+        id: create_check
+        uses: actions/github-script@4afd733a84b1f43292c63897423277bb7f4313a9 # v7
+        with:
+          script: |
+            const checkName = 'E2E Tests (GCP)';
+            const prNumber = context.payload.pull_request.number;
+            const sha = context.payload.pull_request.head.sha;
+            
+            // Create initial check run
+            const { data: checkRun } = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: checkName,
+              head_sha: sha,
+              status: 'queued',
+              output: {
+                title: checkName,
+                summary: 'E2E tests are queued...'
+              }
+            });
+            
+            core.setOutput('check_run_id', checkRun.id);
+            return checkRun.id;
+      
+      - name: Determine E2E Trigger Type
+        id: trigger_type
+        run: |
+          if [[ "${{ github.actor }}" == "renovate[bot]" ]]; then
+            echo "should_auto_trigger=true" >> $GITHUB_OUTPUT
+            echo "📦 Renovate PR detected - will auto-trigger E2E tests"
+          else
+            echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
+            echo "👤 Human PR detected - E2E tests require manual trigger"
+          fi
+      
+      - name: Update Check for Manual Trigger Required
+        if: steps.trigger_type.outputs.should_auto_trigger == 'false'
+        uses: actions/github-script@4afd733a84b1f43292c63897423277bb7f4313a9 # v7
+        with:
+          script: |
+            await github.rest.checks.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              check_run_id: ${{ steps.create_check.outputs.check_run_id }},
+              status: 'completed',
+              conclusion: 'action_required',
+              completed_at: new Date().toISOString(),
+              output: {
+                title: 'E2E Tests (GCP) - Manual Trigger Required',
+                summary: `⚠️ E2E tests require manual trigger by a maintainer after code review.
+                
+                A repository maintainer can trigger E2E tests by:
+                1. Going to Actions → "Manual E2E Test Trigger" workflow
+                2. Click "Run workflow" and enter PR number: ${{ github.event.pull_request.number }}
+                
+                This check must pass before the PR can be merged.`
+              }
+            });
+      
+      - name: Generate App Token for E2E Dispatch
+        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        id: app_token
+        uses: actions/create-github-app-token@5d869da34e18e7287c1daad50e0b8ea0f506ce69 # v1
+        with:
+          app-id: ${{ secrets.APP_ID_DISPATCH }}
+          private-key: ${{ secrets.PRIVATE_KEY_DISPATCH }}
+          owner: pjscruggs
+          repositories: slogcp-test
+      
+      - name: Dispatch E2E Tests
+        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
+        with:
+          token: ${{ steps.app_token.outputs.token }}
+          repository: pjscruggs/slogcp-test
+          event-type: e2e-test
+          client-payload: |
+            {
+              "lib_repo_full_name": "${{ github.repository }}",
+              "pr_sha": "${{ github.event.pull_request.head.sha }}",
+              "pr_number": "${{ github.event.pull_request.number }}",
+              "lib_run_id": "${{ github.run_id }}",
+              "check_run_id": "${{ steps.create_check.outputs.check_run_id }}"
+            }
