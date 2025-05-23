@@ -31,7 +31,7 @@ jobs:
       
       - name: Get PR Information
         id: pr_info
-        uses: actions/github-script@4afd733a84b1f43292c63897423277bb7f4313a9 # v7
+        uses: actions/github-script@v7
         with:
           script: |
             const pr = await github.rest.pulls.get({
@@ -51,7 +51,7 @@ jobs:
       
       - name: Find and Update E2E Check Run
         id: update_check
-        uses: actions/github-script@4afd733a84b1f43292c63897423277bb7f4313a9 # v7
+        uses: actions/github-script@v7
         with:
           script: |
             const checkName = 'E2E Tests (GCP)';
@@ -102,7 +102,7 @@ jobs:
       
       - name: Generate App Token for E2E Dispatch
         id: app_token
-        uses: actions/create-github-app-token@5d869da34e18e7287c1daad50e0b8ea0f506ce69 # v1
+        uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.APP_ID_DISPATCH }}
           private-key: ${{ secrets.PRIVATE_KEY_DISPATCH }}
@@ -110,7 +110,7 @@ jobs:
           repositories: slogcp-test
       
       - name: Dispatch E2E Tests
-        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
+        uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ steps.app_token.outputs.token }}
           repository: pjscruggs/slogcp-test
@@ -125,12 +125,12 @@ jobs:
             }
       
       - name: Add PR Comment
-        uses: actions/github-script@4afd733a84b1f43292c63897423277bb7f4313a9 # v7
+        uses: actions/github-script@v7
         with:
           script: |
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: ${{ github.event.inputs.pr_number }},
-              body: `🚀 E2E tests manually triggered by @${context.actor}\n\nView progress in the [E2E Tests (GCP) check](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ github.event.inputs.pr_number }}/checks)`
+              body: `🧪 E2E tests manually triggered by @${context.actor}\n\nView progress in the [E2E Tests (GCP) check](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ github.event.inputs.pr_number }}/checks)`
             });
