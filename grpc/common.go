@@ -45,8 +45,8 @@ const (
 	metadataValuesKey      = "values"                // Used within metadata groups to hold the actual values
 
 	// Panic recovery logging - used when a handler panics
-	panicValueKey = "panic.value" // The value recovered from the panic
-	panicStackKey = "panic.stack" // Formatted stack trace from the panic site
+	panicValueKey = "panic.value"       // The value recovered from the panic
+	panicStackKey = "panic.stack_trace" // Formatted stack trace from the panic site
 
 	// Buffer size for stack trace capture during panic recovery
 	// 8KB is typically sufficient for capturing the relevant part of deep stacks
