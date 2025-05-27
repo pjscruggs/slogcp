@@ -12,7 +12,7 @@ permissions:
   checks: write
   contents: read
   pull-requests: read
-  issues: write  # For PR comments
+  issues: write
 
 jobs:
   trigger_e2e:
@@ -108,7 +108,7 @@ jobs:
           private-key: ${{ secrets.PRIVATE_KEY_DISPATCH }}
           owner: pjscruggs
           repositories: slogcp-test
-      
+          
       - name: Dispatch E2E Tests
         uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
         with:
@@ -127,7 +127,7 @@ jobs:
       - name: Add PR Comment
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ github.token }}
           script: |
             await github.rest.issues.createComment({
               owner: context.repo.owner,
