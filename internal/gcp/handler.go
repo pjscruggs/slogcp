@@ -111,6 +111,9 @@ func (h *gcpHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	// Output mode
 	if h.cfg.LogTarget == LogTargetGCP {
+		if stackStr != "" {
+			payload[stackTraceKey] = stackStr
+		}
 		return h.emitGCPEntry(r, payload, httpReq, sourceLoc, fmtTrace, rawSpanID, sampled)
 	}
 	return h.emitRedirectJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr)

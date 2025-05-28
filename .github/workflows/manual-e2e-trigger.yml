@@ -11,8 +11,8 @@ on:
 permissions:
   checks: write
   contents: read
-  pull-requests: read
-  issues: write  # For PR comments
+  pull-requests: write
+  issues: write
 
 jobs:
   trigger_e2e:
@@ -108,7 +108,7 @@ jobs:
           private-key: ${{ secrets.PRIVATE_KEY_DISPATCH }}
           owner: pjscruggs
           repositories: slogcp-test
-      
+          
       - name: Dispatch E2E Tests
         uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
         with:
