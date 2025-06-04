@@ -86,7 +86,13 @@ func NewGcpHandler(
 }
 
 // Enabled reports whether the given log level should be handled by this handler.
+// It returns true if the level meets the minimum severity threshold, with a special
+// exception for DEFAULT severity which is always allowed through as it represents
+// "no assigned severity level" in Google Cloud Logging.
 func (h *gcpHandler) Enabled(_ context.Context, level slog.Level) bool {
+	if level == slog.Level(internalLevelDefault) {
+		return true
+	}
 	min := slog.LevelInfo
 	if h.leveler != nil {
 		min = h.leveler.Level()
