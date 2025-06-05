@@ -280,7 +280,8 @@ func TestSourceLocation(t *testing.T) {
 }
 
 // TestDynamicLogLevels validates that log levels can be set and changed
-// during runtime and that messages are filtered appropriately.func TestDynamicLogLevels(t *testing.T) {
+// during runtime and that messages are filtered appropriately.
+func TestDynamicLogLevels(t *testing.T) {
 	// Create a test that verifies all the extended log levels provided by slogcp
 	levels := []struct {
 		name  string
