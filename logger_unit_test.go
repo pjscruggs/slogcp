@@ -336,7 +336,6 @@ func TestDynamicLogLevels(t *testing.T) {
 				if line == "" {
 					continue
 				}
-
 				var entry map[string]interface{}
 				if err := json.Unmarshal([]byte(line), &entry); err != nil {
 					t.Errorf("Failed to parse JSON log entry: %v", err)
@@ -346,10 +345,10 @@ func TestDynamicLogLevels(t *testing.T) {
 			}
 
 			// Verify that only messages at or above the set level appear
+			// Special case: DEFAULT level always appears regardless of minimum level
 			for j, checkLvl := range levels {
-				levelShouldAppear := j >= i // current level index >= test level index
+				levelShouldAppear := j >= i || checkLvl.name == "Default"
 				levelName := strings.ToLower(checkLvl.name)
-
 				found := false
 				for _, entry := range logEntries {
 					msg, _ := entry["message"].(string)
