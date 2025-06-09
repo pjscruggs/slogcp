@@ -90,7 +90,7 @@ func NewGcpHandler(
 // exception for DEFAULT severity which is always allowed through as it represents
 // "no assigned severity level" in Google Cloud Logging.
 func (h *gcpHandler) Enabled(_ context.Context, level slog.Level) bool {
-	if level == slog.Level(internalLevelDefault) {
+	if level == internalLevelDefault {
 		return true
 	}
 	min := slog.LevelInfo
