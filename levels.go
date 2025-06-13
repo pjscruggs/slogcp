@@ -37,10 +37,6 @@ type Level slog.Level
 // The values are chosen to maintain order and provide some spacing,
 // aligning with the slog philosophy while covering all GCP levels.
 const (
-	// LevelDefault maps to GCP DEFAULT (0) severity. This is used for unspecified
-	// or unknown severity, and sorts below Debug in the severity hierarchy.
-	// In GCP, this appears with a gray "—" (em dash) in the console.
-	LevelDefault Level = -8
 
 	// LevelDebug maps to GCP DEBUG (100) severity, directly corresponding to
 	// the standard slog.LevelDebug (-4). This level is used for detailed debugging
@@ -85,6 +81,11 @@ const (
 	// level, used when the system is unusable or in a catastrophic failure.
 	// In GCP, this appears with a red "E!" in the console.
 	LevelEmergency Level = 20
+
+	// LevelDefault maps to GCP DEFAULT (0) severity. This is used for unspecified
+	// or unknown severity, and sorts below Debug in the severity hierarchy.
+	// In GCP, this appears with a gray "—" (em dash) in the console.
+	LevelDefault Level = 30
 )
 
 // String returns the canonical string representation of the Level, matching
@@ -97,68 +98,35 @@ const (
 // Note that when logging to GCP, the String representation is not used directly;
 // the numeric value is mapped to the appropriate GCP severity.
 func (l Level) String() string {
-	// First check for exact matches with defined constants
-	switch l {
-	case LevelDefault:
-		return "DEFAULT"
-	case LevelDebug:
-		return "DEBUG"
-	case LevelInfo:
-		return "INFO"
-	case LevelNotice:
-		return "NOTICE"
-	case LevelWarn:
-		return "WARN" // Note: GCP uses WARNING, but slog uses WARN. Keep WARN for consistency.
-	case LevelError:
-		return "ERROR"
-	case LevelCritical:
-		return "CRITICAL"
-	case LevelAlert:
-		return "ALERT"
-	case LevelEmergency:
-		return "EMERGENCY"
+	// formatWithOffset is a helper to create the final string representation.
+	formatWithOffset := func(baseName string, offset Level) string {
+		if offset == 0 {
+			return baseName
+		}
+		return fmt.Sprintf("%s%+d", baseName, offset)
 	}
 
-	// For intermediate values, find the nearest lower defined level
-	var baseLevel Level
-	var baseName string
-
+	// Check level ranges from lowest to highest.
 	switch {
+	case l < LevelInfo:
+		return formatWithOffset("DEBUG", l-LevelDebug)
+	case l < LevelNotice:
+		return formatWithOffset("INFO", l-LevelInfo)
+	case l < LevelWarn:
+		return formatWithOffset("NOTICE", l-LevelNotice)
+	case l < LevelError:
+		return formatWithOffset("WARN", l-LevelWarn)
+	case l < LevelCritical:
+		return formatWithOffset("ERROR", l-LevelError)
+	case l < LevelAlert:
+		return formatWithOffset("CRITICAL", l-LevelCritical)
+	case l < LevelEmergency:
+		return formatWithOffset("ALERT", l-LevelAlert)
 	case l < LevelDefault:
-		// For levels below DEFAULT, fall back to standard slog behavior
-		return slog.Level(l).String()
-	case l < LevelDebug: // Between DEFAULT and DEBUG
-		baseLevel = LevelDefault
-		baseName = "DEFAULT"
-	case l < LevelInfo: // Between DEBUG and INFO
-		baseLevel = LevelDebug
-		baseName = "DEBUG"
-	case l < LevelNotice: // Between INFO and NOTICE
-		baseLevel = LevelInfo
-		baseName = "INFO"
-	case l < LevelWarn: // Between NOTICE and WARN
-		baseLevel = LevelNotice
-		baseName = "NOTICE"
-	case l < LevelError: // Between WARN and ERROR
-		baseLevel = LevelWarn
-		baseName = "WARN"
-	case l < LevelCritical: // Between ERROR and CRITICAL
-		baseLevel = LevelError
-		baseName = "ERROR"
-	case l < LevelAlert: // Between CRITICAL and ALERT
-		baseLevel = LevelCritical
-		baseName = "CRITICAL"
-	case l < LevelEmergency: // Between ALERT and EMERGENCY
-		baseLevel = LevelAlert
-		baseName = "ALERT"
-	default: // Above EMERGENCY
-		baseLevel = LevelEmergency
-		baseName = "EMERGENCY"
+		return formatWithOffset("EMERGENCY", l-LevelEmergency)
+	default: // level >= LevelDefault
+		return formatWithOffset("DEFAULT", l-LevelDefault)
 	}
-
-	// Calculate the offset and format the string
-	offset := int(l - baseLevel)
-	return fmt.Sprintf("%s+%d", baseName, offset)
 }
 
 // Level returns the underlying slog.Level value. This method allows slogcp.Level

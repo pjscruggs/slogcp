@@ -24,11 +24,11 @@ import (
 // Internal constants defining additional log severity levels beyond standard slog levels,
 // mirroring the values used in the public slogcp package's Level type.
 const (
-	internalLevelDefault   slog.Level = -8 // DEFAULT severity
 	internalLevelNotice    slog.Level = 2  // NOTICE severity
 	internalLevelCritical  slog.Level = 12 // CRITICAL severity
 	internalLevelAlert     slog.Level = 16 // ALERT severity
 	internalLevelEmergency slog.Level = 20 // EMERGENCY severity
+	internalLevelDefault   slog.Level = 30 // DEFAULT severity
 )
 
 // mapSlogLevelToGcpSeverity converts an slog.Level to the corresponding
@@ -36,8 +36,6 @@ const (
 // and the extended levels defined internally.
 func mapSlogLevelToGcpSeverity(level slog.Level) logging.Severity {
 	switch {
-	case level < slog.LevelDebug: // Covers Default (-8) and lower
-		return logging.Default
 	case level < slog.LevelInfo: // Covers Debug (-4) up to Info
 		return logging.Debug
 	case level < internalLevelNotice: // Covers Info (0) up to Notice
@@ -52,7 +50,9 @@ func mapSlogLevelToGcpSeverity(level slog.Level) logging.Severity {
 		return logging.Critical
 	case level < internalLevelEmergency: // Covers Alert (16) up to Emergency
 		return logging.Alert
-	default: // Covers Emergency (20) and higher
+	case level == internalLevelDefault: // Catches exactly the Default level (30)
+		return logging.Default
+	default: // Catches Emergency (20) and any higher custom levels
 		return logging.Emergency
 	}
 }
@@ -63,68 +63,33 @@ func mapSlogLevelToGcpSeverity(level slog.Level) logging.Severity {
 // defined level plus the offset (e.g., "DEFAULT+1", "INFO+1", "NOTICE+1").
 // This is used by the handler in RedirectAsJSON mode for the "severity" field.
 func levelToString(level slog.Level) string {
-	// Check for exact matches with defined constants (both slog standard and internal extended)
-	switch level {
-	case internalLevelDefault:
-		return "DEFAULT"
-	case slog.LevelDebug:
-		return "DEBUG"
-	case slog.LevelInfo:
-		return "INFO"
-	case internalLevelNotice:
-		return "NOTICE"
-	case slog.LevelWarn:
-		// Note: GCP uses 'WARNING', but slog uses 'WARN'. Use GCP name for structured JSON output.
-		return "WARNING"
-	case slog.LevelError:
-		return "ERROR"
-	case internalLevelCritical:
-		return "CRITICAL"
-	case internalLevelAlert:
-		return "ALERT"
-	case internalLevelEmergency:
-		return "EMERGENCY"
+	// Helper to format the string with an offset.
+	formatWithOffset := func(baseName string, offset slog.Level) string {
+		if offset == 0 {
+			return baseName
+		}
+		return fmt.Sprintf("%s%+d", baseName, offset)
 	}
 
-	// For intermediate values, find the nearest lower defined level and name
-	var baseLevel slog.Level
-	var baseName string
-
+	// Handle levels by finding the correct range.
 	switch {
+	case level < slog.LevelInfo:
+		return formatWithOffset("DEBUG", level-slog.LevelDebug)
+	case level < internalLevelNotice:
+		return formatWithOffset("INFO", level-slog.LevelInfo)
+	case level < slog.LevelWarn:
+		return formatWithOffset("NOTICE", level-internalLevelNotice)
+	case level < slog.LevelError:
+		return formatWithOffset("WARNING", level-slog.LevelWarn)
+	case level < internalLevelCritical:
+		return formatWithOffset("ERROR", level-slog.LevelError)
+	case level < internalLevelAlert:
+		return formatWithOffset("CRITICAL", level-internalLevelCritical)
+	case level < internalLevelEmergency:
+		return formatWithOffset("ALERT", level-internalLevelAlert)
 	case level < internalLevelDefault:
-		// For levels below DEFAULT, use "DEFAULT-[offset]" for clarity
-		offset := int(internalLevelDefault - level)
-		return fmt.Sprintf("DEFAULT-%d", offset)
-	case level < slog.LevelDebug: // Between DEFAULT and DEBUG
-		baseLevel = internalLevelDefault
-		baseName = "DEFAULT"
-	case level < slog.LevelInfo: // Between DEBUG and INFO
-		baseLevel = slog.LevelDebug
-		baseName = "DEBUG"
-	case level < internalLevelNotice: // Between INFO and NOTICE
-		baseLevel = slog.LevelInfo
-		baseName = "INFO"
-	case level < slog.LevelWarn: // Between NOTICE and WARN
-		baseLevel = internalLevelNotice
-		baseName = "NOTICE"
-	case level < slog.LevelError: // Between WARN and ERROR
-		baseLevel = slog.LevelWarn
-		baseName = "WARNING" // Use GCP name
-	case level < internalLevelCritical: // Between ERROR and CRITICAL
-		baseLevel = slog.LevelError
-		baseName = "ERROR"
-	case level < internalLevelAlert: // Between CRITICAL and ALERT
-		baseLevel = internalLevelCritical
-		baseName = "CRITICAL"
-	case level < internalLevelEmergency: // Between ALERT and EMERGENCY
-		baseLevel = internalLevelAlert
-		baseName = "ALERT"
-	default: // Above EMERGENCY
-		baseLevel = internalLevelEmergency
-		baseName = "EMERGENCY"
+		return formatWithOffset("EMERGENCY", level-internalLevelEmergency)
+	default: // level >= internalLevelDefault
+		return formatWithOffset("DEFAULT", level-internalLevelDefault)
 	}
-
-	// Calculate the offset and format the string
-	offset := int(level - baseLevel)
-	return fmt.Sprintf("%s+%d", baseName, offset)
 }
