@@ -298,7 +298,12 @@ func TestDynamicLogLevels(t *testing.T) {
 		{"Emergency", slogcp.LevelEmergency.Level()},
 	}
 
-	for i, lvl := range levels {
+	// Sort the levels by their integer value to ensure the test loop is logical.
+	sort.Slice(levels, func(i, j int) bool {
+		return levels[i].level < levels[j].level
+	})
+
+	for _, lvl := range levels {
 		t.Run(lvl.name, func(t *testing.T) {
 			output := captureOutput(t, &os.Stdout, func() {
 				logger, err := slogcp.New(
@@ -344,10 +349,9 @@ func TestDynamicLogLevels(t *testing.T) {
 				logEntries = append(logEntries, entry)
 			}
 
-			// Verify that only messages at or above the set level appear
-			// Special case: DEFAULT level always appears regardless of minimum level
-			for j, checkLvl := range levels {
-				levelShouldAppear := j >= i || checkLvl.name == "Default"
+			// Verify that only messages at or above the set level appear.
+			for _, checkLvl := range levels {
+				levelShouldAppear := checkLvl.level >= lvl.level
 				levelName := strings.ToLower(checkLvl.name)
 				found := false
 				for _, entry := range logEntries {

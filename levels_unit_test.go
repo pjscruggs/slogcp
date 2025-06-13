@@ -33,7 +33,6 @@ func TestLevel_String(t *testing.T) {
 		name  string // Descriptive name for t.Run subtest
 	}{
 		// Test cases cover exact matches for defined constants
-		{slogcp.LevelDefault, "DEFAULT", "LevelDefault"},
 		{slogcp.LevelDebug, "DEBUG", "LevelDebug"},
 		{slogcp.LevelInfo, "INFO", "LevelInfo"},
 		{slogcp.LevelNotice, "NOTICE", "LevelNotice"},
@@ -42,29 +41,31 @@ func TestLevel_String(t *testing.T) {
 		{slogcp.LevelCritical, "CRITICAL", "LevelCritical"},
 		{slogcp.LevelAlert, "ALERT", "LevelAlert"},
 		{slogcp.LevelEmergency, "EMERGENCY", "LevelEmergency"},
-		// Test cases cover intermediate values between constants, checking "+N" logic
-		{slogcp.LevelDefault + 1, "DEFAULT+1", "DefaultPlus1"},    // -7
-		{slogcp.LevelDebug - 1, "DEFAULT+3", "BelowDebug"},        // -5
-		{slogcp.LevelDebug + 1, "DEBUG+1", "DebugPlus1"},          // -3
-		{slogcp.LevelInfo - 1, "DEBUG+3", "BelowInfo"},            // -1
-		{slogcp.LevelInfo + 1, "INFO+1", "InfoPlus1"},             // 1
-		{slogcp.LevelNotice - 1, "INFO+1", "BelowNotice"},         // 1
-		{slogcp.LevelNotice + 1, "NOTICE+1", "NoticePlus1"},       // 3
-		{slogcp.LevelWarn - 1, "NOTICE+1", "BelowWarn"},           // 3
-		{slogcp.LevelWarn + 1, "WARN+1", "WarnPlus1"},             // 5
-		{slogcp.LevelError - 1, "WARN+3", "BelowError"},           // 7
-		{slogcp.LevelError + 1, "ERROR+1", "ErrorPlus1"},          // 9
-		{slogcp.LevelCritical - 1, "ERROR+3", "BelowCritical"},    // 11
-		{slogcp.LevelCritical + 1, "CRITICAL+1", "CriticalPlus1"}, // 13
-		{slogcp.LevelAlert - 1, "CRITICAL+3", "BelowAlert"},       // 15
-		{slogcp.LevelAlert + 1, "ALERT+1", "AlertPlus1"},          // 17
-		{slogcp.LevelEmergency - 1, "ALERT+3", "BelowEmergency"},  // 19
-		// Test cases cover edge cases below LevelDefault, verifying delegation to slog.Level.String()
-		{slogcp.LevelDefault - 1, slog.Level(slogcp.LevelDefault - 1).String(), "BelowDefaultDelegation"},    // -9
-		{slogcp.LevelDefault - 5, slog.Level(slogcp.LevelDefault - 5).String(), "FarBelowDefaultDelegation"}, // -13
-		// Test cases cover edge cases far above LevelEmergency
-		{slogcp.LevelEmergency + 1, "EMERGENCY+1", "EmergencyPlus1"},        // 21
-		{slogcp.LevelEmergency + 100, "EMERGENCY+100", "FarAboveEmergency"}, // 120
+		{slogcp.LevelDefault, "DEFAULT", "LevelDefault"},
+
+		// Test cases cover intermediate values between constants
+		{slogcp.LevelDebug - 1, "DEBUG-1", "BelowDebug"},             // -5
+		{slogcp.LevelDebug + 1, "DEBUG+1", "DebugPlus1"},             // -3
+		{slogcp.LevelInfo - 1, "DEBUG+3", "BelowInfo"},               // -1
+		{slogcp.LevelInfo + 1, "INFO+1", "InfoPlus1"},                // 1
+		{slogcp.LevelNotice - 1, "INFO+1", "BelowNotice"},            // 1
+		{slogcp.LevelNotice + 1, "NOTICE+1", "NoticePlus1"},          // 3
+		{slogcp.LevelWarn - 1, "NOTICE+1", "BelowWarn"},              // 3
+		{slogcp.LevelWarn + 1, "WARN+1", "WarnPlus1"},                // 5
+		{slogcp.LevelError - 1, "WARN+3", "BelowError"},              // 7
+		{slogcp.LevelError + 1, "ERROR+1", "ErrorPlus1"},             // 9
+		{slogcp.LevelCritical - 1, "ERROR+3", "BelowCritical"},       // 11
+		{slogcp.LevelCritical + 1, "CRITICAL+1", "CriticalPlus1"},    // 13
+		{slogcp.LevelAlert - 1, "CRITICAL+3", "BelowAlert"},          // 15
+		{slogcp.LevelAlert + 1, "ALERT+1", "AlertPlus1"},             // 17
+		{slogcp.LevelEmergency - 1, "ALERT+3", "BelowEmergency"},     // 19
+		{slogcp.LevelEmergency + 1, "EMERGENCY+1", "EmergencyPlus1"}, // 21
+		{slogcp.LevelDefault - 1, "EMERGENCY+9", "BelowDefault"},     // 29
+		{slogcp.LevelDefault + 1, "DEFAULT+1", "DefaultPlus1"},       // 31
+
+		// Test cases cover edge cases far below and far above defined levels
+		{slogcp.LevelDebug - 10, "DEBUG-10", "FarBelowDebug"},         // -14
+		{slogcp.LevelDefault + 100, "DEFAULT+100", "FarAboveDefault"}, // 130
 	}
 
 	for _, tc := range testCases {
