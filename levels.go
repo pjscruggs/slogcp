@@ -41,50 +41,41 @@ const (
 	// LevelDebug maps to GCP DEBUG (100) severity, directly corresponding to
 	// the standard slog.LevelDebug (-4). This level is used for detailed debugging
 	// information that would be excessive at higher levels.
-	// In GCP, this appears with a gray "D" in the console.
 	LevelDebug Level = Level(slog.LevelDebug) // -4
 
 	// LevelInfo maps to GCP INFO (200) severity, directly corresponding to
 	// the standard slog.LevelInfo (0). This is the default level for routine
 	// operational messages confirming normal operation.
-	// In GCP, this appears with a blue "I" in the console.
 	LevelInfo Level = Level(slog.LevelInfo) // 0
 
 	// LevelNotice maps to GCP NOTICE (300) severity. This sits between Info and
 	// Warn, used for significant but expected events worth highlighting.
-	// In GCP, this appears with a blue "N" in the console.
 	LevelNotice Level = 2
 
 	// LevelWarn maps to GCP WARNING (400) severity, directly corresponding to
 	// the standard slog.LevelWarn (4). Used for potentially harmful situations
 	// or unexpected states that might indicate a problem.
-	// In GCP, this appears with a yellow "W" in the console.
 	LevelWarn Level = Level(slog.LevelWarn) // 4
 
 	// LevelError maps to GCP ERROR (500) severity, directly corresponding to
 	// the standard slog.LevelError (8). Used for runtime errors that require
 	// attention but don't necessarily impact overall application function.
-	// In GCP, this appears with a red "E" in the console.
 	LevelError Level = Level(slog.LevelError) // 8
 
 	// LevelCritical maps to GCP CRITICAL (600) severity. This is more severe
 	// than Error, used for severe runtime errors that prevent some function.
-	// In GCP, this appears with a red "C" in the console.
 	LevelCritical Level = 12
 
 	// LevelAlert maps to GCP ALERT (700) severity. This indicates that action
 	// must be taken immediately, such as when a component becomes unavailable.
-	// In GCP, this appears with a red "A" in the console.
 	LevelAlert Level = 16
 
 	// LevelEmergency maps to GCP EMERGENCY (800) severity. The highest severity
 	// level, used when the system is unusable or in a catastrophic failure.
-	// In GCP, this appears with a red "E!" in the console.
 	LevelEmergency Level = 20
 
 	// LevelDefault maps to GCP DEFAULT (0) severity. This is used for unspecified
 	// or unknown severity, and sorts below Debug in the severity hierarchy.
-	// In GCP, this appears with a gray "—" (em dash) in the console.
 	LevelDefault Level = 30
 )
 
