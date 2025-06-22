@@ -28,7 +28,6 @@ import (
 
 	"cloud.google.com/go/logging"
 	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
-	logtypepb "google.golang.org/genproto/googleapis/logging/type"
 )
 
 // entryLogger defines the minimal interface for sending log entries.
@@ -207,17 +206,13 @@ func (h *gcpHandler) emitGCPEntry(
 	}
 	entry := logging.Entry{
 		Timestamp:      ts,
+		Severity:       sev,
 		Payload:        payload,
 		Trace:          fmtTrace,
 		SpanID:         spanID,
 		TraceSampled:   sampled,
 		SourceLocation: sourceLoc,
 		HTTPRequest:    httpReq,
-	}
-
-	// Only set severity if we're not trying to log with the "DEFAULT" level,
-	if int(sev) != int(logtypepb.LogSeverity_DEFAULT) {
-		entry.Severity = sev
 	}
 
 	h.entryLog.Log(entry)
