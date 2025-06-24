@@ -27,6 +27,22 @@ import (
 	"github.com/pjscruggs/slogcp/internal/gcp"
 )
 
+// LabelsGroup is the special slog.Group name used to specify dynamic labels
+// that should be added to the Cloud Logging labels field rather than the
+// jsonPayload. Attributes within this group are automatically converted to
+// strings and merged with any common labels configured via WithGCPCommonLabel.
+//
+// Example:
+//
+//	logger.Info("user action",
+//	    slog.Group(slogcp.LabelsGroup,
+//	        slog.String("user_id", "u123"),
+//	        slog.String("action", "login"),
+//	        slog.Bool("success", true),  // Converted to "true"
+//	    ),
+//	)
+const LabelsGroup = "logging.googleapis.com/labels"
+
 // Logger wraps slog.Logger to provide GCP-specific logging features or
 // fallback structured JSON logging to standard output/error/file.
 //
