@@ -108,24 +108,25 @@ func (h *gcpHandler) Handle(ctx context.Context, r slog.Record) error {
 	// Extract trace info
 	fmtTrace, rawTraceID, rawSpanID, sampled, _ := ExtractTraceSpan(ctx, h.cfg.ProjectID)
 
-	// Build payload and extract HTTP request, error and stack details
-	payload, httpReq, errType, errMsg, stackStr := h.buildPayload(r)
+	// Build payload and extract HTTP request, error, stack details, and labels
+	payload, httpReq, errType, errMsg, stackStr, dynamicLabels := h.buildPayload(r)
 
 	// Output mode
 	if h.cfg.LogTarget == LogTargetGCP {
 		if stackStr != "" {
 			payload[stackTraceKey] = stackStr
 		}
-		return h.emitGCPEntry(r, payload, httpReq, sourceLoc, fmtTrace, rawSpanID, sampled)
+		return h.emitGCPEntry(r, payload, httpReq, sourceLoc, fmtTrace, rawSpanID, sampled, dynamicLabels)
 	}
-	return h.emitRedirectJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr)
+	return h.emitRedirectJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr, dynamicLabels)
 }
 
-// buildPayload assembles the structured payload, extracts HTTPRequest, error type/message, and stack trace.
+// buildPayload assembles the structured payload, extracts HTTPRequest, error type/message, stack trace, and labels.
 func (h *gcpHandler) buildPayload(r slog.Record) (
 	map[string]any,
 	*logging.HTTPRequest,
 	string, string, string,
+	map[string]string,
 ) {
 	// Capture base state
 	h.mu.Lock()
@@ -137,8 +138,9 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 	var httpReq *logging.HTTPRequest
 	var firstErr error
 	var stackStr string
+	dynamicLabels := make(map[string]string)
 
-	// processAttr applies replacer and fills payload
+	// processAttr applies replacer and fills payload or labels
 	processAttr := func(ga groupedAttr) {
 		a := ga.attr
 		if h.cfg.ReplaceAttrFunc != nil {
@@ -147,12 +149,32 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 				return
 			}
 		}
+
+		// Check if we're in the special labels group
+		inLabelsGroup := false
+		for _, g := range ga.groups {
+			if g == "logging.googleapis.com/labels" {
+				inLabelsGroup = true
+				break
+			}
+		}
+
+		if inLabelsGroup {
+			// Convert value to string and add to labels
+			val := resolveSlogValue(a.Value)
+			if val != nil {
+				dynamicLabels[a.Key] = convertToString(val)
+			}
+			return
+		}
+
 		if a.Key == httpRequestKey {
 			if req, ok := a.Value.Any().(*logging.HTTPRequest); ok && httpReq == nil {
 				httpReq = req
 			}
 			return
 		}
+
 		val := resolveSlogValue(a.Value)
 		if errVal, ok := val.(error); ok && firstErr == nil {
 			firstErr = errVal
@@ -184,7 +206,7 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 		}
 	}
 
-	return payload, httpReq, errType, errMsg, stackStr
+	return payload, httpReq, errType, errMsg, stackStr, dynamicLabels
 }
 
 // emitGCPEntry logs a structured Entry to Cloud Logging.
@@ -195,6 +217,7 @@ func (h *gcpHandler) emitGCPEntry(
 	sourceLoc *loggingpb.LogEntrySourceLocation,
 	fmtTrace, spanID string,
 	sampled bool,
+	dynamicLabels map[string]string,
 ) error {
 	sev := mapSlogLevelToGcpSeverity(r.Level)
 	ts := r.Time
@@ -204,10 +227,26 @@ func (h *gcpHandler) emitGCPEntry(
 	if r.Message != "" {
 		payload[messageKey] = r.Message
 	}
+
+	// Merge common labels with dynamic labels (dynamic takes precedence)
+	var labels map[string]string
+	if len(h.cfg.GCPCommonLabels) > 0 || len(dynamicLabels) > 0 {
+		labels = make(map[string]string)
+		// Start with common labels
+		for k, v := range h.cfg.GCPCommonLabels {
+			labels[k] = v
+		}
+		// Override with dynamic labels
+		for k, v := range dynamicLabels {
+			labels[k] = v
+		}
+	}
+
 	entry := logging.Entry{
 		Timestamp:      ts,
 		Severity:       sev,
 		Payload:        payload,
+		Labels:         labels,
 		Trace:          fmtTrace,
 		SpanID:         spanID,
 		TraceSampled:   sampled,
@@ -228,6 +267,7 @@ func (h *gcpHandler) emitRedirectJSON(
 	fmtTrace, rawTrace, spanID string,
 	sampled bool,
 	errType, errMsg, stackStr string,
+	dynamicLabels map[string]string,
 ) error {
 	if h.redirectWriter == nil {
 		return errors.New("slogcp: redirect mode but no writer configured")
@@ -259,9 +299,21 @@ func (h *gcpHandler) emitRedirectJSON(
 			jsonPayload["httpRequest"] = m
 		}
 	}
-	if len(h.cfg.GCPCommonLabels) > 0 {
-		jsonPayload["logging.googleapis.com/labels"] = h.cfg.GCPCommonLabels
+
+	// Merge common labels with dynamic labels
+	if len(h.cfg.GCPCommonLabels) > 0 || len(dynamicLabels) > 0 {
+		mergedLabels := make(map[string]string)
+		// Start with common labels
+		for k, v := range h.cfg.GCPCommonLabels {
+			mergedLabels[k] = v
+		}
+		// Override with dynamic labels
+		for k, v := range dynamicLabels {
+			mergedLabels[k] = v
+		}
+		jsonPayload["logging.googleapis.com/labels"] = mergedLabels
 	}
+
 	enc := json.NewEncoder(h.redirectWriter)
 	enc.SetEscapeHTML(false)
 	err := enc.Encode(jsonPayload)
