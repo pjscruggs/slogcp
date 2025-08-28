@@ -2,17 +2,31 @@ name: Validation Pipeline
 on:
   pull_request:
     branches: [ main ]
+  pull_request_target:
+    branches: [ main ]
+    types: [opened, reopened, synchronize]
   merge_group:
     branches: [ main ]
   workflow_dispatch:
   workflow_call:
+
 permissions:
   contents: write
   pull-requests: read
   security-events: write
   checks: write
+
 jobs:
+  # -----------------------------
+  # VALIDATION (runs actual code)
+  # -----------------------------
   validation:
+    # Only run this job on events where it's safe to execute PR code.
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event_name == 'merge_group' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'workflow_call'
     name: Fix and Validate Code
     runs-on: ubuntu-latest
     steps:
@@ -144,55 +158,49 @@ jobs:
           echo "Running vulnerability check..."
           govulncheck ./...
 
+  # -------------------------------------------------------
+  # E2E GATEKEEPER (PR-target; API-only; uses repo secrets)
+  # -------------------------------------------------------
   e2e_gatekeeper:
     name: E2E Test Gatekeeper
-    needs: validation
+    # This job only runs for pull_request_target (safe context with secrets).
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     permissions:
       checks: write
       contents: read
     
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
-      
+      # ⚠️ No checkout here. PR code must not be executed in PR-target.
+
       - name: Create/Update E2E Check Run
         id: create_check
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |
             const checkName = 'E2E Tests (GCP)';
-            const prNumber = context.payload.pull_request.number;
             const sha = context.payload.pull_request.head.sha;
-            
-            // Create initial check run
             const { data: checkRun } = await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               name: checkName,
               head_sha: sha,
               status: 'queued',
-              output: {
-                title: checkName,
-                summary: 'E2E tests are queued...'
-              }
+              output: { title: checkName, summary: 'E2E tests are queued...' }
             });
-            
             core.setOutput('check_run_id', checkRun.id);
-            return checkRun.id;
-      
+
       - name: Determine E2E Trigger Type
         id: trigger_type
         run: |
           if [[ "${{ github.actor }}" == "renovate[bot]" ]]; then
             echo "should_auto_trigger=true" >> $GITHUB_OUTPUT
-            echo "📦 Renovate PR detected - will auto-trigger E2E tests"
+            echo "📦 Renovate PR detected - will auto-trigger E2E tests (after validation passes)"
           else
             echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
             echo "👤 Human PR detected - E2E tests require manual trigger"
           fi
-      
+
       - name: Update Check for Manual Trigger Required
         if: steps.trigger_type.outputs.should_auto_trigger == 'false'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
@@ -208,17 +216,59 @@ jobs:
               output: {
                 title: 'E2E Tests (GCP) - Manual Trigger Required',
                 summary: `⚠️ E2E tests require manual trigger by a maintainer after code review.
-                
+
                 A repository maintainer can trigger E2E tests by:
                 1. Going to Actions → "Manual E2E Test Trigger" workflow
                 2. Click "Run workflow" and enter PR number: ${{ github.event.pull_request.number }}
-                
+
                 This check must pass before the PR can be merged.`
               }
             });
-      
-      - name: Generate App Token for E2E Dispatch
+
+      - name: Wait for Validation to Succeed
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        id: wait_validation
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const ref = context.payload.pull_request.head.sha;
+            const targetCheckName = 'Fix and Validate Code';
+            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            let ok = false;
+
+            for (let i = 0; i < 80; i++) { // ~20 min @ 15s
+              const { data } = await github.rest.checks.listForRef({ owner, repo, ref, filter: 'latest' });
+              const cr = data.check_runs.find(r => r.name === targetCheckName);
+              if (!cr || cr.status === 'queued' || cr.status === 'in_progress') {
+                await sleep(15000);
+                continue;
+              }
+              if (cr.status === 'completed' && cr.conclusion === 'success') { ok = true; break; }
+              core.setFailed(`Validation job conclusion: ${cr?.conclusion || 'unknown'}`);
+              return;
+            }
+            if (!ok) core.setFailed('Validation job did not complete in time');
+            core.setOutput('ok', ok ? 'true' : 'false');
+
+      - name: Detect secret availability
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.wait_validation.outputs.ok == 'true'
+        id: have_secrets
+        run: |
+          if [ -n "${{ secrets.APP_ID_DISPATCH }}" ] && [ -n "${{ secrets.PRIVATE_KEY_DISPATCH }}" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate App Token for E2E Dispatch
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.wait_validation.outputs.ok == 'true' &&
+          steps.have_secrets.outputs.ok == 'true'
         id: app_token
         uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2
         with:
@@ -226,9 +276,9 @@ jobs:
           private-key: ${{ secrets.PRIVATE_KEY_DISPATCH }}
           owner: pjscruggs
           repositories: slogcp-test
-      
+
       - name: Dispatch E2E Tests
-        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        if: steps.app_token.outputs.token != ''
         uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
         with:
           token: ${{ steps.app_token.outputs.token }}
@@ -242,3 +292,25 @@ jobs:
               "lib_run_id": "${{ github.run_id }}",
               "check_run_id": "${{ steps.create_check.outputs.check_run_id }}"
             }
+
+      - name: "Update check: maintainer trigger required (fallback)"
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          (steps.wait_validation.outputs.ok != 'true' ||
+           steps.have_secrets.outputs.ok != 'true' ||
+           steps.app_token.outputs.token == '')
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            await github.rest.checks.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              check_run_id: ${{ steps.create_check.outputs.check_run_id }},
+              status: 'completed',
+              conclusion: 'action_required',
+              completed_at: new Date().toISOString(),
+              output: {
+                title: 'E2E Tests (GCP) - Manual Trigger Required',
+                summary: `Secrets not available or validation not successful. A maintainer can run the "Manual E2E Test Trigger" workflow with PR #${{ github.event.pull_request.number }}.`
+              }
+            });
