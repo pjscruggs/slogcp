@@ -270,7 +270,7 @@ jobs:
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: app_token
-        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v2
+        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2
         with:
           app-id: ${{ secrets.APP_ID_DISPATCH }}
           private-key: ${{ secrets.PRIVATE_KEY_DISPATCH }}
