@@ -154,7 +154,7 @@ jobs:
       - name: 🛡️🔍 Run Vulnerability Check
         run: |
           echo "Installing govulncheck..."
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@b9d319d7ce41a3991288754d7ec709166dce2619
           echo "Running vulnerability check..."
           govulncheck ./...
 
