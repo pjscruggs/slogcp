@@ -21,7 +21,6 @@ jobs:
   # VALIDATION (runs actual code)
   # -----------------------------
   validation:
-    # Only run this job on events where it's safe to execute PR code.
     if: |
       github.event_name == 'pull_request' ||
       github.event_name == 'merge_group' ||
@@ -59,7 +58,6 @@ jobs:
           version: v2.1.5
           install-mode: goinstall
           
-      # FIX PHASE
       - name: ✨ Apply Go Formatting
         run: |
           go install golang.org/x/tools/cmd/goimports@latest
@@ -103,7 +101,6 @@ jobs:
             git push origin ${{ steps.get-branch.outputs.BRANCH_NAME }}
           }
           
-      # Re-checkout if any changes were pushed
       - name: 🔄 Re-checkout after fixes if needed
         run: |
           if git diff --quiet origin/${{ steps.get-branch.outputs.BRANCH_NAME }} HEAD; then
@@ -114,7 +111,6 @@ jobs:
             git checkout origin/${{ steps.get-branch.outputs.BRANCH_NAME }}
           fi
       
-      # VALIDATION PHASE
       - name: 🧐 Verify Linting
         run: golangci-lint run ./...
       
@@ -163,7 +159,6 @@ jobs:
   # -------------------------------------------------------
   e2e_gatekeeper:
     name: E2E Test Gatekeeper
-    # This job only runs for pull_request_target (safe context with secrets).
     if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     permissions:
@@ -171,10 +166,18 @@ jobs:
       contents: read
     
     steps:
-      # ⚠️ No checkout here. PR code must not be executed in PR-target.
+      - name: Determine E2E Trigger Type
+        id: trigger_type
+        run: |
+          if [[ "${{ github.actor }}" == "renovate[bot]" ]]; then
+            echo "should_auto_trigger=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Create/Update E2E Check Run
-        id: create_check
+      - name: Create Manual Gatekeeper Check (queued)
+        if: steps.trigger_type.outputs.should_auto_trigger == 'false'
+        id: manual_check
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |
@@ -190,17 +193,6 @@ jobs:
             });
             core.setOutput('check_run_id', checkRun.id);
 
-      - name: Determine E2E Trigger Type
-        id: trigger_type
-        run: |
-          if [[ "${{ github.actor }}" == "renovate[bot]" ]]; then
-            echo "should_auto_trigger=true" >> $GITHUB_OUTPUT
-            echo "📦 Renovate PR detected - will auto-trigger E2E tests (after validation passes)"
-          else
-            echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
-            echo "👤 Human PR detected - E2E tests require manual trigger"
-          fi
-
       - name: Update Check for Manual Trigger Required
         if: steps.trigger_type.outputs.should_auto_trigger == 'false'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
@@ -209,7 +201,7 @@ jobs:
             await github.rest.checks.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              check_run_id: ${{ steps.create_check.outputs.check_run_id }},
+              check_run_id: ${{ steps.manual_check.outputs.check_run_id }},
               status: 'completed',
               conclusion: 'action_required',
               completed_at: new Date().toISOString(),
@@ -225,6 +217,37 @@ jobs:
               }
             });
 
+      - name: Generate E2E Run ID
+        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        id: run_id
+        shell: bash
+        run: |
+          echo "e2e_run_id=$(date -u +%Y%m%dT%H%M%S)-$RANDOM" >> "$GITHUB_OUTPUT"
+
+      - name: Create Run-Scoped E2E Check (in progress)
+        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        id: create_run_check
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
+            const name = `E2E Tests (GCP) — ${runId}`;
+            const sha = context.payload.pull_request.head.sha;
+            const { data: checkRun } = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name,
+              head_sha: sha,
+              status: 'in_progress',
+              external_id: runId,
+              started_at: new Date().toISOString(),
+              output: {
+                title: name,
+                summary: `E2E run ${runId} initiated. Waiting for validation to pass...`
+              }
+            });
+            core.setOutput('check_run_id', checkRun.id);
+
       - name: Wait for Validation to Succeed
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: wait_validation
@@ -238,7 +261,7 @@ jobs:
             const sleep = (ms) => new Promise(r => setTimeout(r, ms));
             let ok = false;
 
-            for (let i = 0; i < 80; i++) { // ~20 min @ 15s
+            for (let i = 0; i < 80; i++) {
               const { data } = await github.rest.checks.listForRef({ owner, repo, ref, filter: 'latest' });
               const cr = data.check_runs.find(r => r.name === targetCheckName);
               if (!cr || cr.status === 'queued' || cr.status === 'in_progress') {
@@ -290,10 +313,11 @@ jobs:
               "pr_sha": "${{ github.event.pull_request.head.sha }}",
               "pr_number": "${{ github.event.pull_request.number }}",
               "lib_run_id": "${{ github.run_id }}",
-              "check_run_id": "${{ steps.create_check.outputs.check_run_id }}"
+              "check_run_id": "${{ steps.create_run_check.outputs.check_run_id }}",
+              "e2e_run_id": "${{ steps.run_id.outputs.e2e_run_id }}"
             }
 
-      - name: "Update check: maintainer trigger required (fallback)"
+      - name: Update run-scoped check when auto path cannot dispatch
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           (steps.wait_validation.outputs.ok != 'true' ||
@@ -305,7 +329,7 @@ jobs:
             await github.rest.checks.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              check_run_id: ${{ steps.create_check.outputs.check_run_id }},
+              check_run_id: ${{ steps.create_run_check.outputs.check_run_id }},
               status: 'completed',
               conclusion: 'action_required',
               completed_at: new Date().toISOString(),
