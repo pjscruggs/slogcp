@@ -22,7 +22,6 @@ jobs:
     steps:
       - name: Verify Authorization
         run: |
-          # Check if actor is repository owner or in maintainers list
           if [[ "${{ github.actor }}" != "${{ github.repository_owner }}" ]]; then
             echo "❌ Unauthorized: Only repository maintainers can trigger E2E tests"
             exit 1
@@ -48,16 +47,25 @@ jobs:
             console.log(`Head SHA: ${pr.data.head.sha}`);
             
             return pr.data;
-      
+
+      - name: Generate App Token for lib-repo (checks)
+        id: lib_repo_app_token
+        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2
+        with:
+          app-id: ${{ secrets.LIB_REPO_APP_ID }}
+          private-key: ${{ secrets.LIB_REPO_APP_PRIVATE_KEY }}
+          owner: pjscruggs
+          repositories: slogcp
+
       - name: Find and Update E2E Check Run
         id: update_check
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
+          github-token: ${{ steps.lib_repo_app_token.outputs.token }}
           script: |
             const checkName = 'E2E Tests (GCP)';
             const sha = '${{ steps.pr_info.outputs.head_sha }}';
             
-            // Find existing check run
             const checks = await github.rest.checks.listForRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -68,8 +76,6 @@ jobs:
             let checkRunId;
             if (checks.data.total_count > 0) {
               checkRunId = checks.data.check_runs[0].id;
-              
-              // Update to in_progress
               await github.rest.checks.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -82,7 +88,6 @@ jobs:
                 }
               });
             } else {
-              // Create new check if none exists
               const { data: checkRun } = await github.rest.checks.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
