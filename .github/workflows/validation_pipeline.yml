@@ -225,11 +225,22 @@ jobs:
         run: |
           echo "e2e_run_id=$(date -u +%Y%m%dT%H%M%S)-$RANDOM" >> "$GITHUB_OUTPUT"
 
+      - name: Generate App Token for Check Run
+        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        id: check_run_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID_DISPATCH }}
+          private-key: ${{ secrets.PRIVATE_KEY_DISPATCH }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
       - name: Create Run-Scoped E2E Check (in progress)
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: create_run_check
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
+          github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
             const name = `E2E Tests (GCP) — ${runId}`;
@@ -326,6 +337,7 @@ jobs:
            steps.app_token.outputs.token == '')
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
+          github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
             await github.rest.checks.update({
               owner: context.repo.owner,
