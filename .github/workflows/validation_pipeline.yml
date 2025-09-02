@@ -33,8 +33,8 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref }}
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           token: ${{ secrets.GITHUB_TOKEN }}
       
       - name: 🔍 Determine branch name
@@ -92,6 +92,7 @@ jobs:
         continue-on-error: true
       
       - name: 💾 Commit All Fixes
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -224,11 +225,22 @@ jobs:
         run: |
           echo "e2e_run_id=$(date -u +%Y%m%dT%H%M%S)-$RANDOM" >> "$GITHUB_OUTPUT"
 
+      - name: Generate App Token for Check Run
+        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        id: check_run_token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID_DISPATCH }}
+          private-key: ${{ secrets.PRIVATE_KEY_DISPATCH }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
       - name: Create Run-Scoped E2E Check (in progress)
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: create_run_check
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
+          github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
             const name = `E2E Tests (GCP) — ${runId}`;
@@ -325,6 +337,7 @@ jobs:
            steps.app_token.outputs.token == '')
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
+          github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
             await github.rest.checks.update({
               owner: context.repo.owner,
