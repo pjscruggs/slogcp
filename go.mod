@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp
 
-go 1.24.6
+go 1.24.7
 
 require (
 	cloud.google.com/go/compute/metadata v0.8.0
