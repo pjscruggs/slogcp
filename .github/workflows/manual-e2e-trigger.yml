@@ -46,7 +46,7 @@ jobs:
       - name: Get PR Information
         if: ${{ github.event.inputs.mode == 'pr' }}
         id: pr_info
-        uses: actions/github-script@v7
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |
             const pr = await github.rest.pulls.get({
@@ -62,7 +62,7 @@ jobs:
       - name: Resolve latest main SHA
         if: ${{ github.event.inputs.mode == 'main_latest' }}
         id: main_sha
-        uses: actions/github-script@v7
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |
             const { data: ref } = await github.rest.git.getRef({
@@ -91,7 +91,7 @@ jobs:
 
       - name: Create Run-Scoped E2E Check
         id: create_check
-        uses: actions/github-script@v7
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           github-token: ${{ github.token }}
           script: |
@@ -114,7 +114,7 @@ jobs:
       
       - name: Generate App Token for E2E Dispatch
         id: app_token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -122,7 +122,7 @@ jobs:
           repositories: slogcp-test
           
       - name: Dispatch E2E Tests
-        uses: peter-evans/repository-dispatch@v3
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
         with:
           token: ${{ steps.app_token.outputs.token }}
           repository: pjscruggs/slogcp-test
@@ -139,7 +139,7 @@ jobs:
       
       - name: Add PR Comment
         if: ${{ steps.target.outputs.pr_number != '' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |
             await github.rest.issues.createComment({
