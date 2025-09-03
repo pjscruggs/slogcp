@@ -116,8 +116,8 @@ jobs:
         id: app_token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.APP_ID_DISPATCH }}
-          private-key: ${{ secrets.PRIVATE_KEY_DISPATCH }}
+          app-id: ${{ secrets.E2E_APP_ID }}
+          private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
           owner: pjscruggs
           repositories: slogcp-test
           
