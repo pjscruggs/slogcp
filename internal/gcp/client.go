@@ -177,7 +177,7 @@ func (cm *ClientManager) Initialize() error {
 		}
 
 		// Create the logger with assembled options
-		const logID = "slogcp_application_logs"
+		const logID = "app"
 		concreteLogger := cm.client.Logger(logID, loggerOpts...)
 		if concreteLogger == nil {
 			cm.initErr = fmt.Errorf("client.Logger(%q) returned nil: %w", logID, ErrClientInitializationFailed)

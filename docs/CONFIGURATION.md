@@ -50,7 +50,7 @@ Determines where log entries are sent.
 #### GCP Cloud Logging API (Default)
 -   Requires GCP project information (see [GCP Project ID and Parent Resource](#gcp-project-id-and-parent-resource)).
 -   Uses the `cloud.google.com/go/logging` client.
--   Log entries are sent to a log named `slogcp_application_logs`.
+-   Log entries are sent to a log named `app`.
 
 #### Standard Output (stdout)
 -   Logs structured JSON to `os.Stdout`.
