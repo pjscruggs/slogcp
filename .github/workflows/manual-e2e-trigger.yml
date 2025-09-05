@@ -1,5 +1,4 @@
 name: Manual E2E Test Trigger
-
 on:
   workflow_dispatch:
     inputs:
@@ -15,13 +14,11 @@ on:
         description: 'PR number to run E2E tests on (required for mode=pr)'
         required: false
         type: string
-
 permissions:
   checks: write
   contents: read
   pull-requests: write
   issues: write
-
 jobs:
   trigger_e2e:
     name: Manually Trigger E2E Tests
@@ -35,7 +32,6 @@ jobs:
             exit 1
           fi
           echo "✅ Authorized maintainer: ${{ github.actor }}"
-
       - name: Validate Inputs
         run: |
           if [[ "${{ github.event.inputs.mode }}" == "pr" && -z "${{ github.event.inputs.pr_number }}" ]]; then
@@ -58,7 +54,6 @@ jobs:
             core.setOutput('head_ref', pr.data.head.ref);
             core.setOutput('author', pr.data.user.login);
             return pr.data;
-
       - name: Resolve latest main SHA
         if: ${{ github.event.inputs.mode == 'main_latest' }}
         id: main_sha
@@ -71,7 +66,6 @@ jobs:
               ref: 'heads/main'
             });
             core.setOutput('sha', ref.object.sha);
-
       - name: Select Target SHA
         id: target
         run: |
@@ -82,18 +76,26 @@ jobs:
             echo "head_sha=${{ steps.pr_info.outputs.head_sha }}" >> $GITHUB_OUTPUT
             echo "pr_number=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
           fi
-
       - name: Generate E2E Run ID
         id: run_id
         shell: bash
         run: |
           echo "e2e_run_id=$(date -u +%Y%m%dT%H%M%S)-$RANDOM" >> "$GITHUB_OUTPUT"
-
+      
+      - name: Generate App Token for E2E Dispatch
+        id: app_token
+        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2
+        with:
+          app-id: ${{ secrets.E2E_APP_ID }}
+          private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
+          owner: pjscruggs
+          repositories: slogcp,slogcp-test
+          
       - name: Create Run-Scoped E2E Check
         id: create_check
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ steps.app_token.outputs.token }}
           script: |
             const checkName = `E2E Tests (GCP) — ${{ steps.run_id.outputs.e2e_run_id }}`;
             const sha = '${{ steps.target.outputs.head_sha }}';
@@ -111,15 +113,6 @@ jobs:
               }
             });
             core.setOutput('check_run_id', checkRun.id);
-      
-      - name: Generate App Token for E2E Dispatch
-        id: app_token
-        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2
-        with:
-          app-id: ${{ secrets.E2E_APP_ID }}
-          private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
-          owner: pjscruggs
-          repositories: slogcp-test
           
       - name: Dispatch E2E Tests
         uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
