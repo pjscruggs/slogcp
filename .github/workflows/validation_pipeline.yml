@@ -179,7 +179,7 @@ jobs:
       - name: Create Manual Gatekeeper Check (queued)
         if: steps.trigger_type.outputs.should_auto_trigger == 'false'
         id: manual_check
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const checkName = 'E2E Tests (GCP)';
@@ -196,7 +196,7 @@ jobs:
 
       - name: Update Check for Manual Trigger Required
         if: steps.trigger_type.outputs.should_auto_trigger == 'false'
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             await github.rest.checks.update({
@@ -238,7 +238,7 @@ jobs:
       - name: Create Run-Scoped E2E Check (in progress)
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: create_run_check
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
@@ -263,7 +263,7 @@ jobs:
       - name: Wait for Validation to Succeed
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: wait_validation
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const owner = context.repo.owner;
@@ -335,7 +335,7 @@ jobs:
           (steps.wait_validation.outputs.ok != 'true' ||
            steps.have_secrets.outputs.ok != 'true' ||
            steps.app_token.outputs.token == '')
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
