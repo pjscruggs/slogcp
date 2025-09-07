@@ -125,7 +125,7 @@ func wasTargetExplicitlyConfigured(builderState *options, envLogTargetStr, envRe
 // It modifies cfg.Parent and cfg.ProjectID in place and allows the initialization
 // process to continue even when a Parent is missing for GCP target, enabling
 // automatic fallback to local logging.
-func resolveParentAndProjectID(cfg *gcp.Config, builderState *options, baseConfigLoadErr error) error {
+func resolveParentAndProjectID(cfg *gcp.Config, builderState *options, _ error) error {
 	// Apply programmatic Parent setting if provided
 	if builderState.parent != nil {
 		cfg.Parent = *builderState.parent
