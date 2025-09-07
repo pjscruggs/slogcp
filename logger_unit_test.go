@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/pjscruggs/slogcp"
+	gcp "github.com/pjscruggs/slogcp/internal/gcp"
 )
 
 // captureOutput redirects os.Stdout or os.Stderr, runs the provided function,
@@ -648,5 +649,400 @@ func TestMiddleware(t *testing.T) {
 	}
 	if entry["mw2"] != "value2" {
 		t.Errorf("Second middleware attribute missing or incorrect: %v", entry)
+	}
+}
+
+// TestNormalizeLogID verifies the log ID normalization and validation logic,
+// including character validation, length limits, quote stripping, and default values.
+func TestNormalizeLogID(t *testing.T) {
+	testCases := []struct {
+		name      string
+		input     string
+		want      string
+		wantError bool
+	}{
+		// Valid cases
+		{
+			name:  "Simple valid ID",
+			input: "app",
+			want:  "app",
+		},
+		{
+			name:  "Valid with hyphen",
+			input: "user-service",
+			want:  "user-service",
+		},
+		{
+			name:  "Valid with underscore",
+			input: "api_v2",
+			want:  "api_v2",
+		},
+		{
+			name:  "Valid with slash",
+			input: "logs/debug",
+			want:  "logs/debug",
+		},
+		{
+			name:  "Valid with dot",
+			input: "service.v1",
+			want:  "service.v1",
+		},
+		{
+			name:  "Mixed case preserved",
+			input: "MyService",
+			want:  "MyService",
+		},
+		{
+			name:  "Empty string defaults to app",
+			input: "",
+			want:  "app",
+		},
+		{
+			name:  "Whitespace only defaults to app",
+			input: "   ",
+			want:  "app",
+		},
+		{
+			name:  "Single quotes stripped",
+			input: "'service'",
+			want:  "service",
+		},
+		{
+			name:  "Double quotes stripped",
+			input: "\"service\"",
+			want:  "service",
+		},
+		{
+			name:  "Mixed quotes stripped",
+			input: "'\"service\"'",
+			want:  "service",
+		},
+		{
+			name:  "Whitespace and quotes trimmed",
+			input: "  'service'  ",
+			want:  "service",
+		},
+		{
+			name:  "Maximum valid length 511 chars",
+			input: strings.Repeat("a", 511),
+			want:  strings.Repeat("a", 511),
+		},
+
+		// Invalid cases
+		{
+			name:      "Invalid character @",
+			input:     "app@service",
+			wantError: true,
+		},
+		{
+			name:      "Invalid character colon",
+			input:     "log:test",
+			wantError: true,
+		},
+		{
+			name:      "Invalid character hash",
+			input:     "service#1",
+			wantError: true,
+		},
+		{
+			name:      "Invalid character pipe",
+			input:     "app|pipe",
+			wantError: true,
+		},
+		{
+			name:      "Invalid character space",
+			input:     "app service",
+			wantError: true,
+		},
+		{
+			name:      "Exactly 512 characters",
+			input:     strings.Repeat("a", 512),
+			wantError: true,
+		},
+		{
+			name:      "Over 512 characters",
+			input:     strings.Repeat("a", 1000),
+			wantError: true,
+		},
+		{
+			name:      "Unicode characters",
+			input:     "日本語",
+			wantError: true,
+		},
+		{
+			name:      "Emoji characters",
+			input:     "app😀",
+			wantError: true,
+		},
+		{
+			name:      "Newline character",
+			input:     "app\nservice",
+			wantError: true,
+		},
+		{
+			name:      "Tab character",
+			input:     "app\tservice",
+			wantError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc // Capture range variable
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := gcp.NormalizeLogID(tc.input)
+
+			if tc.wantError {
+				if err == nil {
+					t.Errorf("NormalizeLogID(%q) = %q, nil; want error", tc.input, got)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("NormalizeLogID(%q) error = %v; want nil", tc.input, err)
+				}
+				if got != tc.want {
+					t.Errorf("NormalizeLogID(%q) = %q; want %q", tc.input, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestLoggerWithCustomLogID verifies that loggers created with specific log IDs
+// correctly use those IDs in their resolved configuration.
+func TestLoggerWithCustomLogID(t *testing.T) {
+	testCases := []struct {
+		name      string
+		option    slogcp.Option
+		envValue  string
+		wantLogID string
+		wantError bool
+	}{
+		{
+			name:      "Custom log ID via option",
+			option:    slogcp.WithGCPLogID("custom-service"),
+			wantLogID: "custom-service",
+		},
+		{
+			name:      "Empty option uses default",
+			option:    slogcp.WithGCPLogID(""),
+			wantLogID: "app",
+		},
+		{
+			name:      "Option with quotes gets normalized",
+			option:    slogcp.WithGCPLogID("'quoted-service'"),
+			wantLogID: "quoted-service",
+		},
+		{
+			name:      "Invalid character in option",
+			option:    slogcp.WithGCPLogID("invalid@service"),
+			wantError: true,
+		},
+		{
+			name:      "Too long log ID",
+			option:    slogcp.WithGCPLogID(strings.Repeat("a", 512)),
+			wantError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			// Set environment variable if specified
+			if tc.envValue != "" {
+				t.Setenv("SLOGCP_GCP_LOG_ID", tc.envValue)
+			}
+
+			// Create logger with redirect to stdout to avoid GCP initialization
+			opts := []slogcp.Option{
+				slogcp.WithRedirectToStdout(),
+			}
+			if tc.option != nil {
+				opts = append(opts, tc.option)
+			}
+
+			logger, err := slogcp.New(opts...)
+
+			if tc.wantError {
+				if err == nil {
+					t.Error("Expected error creating logger with invalid log ID, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Failed to create logger: %v", err)
+			}
+			defer logger.Close()
+
+			// Verify the log ID
+			if got := logger.GCPLogID(); got != tc.wantLogID {
+				t.Errorf("logger.GCPLogID() = %q; want %q", got, tc.wantLogID)
+			}
+		})
+	}
+}
+
+// TestLogIDEnvironmentVariableProcessing verifies that the SLOGCP_GCP_LOG_ID
+// environment variable is correctly processed during configuration loading.
+func TestLogIDEnvironmentVariableProcessing(t *testing.T) {
+	testCases := []struct {
+		name      string
+		envValue  string
+		wantLogID string
+	}{
+		{
+			name:      "Simple env var value",
+			envValue:  "env-service",
+			wantLogID: "env-service",
+		},
+		{
+			name:      "Env var with quotes",
+			envValue:  "'quoted'",
+			wantLogID: "quoted",
+		},
+		{
+			name:      "Env var with whitespace",
+			envValue:  "  spaced  ",
+			wantLogID: "spaced",
+		},
+		{
+			name:      "Empty env var uses default",
+			envValue:  "",
+			wantLogID: "app",
+		},
+		{
+			name:      "Env var with slashes",
+			envValue:  "logs/application",
+			wantLogID: "logs/application",
+		},
+		{
+			name:      "Env var with mixed valid chars",
+			envValue:  "service_v1.2-beta/logs",
+			wantLogID: "service_v1.2-beta/logs",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SLOGCP_GCP_LOG_ID", tc.envValue)
+
+			logger, err := slogcp.New(slogcp.WithRedirectToStdout())
+			if err != nil {
+				t.Fatalf("Failed to create logger: %v", err)
+			}
+			defer logger.Close()
+
+			if got := logger.GCPLogID(); got != tc.wantLogID {
+				t.Errorf("logger.GCPLogID() = %q; want %q", got, tc.wantLogID)
+			}
+		})
+	}
+}
+
+// TestLogIDWithRedirectTargets verifies that log ID configuration works correctly
+// even when using redirect targets (stdout, stderr, file) instead of GCP.
+func TestLogIDWithRedirectTargets(t *testing.T) {
+	testCases := []struct {
+		name      string
+		options   []slogcp.Option
+		wantLogID string
+	}{
+		{
+			name: "Log ID with stdout redirect",
+			options: []slogcp.Option{
+				slogcp.WithRedirectToStdout(),
+				slogcp.WithGCPLogID("stdout-service"),
+			},
+			wantLogID: "stdout-service",
+		},
+		{
+			name: "Log ID with stderr redirect",
+			options: []slogcp.Option{
+				slogcp.WithRedirectToStderr(),
+				slogcp.WithGCPLogID("stderr-service"),
+			},
+			wantLogID: "stderr-service",
+		},
+		{
+			name: "Log ID with file redirect",
+			options: []slogcp.Option{
+				slogcp.WithRedirectToFile(t.TempDir() + "/test.log"),
+				slogcp.WithGCPLogID("file-service"),
+			},
+			wantLogID: "file-service",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			logger, err := slogcp.New(tc.options...)
+			if err != nil {
+				t.Fatalf("Failed to create logger: %v", err)
+			}
+			defer logger.Close()
+
+			if got := logger.GCPLogID(); got != tc.wantLogID {
+				t.Errorf("logger.GCPLogID() = %q; want %q", got, tc.wantLogID)
+			}
+		})
+	}
+}
+
+// TestLogIDErrorPropagation verifies that errors from invalid log IDs
+// are properly propagated and reported during logger creation.
+func TestLogIDErrorPropagation(t *testing.T) {
+	testCases := []struct {
+		name           string
+		option         slogcp.Option
+		envValue       string
+		wantErrorSubstr string
+	}{
+		{
+			name:            "Invalid character via option",
+			option:          slogcp.WithGCPLogID("invalid@char"),
+			wantErrorSubstr: "invalid character",
+		},
+		{
+			name:            "Too long via option",
+			option:          slogcp.WithGCPLogID(strings.Repeat("x", 512)),
+			wantErrorSubstr: "must be < 512 characters",
+		},
+		{
+			name:            "Invalid character via env var",
+			envValue:        "bad|pipe",
+			wantErrorSubstr: "invalid character",
+		},
+		{
+			name:            "Unicode via option",
+			option:          slogcp.WithGCPLogID("测试"),
+			wantErrorSubstr: "invalid character",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.envValue != "" {
+				t.Setenv("SLOGCP_GCP_LOG_ID", tc.envValue)
+			}
+
+			opts := []slogcp.Option{slogcp.WithRedirectToStdout()}
+			if tc.option != nil {
+				opts = append(opts, tc.option)
+			}
+
+			_, err := slogcp.New(opts...)
+			if err == nil {
+				t.Fatal("Expected error but got nil")
+			}
+
+			if !strings.Contains(err.Error(), tc.wantErrorSubstr) {
+				t.Errorf("Error %q does not contain expected substring %q", err.Error(), tc.wantErrorSubstr)
+			}
+		})
 	}
 }
