@@ -81,6 +81,7 @@ type options struct {
 	// GCP Client/Logger passthrough fields
 	projectID                *string
 	parent                   *string
+	gcpLogID                 *string
 	clientScopes             []string // Use slice directly, nil means unset
 	clientOnErrorFunc        func(error)
 	programmaticCommonLabels map[string]string // Accumulates WithGCPCommonLabel/WithGCPCommonLabels
@@ -247,6 +248,12 @@ func WithProjectID(id string) Option { return func(o *options) { o.projectID = &
 // This controls where logs are stored in the GCP resource hierarchy.
 // This overrides SLOGCP_GCP_PARENT and any parent derived from ProjectID.
 func WithParent(parent string) Option { return func(o *options) { o.parent = &parent } }
+
+// WithGCPLogID returns an Option that explicitly sets the Cloud Logging log ID.
+// The log ID identifies the specific log within Cloud Logging where entries are written.
+// If not set, the default log ID "app" is used.
+// This overrides SLOGCP_GCP_LOG_ID and any default value.
+func WithGCPLogID(logID string) Option { return func(o *options) { o.gcpLogID = &logID } }
 
 // WithGCPClientScopes returns an Option that sets the OAuth2 scopes for the GCP client.
 // This is typically only needed when using custom authentication methods or

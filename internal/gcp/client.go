@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"sync"
 
@@ -177,10 +178,10 @@ func (cm *ClientManager) Initialize() error {
 		}
 
 		// Create the logger with assembled options
-		const logID = "app"
-		concreteLogger := cm.client.Logger(logID, loggerOpts...)
+		escapedLogID := url.PathEscape(cm.cfg.GCPLogID)
+		concreteLogger := cm.client.Logger(escapedLogID, loggerOpts...)
 		if concreteLogger == nil {
-			cm.initErr = fmt.Errorf("client.Logger(%q) returned nil: %w", logID, ErrClientInitializationFailed)
+			cm.initErr = fmt.Errorf("client.Logger(%q) returned nil: %w", escapedLogID, ErrClientInitializationFailed)
 			if cm.client != nil {
 				_ = cm.client.Close() // Attempt cleanup
 			}

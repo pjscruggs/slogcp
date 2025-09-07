@@ -228,6 +228,16 @@ func applyProgrammaticOptions(cfg *gcp.Config, builderState *options, baseConfig
 		return err
 	}
 
+	if builderState.gcpLogID != nil {
+		cfg.GCPLogID = *builderState.gcpLogID
+	}
+
+	normalizedLogID, err := gcp.NormalizeLogID(cfg.GCPLogID)
+	if err != nil {
+		return fmt.Errorf("invalid GCP LogID %q: %w", cfg.GCPLogID, err)
+	}
+	cfg.GCPLogID = normalizedLogID
+
 	// Apply behavior options
 	if builderState.level != nil {
 		cfg.InitialLevel = *builderState.level
@@ -638,6 +648,9 @@ func (l *Logger) ProjectID() string { return l.resolvedCfg.ProjectID }
 // Parent returns the resolved Google Cloud resource parent string used by the logger
 // (e.g., "projects/my-proj", "folders/123"). May be empty if not configured.
 func (l *Logger) Parent() string { return l.resolvedCfg.Parent }
+
+// GCPLogID returns the normalized Cloud Logging log ID in use.
+func (l *Logger) GCPLogID() string { return l.resolvedCfg.GCPLogID }
 
 // SetLevel dynamically changes the minimum logging level.
 // Messages below this level will be discarded.

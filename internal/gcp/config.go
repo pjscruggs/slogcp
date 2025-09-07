@@ -76,6 +76,7 @@ const (
 	// GCP Client passthroughs
 	envGCPParent       = "SLOGCP_GCP_PARENT"        // GCP resource parent
 	envGCPClientScopes = "SLOGCP_GCP_CLIENT_SCOPES" // OAuth scopes for GCP client
+	envGCPLogID        = "SLOGCP_GCP_LOG_ID"        // Cloud Logging log ID
 	// GOOGLE_CLOUD_PROJECT is handled implicitly
 
 	// GCP Logger passthroughs
@@ -102,7 +103,9 @@ const (
 	slogcpDefaultLogTarget            = LogTargetGCP
 	EnvLogTarget                      = envLogTarget
 	EnvRedirectAsJSONTarget           = envRedirectAsJSONTarget
+	EnvGCPLogID                       = envGCPLogID
 	slogcpDefaultGCPBufferedByteLimit = 100 * 1024 * 1024 // 100 MiB
+	slogcpDefaultGCPLogID             = "app"
 	defaultClientInitTimeout          = 10 * time.Second
 )
 
@@ -137,6 +140,7 @@ type Config struct {
 
 	ProjectID string // Final resolved project ID - REQUIRED for trace formatting if trace exists
 	Parent    string // Final resolved parent - REQUIRED for GCP target
+	GCPLogID  string // Final resolved log ID - defaults to "app" if unset
 
 	ClientScopes      []string    // nil means use GCP default
 	ClientOnErrorFunc func(error) // nil means use slogcp default (stderr)
@@ -174,6 +178,7 @@ func LoadConfig() (Config, error) {
 		StackTraceEnabled:    slogcpDefaultStackTraceEnabled,
 		StackTraceLevel:      slogcpDefaultStackTraceLevel,
 		LogTarget:            slogcpDefaultLogTarget,
+		GCPLogID:             slogcpDefaultGCPLogID,
 		GCPBufferedByteLimit: func() *int { b := slogcpDefaultGCPBufferedByteLimit; return &b }(),
 	}
 
@@ -216,6 +221,12 @@ func LoadConfig() (Config, error) {
 			// An unrecognized value for SLOGCP_REDIRECT_AS_JSON_TARGET.
 			return Config{}, fmt.Errorf("invalid redirect target specified in %s: %s", envRedirectAsJSONTarget, envRedirectTargetStr)
 		}
+	}
+
+	// Resolve GCP Log ID from environment variable if set
+	// Otherwise, it remains as the default.
+	if envLogID := os.Getenv(envGCPLogID); envLogID != "" {
+		cfg.GCPLogID = envLogID
 	}
 
 	// Resolve project ID and parent from environment or metadata server
@@ -464,4 +475,55 @@ func parseBoolPtrEnv(valStr string) *bool {
 		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid boolean value %q in env var, ignoring\n", valStr)
 		return nil
 	}
+}
+
+// Max length is *less than* 512 chars (i.e., 0..511)
+// See: https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry
+const logIDMaxLen = 512
+
+// normalizeLogID returns a cleaned LOG_ID or an error if it violates
+// Cloud Logging constraints. It does not URL-encode or build logName.
+func normalizeLogID(s string) (string, error) {
+	// Trim spaces, strip surrounding quotes, then trim again.
+	s = strings.TrimSpace(s)
+
+	for len(s) > 0 && (s[0] == '"' || s[0] == '\'') {
+		s = s[1:]
+	}
+	for n := len(s); n > 0 && (s[n-1] == '"' || s[n-1] == '\''); n = len(s) {
+		s = s[:n-1]
+	}
+
+	s = strings.TrimSpace(s)
+
+	// Use default when empty.
+	if s == "" {
+		s = slogcpDefaultGCPLogID
+	}
+
+	if len(s) >= logIDMaxLen {
+		return "", fmt.Errorf("LOG_ID must be < %d characters", logIDMaxLen)
+	}
+
+	// Validate allowed ASCII set.
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if ('a' <= b && b <= 'z') ||
+			('A' <= b && b <= 'Z') ||
+			('0' <= b && b <= '9') ||
+			b == '/' || b == '_' || b == '-' || b == '.' {
+			continue
+		}
+		return "", fmt.Errorf(
+			"LOG_ID contains invalid character %q; allowed are letters, digits, '/', '_', '-', '.'",
+			b,
+		)
+	}
+
+	return s, nil
+}
+
+// NormalizeLogID exposes normalizeLogID for use by other packages.
+func NormalizeLogID(s string) (string, error) {
+	return normalizeLogID(s)
 }
