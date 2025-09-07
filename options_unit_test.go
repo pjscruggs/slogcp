@@ -288,3 +288,107 @@ func TestReopenLogFile(t *testing.T) {
 		t.Errorf("New log file doesn't contain second message")
 	}
 }
+
+// TestLogIDConfigurationPrecedence verifies that log ID configuration follows
+// the correct precedence order: programmatic option > environment variable > default.
+func TestLogIDConfigurationPrecedence(t *testing.T) {
+	testCases := []struct {
+		name      string
+		envValue  string
+		option    *string // nil means no option provided
+		wantLogID string
+		wantError bool
+	}{
+		{
+			name:      "Default when nothing set",
+			envValue:  "",
+			option:    nil,
+			wantLogID: "app",
+		},
+		{
+			name:      "Environment variable only",
+			envValue:  "env-log-id",
+			option:    nil,
+			wantLogID: "env-log-id",
+		},
+		{
+			name:      "Programmatic option only",
+			envValue:  "",
+			option:    stringPtr("option-log-id"),
+			wantLogID: "option-log-id",
+		},
+		{
+			name:      "Option overrides environment variable",
+			envValue:  "env-log-id",
+			option:    stringPtr("option-log-id"),
+			wantLogID: "option-log-id",
+		},
+		{
+			name:      "Empty option string uses default",
+			envValue:  "env-log-id",
+			option:    stringPtr(""),
+			wantLogID: "app",
+		},
+		{
+			name:      "Option with whitespace gets trimmed",
+			envValue:  "",
+			option:    stringPtr("  trimmed  "),
+			wantLogID: "trimmed",
+		},
+		{
+			name:      "Invalid env var with valid option",
+			envValue:  "invalid@log",
+			option:    stringPtr("valid-log-id"),
+			wantLogID: "valid-log-id",
+		},
+		{
+			name:      "Invalid env var without option override",
+			envValue:  "invalid@log",
+			option:    nil,
+			wantError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			// Set environment variable
+			if tc.envValue != "" {
+				t.Setenv("SLOGCP_GCP_LOG_ID", tc.envValue)
+			}
+
+			// Build options
+			opts := []slogcp.Option{slogcp.WithRedirectToStdout()}
+			if tc.option != nil {
+				opts = append(opts, slogcp.WithGCPLogID(*tc.option))
+			}
+
+			// Create logger
+			logger, err := slogcp.New(opts...)
+
+			if tc.wantError {
+				if err == nil {
+					t.Error("Expected error but got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+			defer logger.Close()
+
+			// Verify log ID
+			if got := logger.GCPLogID(); got != tc.wantLogID {
+				t.Errorf("logger.GCPLogID() = %q; want %q", got, tc.wantLogID)
+			}
+		})
+	}
+}
+
+// stringPtr is a helper function to get a pointer to a string value.
+// This is useful for test cases where we need to distinguish between
+// an empty string and no value provided.
+func stringPtr(s string) *string {
+	return &s
+}

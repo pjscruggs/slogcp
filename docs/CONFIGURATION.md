@@ -50,7 +50,7 @@ Determines where log entries are sent.
 #### GCP Cloud Logging API (Default)
 -   Requires GCP project information (see [GCP Project ID and Parent Resource](#gcp-project-id-and-parent-resource)).
 -   Uses the `cloud.google.com/go/logging` client.
--   Log entries are sent to a log named `app`.
+-   Log entries are sent to a log named `app` by default (configurable, see [Log ID](#log-id)).
 
 #### Standard Output (stdout)
 -   Logs structured JSON to `os.Stdout`.
@@ -158,6 +158,16 @@ It's crucial to close the logger to ensure all buffered logs are flushed and res
 ## GCP Client Options (for `LogTargetGCP`)
 
 These options fine-tune the behavior of the underlying Google Cloud Logging client when `LogTarget` is `LogTargetGCP`. Many correspond to options in `cloud.google.com/go/logging.ClientOptions` or `logging.LoggerOptions`.
+
+### Log ID
+
+Identifies the specific log within Google Cloud Logging where entries are written. In the Cloud Logging entry structure, it appears as the final component of the `logName` field: `projects/{PROJECT_ID}/logs/{LOG_ID}`.
+
+-   **Programmatic**: `slogcp.WithGCPLogID(logID string)`
+    -   Example: `slogcp.WithGCPLogID("my-service")`
+-   **Environment Variable**: `SLOGCP_GCP_LOG_ID`
+-   **Default**: `"app"`
+-   **Validation**: Must be less than 512 characters and contain only letters, digits, and the characters `/`, `_`, `-`, `.`. Leading/trailing whitespace and surrounding quotes are automatically removed.
 
 ### Authentication Scopes
 
@@ -373,6 +383,7 @@ These server interceptors read trace context headers (`traceparent` W3C header f
 | `SLOGCP_PROJECT_ID`                  | GCP Project ID (overrides `GOOGLE_CLOUD_PROJECT` and metadata)              | (derived)                                      |
 | `GOOGLE_CLOUD_PROJECT`               | GCP Project ID (standard env var)                                           | (derived from metadata if on GCP)              |
 | `SLOGCP_GCP_PARENT`                  | GCP Parent resource (e.g., `projects/ID`, `folders/ID`)                     | (derived from Project ID)                      |
+| `SLOGCP_GCP_LOG_ID`                  | GCP Log ID (the name of the log within Cloud Logging)                       | `app`                                          |
 | `SLOGCP_GCP_CLIENT_SCOPES`           | Comma-separated OAuth2 scopes for GCP client                                | (GCP client default)                           |
 | `SLOGCP_GCP_COMMON_LABELS_JSON`      | JSON string map of common labels for GCP logs                               | (none)                                         |
 | `SLOGCP_GCP_CL_*`                    | Individual common labels (e.g., `SLOGCP_GCP_CL_SERVICE=api`)                | (none)                                         |
