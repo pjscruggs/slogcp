@@ -996,9 +996,9 @@ func TestLogIDWithRedirectTargets(t *testing.T) {
 // are properly propagated and reported during logger creation.
 func TestLogIDErrorPropagation(t *testing.T) {
 	testCases := []struct {
-		name           string
-		option         slogcp.Option
-		envValue       string
+		name            string
+		option          slogcp.Option
+		envValue        string
 		wantErrorSubstr string
 	}{
 		{

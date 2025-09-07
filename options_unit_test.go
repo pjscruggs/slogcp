@@ -293,11 +293,11 @@ func TestReopenLogFile(t *testing.T) {
 // the correct precedence order: programmatic option > environment variable > default.
 func TestLogIDConfigurationPrecedence(t *testing.T) {
 	testCases := []struct {
-		name       string
-		envValue   string
-		option     *string // nil means no option provided
-		wantLogID  string
-		wantError  bool
+		name      string
+		envValue  string
+		option    *string // nil means no option provided
+		wantLogID string
+		wantError bool
 	}{
 		{
 			name:      "Default when nothing set",
