@@ -112,12 +112,19 @@ func NewClientManager(cfg Config, userAgent string, levelVar *slog.LevelVar) *Cl
 // This method is idempotent - subsequent calls after the first have no effect.
 func (cm *ClientManager) Initialize() error {
 	cm.initOnce.Do(func() {
+		// Both Parent and ProjectID are expected to be resolved by LoadConfig for GCP target.
 		if cm.cfg.Parent == "" {
 			cm.initErr = fmt.Errorf("GCP parent is required for client initialization: %w", ErrProjectIDMissing)
 			return
 		}
+		if cm.cfg.ProjectID == "" {
+			cm.initErr = fmt.Errorf("GCP project ID is required for client initialization: %w", ErrProjectIDMissing)
+			return
+		}
 
-		clientParentArg := cm.cfg.Parent
+		// The Logging client expects the plain project ID.
+		projectIDArg := cm.cfg.ProjectID
+
 		clientAPIOpts := []option.ClientOption{option.WithUserAgent(cm.userAgent)}
 		if cm.cfg.ClientScopes != nil {
 			clientAPIOpts = append(clientAPIOpts, option.WithScopes(cm.cfg.ClientScopes...))
@@ -131,8 +138,8 @@ func (cm *ClientManager) Initialize() error {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
-		// Create client with timeout context
-		clientWrapper, err := cm.newClientFn(ctx, clientParentArg, cm.cfg.ClientOnErrorFunc, clientAPIOpts...)
+		// Create client with timeout context (using project ID, not "projects/<id>")
+		clientWrapper, err := cm.newClientFn(ctx, projectIDArg, cm.cfg.ClientOnErrorFunc, clientAPIOpts...)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				cm.initErr = fmt.Errorf("GCP client creation timed out after %v: %w",

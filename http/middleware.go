@@ -24,6 +24,7 @@ import (
 	"cloud.google.com/go/logging"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // responseWriter wraps an http.ResponseWriter to capture the HTTP status code
@@ -73,6 +74,8 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 //  1. Extracts trace context (Trace ID, Span ID, sampling decision) from
 //     incoming headers using the globally configured OpenTelemetry propagator
 //     (e.g., W3C TraceContext, B3) and adds it to the request's context.
+//     If no valid span context is present after extraction, it falls back to
+//     parsing the legacy X-Cloud-Trace-Context header.
 //  2. Records the start time of the request.
 //  3. Wraps the [http.ResponseWriter] using the internal responseWriter type
 //     to capture the status code and response size.
@@ -101,8 +104,15 @@ func Middleware(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			startTime := time.Now()
 
-			// Extract trace context from incoming headers and create a new context.
+			// Extract trace context from incoming headers via the global propagator.
 			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+
+			// If no valid span context after extraction, try legacy X-Cloud-Trace-Context header.
+			if sc := trace.SpanContextFromContext(ctx); !sc.IsValid() {
+				if header := r.Header.Get(XCloudTraceContextHeader); header != "" {
+					ctx = injectTraceContextFromHeader(ctx, header)
+				}
+			}
 
 			// Replace the request's context with the new one containing trace info.
 			r = r.WithContext(ctx)
@@ -169,7 +179,7 @@ func extractIP(addr string) string {
 	if strings.HasPrefix(addr, "[") {
 		endBracket := strings.Index(addr, "]")
 		if endBracket > 0 {
-			ipStr := addr[1:endBracket]
+			ipStr := addr[1 : endBracket+0]
 			if ip := net.ParseIP(ipStr); ip != nil {
 				return ipStr // Return the IPv6 part.
 			}

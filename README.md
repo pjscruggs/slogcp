@@ -18,16 +18,17 @@ go get github.com/pjscruggs/slogcp
 
 ## Features
 
-- {🪵} **Structured JSON logging** for powerful filtering and analysis in Cloud Logging
-- ☁️  **GCP Cloud Logging API integration** for increased reliability and throughput over `stdout` / `stderr`
-- 🌈  **Complete GCP severity level support** (DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY)
-- 📡  **Automatic trace context extraction** that correlates logs with Cloud Trace spans
-- 🧩  **Ready-to-use HTTP and gRPC middleware** with optimized GCP-friendly log structuring
-- 🎚️  **Dynamic log level control** without application restart
-- 🐛  **Error logging with optional stack traces** for efficient debugging
-- 🏷️  **Automatic GCP resource detection** for proper log association
-- 🔄  **Smart environment detection** that automatically falls back to local logging when needed
-- 🪂  **Graceful shutdown handling** with automatic buffered log flushing
+* {🪵} **Structured JSON logging** for powerful filtering and analysis in Cloud Logging
+* ☁️  **GCP Cloud Logging API integration** for increased reliability and throughput over `stdout` / `stderr`
+* 🌈  **Complete GCP severity level support** (DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY)
+* 📡  **Automatic trace context extraction and propagation** (gRPC by default; optional HTTP client transport)
+* 🚚  **Optional HTTP client transport** that injects W3C Trace Context (and optionally `X-Cloud-Trace-Context`) on outbound requests
+* 🧩  **Ready-to-use HTTP and gRPC middleware** with optimized GCP-friendly log structuring
+* 🎚️  **Dynamic log level control** without application restart
+* 🐛  **Error logging with optional stack traces** for efficient debugging
+* 🏷️  **Automatic GCP resource detection** for proper log association
+* 🔄  **Smart environment detection** that automatically falls back to local logging when needed
+* 🪂  **Graceful shutdown handling** with automatic buffered log flushing
 
 ## Quick Start
 
@@ -79,7 +80,7 @@ logger, err := slogcp.New(
 
 ### GCP Logging Client Access
 
-slogcp exposes all the underlying Google Cloud Logging client's configurables through passthrough options. Most of these can be configured both programmatically and with environmental variables. 
+slogcp exposes all the underlying Google Cloud Logging client's configurables through passthrough options. Most of these can be configured both programmatically and with environmental variables.
 
 ```go
 logger, err := slogcp.New(
@@ -93,12 +94,12 @@ logger, err := slogcp.New(
 
 Core environment variables for configuring slogcp:
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `SLOGCP_LOG_TARGET` | Where to send logs: `gcp`, `stdout`, `stderr`, `file` | `gcp` |
-| `LOG_LEVEL` | Minimum log level (`debug`, `info`, `warn`, `error`, etc.) | `info` |
-| `LOG_SOURCE_LOCATION` | Include source file/line (`true`, `false`) | `false` |
-| `LOG_STACK_TRACE_ENABLED` | Enable stack traces (`true`, `false`) | `false` |
+| Variable                  | Description                                                | Default |
+| ------------------------- | ---------------------------------------------------------- | ------- |
+| `SLOGCP_LOG_TARGET`       | Where to send logs: `gcp`, `stdout`, `stderr`, `file`      | `gcp`   |
+| `LOG_LEVEL`               | Minimum log level (`debug`, `info`, `warn`, `error`, etc.) | `info`  |
+| `LOG_SOURCE_LOCATION`     | Include source file/line (`true`, `false`)                 | `false` |
+| `LOG_STACK_TRACE_ENABLED` | Enable stack traces (`true`, `false`)                      | `false` |
 
 ## Common Usage Patterns
 
@@ -143,7 +144,7 @@ logger, err := slogcp.New(
 
 slogcp provides ready-to-use middleware for HTTP servers and gRPC services.
 
-### HTTP Example
+### HTTP Example (Server)
 
 ```go
 import (
@@ -168,6 +169,29 @@ func main() {
     http.ListenAndServe(":8080", nil)
 }
 ```
+
+### HTTP Example (Client propagation)
+
+```go
+import (
+    "net/http"
+    slogcphttp "github.com/pjscruggs/slogcp/http"
+)
+
+// Create an HTTP client that forwards trace context from req.Context()
+client := &http.Client{
+    Transport: slogcphttp.NewPropagatingTransport(nil), // wraps http.DefaultTransport
+}
+
+// In a handler where r.Context() carries inbound trace context:
+req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://downstream", nil)
+resp, err := client.Do(req)
+```
+
+### gRPC
+
+* Client interceptors inject W3C `traceparent` into outgoing metadata by default; server interceptors extract context for correlation.
+* “Manual” injectors (`InjectUnaryTraceContextInterceptor` / `InjectStreamTraceContextInterceptor`) are available for servers **without** OTel propagation configured.
 
 For gRPC interceptors and more advanced middleware options, see the [Configuration Documentation](docs/CONFIGURATION.md).
 

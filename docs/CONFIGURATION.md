@@ -135,6 +135,14 @@ Required when `LogTarget` is `LogTargetGCP`. The Parent resource (e.g., `project
 -   **Metadata Server**: If running on GCP (e.g., GCE, GKE, Cloud Run) and no environment variables are set, the Project ID is auto-detected from the metadata server. Parent defaults to `projects/DETECTED_PROJECT_ID`.
 -   **Default**: None. If `LogTargetGCP` is used and no Project ID/Parent can be resolved, `slogcp.New()` returns an error.
 
+### Cross-project Trace Linking
+
+When logs are written in one project but traces live in another, you can direct trace formatting to a different project.
+
+-   **Programmatic**: `slogcp.WithTraceProjectID(id string)` (falls back to `WithProjectID` when empty)
+-   **Environment Variable**: `SLOGCP_TRACE_PROJECT_ID`
+-   **Behavior**: The handler formats the `Trace` as `projects/{TraceProjectID}/traces/{traceID}` while still writing log entries under the configured parent.
+
 ### Automatic Fallback Mode
 
 If no log target is explicitly configured (via options or environment variables) and the default `LogTargetGCP` initialization fails (e.g., due to missing credentials or project ID locally), `slogcp.New()` will automatically fall back to structured JSON logging on `stdout`.
@@ -220,7 +228,7 @@ Controls how the GCP client buffers log entries before sending them in batches.
     Max number of entries buffered. Default: `1000`.
 -   **`WithGCPEntryByteThreshold(n int)` / `SLOGCP_GCP_ENTRY_BYTE_THRESHOLD`**:
     Max size of entries buffered (bytes). Default: `8 MiB` (8 * 1024 * 1024 bytes).
--   **`WithGCPEntryByteLimit(n int)` / `SLOGCP_GCP_ENTRY_BYTE_LIMIT`**:
+-   **`WithGCPEntryByteLimit(n int)` / `SLOGCP_GCP_ENTRY_BYTE_LIMIT`****:**
     Max size of a single log entry (bytes). Larger entries are dropped or truncated by the client library. Default: `0` (no limit by `slogcp`, but GCP service limits apply, typically around 256KB).
 -   **`WithGCPBufferedByteLimit(n int)` / `SLOGCP_GCP_BUFFERED_BYTE_LIMIT`**:
     Total memory limit for all buffered entries. If reached, new entries may be dropped. Default: `100 MiB` (100 * 1024 * 1024 bytes) - this is an `slogcp` default, overriding the GCP client library's own default if any.
@@ -253,7 +261,7 @@ Enables partial success for batch log writes to the GCP API.
 | `slogcp.LevelDebug`     | -4 (`slog.LevelDebug`)        | `DEBUG`             | `logging.Debug`           |
 | `slogcp.LevelInfo`      | 0 (`slog.LevelInfo`)          | `INFO`              | `logging.Info`            |
 | `slogcp.LevelNotice`    | 2                             | `NOTICE`            | `logging.Notice`          |
-| `slogcp.LevelWarn`      | 4 (`slog.LevelWarn`)          | `WARN` (or `WARNING`) | `logging.Warning`         |
+| `slogcp.LevelWarn`      | 4 (`slog.LevelWarn`)          | `WARN` (or `WARNING`) | `logging.Warning`       |
 | `slogcp.LevelError`     | 8 (`slog.LevelError`)         | `ERROR`             | `logging.Error`           |
 | `slogcp.LevelCritical`  | 12                            | `CRITICAL`          | `logging.Critical`        |
 | `slogcp.LevelAlert`     | 16                            | `ALERT`             | `logging.Alert`           |
@@ -261,9 +269,9 @@ Enables partial success for batch log writes to the GCP API.
 
 When logging to non-GCP targets (stdout, stderr, file), the `severity` field in the JSON output will use the GCP Severity String (e.g., "DEBUG", "NOTICE", "WARNING").
 
-## HTTP Middleware Configuration (`slogcp/http`)
+## HTTP Middleware & Client Propagation (`slogcp/http`)
 
-The `github.com/pjscruggs/slogcp/http` subpackage provides `net/http` middleware.
+The `github.com/pjscruggs/slogcp/http` subpackage provides server middleware **and** an optional client transport.
 
 ### `slogcphttp.Middleware`
 
@@ -278,7 +286,7 @@ Wraps an `http.Handler` to log request and response details.
     -   `5xx` -> `slog.LevelError`
     -   `4xx` -> `slog.LevelWarn`
     -   Others -> `slog.LevelInfo`
--   **Trace Context**: Extracts trace context from incoming headers using the globally configured OpenTelemetry propagator (e.g., W3C TraceContext, B3) and adds it to the request's `context.Context`. This context is then used for logging, enabling trace correlation.
+-   **Trace Context (inbound)**: Extracts trace context from incoming headers using the globally configured OpenTelemetry propagator (e.g., W3C TraceContext, B3) and adds it to the request's `context.Context`. This context is then used for logging, enabling trace correlation.
 
 ### `slogcphttp.InjectTraceContextMiddleware`
 
@@ -296,6 +304,39 @@ Specifically processes the `X-Cloud-Trace-Context` header (used by Google Cloud 
     -   If the `X-Cloud-Trace-Context` header is missing or invalid, it proceeds without modifying the context.
     -   If a valid header is found, it creates a `trace.SpanContext` and adds it to the request context using `trace.ContextWithRemoteSpanContext`.
 
+### `slogcphttp.NewPropagatingTransport`
+
+`NewPropagatingTransport(base http.RoundTripper, opts ...TransportOption) http.RoundTripper`
+
+An opt-in HTTP client transport that **propagates the current trace context on outbound requests**:
+-   Injects **W3C Trace Context** (`traceparent`/`tracestate`) by default.
+-   Optionally injects **`X-Cloud-Trace-Context`** (span ID in **decimal**; `o=1` when sampled).
+-   Skips injection if headers are already present on the request.
+-   You can restrict propagation using a filter.
+
+**Options**
+- `WithHeaderPropagation(enabled bool)` — default `true` (W3C).
+- `WithXCloudPropagation(enabled bool)` — default `true` (legacy Google header).
+- `WithShouldPropagate(func(*http.Request) bool)` — return `false` to skip (e.g., for external domains).
+
+**Usage**
+```go
+client := &http.Client{
+    Transport: slogcphttp.NewPropagatingTransport(nil, // nil -> http.DefaultTransport
+        slogcphttp.WithShouldPropagate(func(r *http.Request) bool {
+            // Example: only internal calls
+            return strings.HasSuffix(r.URL.Host, ".svc.cluster.local") ||
+                   strings.HasSuffix(r.URL.Host, ".corp.example.com")
+        }),
+    ),
+}
+
+req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://svc.api/", nil)
+resp, err := client.Do(req)
+````
+
+> If you already use `otelhttp.NewTransport`, prefer that for full tracing (it injects W3C). Do not double-wrap. The transport here is for lightweight **propagation** (log/trace correlation) without full OTel.
+
 ## gRPC Interceptor Configuration (`slogcp/grpc`)
 
 The `github.com/pjscruggs/slogcp/grpc` subpackage provides gRPC client and server interceptors.
@@ -304,99 +345,104 @@ The `github.com/pjscruggs/slogcp/grpc` subpackage provides gRPC client and serve
 
 These options are applicable to both client and server interceptors. They are passed to the interceptor constructor functions (e.g., `slogcpgrpc.UnaryServerInterceptor(logger, opts...)`).
 
--   **`WithLevels(f CodeToLevel)`**: Customizes the mapping from `google.golang.org/grpc/codes.Code` to `slog.Level` for the final log entry.
-    -   `CodeToLevel` is `func(code codes.Code) slog.Level`.
-    -   Default: Maps `OK` to `Info`, client errors (`InvalidArgument`, `NotFound`, etc.) to `Warn`, server errors (`Internal`, `Unknown`, etc.) to `Error`.
--   **`WithShouldLog(f ShouldLogFunc)`**: Filters which RPC calls are logged.
-    -   `ShouldLogFunc` is `func(ctx context.Context, fullMethodName string) bool`.
-    -   Return `false` to skip logging for a call. Useful for health checks.
-    -   Default: Logs all calls. This is combined with `WithSkipPaths` and `WithSamplingRate`.
--   **`WithPayloadLogging(enabled bool)`**: Enables logging of request and response message payloads.
-    -   Logged at `slog.LevelDebug`.
-    -   Default: `false`. Use with caution due to potential log volume and data sensitivity.
--   **`WithMaxPayloadSize(sizeBytes int)`**: Limits the size of logged payloads (in bytes) when payload logging is enabled.
-    -   Truncated payloads are marked, and original size is logged.
-    -   Default: `0` (no limit).
--   **`WithMetadataLogging(enabled bool)`**: Enables logging of gRPC request/response metadata (headers/trailers).
-    -   Default: `false`.
--   **`WithMetadataFilter(f MetadataFilterFunc)`**: Filters which metadata keys are logged.
-    -   `MetadataFilterFunc` is `func(key string) bool`. Return `true` to include the key.
-    -   Default: Excludes common sensitive headers like `authorization`, `cookie`, `grpc-trace-bin`.
--   **`WithPanicRecovery(enabled bool)`** (Server-side only): Controls if the interceptor recovers from panics in handlers, logs them, and returns a `codes.Internal` error.
-    -   Default: `true`. Set to `false` if another interceptor handles panic recovery.
--   **`WithAutoStackTrace(enabled bool)`** (Server-side only): If `true`, automatically attaches stack traces to logged errors (from panics or error-level logs containing an `error` object).
-    -   Default: `false`.
--   **`WithSkipPaths(paths []string)`**: Excludes specific gRPC methods from logging if their full method name contains any of the specified path strings.
-    -   Example: `slogcpgrpc.WithSkipPaths([]string{"/grpc.health.v1.Health/Check"})`
--   **`WithSamplingRate(rate float64)`**: Logs a fraction of requests (0.0 to 1.0).
-    -   Sampling is deterministic based on method name and timestamp.
-    -   Default: `1.0` (log all requests).
--   **`WithLogCategory(category string)`**: Adds a `log.category` attribute to gRPC log entries.
-    -   Default: `"grpc_request"`.
+* **`WithLevels(f CodeToLevel)`**: Customizes the mapping from `google.golang.org/grpc/codes.Code` to `slog.Level` for the final log entry.
+* **`WithShouldLog(f ShouldLogFunc)`**: Filters which RPC calls are logged.
+* **`WithPayloadLogging(enabled bool)`**: Enables logging of request and response message payloads (debug level).
+* **`WithMaxPayloadSize(sizeBytes int)`**: Limits the size of logged payloads (when enabled).
+* **`WithMetadataLogging(enabled bool)`**: Enables logging of gRPC metadata (headers/trailers).
+* **`WithMetadataFilter(f MetadataFilterFunc)`**: Filters which metadata keys are logged.
+* **`WithPanicRecovery(enabled bool)`** (Server): Interceptor recovers and logs panics as `Internal`.
+* **`WithAutoStackTrace(enabled bool)`** (Server): Attach stack traces to logged errors.
+* **`WithSkipPaths(paths []string)`**: Exclude method paths from logging.
+* **`WithSamplingRate(rate float64)`**: Sample logs (0.0..1.0).
+* **`WithLogCategory(category string)`**: Adds a `log.category` attribute (default `"grpc_request"`).
+* **`WithTracePropagation(enabled bool)`**: When `true` (default), **client** interceptors inject **W3C** (`traceparent`/`tracestate`) into outgoing metadata using the global OTel propagator. They **do not** add `x-cloud-trace-context` to gRPC metadata. If `traceparent` already exists, they do not overwrite it.
 
 ### Server Interceptors
 
--   `slogcpgrpc.UnaryServerInterceptor(logger *slogcp.Logger, opts ...Option)`
--   `slogcpgrpc.StreamServerInterceptor(logger *slogcp.Logger, opts ...Option)`
+* `slogcpgrpc.UnaryServerInterceptor(logger *slogcp.Logger, opts ...Option)`
+* `slogcpgrpc.StreamServerInterceptor(logger *slogcp.Logger, opts ...Option)`
 
 These interceptors log:
--   gRPC service and method names.
--   Duration of the call.
--   Final gRPC status code.
--   Peer address (client's address).
--   Error returned by the handler (formatted for Cloud Error Reporting).
--   Panic details if `WithPanicRecovery(true)` is active.
--   Trace context is automatically extracted from the incoming `context.Context` by the `slogcp.Logger`'s handler.
+
+* gRPC service and method names.
+* Duration of the call.
+* Final gRPC status code.
+* Peer address (client's address).
+* Error returned by the handler (formatted for Cloud Error Reporting).
+* Panic details if `WithPanicRecovery(true)` is active.
+
+Trace context is extracted from the incoming `context.Context` and included in logs by the `slogcp` handler.
 
 ### Client Interceptors
 
--   `slogcpgrpc.NewUnaryClientInterceptor(logger *slogcp.Logger, opts ...Option)`
--   `slogcpgrpc.NewStreamClientInterceptor(logger *slogcp.Logger, opts ...Option)`
+* `slogcpgrpc.NewUnaryClientInterceptor(logger *slogcp.Logger, opts ...Option)`
+* `slogcpgrpc.NewStreamClientInterceptor(logger *slogcp.Logger, opts ...Option)`
 
 These interceptors log:
--   gRPC service and method names.
--   Duration of the call.
--   Final gRPC status code.
--   Error returned by the call.
--   Trace context is propagated in outgoing metadata and included in logs by the `slogcp.Logger`'s handler.
+
+* gRPC service and method names.
+* Duration of the call.
+* Final gRPC status code.
+* Error returned by the call.
+
+When `WithTracePropagation(true)` (default), they inject W3C trace context into outgoing metadata using the global OTel propagator and **skip injection** if a `traceparent` is already present.
 
 ### Manual Trace Context Injection (gRPC)
 
--   `slogcpgrpc.InjectUnaryTraceContextInterceptor() grpc.UnaryServerInterceptor`
--   `slogcpgrpc.InjectStreamTraceContextInterceptor() grpc.StreamServerInterceptor`
+* `slogcpgrpc.InjectUnaryTraceContextInterceptor() grpc.UnaryServerInterceptor`
+* `slogcpgrpc.InjectStreamTraceContextInterceptor() grpc.StreamServerInterceptor`
 
 These server interceptors read trace context headers (`traceparent` W3C header first, then `x-cloud-trace-context` GCP header) from incoming request metadata and inject the parsed `trace.SpanContext` into the Go `context.Context`.
--   **Usage**: Use only if standard OpenTelemetry instrumentation (e.g., `otelgrpc`) is NOT configured to handle trace propagation from these headers automatically.
--   Place early in the interceptor chain, before logging or other trace-consuming interceptors.
--   If a valid OTel span context already exists in the incoming context, these injectors do nothing.
+
+* **Usage**: Use only if standard OpenTelemetry instrumentation (e.g., `otelgrpc`) is NOT configured to handle trace propagation from these headers automatically.
+* Place early in the interceptor chain, before logging or other trace-consuming interceptors.
+* If a valid OTel span context already exists in the incoming context, these injectors do nothing.
+
+## Operation Grouping
+
+To group related log entries in Cloud Logging, emit the standard operation structure:
+
+```go
+logger.Info("request start",
+    slog.Group("logging.googleapis.com/operation",
+        slog.String("id", requestID),
+        slog.String("producer", "api-server"),
+        slog.Bool("first", true),
+    ),
+)
+```
+
+`slogcp` will map this group to the Cloud Logging `operation` field when using the API client, and emit the same nested object in JSON redirect modes.
 
 ## Environment Variables Summary
 
-| Variable                             | Description                                                                 | Default (if any)                               |
-|--------------------------------------|-----------------------------------------------------------------------------|------------------------------------------------|
-| `LOG_LEVEL`                          | Minimum log level (debug, info, warn, error, notice, critical, etc.)        | `info`                                         |
-| `LOG_SOURCE_LOCATION`                | Include source file/line in logs (`true`/`false`)                           | `false`                                        |
-| `LOG_STACK_TRACE_ENABLED`            | Enable stack traces for errors (`true`/`false`)                             | `false`                                        |
-| `LOG_STACK_TRACE_LEVEL`              | Minimum level for stack traces (e.g., `error`)                              | `error`                                        |
-| `SLOGCP_LOG_TARGET`                  | Primary log destination (`gcp`, `stdout`, `stderr`, `file`)                 | `gcp`                                          |
-| `SLOGCP_REDIRECT_AS_JSON_TARGET`     | Specific target for non-GCP modes (`stdout`, `stderr`, `file:/path/to.log`) | (depends on `SLOGCP_LOG_TARGET`)               |
-| `SLOGCP_PROJECT_ID`                  | GCP Project ID (overrides `GOOGLE_CLOUD_PROJECT` and metadata)              | (derived)                                      |
-| `GOOGLE_CLOUD_PROJECT`               | GCP Project ID (standard env var)                                           | (derived from metadata if on GCP)              |
-| `SLOGCP_GCP_PARENT`                  | GCP Parent resource (e.g., `projects/ID`, `folders/ID`)                     | (derived from Project ID)                      |
-| `SLOGCP_GCP_LOG_ID`                  | GCP Log ID (the name of the log within Cloud Logging)                       | `app`                                          |
-| `SLOGCP_GCP_CLIENT_SCOPES`           | Comma-separated OAuth2 scopes for GCP client                                | (GCP client default)                           |
-| `SLOGCP_GCP_COMMON_LABELS_JSON`      | JSON string map of common labels for GCP logs                               | (none)                                         |
-| `SLOGCP_GCP_CL_*`                    | Individual common labels (e.g., `SLOGCP_GCP_CL_SERVICE=api`)                | (none)                                         |
-| `SLOGCP_GCP_RESOURCE_TYPE`           | GCP Monitored Resource type (e.g., `gce_instance`)                          | (auto-detected)                                |
-| `SLOGCP_GCP_RL_*`                    | GCP Monitored Resource labels (e.g., `SLOGCP_GCP_RL_INSTANCE_ID=123`)       | (auto-detected)                                |
-| `SLOGCP_GCP_CONCURRENT_WRITE_LIMIT`  | Max concurrent goroutines for sending logs to GCP                           | 1                                              |
-| `SLOGCP_GCP_DELAY_THRESHOLD_MS`      | Max time (ms) to buffer entries before sending to GCP                       | 1000 (1s)                                      |
-| `SLOGCP_GCP_ENTRY_COUNT_THRESHOLD`   | Max number of entries to buffer before sending to GCP                       | 1000                                           |
-| `SLOGCP_GCP_ENTRY_BYTE_THRESHOLD`    | Max size (bytes) of entries to buffer before sending to GCP                 | 8388608 (8MiB)                                 |
-| `SLOGCP_GCP_ENTRY_BYTE_LIMIT`        | Max size (bytes) of a single log entry for GCP                              | 0 (no limit by slogcp)                         |
-| `SLOGCP_GCP_BUFFERED_BYTE_LIMIT`     | Total memory limit (bytes) for buffered log entries for GCP                 | 104857600 (100MiB)                             |
-| `SLOGCP_GCP_CONTEXT_FUNC_TIMEOUT_MS` | Timeout (ms) for default context used in background GCP client operations   | (none, client init has 10s default)            |
-| `SLOGCP_GCP_PARTIAL_SUCCESS`         | Enable partial success for GCP log writes (`true`/`false`)                  | `false`                                        |
+| Variable                             | Description                                                                 | Default (if any)                    |
+| ------------------------------------ | --------------------------------------------------------------------------- | ----------------------------------- |
+| `LOG_LEVEL`                          | Minimum log level (debug, info, warn, error, notice, critical, etc.)        | `info`                              |
+| `LOG_SOURCE_LOCATION`                | Include source file/line in logs (`true`/`false`)                           | `false`                             |
+| `LOG_STACK_TRACE_ENABLED`            | Enable stack traces for errors (`true`/`false`)                             | `false`                             |
+| `LOG_STACK_TRACE_LEVEL`              | Minimum level for stack traces (e.g., `error`)                              | `error`                             |
+| `SLOGCP_LOG_TARGET`                  | Primary log destination (`gcp`, `stdout`, `stderr`, `file`)                 | `gcp`                               |
+| `SLOGCP_REDIRECT_AS_JSON_TARGET`     | Specific target for non-GCP modes (`stdout`, `stderr`, `file:/path/to.log`) | (depends on `SLOGCP_LOG_TARGET`)    |
+| `SLOGCP_PROJECT_ID`                  | GCP Project ID (overrides `GOOGLE_CLOUD_PROJECT` and metadata)              | (derived)                           |
+| `GOOGLE_CLOUD_PROJECT`               | GCP Project ID (standard env var)                                           | (derived from metadata if on GCP)   |
+| `SLOGCP_GCP_PARENT`                  | GCP Parent resource (e.g., `projects/ID`, `folders/ID`)                     | (derived from Project ID)           |
+| `SLOGCP_GCP_LOG_ID`                  | GCP Log ID (the name of the log within Cloud Logging)                       | `app`                               |
+| `SLOGCP_GCP_CLIENT_SCOPES`           | Comma-separated OAuth2 scopes for GCP client                                | (GCP client default)                |
+| `SLOGCP_GCP_COMMON_LABELS_JSON`      | JSON string map of common labels for GCP logs                               | (none)                              |
+| `SLOGCP_GCP_CL_*`                    | Individual common labels (e.g., `SLOGCP_GCP_CL_SERVICE=api`)                | (none)                              |
+| `SLOGCP_GCP_RESOURCE_TYPE`           | GCP Monitored Resource type (e.g., `gce_instance`)                          | (auto-detected)                     |
+| `SLOGCP_GCP_RL_*`                    | GCP Monitored Resource labels (e.g., `SLOGCP_GCP_RL_INSTANCE_ID=123`)       | (auto-detected)                     |
+| `SLOGCP_GCP_CONCURRENT_WRITE_LIMIT`  | Max concurrent goroutines for sending logs to GCP                           | 1                                   |
+| `SLOGCP_GCP_DELAY_THRESHOLD_MS`      | Max time (ms) to buffer entries before sending to GCP                       | 1000 (1s)                           |
+| `SLOGCP_GCP_ENTRY_COUNT_THRESHOLD`   | Max number of entries to buffer before sending to GCP                       | 1000                                |
+| `SLOGCP_GCP_ENTRY_BYTE_THRESHOLD`    | Max size (bytes) of entries to buffer before sending to GCP                 | 8388608 (8MiB)                      |
+| `SLOGCP_GCP_ENTRY_BYTE_LIMIT`        | Max size (bytes) of a single log entry for GCP                              | 0 (no limit by slogcp)              |
+| `SLOGCP_GCP_BUFFERED_BYTE_LIMIT`     | Total memory limit (bytes) for buffered log entries for GCP                 | 104857600 (100MiB)                  |
+| `SLOGCP_GCP_CONTEXT_FUNC_TIMEOUT_MS` | Timeout (ms) for default context used in background GCP client operations   | (none, client init has 10s default) |
+| `SLOGCP_GCP_PARTIAL_SUCCESS`         | Enable partial success for GCP log writes (`true`/`false`)                  | `false`                             |
+| `SLOGCP_TRACE_PROJECT_ID`            | Project ID used to format fully-qualified trace names                       | (falls back to `SLOGCP_PROJECT_ID`) |
 
 ## Examples
 
@@ -463,6 +509,7 @@ func main() {
     }
 }
 ```
+
 Alternatively, set environment variables:
 `SLOGCP_LOG_TARGET=stdout LOG_LEVEL=debug LOG_SOURCE_LOCATION=true`
 
@@ -521,19 +568,8 @@ import (
 	slogcpgrpc "github.com/pjscruggs/slogcp/grpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/health/grpc_health_v1" // For health check example
 	// ... your_pb_definitions
 )
-
-// Example HealthServer implementation
-type healthServer struct{}
-func (s *healthServer) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
-	return &grpc_health_v1.HealthCheckResponse{Status: grpc_health_v1.HealthCheckResponse_SERVING}, nil
-}
-func (s *healthServer) Watch(req *grpc_health_v1.HealthCheckRequest, stream grpc_health_v1.Health_WatchServer) error {
-	return status.Errorf(codes.Unimplemented, "Watch is not implemented")
-}
-
 
 func main() {
 	slogcpLogger, err := slogcp.New(slogcp.WithRedirectToStdout()) // Local example
@@ -542,46 +578,26 @@ func main() {
 	}
 	defer slogcpLogger.Close()
 
-	// Custom function to skip logging for health checks
 	shouldLogRPC := func(ctx context.Context, fullMethodName string) bool {
-		if strings.HasPrefix(fullMethodName, "/grpc.health.v1.Health/") {
-			return false // Don't log health checks
-		}
-		return true
-	}
-
-	// Custom level function (example: treat NotFound as Info)
-	customCodeToLevel := func(code codes.Code) slog.Level {
-		if code == codes.NotFound {
-			return slog.LevelInfo
-		}
-		return slogcpgrpc.DefaultCodeToLevel()(code) // Fallback to default for others
+		return !strings.HasPrefix(fullMethodName, "/grpc.health.v1.Health/")
 	}
 
 	server := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			slogcpgrpc.UnaryServerInterceptor(slogcpLogger,
 				slogcpgrpc.WithShouldLog(shouldLogRPC),
-				slogcpgrpc.WithLevels(customCodeToLevel),
-				slogcpgrpc.WithPayloadLogging(true),      // Enable payload logging
-				slogcpgrpc.WithMaxPayloadSize(1024),     // Limit payload log to 1KB
-				slogcpgrpc.WithMetadataLogging(true),    // Enable metadata logging
+				slogcpgrpc.WithMetadataLogging(true),
 			),
-			// ... other unary interceptors
 		),
 		grpc.ChainStreamInterceptor(
 			slogcpgrpc.StreamServerInterceptor(slogcpLogger,
 				slogcpgrpc.WithShouldLog(shouldLogRPC),
-				// ... other stream options
 			),
-			// ... other stream interceptors
 		),
 	)
 
-	// Register your services
+	// Register your services...
 	// pb.RegisterYourServiceServer(server, &yourServiceImpl{})
-	grpc_health_v1.RegisterHealthServer(server, &healthServer{})
-
 
 	lis, err := net.Listen("tcp", ":50051")
 	if err != nil {
@@ -594,3 +610,24 @@ func main() {
 	}
 }
 ```
+
+### HTTP Client Propagation with `PropagatingTransport`
+
+Propagate the current trace to downstream HTTP services (for log/trace correlation) without pulling in full tracing:
+
+```go
+client := &http.Client{
+    Transport: slogcphttp.NewPropagatingTransport(nil, // wrap DefaultTransport
+        slogcphttp.WithShouldPropagate(func(r *http.Request) bool {
+            return strings.HasSuffix(r.URL.Host, ".svc.cluster.local")
+        }),
+        // slogcphttp.WithXCloudPropagation(false), // opt out of legacy header if desired
+    ),
+}
+
+// Carry the inbound context so headers can be injected
+req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://orders.svc.cluster.local/create", body)
+resp, err := client.Do(req)
+```
+
+> Downstream services that use `slogcp` (or the Cloud Logging Go client) will auto-link their logs to the same trace when `HTTPRequest.Request` is passed in their handler and the headers are present.

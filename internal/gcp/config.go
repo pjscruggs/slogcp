@@ -72,6 +72,7 @@ const (
 	envLogTarget               = "SLOGCP_LOG_TARGET"              // Where logs should be sent
 	envRedirectAsJSONTarget    = "SLOGCP_REDIRECT_AS_JSON_TARGET" // "stdout", "stderr", "file:/path/to/file.log"
 	envSlogcpProjectIDOverride = "SLOGCP_PROJECT_ID"              // Override GCP project ID
+	envTraceProjectID          = "SLOGCP_TRACE_PROJECT_ID"        // Override project used to format trace resource names
 
 	// GCP Client passthroughs
 	envGCPParent       = "SLOGCP_GCP_PARENT"        // GCP resource parent
@@ -138,9 +139,19 @@ type Config struct {
 	InitialAttrs    []slog.Attr                         // Initial attributes set by options
 	InitialGroup    string                              // Initial group name set by options
 
-	ProjectID string // Final resolved project ID - REQUIRED for trace formatting if trace exists
-	Parent    string // Final resolved parent - REQUIRED for GCP target
-	GCPLogID  string // Final resolved log ID - defaults to "app" if unset
+	// ProjectID is the resolved project used for API calls and, by default,
+	// for building fully-qualified trace names in log entries.
+	ProjectID string
+
+	// TraceProjectID, if set, overrides ProjectID when formatting
+	// fully-qualified trace resource names:
+	//   projects/<TraceProjectID>/traces/<traceID>
+	// If empty, ProjectID is used.
+	TraceProjectID string
+
+	// Parent is the full resource parent (e.g., "projects/PROJECT_ID").
+	Parent   string
+	GCPLogID string // Cloud Logging log ID (defaults to "app")
 
 	ClientScopes      []string    // nil means use GCP default
 	ClientOnErrorFunc func(error) // nil means use slogcp default (stderr)
@@ -261,6 +272,11 @@ func LoadConfig() (Config, error) {
 		}
 	}
 
+	// Optional override for the project used when formatting trace resource names.
+	if v := os.Getenv(envTraceProjectID); v != "" {
+		cfg.TraceProjectID = v
+	}
+
 	// Process core logging settings
 	cfg.InitialLevel = parseLevelEnv(os.Getenv(envLogLevel), cfg.InitialLevel)
 	cfg.AddSource = parseBoolEnv(os.Getenv(envLogSourceLocation), cfg.AddSource)
@@ -340,9 +356,15 @@ func LoadConfig() (Config, error) {
 	}
 	cfg.GCPPartialSuccess = parseBoolPtrEnv(os.Getenv(envGCPPartialSuccess))
 
-	// Check for project ID missing error condition *after* parsing all potential sources
+	// If targeting GCP, ensure we have a parent.
 	if cfg.LogTarget == LogTargetGCP && cfg.Parent == "" {
 		return cfg, fmt.Errorf("parent (e.g. projects/PROJECT_ID) is required for GCP target and could not be resolved from env vars or metadata: %w", ErrProjectIDMissing)
+	}
+
+	// Default the TraceProjectID if not explicitly set:
+	// prefer explicit SLOGCP_TRACE_PROJECT_ID; otherwise fall back to ProjectID.
+	if cfg.TraceProjectID == "" {
+		cfg.TraceProjectID = cfg.ProjectID
 	}
 
 	return cfg, nil
