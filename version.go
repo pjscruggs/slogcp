@@ -19,7 +19,7 @@ import "fmt"
 // Version is the current version of the slogcp library.
 // Follows semantic versioning (https://semver.org/).
 // It can be overridden at build time via -ldflags.
-var Version = "v0.1.5-alpha"
+var Version = "v0.1.6-alpha"
 
 // UserAgent is the string sent with Cloud Logging API requests, identifying this library.
 // Initialized based on the Version variable.
