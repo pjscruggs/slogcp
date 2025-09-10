@@ -53,24 +53,25 @@ func NewUnaryClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.Unary
 		startTime := time.Now()
 		serviceName, methodName := splitMethodName(method)
 
-		// Prepare outgoing metadata with trace context.
+		// Prepare outgoing metadata, optionally injecting trace headers.
 		originalOutgoingMD, _ := metadata.FromOutgoingContext(ctx)
-		outgoingMDWithTrace := originalOutgoingMD.Copy()
-
-		// Avoid duplicating injection if headers already exist.
-		if len(outgoingMDWithTrace.Get(traceparentHeader)) == 0 {
-			otel.GetTextMapPropagator().Inject(ctx, metadataCarrier{md: outgoingMDWithTrace})
-		}
-		// Also synthesize X-Cloud-Trace-Context if not present and we have a valid span.
-		if len(outgoingMDWithTrace.Get(xCloudTraceContextHeaderMD)) == 0 {
-			if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
-				if v := formatXCloudTraceContextFromSpanContext(sc); v != "" {
-					outgoingMDWithTrace[xCloudTraceContextHeaderMD] = []string{v}
+		ctxWithOutgoingMD := ctx
+		if cfg.propagateTraceHeaders {
+			outgoingMDWithTrace := originalOutgoingMD.Copy()
+			// Avoid duplicating injection if headers already exist.
+			if len(outgoingMDWithTrace.Get(traceparentHeader)) == 0 {
+				otel.GetTextMapPropagator().Inject(ctx, metadataCarrier{md: outgoingMDWithTrace})
+			}
+			// Also synthesize X-Cloud-Trace-Context if not present and we have a valid span.
+			if len(outgoingMDWithTrace.Get(xCloudTraceContextHeaderMD)) == 0 {
+				if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+					if v := formatXCloudTraceContextFromSpanContext(sc); v != "" {
+						outgoingMDWithTrace[xCloudTraceContextHeaderMD] = []string{v}
+					}
 				}
 			}
+			ctxWithOutgoingMD = metadata.NewOutgoingContext(ctx, outgoingMDWithTrace)
 		}
-
-		ctxWithOutgoingMD := metadata.NewOutgoingContext(ctx, outgoingMDWithTrace)
 
 		// Prepare slice to hold metadata attributes for the final log.
 		var metadataAttrs []slog.Attr
