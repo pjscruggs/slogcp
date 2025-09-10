@@ -22,16 +22,18 @@ import (
 	"time"
 
 	"cloud.google.com/go/logging"
+	logpb "cloud.google.com/go/logging/apiv2/loggingpb"
 )
 
 // Constants for standard keys used within the structured log payload (jsonPayload)
 // and for special attribute handling.
 const (
-	messageKey     = "message"     // Key for the main log message string.
-	errorKey       = "error"       // Key used in RedirectAsJSON for the error message.
-	errorTypeKey   = "type"        // Key within the GCP API payload for the Go error type.
-	stackTraceKey  = "stack_trace" // Key for the formatted stack trace string (for GCER).
-	httpRequestKey = "httpRequest" // Special key used to pass HTTPRequest struct to the handler.
+	messageKey        = "message"                          // Key for the main log message string.
+	errorKey          = "error"                            // Key used in RedirectAsJSON for the error message.
+	errorTypeKey      = "type"                             // Key within the GCP API payload for the Go error type.
+	stackTraceKey     = "stack_trace"                      // Key for the formatted stack trace string (for GCER).
+	httpRequestKey    = "httpRequest"                      // Special key used to pass HTTPRequest struct to the handler.
+	operationGroupKey = "logging.googleapis.com/operation" // Canonical operation group name
 )
 
 // formattedError holds the processed error details for structured logging,
@@ -221,4 +223,95 @@ func convertToString(v any) string {
 		// For any other type, use fmt.Sprintf
 		return fmt.Sprintf("%v", val)
 	}
+}
+
+// ExtractOperationFromRecord scans a slog.Record for a group named
+// "logging.googleapis.com/operation" and builds a LogEntryOperation.
+//
+// The group may contain the keys "id", "producer", "first", and "last".
+// Missing keys are treated as zero values. If no such group exists, nil is returned.
+func ExtractOperationFromRecord(rec slog.Record) *logpb.LogEntryOperation {
+	var op *logpb.LogEntryOperation
+
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key != operationGroupKey || a.Value.Kind() != slog.KindGroup {
+			return true
+		}
+		fields := a.Value.Group()
+		o := &logpb.LogEntryOperation{}
+		for i := range fields {
+			switch fields[i].Key {
+			case "id":
+				o.Id = fields[i].Value.String()
+			case "producer":
+				o.Producer = fields[i].Value.String()
+			case "first":
+				o.First = fields[i].Value.Bool()
+			case "last":
+				o.Last = fields[i].Value.Bool()
+			}
+		}
+		op = o
+		// Stop walking; operation group found.
+		return false
+	})
+
+	return op
+}
+
+// ExtractOperationFromPayload looks for a canonical
+// "logging.googleapis.com/operation" object already present in a structured
+// payload map and converts it into a LogEntryOperation. If the key is absent
+// or the value is not a compatible map shape, it returns nil.
+//
+// This helper allows the handler to honor operation groups that were resolved
+// into the payload (e.g., via initial attrs) before building the final entry.
+func ExtractOperationFromPayload(payload map[string]any) *logpb.LogEntryOperation {
+	if payload == nil {
+		return nil
+	}
+	raw, ok := payload[operationGroupKey]
+	if !ok || raw == nil {
+		return nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	op := &logpb.LogEntryOperation{}
+
+	if v, ok := m["id"]; ok {
+		if s, ok := v.(string); ok {
+			op.Id = s
+		}
+	}
+	if v, ok := m["producer"]; ok {
+		if s, ok := v.(string); ok {
+			op.Producer = s
+		}
+	}
+	if v, ok := m["first"]; ok {
+		switch b := v.(type) {
+		case bool:
+			op.First = b
+		case string:
+			// tolerate stringified bools from user attrs
+			op.First = b == "true"
+		}
+	}
+	if v, ok := m["last"]; ok {
+		switch b := v.(type) {
+		case bool:
+			op.Last = b
+		case string:
+			op.Last = b == "true"
+		}
+	}
+
+	// If all fields are zero-values, treat as not present.
+	if op.Id == "" && op.Producer == "" && !op.First && !op.Last {
+		return nil
+	}
+	return op
 }

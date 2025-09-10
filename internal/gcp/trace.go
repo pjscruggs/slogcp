@@ -17,6 +17,7 @@ package gcp
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -25,44 +26,92 @@ import (
 // as attributes to structured log payloads. These specific keys are recognized
 // by Google Cloud Logging for automatic correlation with Cloud Trace.
 const (
-	// TraceKey is the field name for the formatted trace ID.
+	// TraceKey is the field name for the formatted trace name.
+	// The value must be "projects/PROJECT_ID/traces/TRACE_ID".
 	TraceKey = "logging.googleapis.com/trace"
-	// SpanKey is the field name for the span ID.
+	// SpanKey is the field name for the hex span ID.
 	SpanKey = "logging.googleapis.com/spanId"
-	// SampledKey is the field name for the trace sampling decision.
+	// SampledKey is the field name for the boolean sampling decision.
 	SampledKey = "logging.googleapis.com/trace_sampled"
 )
 
-// ExtractTraceSpan extracts OpenTelemetry trace ID, span ID, and sampling status
-// from the provided context.Context. It formats the trace ID using the provided
-// projectID according to the format expected by Google Cloud Logging
-// ("projects/PROJECT_ID/traces/TRACE_ID").
+// ExtractTraceSpan extracts OpenTelemetry trace details from ctx and, if a
+// non-empty projectID is provided, formats a fully-qualified Cloud Trace name
+// using "projects/{projectID}/traces/{traceID}".
 //
-// It returns the formatted trace ID (if possible), the raw hex trace ID, the raw
-// hex span ID, the sampling decision, and the original OpenTelemetry SpanContext.
-// If the context does not contain a valid SpanContext, or if the projectID is
-// empty when needed for formatting, relevant return values will be empty strings
-// or false.
+// It returns:
+//   - formattedTraceID: "projects/<projectID>/traces/<traceID>" if projectID != "", else "".
+//   - rawTraceID: 32-char lowercase hex trace ID.
+//   - rawSpanID:  16-char lowercase hex span ID.
+//   - sampled:    whether the span context is sampled.
+//   - otelCtx:    the original span context (valid==true iff trace present).
+//
+// This function is intentionally light-weight: it does not create spans,
+// does not parse headers, and does not mutate context. Upstream middleware
+// should populate the OTel span context (e.g., via OTel propagators or an
+// X-Cloud-Trace-Context injector) before calling this helper.
+//
+// For cross-project linking, pass the desired project that owns the trace as
+// projectID (often Config.TraceProjectID). If empty, only raw IDs are returned.
 func ExtractTraceSpan(ctx context.Context, projectID string) (formattedTraceID, rawTraceID, rawSpanID string, sampled bool, otelCtx trace.SpanContext) {
 	otelCtx = trace.SpanContextFromContext(ctx)
-
-	// Return early if the context is invalid (no trace info).
 	if !otelCtx.IsValid() {
 		return "", "", "", false, otelCtx
 	}
 
-	// Extract components from the valid SpanContext.
-	traceIDInternal := otelCtx.TraceID()
-	spanIDInternal := otelCtx.SpanID()
+	traceID := otelCtx.TraceID()
+	spanID := otelCtx.SpanID()
+	rawTraceID = traceID.String()
+	rawSpanID = spanID.String()
 	sampled = otelCtx.IsSampled()
-	rawTraceID = traceIDInternal.String()
-	rawSpanID = spanIDInternal.String()
 
-	// Format the traceID into the GCP required format only if projectID is available.
 	if projectID != "" {
-		formattedTraceID = fmt.Sprintf("projects/%s/traces/%s", projectID, rawTraceID)
+		formattedTraceID = FormatTraceResource(projectID, rawTraceID)
 	}
-	// If projectID is empty, formattedTraceID remains "", but raw IDs and sampled flag are still valid.
 
 	return formattedTraceID, rawTraceID, rawSpanID, sampled, otelCtx
+}
+
+// FormatTraceResource returns a fully-qualified Cloud Trace resource name:
+//
+//	projects/<projectID>/traces/<traceID>
+//
+// Callers should pass a 32-char lowercase hex traceID (e.g., from OTel).
+func FormatTraceResource(projectID, rawTraceID string) string {
+	return fmt.Sprintf("projects/%s/traces/%s", projectID, rawTraceID)
+}
+
+// SpanIDHexToDecimal converts a 16-char hex span ID to its unsigned
+// decimal representation as required by the legacy X-Cloud-Trace-Context
+// header's SPAN_ID field.
+//
+// It returns ("", false) if the value cannot be parsed.
+func SpanIDHexToDecimal(spanIDHex string) (string, bool) {
+	// 64-bit span IDs as hex -> decimal
+	ui, err := strconv.ParseUint(spanIDHex, 16, 64)
+	if err != nil {
+		return "", false
+	}
+	return strconv.FormatUint(ui, 10), true
+}
+
+// BuildXCloudTraceContext builds the value for the legacy X-Cloud-Trace-Context
+// header from raw hex IDs and a sampled flag. The format is:
+//
+//	TRACE_ID[/SPAN_ID][;o=TRACE_TRUE]
+//
+// where SPAN_ID is decimal and TRACE_TRUE is "1" when sampled, "0" otherwise.
+//
+// If spanIDHex is empty or invalid, the "/SPAN_ID" portion is omitted.
+func BuildXCloudTraceContext(rawTraceID, spanIDHex string, sampled bool) string {
+	val := rawTraceID
+	if dec, ok := SpanIDHexToDecimal(spanIDHex); ok && dec != "" {
+		val = fmt.Sprintf("%s/%s", val, dec)
+	}
+	if sampled {
+		val = fmt.Sprintf("%s;o=1", val)
+	} else {
+		val = fmt.Sprintf("%s;o=0", val)
+	}
+	return val
 }

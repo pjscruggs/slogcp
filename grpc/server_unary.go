@@ -19,6 +19,8 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
@@ -60,6 +62,18 @@ func UnaryServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.UnarySer
 		info *grpc.UnaryServerInfo, // Info about the RPC.
 		handler grpc.UnaryHandler, // The next interceptor or the final RPC handler.
 	) (resp interface{}, err error) { // Named return value for easier access in final logging.
+
+		// Extract inbound trace context from gRPC metadata using the global OTel propagator.
+		// Fallback to X-Cloud-Trace-Context if no valid span was found.
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			ctxExtracted := otel.GetTextMapPropagator().Extract(ctx, metadataCarrier{md: md})
+			if !trace.SpanContextFromContext(ctxExtracted).IsValid() {
+				if vals := md.Get(xCloudTraceContextHeaderMD); len(vals) > 0 {
+					ctxExtracted = injectTraceContextFromXCloudHeader(ctxExtracted, vals[0])
+				}
+			}
+			ctx = ctxExtracted
+		}
 
 		// Check if this call should be logged based on the filter function.
 		if !cfg.shouldLogFunc(ctx, info.FullMethod) {

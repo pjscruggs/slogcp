@@ -12,55 +12,58 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package http provides standard net/http middleware for integrating slogcp
-// logging with HTTP servers.
+// Package http provides net/http integration for slogcp.
 //
-// The package offers two main components:
+// The package offers:
 //
-// 1. [Middleware] function wraps an existing [http.Handler] to automatically
-// log details about each incoming request and its response using a provided
-// [slog.Logger] (obtained from the main slogcp package).
+//  1. [Middleware]: wraps an [http.Handler] to log request/response details
+//     with a provided *slog.Logger (from slogcp).
 //
-// 2. [InjectTraceContextMiddleware] function processes the X-Cloud-Trace-Context
-// header used by Google Cloud services and injects the trace context into the
-// request context so it can be used by logging and other observability tools.
+//  2. [InjectTraceContextMiddleware]: extracts the legacy X-Cloud-Trace-Context
+//     header and injects a remote span context into the request’s context.
+//     Use this only when you’re not already using an OpenTelemetry HTTP
+//     server middleware.
 //
-// These middlewares extract trace context from request headers and include
-// request/response details (like status code, size, latency, remote IP) in
-// structured log records, enabling better filtering and analysis in the GCP console.
+//  3. [NewTraceRoundTripper]: an opt-in client transport that propagates the
+//     current span context on outbound requests (injects W3C traceparent and,
+//     by default, X-Cloud-Trace-Context). This is useful when you are not
+//     using a full OpenTelemetry HTTP client wrapper.
 //
-// # Basic Usage
+// These helpers make it easy to correlate HTTP traffic with Cloud Logging and
+// Cloud Trace by ensuring trace context is present on inbound and outbound calls.
 //
-// First, obtain a logger instance from the main slogcp package:
+// # Basic Usage (server)
 //
 //	// Assumes GOOGLE_CLOUD_PROJECT is set or running on GCP.
 //	slogcpLogger, err := slogcp.New()
 //	if err != nil {
-//	    log.Fatalf("Failed to create slogcp logger: %v", err)
+//	    log.Fatalf("failed to create slogcp logger: %v", err)
 //	}
 //	defer slogcpLogger.Close()
-//
-// Then, apply the middlewares to your HTTP handler:
 //
 //	// Import the middleware package
 //	import slogcphttp "github.com/pjscruggs/slogcp/http"
 //
 //	myHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-//	    // Your handler logic...
 //	    w.WriteHeader(http.StatusOK)
 //	    w.Write([]byte("Hello, world!"))
 //	})
 //
-//	// Wrap the handler with both middlewares.
-//	// The trace injector should come first in the chain.
-//	// Note: Middleware expects *slog.Logger, which slogcp.Logger embeds.
+//	// The trace injector should come before the main logging middleware.
 //	handler := slogcphttp.Middleware(slogcpLogger.Logger)(
 //	    slogcphttp.InjectTraceContextMiddleware()(myHandler),
 //	)
 //
-//	// Start the server with the wrapped handler.
 //	log.Println("Starting server on :8080")
 //	if err := http.ListenAndServe(":8080", handler); err != nil {
-//	    log.Fatalf("Server failed: %v", err)
+//	    log.Fatalf("server failed: %v", err)
 //	}
+//
+// # Basic Usage (client)
+//
+//	// Wrap an HTTP client to propagate trace headers on outbound requests.
+//	client := &http.Client{
+//	    Transport: slogcphttp.NewTraceRoundTripper(nil), // wraps http.DefaultTransport
+//	}
+//	// Use client.Do(req.WithContext(ctx)) where ctx carries a span (or an injected remote span).
 package http

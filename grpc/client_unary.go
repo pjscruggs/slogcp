@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -30,23 +30,6 @@ import (
 
 // NewUnaryClientInterceptor creates a gRPC unary client interceptor that logs RPC calls
 // using the provided slogcp logger and configuration options.
-//
-// It automatically logs the gRPC service and method name, call duration, final
-// gRPC status code, and any error returned. Trace context is extracted from the
-// incoming context and propagated in outgoing metadata. The slogcp handler
-// automatically includes trace information in the log entries.
-//
-// If configured via [WithMetadataLogging](true), it logs filtered outgoing request
-// metadata and incoming response headers and trailers.
-//
-// If configured via [WithPayloadLogging](true), it logs the outgoing request and
-// incoming response message payloads at [slog.LevelDebug]. Payload size can be
-// limited using [WithMaxPayloadSize].
-//
-// Behavior can be further customized using [Option] functions (e.g., [WithLevels],
-// [WithShouldLog], [WithMetadataFilter]). By default, all calls are logged,
-// metadata and payloads are not logged, and a standard mapping from gRPC status
-// codes to log levels is used.
 func NewUnaryClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.UnaryClientInterceptor {
 	// Process the provided options to get the final configuration.
 	cfg := processOptions(opts...)
@@ -70,18 +53,25 @@ func NewUnaryClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.Unary
 		startTime := time.Now()
 		serviceName, methodName := splitMethodName(method)
 
-		// Prepare outgoing metadata with trace context.
-		propagator := otel.GetTextMapPropagator()
-		carrier := propagation.HeaderCarrier{}
+		// Prepare outgoing metadata, optionally injecting trace headers.
 		originalOutgoingMD, _ := metadata.FromOutgoingContext(ctx)
-		outgoingMDWithTrace := originalOutgoingMD.Copy()
-		propagator.Inject(ctx, carrier)
-		for key, values := range carrier {
-			if len(values) > 0 {
-				outgoingMDWithTrace.Append(key, values...)
+		ctxWithOutgoingMD := ctx
+		if cfg.propagateTraceHeaders {
+			outgoingMDWithTrace := originalOutgoingMD.Copy()
+			// Avoid duplicating injection if headers already exist.
+			if len(outgoingMDWithTrace.Get(traceparentHeader)) == 0 {
+				otel.GetTextMapPropagator().Inject(ctx, metadataCarrier{md: outgoingMDWithTrace})
 			}
+			// Also synthesize X-Cloud-Trace-Context if not present and we have a valid span.
+			if len(outgoingMDWithTrace.Get(xCloudTraceContextHeaderMD)) == 0 {
+				if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+					if v := formatXCloudTraceContextFromSpanContext(sc); v != "" {
+						outgoingMDWithTrace[xCloudTraceContextHeaderMD] = []string{v}
+					}
+				}
+			}
+			ctxWithOutgoingMD = metadata.NewOutgoingContext(ctx, outgoingMDWithTrace)
 		}
-		ctxWithOutgoingMD := metadata.NewOutgoingContext(ctx, outgoingMDWithTrace)
 
 		// Prepare slice to hold metadata attributes for the final log.
 		var metadataAttrs []slog.Attr
@@ -97,7 +87,6 @@ func NewUnaryClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.Unary
 		}
 
 		// Log the "start" event.
-		// Pass the original context (ctx) so the handler can extract trace info.
 		startAttrs := []slog.Attr{
 			slog.String(grpcServiceKey, serviceName),
 			slog.String(grpcMethodKey, methodName),
@@ -143,7 +132,6 @@ func NewUnaryClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.Unary
 
 			// Assemble Final Log Attributes using helpers.
 			finishAttrs := assembleFinishAttrs(duration, err, "") // No peer address for client
-			// Trace attributes are handled automatically by the slogcp.Handler via context.
 
 			// Combine all attribute slices.
 			logAttrs := make([]slog.Attr, 0, 3+len(metadataAttrs)) // Pre-allocate slice
@@ -160,16 +148,13 @@ func NewUnaryClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.Unary
 		}() // End of defer function for final logging.
 
 		// Invoke the RPC using the context with propagated trace headers.
-		// The named return 'err' will capture the result.
 		err = invoker(ctxWithOutgoingMD, method, req, reply, cc, finalCallOpts...)
 
 		// Log Response Payload (if enabled and successful).
-		// This happens *before* the defer runs, using the 'err' from the invoker.
 		if err == nil && cfg.logPayloads {
 			logPayload(ctx, logger, cfg, "received", reply)
 		}
 
-		// Return the original error from the invoker.
 		return err
 	}
 }

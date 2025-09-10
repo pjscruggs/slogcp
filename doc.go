@@ -48,7 +48,10 @@
 // # Subpackages
 //
 //   - [github.com/pjscruggs/slogcp/http]: Provides net/http middleware for
-//     logging HTTP server requests and responses, including trace context injection.
+//     logging HTTP server requests and responses, including trace context injection,
+//     and an opt-in outbound RoundTripper (TracePropagationTransport) that injects
+//     both W3C `traceparent` and `X-Cloud-Trace-Context` headers on outgoing requests
+//     for cross-service log/trace correlation.
 //   - [github.com/pjscruggs/slogcp/grpc]: Offers gRPC client and server
 //     interceptors for comprehensive logging of RPC calls, with similar
 //     features for trace handling and payload/metadata logging options.
