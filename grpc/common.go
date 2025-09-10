@@ -16,12 +16,16 @@ package grpc
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"log/slog"
 	"path"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -65,19 +69,14 @@ const (
 	categoryKey = "log.category" // Optional grouping category from WithLogCategory
 )
 
+// HTTP/gRPC propagation header keys (metadata is always lowercase in gRPC).
+const (
+	traceparentHeader          = "traceparent"
+	tracestateHeader           = "tracestate"
+	xCloudTraceContextHeaderMD = "x-cloud-trace-context" // gRPC metadata key form
+)
+
 // splitMethodName parses a gRPC full method name into service and method components.
-//
-// gRPC method names are formatted as "/package.Service/Method". This function
-// extracts the service part ("package.Service") and method part ("Method"),
-// handling edge cases like missing slashes or empty components.
-//
-// For example:
-//   - "/users.UserService/GetUser" → "users.UserService", "GetUser"
-//   - "users.UserService/GetUser" → "users.UserService", "GetUser" (handles missing leading slash)
-//   - "/GetUser" → "unknown", "GetUser" (handles missing service component)
-//
-// The service name is used for grouping related methods in logs, and the method name
-// identifies the specific RPC operation being performed.
 func splitMethodName(fullMethodName string) (service, method string) {
 	fullMethodName = strings.TrimPrefix(fullMethodName, "/")
 	service = path.Dir(fullMethodName)
@@ -91,20 +90,6 @@ func splitMethodName(fullMethodName string) (service, method string) {
 }
 
 // defaultMetadataFilter provides basic filtering of sensitive metadata.
-// It returns true for keys that should be included in logs, false for keys
-// that should be excluded for security or privacy reasons.
-//
-// This filter blocks common authentication and security headers:
-//   - "authorization": Contains credentials, tokens, or passwords
-//   - "cookie"/"set-cookie": May contain session tokens or other sensitive data
-//   - "x-csrf-token": Security token for preventing CSRF attacks
-//   - "grpc-trace-bin": Binary trace data that's handled separately by the tracer
-//
-// All other headers are allowed by default. This filter is case-insensitive
-// to handle variations in header casing.
-//
-// Applications with stricter requirements should provide a custom filter
-// using the WithMetadataFilter option.
 func defaultMetadataFilter(key string) bool {
 	switch strings.ToLower(key) {
 	case "authorization", "cookie", "set-cookie", "x-csrf-token", "grpc-trace-bin":
@@ -115,18 +100,6 @@ func defaultMetadataFilter(key string) bool {
 }
 
 // filterMetadata applies a filtering function to gRPC metadata.
-// It creates a new metadata.MD containing only the key-value pairs where
-// the filter function returns true for the key.
-//
-// The filter is applied to each key in the original metadata. If the filter
-// returns true, the values for that key are copied to a new slice to prevent
-// aliasing issues, and added to the result.
-//
-// If filterFunc is nil, defaultMetadataFilter is used.
-// If the input metadata is empty or all keys are filtered out, nil is returned.
-//
-// This function is used internally by the interceptors to safely log a subset
-// of metadata without exposing sensitive values.
 func filterMetadata(md metadata.MD, filterFunc MetadataFilterFunc) metadata.MD {
 	if filterFunc == nil {
 		filterFunc = defaultMetadataFilter
@@ -150,23 +123,6 @@ func filterMetadata(md metadata.MD, filterFunc MetadataFilterFunc) metadata.MD {
 }
 
 // assembleFinishAttrs creates a standard set of attributes for RPC completion logs.
-// This function centralizes the creation of common attributes used in the final
-// log entry when a gRPC call completes, ensuring consistent structure across
-// both client and server interceptors.
-//
-// Parameters:
-//   - duration: The total time taken for the RPC call
-//   - err: The error returned by the handler or received from the server
-//   - peerAddr: The remote endpoint address (should be empty for client-side logs)
-//
-// The returned attributes include:
-//   - grpc.duration: Call duration as a time.Duration
-//   - grpc.code: Final status code as a string (from the error if present)
-//   - peer.address: Client address (for server logs only)
-//   - error: The original error object if one occurred
-//
-// The "error" attribute uses the standard key name, allowing the slogcp handler
-// to apply special formatting and extract stack traces based on configuration.
 func assembleFinishAttrs(duration time.Duration, err error, peerAddr string) []slog.Attr {
 	grpcStatus := status.Code(err)
 	attrs := []slog.Attr{
@@ -177,32 +133,12 @@ func assembleFinishAttrs(duration time.Duration, err error, peerAddr string) []s
 		attrs = append(attrs, slog.String(peerAddressKey, peerAddr))
 	}
 	if err != nil {
-		// Using the standard "error" key allows the slogcp handler to recognize this
-		// as an error and potentially add stack traces automatically
 		attrs = append(attrs, slog.Any("error", err))
 	}
 	return attrs
 }
 
-// handlePanic recovers from a panic during a gRPC call, logs detailed information,
-// and returns an appropriate error to the client.
-//
-// When a panic occurs in a gRPC handler, this function:
-// 1. Captures a stack trace at the point of the panic
-// 2. Logs the panic value and stack trace at CRITICAL level
-// 3. Returns a standard Internal error to the client
-//
-// The panic is logged immediately with details useful for debugging, but the client
-// receives only a generic error message to avoid leaking implementation details.
-// This maintains security while providing operators with the information they need
-// to investigate the issue.
-//
-// The context is passed to logging to preserve trace correlation.
-// The function is intended to be called from defer blocks in interceptors.
-//
-// Returns:
-//   - isPanic: true if a panic was recovered, false otherwise
-//   - err: a gRPC Internal error if a panic occurred, nil otherwise
+// handlePanic recovers from a panic during a gRPC call, logs details, and returns an error.
 func handlePanic(ctx context.Context, logger *slog.Logger, recoveredValue any) (isPanic bool, err error) {
 	if recoveredValue == nil {
 		return false, nil // No panic occurred
@@ -215,7 +151,6 @@ func handlePanic(ctx context.Context, logger *slog.Logger, recoveredValue any) (
 	stackBytesWritten := runtime.Stack(stackBuf, false)
 
 	// Log the panic immediately with all available details
-	// The CRITICAL level ensures operators are alerted to the issue
 	logger.LogAttrs(ctx, internalLevelCritical,
 		"Recovered panic during gRPC call",
 		slog.Any(panicValueKey, recoveredValue),
@@ -228,7 +163,106 @@ func handlePanic(ctx context.Context, logger *slog.Logger, recoveredValue any) (
 }
 
 // Internal level constant used for panic logging.
-// This avoids a package import cycle with the main slogcp package.
 const (
 	internalLevelCritical slog.Level = 12 // Corresponds to slogcp.LevelCritical
 )
+
+// metadataCarrier adapts gRPC metadata.MD to OTel's TextMapCarrier.
+type metadataCarrier struct{ md metadata.MD }
+
+func (c metadataCarrier) Get(key string) string {
+	// gRPC metadata is case-insensitive but normalized to lowercase keys.
+	vals := c.md.Get(strings.ToLower(key))
+	if len(vals) > 0 {
+		return vals[0]
+	}
+	return ""
+}
+
+func (c metadataCarrier) Set(key string, value string) {
+	lk := strings.ToLower(key)
+	if c.md == nil {
+		c.md = metadata.MD{}
+	}
+	// Replace any existing values for deterministic behavior.
+	c.md[lk] = []string{value}
+}
+
+func (c metadataCarrier) Keys() []string {
+	keys := make([]string, 0, len(c.md))
+	for k := range c.md {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// injectTraceContextFromXCloudHeader parses an X-Cloud-Trace-Context header value
+// and returns a new context carrying a remote SpanContext. Invalid inputs return
+// the original context unchanged.
+//
+// Header format: TRACE_ID/SPAN_ID;o=OPTIONS
+//   - TRACE_ID: 32-char lowercase hex
+//   - SPAN_ID: decimal uint64 (converted to hex bytes for OTel)
+//   - OPTIONS: contains "o=1" if sampled (otherwise unsampled)
+func injectTraceContextFromXCloudHeader(ctx context.Context, header string) context.Context {
+	parts := strings.Split(header, "/")
+	if len(parts) != 2 {
+		return ctx
+	}
+	traceIDStr := parts[0]
+	spanPart := parts[1]
+	options := ""
+	if i := strings.Index(spanPart, ";"); i >= 0 {
+		options = spanPart[i+1:]
+		spanPart = spanPart[:i]
+	}
+
+	tid, err := trace.TraceIDFromHex(traceIDStr)
+	if err != nil || !tid.IsValid() {
+		return ctx
+	}
+
+	// Parse decimal span id to bytes
+	var sid trace.SpanID
+	if spanPart != "" {
+		if u, err := strconv.ParseUint(spanPart, 10, 64); err == nil {
+			binary.BigEndian.PutUint64(sid[:], u)
+		}
+	}
+	if !sid.IsValid() {
+		// Generate a span id if input invalid
+		if _, err := rand.Read(sid[:]); err != nil {
+			return ctx
+		}
+	}
+
+	var flags trace.TraceFlags
+	if strings.Contains(options, "o=1") {
+		flags = trace.FlagsSampled
+	}
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    tid,
+		SpanID:     sid,
+		TraceFlags: flags,
+		Remote:     true,
+	})
+	return trace.ContextWithRemoteSpanContext(ctx, sc)
+}
+
+// formatXCloudTraceContextFromSpanContext builds the X-Cloud-Trace-Context value
+// from a SpanContext: "<traceID-hex>/<spanID-dec>;o=<0|1>".
+// Returns empty string if the span context is invalid.
+func formatXCloudTraceContextFromSpanContext(sc trace.SpanContext) string {
+	if !sc.IsValid() {
+		return ""
+	}
+	// Convert span ID (8 bytes) to decimal uint64 using big-endian.
+	sid := sc.SpanID() // value, not addressable; copy to local
+	u := binary.BigEndian.Uint64(sid[:])
+	o := "0"
+	if sc.IsSampled() {
+		o = "1"
+	}
+	return sc.TraceID().String() + "/" + strconv.FormatUint(u, 10) + ";o=" + o
+}

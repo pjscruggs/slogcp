@@ -90,10 +90,24 @@
 //   - [WithSkipPaths]: Exclude specific gRPC methods from logging based on path matching.
 //   - [WithSamplingRate]: Log only a fraction of requests (0.0 to 1.0).
 //   - [WithLogCategory]: Add a custom category attribute to logs (defaults to "grpc_request").
+//   - [WithPanicRecovery] (server): Enable/disable panic recovery and logging (default: true).
+//   - [WithAutoStackTrace] (server): Auto-attach stack traces to error-level logs (default: false).
+//   - [WithTracePropagation]: Control propagation of trace context headers/metadata (default: true).
 //
 // By default, all calls are logged, payloads and metadata are not logged, and a
 // standard mapping from gRPC codes to log levels is used (e.g., OK -> Info,
 // InvalidArgument -> Warn, Internal -> Error).
+//
+// # Manual trace-context injection
+//
+// If you are not using OpenTelemetry's gRPC instrumentation to extract trace
+// context from incoming metadata, you can enable lightweight parsing of
+// W3C traceparent and X-Cloud-Trace-Context via:
+//   - [InjectUnaryTraceContextInterceptor]
+//   - [InjectStreamTraceContextInterceptor]
+//
+// These should be placed early in the server interceptor chain and are no-ops
+// when a valid span context already exists in the incoming context.
 //
 // # Composability
 //
