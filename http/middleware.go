@@ -179,7 +179,7 @@ func extractIP(addr string) string {
 	if strings.HasPrefix(addr, "[") {
 		endBracket := strings.Index(addr, "]")
 		if endBracket > 0 {
-			ipStr := addr[1 : endBracket+0]
+			ipStr := addr[1:endBracket]
 			if ip := net.ParseIP(ipStr); ip != nil {
 				return ipStr // Return the IPv6 part.
 			}
