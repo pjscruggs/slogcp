@@ -154,7 +154,10 @@ func parseTraceparent(md metadata.MD) (trace.SpanContext, bool) {
 	if len(values) == 0 {
 		return trace.SpanContext{}, false
 	}
-	headerValue := values[0] // Use only the first value per W3C spec.
+	headerValue := strings.TrimSpace(values[0]) // Use only the first value per W3C spec.
+	if headerValue == "" {
+		return trace.SpanContext{}, false
+	}
 
 	// Format: version-traceid-spanid-flags
 	parts := strings.Split(headerValue, "-")
@@ -162,7 +165,11 @@ func parseTraceparent(md metadata.MD) (trace.SpanContext, bool) {
 		return trace.SpanContext{}, false // Invalid format.
 	}
 
-	version, traceIDStr, spanIDStr, flagsStr := parts[0], parts[1], parts[2], parts[3]
+	version := strings.TrimSpace(parts[0])
+	traceIDStr := strings.TrimSpace(parts[1])
+	spanIDStr := strings.TrimSpace(parts[2])
+	flagsStr := strings.TrimSpace(parts[3])
+
 	if version != "00" {
 		return trace.SpanContext{}, false // Unsupported version.
 	}
@@ -181,10 +188,13 @@ func parseTraceparent(md metadata.MD) (trace.SpanContext, bool) {
 	if err != nil {
 		return trace.SpanContext{}, false // Invalid flags hex.
 	}
-	// Corrected: Cast flagsUint to trace.TraceFlags before bitwise AND.
-	// Check if the sampled bit (trace.FlagsSampled) is set in the parsed flags.
-	sampled := (trace.TraceFlags(flagsUint) & trace.FlagsSampled) == trace.FlagsSampled
-	traceFlags := trace.FlagsSampled.WithSampled(sampled)
+	// Per W3C, bit 0x01 indicates "sampled".
+	var traceFlags trace.TraceFlags
+	if (trace.TraceFlags(flagsUint) & trace.FlagsSampled) == trace.FlagsSampled {
+		traceFlags = trace.FlagsSampled
+	} else {
+		traceFlags = 0
+	}
 
 	spanContextConfig := trace.SpanContextConfig{
 		TraceID:    traceID,
@@ -204,20 +214,23 @@ func parseXCloudTraceContext(md metadata.MD) (trace.SpanContext, bool) {
 	if len(values) == 0 {
 		return trace.SpanContext{}, false
 	}
-	headerValue := values[0]
+	headerValue := strings.TrimSpace(values[0])
+	if headerValue == "" {
+		return trace.SpanContext{}, false
+	}
 
 	// Format: TRACE_ID/SPAN_ID;o=OPTIONS
 	parts := strings.Split(headerValue, "/")
 	if len(parts) != 2 {
 		return trace.SpanContext{}, false // Invalid format.
 	}
-	traceIDStr := parts[0]
+	traceIDStr := strings.TrimSpace(parts[0])
 
-	spanIDStr := parts[1]
+	spanIDPart := strings.TrimSpace(parts[1])
 	optionsStr := ""
-	if idx := strings.Index(spanIDStr, ";"); idx != -1 {
-		optionsStr = spanIDStr[idx+1:]
-		spanIDStr = spanIDStr[:idx]
+	if idx := strings.Index(spanIDPart, ";"); idx != -1 {
+		optionsStr = strings.TrimSpace(spanIDPart[idx+1:])
+		spanIDPart = strings.TrimSpace(spanIDPart[:idx])
 	}
 
 	traceID, err := trace.TraceIDFromHex(traceIDStr)
@@ -226,7 +239,7 @@ func parseXCloudTraceContext(md metadata.MD) (trace.SpanContext, bool) {
 	}
 
 	// SPAN_ID in XCTC is decimal uint64. Convert to hex SpanID.
-	spanIDUint, err := strconv.ParseUint(spanIDStr, 10, 64)
+	spanIDUint, err := strconv.ParseUint(spanIDPart, 10, 64)
 	if err != nil {
 		return trace.SpanContext{}, false // Invalid SpanID decimal.
 	}
@@ -238,8 +251,10 @@ func parseXCloudTraceContext(md metadata.MD) (trace.SpanContext, bool) {
 
 	// Parse sampling option (o=1 means sampled).
 	var traceFlags trace.TraceFlags
-	if strings.Contains(optionsStr, "o=1") {
+	if strings.Contains(strings.ToLower(optionsStr), "o=1") {
 		traceFlags = trace.FlagsSampled
+	} else {
+		traceFlags = 0
 	}
 
 	spanContextConfig := trace.SpanContextConfig{

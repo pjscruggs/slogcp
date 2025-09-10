@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -30,12 +30,7 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
-// wrappedClientStream wraps an existing grpc.ClientStream to provide logging
-// capabilities via slogcp. It intercepts key stream operations like SendMsg,
-// RecvMsg, Header, and Trailer to log events, payloads (optionally), metadata
-// (optionally), and the final stream status.
-//
-// It ensures that the final stream completion status is logged exactly once.
+// wrappedClientStream wraps an existing grpc.ClientStream to provide logging.
 type wrappedClientStream struct {
 	grpc.ClientStream // Embed the original stream interface.
 
@@ -58,23 +53,7 @@ type wrappedClientStream struct {
 	headerLogged bool        // Tracks if headers have already been logged.
 }
 
-// NewStreamClientInterceptor returns a new streaming client interceptor (grpc.StreamClientInterceptor)
-// that logs outgoing gRPC streams using the provided slogcp.Logger.
-//
-// It logs stream initiation details, completion status, duration, and optionally
-// metadata and message payloads. Trace context from the incoming context.Context
-// is automatically propagated in outgoing metadata and included in log entries
-// by the slogcp.Handler.
-//
-// If configured via [WithMetadataLogging](true), it logs filtered outgoing request
-// metadata and incoming response headers and trailers.
-//
-// If configured via [WithPayloadLogging](true), it logs individual messages sent
-// and received on the stream at [slog.LevelDebug]. Payload size can be limited
-// using [WithMaxPayloadSize].
-//
-// The behavior can be customized using functional options like [WithLevels],
-// [WithShouldLog], [WithMetadataFilter].
+// NewStreamClientInterceptor returns a new streaming client interceptor.
 func NewStreamClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.StreamClientInterceptor {
 	cfg := processOptions(opts...) // Process configuration options.
 
@@ -96,14 +75,18 @@ func NewStreamClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.Stre
 		serviceName, methodName := splitMethodName(method)
 
 		// Prepare outgoing metadata with trace context.
-		propagator := otel.GetTextMapPropagator()
-		carrier := propagation.HeaderCarrier{}
 		originalOutgoingMD, _ := metadata.FromOutgoingContext(ctx)
 		outgoingMDWithTrace := originalOutgoingMD.Copy()
-		propagator.Inject(ctx, carrier)
-		for key, values := range carrier {
-			if len(values) > 0 {
-				outgoingMDWithTrace.Append(key, values...)
+		// Avoid duplicating injection if headers already exist.
+		if len(outgoingMDWithTrace.Get(traceparentHeader)) == 0 {
+			otel.GetTextMapPropagator().Inject(ctx, metadataCarrier{md: outgoingMDWithTrace})
+		}
+		// Also synthesize X-Cloud-Trace-Context if not present and we have a valid span.
+		if len(outgoingMDWithTrace.Get(xCloudTraceContextHeaderMD)) == 0 {
+			if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+				if v := formatXCloudTraceContextFromSpanContext(sc); v != "" {
+					outgoingMDWithTrace[xCloudTraceContextHeaderMD] = []string{v}
+				}
 			}
 		}
 		ctxWithOutgoingMD := metadata.NewOutgoingContext(ctx, outgoingMDWithTrace)
@@ -115,7 +98,6 @@ func NewStreamClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.Stre
 		}
 
 		// Log the "start" event.
-		// Pass the original context (ctx) so the handler can extract trace info.
 		startAttrs := []slog.Attr{
 			slog.String(grpcServiceKey, serviceName),
 			slog.String(grpcMethodKey, methodName),
@@ -136,7 +118,6 @@ func NewStreamClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.Stre
 
 			// Assemble attributes for the failure log.
 			finishAttrs := assembleFinishAttrs(duration, err, "") // No peer addr for client
-			// Trace attributes are handled automatically by the slogcp.Handler via context.
 			var metadataAttrs []slog.Attr
 			if filteredOutgoingMD != nil {
 				metadataAttrs = append(metadataAttrs, slog.Group(grpcRequestMetadataKey, slog.Any(metadataValuesKey, filteredOutgoingMD)))
@@ -152,9 +133,8 @@ func NewStreamClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.Stre
 			logAttrs = append(logAttrs, finishAttrs...)
 			logAttrs = append(logAttrs, metadataAttrs...)
 
-			// Log using the original context (ctx).
 			logger.LogAttrs(ctx, level, "Failed to start gRPC client stream", logAttrs...)
-			return nil, err // Return the original error.
+			return nil, err
 		}
 
 		// Stream created successfully, wrap it for logging.
@@ -166,17 +146,14 @@ func NewStreamClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.Stre
 			startTime:    startTime,
 			service:      serviceName,
 			method:       methodName,
-			// projectID is not needed here, handler gets it from context/config.
-			outgoingMD: filteredOutgoingMD, // Store the pre-filtered outgoing MD.
+			outgoingMD:   filteredOutgoingMD, // Store the pre-filtered outgoing MD.
 		}
 
 		return wrappedStream, nil
 	}
 }
 
-// Header calls the underlying ClientStream's Header method, stores the result,
-// logs the header metadata if configured (and not already logged), and returns
-// the result. If an error occurs, it triggers the final stream logging.
+// Header calls the underlying ClientStream's Header method, stores the result, and logs it.
 func (w *wrappedClientStream) Header() (metadata.MD, error) {
 	hdr, err := w.ClientStream.Header()
 
@@ -201,7 +178,6 @@ func (w *wrappedClientStream) Header() (metadata.MD, error) {
 			if w.opts.logCategory != "" {
 				logAttrs = append(logAttrs, slog.String(categoryKey, w.opts.logCategory))
 			}
-			// Trace info is added automatically by the handler from w.ctx.
 			w.logger.LogAttrs(w.ctx, slog.LevelDebug, "gRPC client response header", logAttrs...)
 		}
 	}
@@ -214,8 +190,7 @@ func (w *wrappedClientStream) Header() (metadata.MD, error) {
 	return hdr, err
 }
 
-// Trailer calls the underlying ClientStream's Trailer method, stores the result,
-// and returns it. Trailer logging occurs in the finish() method.
+// Trailer stores the trailer and returns it. Trailer logging occurs in finish().
 func (w *wrappedClientStream) Trailer() metadata.MD {
 	trl := w.ClientStream.Trailer()
 	w.mu.Lock()
@@ -225,23 +200,18 @@ func (w *wrappedClientStream) Trailer() metadata.MD {
 }
 
 // CloseSend calls the underlying ClientStream's CloseSend method.
-// It does not trigger the finish log, as the stream is still open for receiving.
 func (w *wrappedClientStream) CloseSend() error {
 	return w.ClientStream.CloseSend()
 }
 
-// Context returns the original context associated with the stream,
-// preserving trace information for logging.
+// Context returns the original context associated with the stream.
 func (w *wrappedClientStream) Context() context.Context {
 	return w.ctx
 }
 
-// SendMsg logs the outgoing message payload if configured, then calls the
-// underlying ClientStream's SendMsg method. If SendMsg returns an error,
-// it triggers the final stream logging.
+// SendMsg logs the outgoing message payload if configured, then calls SendMsg.
 func (w *wrappedClientStream) SendMsg(m any) error {
 	if w.opts.logPayloads {
-		// Log using the original context (w.ctx).
 		logPayload(w.ctx, w.logger, w.opts, "sent", m)
 	}
 	err := w.ClientStream.SendMsg(m)
@@ -252,32 +222,25 @@ func (w *wrappedClientStream) SendMsg(m any) error {
 	return err
 }
 
-// RecvMsg calls the underlying ClientStream's RecvMsg method. If an error
-// (including io.EOF) occurs, it triggers the final stream logging via finish().
-// If the receive is successful and payload logging is enabled, it logs the payload.
+// RecvMsg calls RecvMsg; on error (including io.EOF) it triggers final logging.
 func (w *wrappedClientStream) RecvMsg(m any) error {
 	err := w.ClientStream.RecvMsg(m)
 
 	if err != nil {
 		// Any error, including io.EOF, signifies the end or failure of the stream.
-		// Trigger the final logging exactly once.
 		w.finishOnce.Do(func() { w.finish(err) })
-		return err // Return the original error.
+		return err
 	}
 
 	// Log payload only on successful receive.
 	if w.opts.logPayloads {
-		// Log using the original context (w.ctx).
 		logPayload(w.ctx, w.logger, w.opts, "received", m)
 	}
 
-	return nil // Successful receive.
+	return nil
 }
 
-// finish logs the completion event for the gRPC stream. It calculates the
-// duration, determines the final status and log level, logs metadata if configured,
-// and emits the final log record using the original context.
-// This method is designed to be called exactly once via finishOnce.Do().
+// finish logs the completion event for the gRPC stream.
 func (w *wrappedClientStream) finish(err error) {
 	w.mu.Lock()
 	if w.finished {
@@ -301,9 +264,7 @@ func (w *wrappedClientStream) finish(err error) {
 	}
 	level := w.opts.levelFunc(status.Code(finalErr))
 
-	// Trace attributes are handled automatically by the slogcp.Handler via context.
-
-	// Assemble base attributes for the final log entry using helper.
+	// Assemble base attributes for the final log entry.
 	finishAttrs := assembleFinishAttrs(duration, finalErr, "") // No peer addr for client
 
 	// Prepare slice for metadata attributes.

@@ -105,8 +105,14 @@ func (h *gcpHandler) Handle(ctx context.Context, r slog.Record) error {
 	// Resolve source location
 	sourceLoc := h.resolveSourceLocation(r)
 
+	// Choose project for trace formatting, preferring TraceProjectID if set.
+	projectForTrace := h.cfg.ProjectID
+	if h.cfg.TraceProjectID != "" {
+		projectForTrace = h.cfg.TraceProjectID
+	}
+
 	// Extract trace info
-	fmtTrace, rawTraceID, rawSpanID, sampled, _ := ExtractTraceSpan(ctx, h.cfg.ProjectID)
+	fmtTrace, rawTraceID, rawSpanID, sampled, _ := ExtractTraceSpan(ctx, projectForTrace)
 
 	// Build payload and extract HTTP request, error, stack details, and labels
 	payload, httpReq, errType, errMsg, stackStr, dynamicLabels := h.buildPayload(r)
@@ -242,16 +248,31 @@ func (h *gcpHandler) emitGCPEntry(
 		}
 	}
 
+	// Optional request grouping via operation.
+	op := ExtractOperationFromRecord(r)
+	if op == nil {
+		// Fallback: honor any already-materialized operation object in payload.
+		op = ExtractOperationFromPayload(payload)
+	}
+
+	// Build the base entry.
 	entry := logging.Entry{
 		Timestamp:      ts,
 		Severity:       sev,
 		Payload:        payload,
 		Labels:         labels,
-		Trace:          fmtTrace,
-		SpanID:         spanID,
-		TraceSampled:   sampled,
 		SourceLocation: sourceLoc,
 		HTTPRequest:    httpReq,
+		Operation:      op,
+	}
+
+	// If we don't have an original *http.Request (or any HTTPRequest at all),
+	// populate trace fields explicitly. Otherwise, let the official client
+	// auto-extract Trace/Span/Sampled from HTTPRequest.Request.
+	if httpReq == nil || httpReq.Request == nil {
+		entry.Trace = fmtTrace
+		entry.SpanID = spanID
+		entry.TraceSampled = sampled
 	}
 
 	h.entryLog.Log(entry)
@@ -312,6 +333,21 @@ func (h *gcpHandler) emitRedirectJSON(
 			mergedLabels[k] = v
 		}
 		jsonPayload["logging.googleapis.com/labels"] = mergedLabels
+	}
+
+	// Optional request grouping via operation, emitted under the canonical key.
+	op := ExtractOperationFromRecord(r)
+	if op == nil {
+		// Fallback: honor any already-materialized operation object in payload.
+		op = ExtractOperationFromPayload(jsonPayload)
+	}
+	if op != nil {
+		jsonPayload["logging.googleapis.com/operation"] = map[string]any{
+			"id":       op.Id,
+			"producer": op.Producer,
+			"first":    op.First,
+			"last":     op.Last,
+		}
 	}
 
 	enc := json.NewEncoder(h.redirectWriter)

@@ -19,6 +19,8 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
@@ -121,10 +123,29 @@ func StreamServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.StreamS
 		// This context should contain trace info if populated by preceding interceptors (e.g., OTel).
 		ctx := ss.Context()
 
+		// Extract inbound trace context from metadata via global OTel propagator,
+		// fallback to X-Cloud-Trace-Context if none found.
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			ctxExtracted := otel.GetTextMapPropagator().Extract(ctx, metadataCarrier{md: md})
+			if !trace.SpanContextFromContext(ctxExtracted).IsValid() {
+				if vals := md.Get(xCloudTraceContextHeaderMD); len(vals) > 0 {
+					ctxExtracted = injectTraceContextFromXCloudHeader(ctxExtracted, vals[0])
+				}
+			}
+			ctx = ctxExtracted
+		}
+
 		// Check if this call should be logged based on the filter function.
 		if !cfg.shouldLogFunc(ctx, info.FullMethod) {
-			// If not logging, call the handler directly and return.
-			return handler(srv, ss)
+			// If not logging, still ensure handler sees the enriched context.
+			// Wrap minimally to override Context().
+			streamToUse := &wrappedServerStream{
+				ServerStream: ss,
+				ctx:          ctx,
+				logger:       logger,
+				opts:         cfg,
+			}
+			return handler(srv, streamToUse)
 		}
 
 		// Extract initial info for logging.
@@ -202,25 +223,15 @@ func StreamServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.StreamS
 
 		}() // End of defer function for panic recovery and logging.
 
-		// Wrap the stream if payload logging is enabled, otherwise use the original stream.
-		// This allows intercepting SendMsg/RecvMsg for logging payloads.
-		streamToUse := func() grpc.ServerStream {
-			if cfg.logPayloads {
-				return &wrappedServerStream{
-					ServerStream: ss,
-					// Pass the original context (ctx) to the wrapper.
-					// This context will be used by logPayload calls inside the wrapper.
-					ctx:    ctx,
-					logger: logger,
-					opts:   cfg,
-				}
-			}
-			return ss
-		}()
+		// Always wrap the stream so the handler sees the enriched context via Context().
+		streamToUse := &wrappedServerStream{
+			ServerStream: ss,
+			ctx:          ctx,
+			logger:       logger,
+			opts:         cfg,
+		}
 
-		// Call the actual gRPC stream handler with the (potentially wrapped) stream.
-		// If a panic occurs here, the defer func above will recover, log, and set 'err'.
-		// Otherwise, 'err' will be the error returned normally by the handler.
+		// Call the actual gRPC stream handler with the wrapped stream.
 		err = handler(srv, streamToUse)
 
 		// Return the error (either from the handler or from panic recovery).

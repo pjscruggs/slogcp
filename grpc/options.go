@@ -58,17 +58,18 @@ type MetadataFilterFunc func(key string) bool
 // This struct is internal to the grpc package and is populated by applying
 // the public Option functions during interceptor creation.
 type options struct {
-	levelFunc          CodeToLevel        // Function to map gRPC code to slog level for the final log entry.
-	shouldLogFunc      ShouldLogFunc      // Function to filter which calls get logged.
-	logPayloads        bool               // Flag to enable request/response payload logging.
-	panicRecovery      bool               // Flag to enable panic recovery and error logging.
-	maxPayloadLogSize  int                // Max size in bytes for logged payloads (0 means no limit).
-	logMetadata        bool               // Flag to enable request/response metadata logging.
-	autoStackTrace     bool               // Flag to enable automatic stack trace injection for errors.
-	metadataFilterFunc MetadataFilterFunc // Function to filter metadata keys before logging.
-	skipPaths          []string           // Method paths to exclude from logging (e.g., health checks).
-	samplingRate       float64            // 0.0-1.0, percentage of requests to log.
-	logCategory        string             // Optional category name to distinguish logs.
+	levelFunc             CodeToLevel        // Function to map gRPC code to slog level for the final log entry.
+	shouldLogFunc         ShouldLogFunc      // Function to filter which calls get logged.
+	logPayloads           bool               // Flag to enable request/response payload logging.
+	panicRecovery         bool               // Flag to enable panic recovery and error logging.
+	maxPayloadLogSize     int                // Max size in bytes for logged payloads (0 means no limit).
+	logMetadata           bool               // Flag to enable request/response metadata logging.
+	autoStackTrace        bool               // Flag to enable automatic stack trace injection for errors.
+	metadataFilterFunc    MetadataFilterFunc // Function to filter metadata keys before logging.
+	skipPaths             []string           // Method paths to exclude from logging (e.g., health checks).
+	samplingRate          float64            // 0.0-1.0, percentage of requests to log.
+	logCategory           string             // Optional category name to distinguish logs.
+	propagateTraceHeaders bool               // Whether to propagate trace context headers/metadata when supported.
 }
 
 const (
@@ -257,6 +258,21 @@ func WithAutoStackTrace(enabled bool) Option {
 	}
 }
 
+// WithTracePropagation controls whether interceptors managed by this package
+// propagate trace context when they support doing so. When enabled, client-side
+// interceptors inject W3C Trace Context (traceparent/tracestate) and the
+// X-Cloud-Trace-Context header equivalent into outgoing metadata; server-side
+// interceptors always accept and parse incoming context regardless of this setting.
+// Default is true.
+//
+// This option is safe to use alongside service meshes or other tracing libraries;
+// interceptors should avoid overwriting existing context when present.
+func WithTracePropagation(enabled bool) Option {
+	return func(o *options) {
+		o.propagateTraceHeaders = enabled
+	}
+}
+
 // processOptions creates a new internal options struct initialized with default values,
 // then iterates through the provided Option functions, applying each one to potentially
 // override the defaults. It returns the final configured options struct, including
@@ -264,17 +280,18 @@ func WithAutoStackTrace(enabled bool) Option {
 func processOptions(opts ...Option) *options {
 	// Start with a struct populated with default settings.
 	opt := &options{
-		levelFunc:          defaultCodeToLevel,
-		shouldLogFunc:      defaultShouldLog,
-		panicRecovery:      true,
-		autoStackTrace:     false,
-		logPayloads:        false,
-		maxPayloadLogSize:  defaultMaxPayloadLogSize,
-		logMetadata:        false,
-		metadataFilterFunc: defaultMetadataFilter,
-		skipPaths:          nil,
-		samplingRate:       1.0, // Default: log all requests
-		logCategory:        defaultLogCategory,
+		levelFunc:             defaultCodeToLevel,
+		shouldLogFunc:         defaultShouldLog,
+		panicRecovery:         true,
+		autoStackTrace:        false,
+		logPayloads:           false,
+		maxPayloadLogSize:     defaultMaxPayloadLogSize,
+		logMetadata:           false,
+		metadataFilterFunc:    defaultMetadataFilter,
+		skipPaths:             nil,
+		samplingRate:          1.0, // Default: log all requests
+		logCategory:           defaultLogCategory,
+		propagateTraceHeaders: true, // Default: enable propagation where supported
 	}
 
 	// Apply each provided Option function to modify the defaults.
