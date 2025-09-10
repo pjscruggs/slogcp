@@ -41,6 +41,20 @@ type wrappedServerStream struct {
 	opts   *options        // Configuration options determining logging behavior (e.g., payload logging enabled).
 }
 
+// contextOnlyServerStream wraps an existing grpc.ServerStream but overrides only
+// the Context() method. It is used when a stream is filtered out by logging
+// rules (e.g., WithShouldLog, WithSkipPaths, sampling) so the handler still
+// receives the enriched context from earlier interceptors (tracing/auth/etc.).
+type contextOnlyServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+// Context returns the wrapped context so downstream handlers see any values
+// injected by earlier interceptors (e.g., tracing/auth). It performs no other
+// behavior change and introduces no logging side effects.
+func (s *contextOnlyServerStream) Context() context.Context { return s.ctx }
+
 // RecvMsg calls the underlying ServerStream's RecvMsg method. If the call is
 // successful and payload logging is enabled in the options, it logs the
 // received message payload using the stored context and logger.
@@ -137,13 +151,11 @@ func StreamServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.StreamS
 
 		// Check if this call should be logged based on the filter function.
 		if !cfg.shouldLogFunc(ctx, info.FullMethod) {
-			// If not logging, still ensure handler sees the enriched context.
-			// Wrap minimally to override Context().
-			streamToUse := &wrappedServerStream{
+			// Ensure the handler sees the enriched context, but do not attach
+			// any logging hooks.
+			streamToUse := &contextOnlyServerStream{
 				ServerStream: ss,
 				ctx:          ctx,
-				logger:       logger,
-				opts:         cfg,
 			}
 			return handler(srv, streamToUse)
 		}
