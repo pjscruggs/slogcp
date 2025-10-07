@@ -146,8 +146,11 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 	var stackStr string
 	dynamicLabels := make(map[string]string)
 
-	// processAttr applies replacer and fills payload or labels
-	processAttr := func(ga groupedAttr) {
+	const labelsGroupName = "logging.googleapis.com/labels"
+
+	// Recursively walk attributes, treating both handler-scoped groups and inline slog.Group(...) the same.
+	var walkAttr func(ga groupedAttr)
+	walkAttr = func(ga groupedAttr) {
 		a := ga.attr
 		if h.cfg.ReplaceAttrFunc != nil {
 			a = h.cfg.ReplaceAttrFunc(ga.groups, a)
@@ -156,24 +159,41 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 			}
 		}
 
-		// Check if we're in the special labels group
+		// Descend into inline group values, appending the group's key to the current path.
+		if a.Value.Kind() == slog.KindGroup {
+			children := a.Value.Group()
+			if len(children) == 0 {
+				return
+			}
+			newPath := append([]string(nil), ga.groups...)
+			if a.Key != "" {
+				newPath = append(newPath, a.Key)
+			}
+			for _, child := range children {
+				walkAttr(groupedAttr{groups: newPath, attr: child})
+			}
+			return
+		}
+
+		// Determine if the effective path is under the special labels group.
 		inLabelsGroup := false
 		for _, g := range ga.groups {
-			if g == "logging.googleapis.com/labels" {
+			if g == labelsGroupName {
 				inLabelsGroup = true
 				break
 			}
 		}
 
 		if inLabelsGroup {
-			// Convert value to string and add to labels
+			// Labels are flat string key/value pairs.
 			val := resolveSlogValue(a.Value)
-			if val != nil {
+			if val != nil && a.Key != "" {
 				dynamicLabels[a.Key] = convertToString(val)
 			}
 			return
 		}
 
+		// Pull out HTTP request if present.
 		if a.Key == httpRequestKey {
 			if req, ok := a.Value.Any().(*logging.HTTPRequest); ok && httpReq == nil {
 				httpReq = req
@@ -181,26 +201,29 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 			return
 		}
 
+		// Normal structured payload handling.
 		val := resolveSlogValue(a.Value)
 		if errVal, ok := val.(error); ok && firstErr == nil {
 			firstErr = errVal
 		}
 		d := getNestedMap(payload, ga.groups)
-		d[a.Key] = val
+		if a.Key != "" {
+			d[a.Key] = val
+		}
 	}
 
-	// initial attrs
+	// Walk initial handler attrs.
 	for _, ga := range baseAttrs {
-		processAttr(ga)
+		walkAttr(ga)
 	}
 
-	// record attrs
+	// Walk record attrs.
 	r.Attrs(func(a slog.Attr) bool {
-		processAttr(groupedAttr{groups: baseGroups, attr: a})
+		walkAttr(groupedAttr{groups: baseGroups, attr: a})
 		return true
 	})
 
-	// extract errors
+	// Extract error information and optional stack trace.
 	errType, errMsg := "", ""
 	if firstErr != nil {
 		fe, origin := formatErrorForReporting(firstErr)
