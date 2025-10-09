@@ -180,7 +180,7 @@ import (
 
 // Create an HTTP client that forwards trace context from req.Context()
 client := &http.Client{
-    Transport: slogcphttp.NewPropagatingTransport(nil), // wraps http.DefaultTransport
+    Transport: slogcphttp.NewTraceRoundTripper(nil), // wraps http.DefaultTransport
 }
 
 // In a handler where r.Context() carries inbound trace context:
