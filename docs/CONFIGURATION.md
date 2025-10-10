@@ -92,7 +92,7 @@ Automatically captures stack traces for logs at or above a specified level, typi
     -   `slogcp.WithStackTraceLevel(level slog.Level)`
 -   **Environment Variables**:
     -   `LOG_STACK_TRACE_ENABLED`
-        -   Example: `LOG_STACK_TRACE_ENABLED=on`
+        -   Example: `LOG_STACK_TRACE_ENABLED=true`
     -   `LOG_STACK_TRACE_LEVEL` (values: `debug`, `info`, `error`, etc.)
 -   **Defaults**:
     -   Enabled: `false`
