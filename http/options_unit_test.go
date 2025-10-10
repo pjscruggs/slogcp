@@ -12,8 +12,8 @@ func TestLoadMiddlewareOptionsFromEnv(t *testing.T) {
 	t.Setenv("SLOGCP_HTTP_LOG_RESPONSE_HEADER_KEYS", "retry-after, Content-Type")
 	t.Setenv("SLOGCP_HTTP_REQUEST_BODY_LIMIT", "128")
 	t.Setenv("SLOGCP_HTTP_RESPONSE_BODY_LIMIT", "256")
-	t.Setenv("SLOGCP_HTTP_RECOVER_PANICS", "true")
-	t.Setenv("SLOGCP_HTTP_TRUST_PROXY_HEADERS", "1")
+	t.Setenv("SLOGCP_HTTP_RECOVER_PANICS", "YeS")
+	t.Setenv("SLOGCP_HTTP_TRUST_PROXY_HEADERS", "on")
 
 	opts := loadMiddlewareOptionsFromEnv()
 
@@ -58,6 +58,7 @@ func TestLoadMiddlewareOptionsFromEnvIgnoresInvalid(t *testing.T) {
 	t.Setenv("SLOGCP_HTTP_REQUEST_BODY_LIMIT", "-10")
 	t.Setenv("SLOGCP_HTTP_RESPONSE_BODY_LIMIT", "not-a-number")
 	t.Setenv("SLOGCP_HTTP_RECOVER_PANICS", "not-bool")
+	t.Setenv("SLOGCP_HTTP_TRUST_PROXY_HEADERS", "perhaps")
 
 	opts := loadMiddlewareOptionsFromEnv()
 
@@ -72,6 +73,41 @@ func TestLoadMiddlewareOptionsFromEnvIgnoresInvalid(t *testing.T) {
 	}
 	if opts.RecoverPanics {
 		t.Fatal("RecoverPanics = true, want false")
+	}
+}
+
+func TestParseBoolFlag(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		in   string
+		want bool
+		ok   bool
+	}{
+		"true":        {in: "true", want: true, ok: true},
+		"true spaced": {in: "  TRUE  ", want: true, ok: true},
+		"one":         {in: "1", want: true, ok: true},
+		"yes":         {in: "YeS", want: true, ok: true},
+		"on":          {in: "on", want: true, ok: true},
+		"false":       {in: "false", want: false, ok: true},
+		"zero":        {in: "0", want: false, ok: true},
+		"no":          {in: "NO", want: false, ok: true},
+		"off":         {in: "Off", want: false, ok: true},
+		"invalid":     {in: "maybe", want: false, ok: false},
+		"empty":       {in: "   ", want: false, ok: false},
+	}
+
+	for name, tc := range tests {
+		tc := tc
+		t.Run(name, func(t *testing.T) {
+			got, ok := parseBoolFlag(tc.in)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if got != tc.want {
+				t.Fatalf("got = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

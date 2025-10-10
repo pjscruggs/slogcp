@@ -81,12 +81,12 @@ func loadMiddlewareOptionsFromEnv() MiddlewareOptions {
 		}
 	}
 	if raw, ok := os.LookupEnv("SLOGCP_HTTP_RECOVER_PANICS"); ok {
-		if v, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil {
+		if v, ok := parseBoolFlag(raw); ok {
 			opts.RecoverPanics = v
 		}
 	}
 	if raw, ok := os.LookupEnv("SLOGCP_HTTP_TRUST_PROXY_HEADERS"); ok {
-		if v, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil {
+		if v, ok := parseBoolFlag(raw); ok {
 			opts.TrustProxyHeaders = v
 		}
 	}
@@ -260,4 +260,20 @@ func parsePositiveInt64(raw string) (int64, error) {
 		v = 0
 	}
 	return v, nil
+}
+
+// parseBoolFlag converts common boolean strings into a bool. Supported values
+// are true/false, yes/no, 1/0, and on/off (case-insensitive). The second return
+// value reports whether the input matched one of the supported values so callers
+// can ignore invalid inputs without overriding defaults.
+func parseBoolFlag(raw string) (bool, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	switch trimmed {
+	case "true", "1", "yes", "on":
+		return true, true
+	case "false", "0", "no", "off":
+		return false, true
+	default:
+		return false, false
+	}
 }

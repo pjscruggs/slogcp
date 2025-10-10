@@ -11,6 +11,10 @@ This document provides a comprehensive guide to configuring the `slogcp` library
 
 This allows for flexible configuration suitable for various deployment environments.
 
+### Boolean Environment Variables
+
+All boolean environment variables in `slogcp` accept `true`, `1`, `yes`, or `on` (case-insensitive) to enable a feature. They accept `false`, `0`, `no`, or `off` to disable it. If any other value is supplied, the configuration keeps its default.
+
 ## Core Logger Configuration (`slogcp.New`)
 
 These options configure the main `slogcp.Logger` instance.
@@ -74,7 +78,8 @@ Determines where log entries are sent.
 Includes the source file, line number, and function name in log entries.
 
 -   **Programmatic**: `slogcp.WithSourceLocationEnabled(enabled bool)`
--   **Environment Variable**: `LOG_SOURCE_LOCATION` (values: `true`, `false`)
+-   **Environment Variable**: `LOG_SOURCE_LOCATION`
+    -   Example: `LOG_SOURCE_LOCATION=true`
 -   **Default**: `false` (disabled)
 -   Enabling this adds some performance overhead.
 
@@ -86,7 +91,8 @@ Automatically captures stack traces for logs at or above a specified level, typi
     -   `slogcp.WithStackTraceEnabled(enabled bool)`
     -   `slogcp.WithStackTraceLevel(level slog.Level)`
 -   **Environment Variables**:
-    -   `LOG_STACK_TRACE_ENABLED` (values: `true`, `false`)
+    -   `LOG_STACK_TRACE_ENABLED`
+        -   Example: `LOG_STACK_TRACE_ENABLED=on`
     -   `LOG_STACK_TRACE_LEVEL` (values: `debug`, `info`, `error`, etc.)
 -   **Defaults**:
     -   Enabled: `false`
@@ -169,16 +175,16 @@ Unless configured otherwise, the middleware logs every request, does not recover
 
 ### Environment Variables
 
-| Variable | Purpose |
-| --- | --- |
-| `SLOGCP_HTTP_SKIP_PATH_SUBSTRINGS` | Comma-separated list mirroring `WithSkipPathSubstrings`. |
-| `SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW` | Severity threshold string or integer for `WithSuppressUnsampledBelow` (e.g. `WARNING`, `DEFAULT`). |
-| `SLOGCP_HTTP_LOG_REQUEST_HEADER_KEYS` | Comma-separated request header keys to capture. |
-| `SLOGCP_HTTP_LOG_RESPONSE_HEADER_KEYS` | Comma-separated response header keys to capture. |
-| `SLOGCP_HTTP_REQUEST_BODY_LIMIT` | Integer byte limit for request body capture. |
-| `SLOGCP_HTTP_RESPONSE_BODY_LIMIT` | Integer byte limit for response body capture. |
-| `SLOGCP_HTTP_RECOVER_PANICS` | Boolean toggle for panic recovery. |
-| `SLOGCP_HTTP_TRUST_PROXY_HEADERS` | Boolean toggle to enable proxy header trust. |
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `SLOGCP_HTTP_SKIP_PATH_SUBSTRINGS` | Comma-separated list mirroring `WithSkipPathSubstrings`. | (none) |
+| `SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW` | Severity threshold string or integer for `WithSuppressUnsampledBelow` (e.g. `WARNING`, `DEFAULT`). | (none) |
+| `SLOGCP_HTTP_LOG_REQUEST_HEADER_KEYS` | Comma-separated request header keys to capture. | (none) |
+| `SLOGCP_HTTP_LOG_RESPONSE_HEADER_KEYS` | Comma-separated response header keys to capture. | (none) |
+| `SLOGCP_HTTP_REQUEST_BODY_LIMIT` | Integer byte limit for request body capture. | `0` (disabled) |
+| `SLOGCP_HTTP_RESPONSE_BODY_LIMIT` | Integer byte limit for response body capture. | `0` (disabled) |
+| `SLOGCP_HTTP_RECOVER_PANICS` | Enables panic recovery when set to true. | `false` |
+| `SLOGCP_HTTP_TRUST_PROXY_HEADERS` | Enables proxy header trust when set to true. | `false` |
 
 Invalid values are ignored so that programmatic options can supply explicit overrides without extra error handling.
 
