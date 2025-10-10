@@ -17,7 +17,12 @@
 // The package offers:
 //
 //  1. [Middleware]: wraps an [http.Handler] to log request/response details
-//     with a provided *slog.Logger (from slogcp).
+//     with a provided *slog.Logger (from slogcp). Behaviour is configurable via
+//     functional options or environment variables such as
+//     SLOGCP_HTTP_SKIP_PATH_SUBSTRINGS, SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW,
+//     SLOGCP_HTTP_LOG_REQUEST_HEADER_KEYS, SLOGCP_HTTP_LOG_RESPONSE_HEADER_KEYS,
+//     SLOGCP_HTTP_REQUEST_BODY_LIMIT, SLOGCP_HTTP_RESPONSE_BODY_LIMIT,
+//     SLOGCP_HTTP_RECOVER_PANICS, and SLOGCP_HTTP_TRUST_PROXY_HEADERS.
 //
 //  2. [InjectTraceContextMiddleware]: extracts the legacy X-Cloud-Trace-Context
 //     header and injects a remote span context into the request’s context.
