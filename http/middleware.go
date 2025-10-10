@@ -138,10 +138,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 			}
 			r = r.WithContext(ctx)
 
-			shouldLog := true
-			if merged.ShouldLog != nil && !merged.ShouldLog(ctx, r) {
-				shouldLog = false
-			}
+			shouldLog := merged.ShouldLog == nil || merged.ShouldLog(ctx, r)
 			if shouldLog && len(merged.SkipPathSubstrings) > 0 {
 				path := r.URL.Path
 				for _, substr := range merged.SkipPathSubstrings {
