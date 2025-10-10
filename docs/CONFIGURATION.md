@@ -11,6 +11,10 @@ This document provides a comprehensive guide to configuring the `slogcp` library
 
 This allows for flexible configuration suitable for various deployment environments.
 
+### Boolean Environment Variables
+
+All boolean environment variables in `slogcp` accept `true`, `1`, `yes`, or `on` (case-insensitive) to enable a feature. They accept `false`, `0`, `no`, or `off` to disable it. If any other value is supplied, the configuration keeps its default.
+
 ## Core Logger Configuration (`slogcp.New`)
 
 These options configure the main `slogcp.Logger` instance.
@@ -74,7 +78,8 @@ Determines where log entries are sent.
 Includes the source file, line number, and function name in log entries.
 
 -   **Programmatic**: `slogcp.WithSourceLocationEnabled(enabled bool)`
--   **Environment Variable**: `LOG_SOURCE_LOCATION` (values: `true`, `false`)
+-   **Environment Variable**: `LOG_SOURCE_LOCATION`
+    -   Example: `LOG_SOURCE_LOCATION=true`
 -   **Default**: `false` (disabled)
 -   Enabling this adds some performance overhead.
 
@@ -86,7 +91,8 @@ Automatically captures stack traces for logs at or above a specified level, typi
     -   `slogcp.WithStackTraceEnabled(enabled bool)`
     -   `slogcp.WithStackTraceLevel(level slog.Level)`
 -   **Environment Variables**:
-    -   `LOG_STACK_TRACE_ENABLED` (values: `true`, `false`)
+    -   `LOG_STACK_TRACE_ENABLED`
+        -   Example: `LOG_STACK_TRACE_ENABLED=true`
     -   `LOG_STACK_TRACE_LEVEL` (values: `debug`, `info`, `error`, etc.)
 -   **Defaults**:
     -   Enabled: `false`
@@ -150,6 +156,37 @@ If no log target is explicitly configured (via options or environment variables)
 -   **Detection**: Use `logger.IsInFallbackMode() bool` to check if the logger is operating in this fallback mode.
 -   This behavior simplifies local development, as the same code can log to GCP in production and `stdout` locally without changes.
 -   If a target *is* explicitly configured, fallback does not occur, and initialization errors are returned.
+
+## HTTP Middleware Options (`slogcp/http`)
+
+Unless configured otherwise, the middleware logs every request, does not recover from panics, captures no headers or bodies, and resolves the client IP from the remote socket address. Server errors (HTTP 5xx) always generate log entries, even when trace-based suppression is enabled.
+
+### Functional Options
+
+| Option | Description |
+| --- | --- |
+| `WithShouldLog(func(context.Context, *http.Request) bool)` | Predicate invoked after trace extraction to decide whether a request should emit a log entry. |
+| `WithSkipPathSubstrings(substrings ...string)` | Drops requests whose `URL.Path` contains any of the supplied substrings. |
+| `WithSuppressUnsampledBelow(level slog.Leveler)` | Suppresses logs for unsampled traces below the provided severity. Server errors (5xx) are never suppressed. |
+| `WithLogRequestHeaderKeys(keys ...string)` / `WithLogResponseHeaderKeys(keys ...string)` | Records selected headers into structured attributes. Keys are canonicalised like `net/http`. |
+| `WithRequestBodyLimit(limit int64)` / `WithResponseBodyLimit(limit int64)` | Captures up to `limit` bytes of the body for debugging. Zero disables capture. |
+| `WithRecoverPanics(enabled bool)` | Wraps the handler with panic recovery that logs and converts panics into HTTP 500 responses. |
+| `WithTrustProxyHeaders(enabled bool)` | When true, `X-Forwarded-For` and `X-Real-IP` headers are trusted when computing the client IP. |
+
+### Environment Variables
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `SLOGCP_HTTP_SKIP_PATH_SUBSTRINGS` | Comma-separated list mirroring `WithSkipPathSubstrings`. | (none) |
+| `SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW` | Severity threshold string or integer for `WithSuppressUnsampledBelow` (e.g. `WARNING`, `DEFAULT`). | (none) |
+| `SLOGCP_HTTP_LOG_REQUEST_HEADER_KEYS` | Comma-separated request header keys to capture. | (none) |
+| `SLOGCP_HTTP_LOG_RESPONSE_HEADER_KEYS` | Comma-separated response header keys to capture. | (none) |
+| `SLOGCP_HTTP_REQUEST_BODY_LIMIT` | Integer byte limit for request body capture. | `0` (disabled) |
+| `SLOGCP_HTTP_RESPONSE_BODY_LIMIT` | Integer byte limit for response body capture. | `0` (disabled) |
+| `SLOGCP_HTTP_RECOVER_PANICS` | Enables panic recovery when set to true. | `false` |
+| `SLOGCP_HTTP_TRUST_PROXY_HEADERS` | Enables proxy header trust when set to true. | `false` |
+
+Invalid values are ignored so that programmatic options can supply explicit overrides without extra error handling.
 
 ### Closing the Logger
 
@@ -280,8 +317,9 @@ The `github.com/pjscruggs/slogcp/http` subpackage provides server middleware **a
 Wraps an `http.Handler` to log request and response details.
 -   **Input**: Requires an `*slog.Logger`. You can pass `slogcpLogger.Logger`.
 -   **Log Content**:
-    -   Method, URL, request size, status code, response size, latency, remote IP, user agent, referer, protocol.
-    -   This information is structured into a `logging.HTTPRequest` object, which `slogcp`'s handler recognizes and places in the `httpRequest` field of the GCP log entry.
+    -   Method, URL, request size (from `Content-Length`), status code, response size, latency, and remote IP.
+    -   These fields populate a `logging.HTTPRequest`, which `slogcp`'s handler forwards to the `httpRequest` field in Cloud Logging.
+    -   Optional request/response headers and body excerpts can be captured through the functional options described below.
 -   **Log Level**: Determined by response status:
     -   `5xx` -> `slog.LevelError`
     -   `4xx` -> `slog.LevelWarn`
@@ -304,29 +342,29 @@ Specifically processes the `X-Cloud-Trace-Context` header (used by Google Cloud 
     -   If the `X-Cloud-Trace-Context` header is missing or invalid, it proceeds without modifying the context.
     -   If a valid header is found, it creates a `trace.SpanContext` and adds it to the request context using `trace.ContextWithRemoteSpanContext`.
 
-### `slogcphttp.NewPropagatingTransport`
+### `slogcphttp.NewTraceRoundTripper`
 
-`NewPropagatingTransport(base http.RoundTripper, opts ...TransportOption) http.RoundTripper`
+`NewTraceRoundTripper(base http.RoundTripper, opts ...TraceRoundTripperOption) http.RoundTripper`
 
 An opt-in HTTP client transport that **propagates the current trace context on outbound requests**:
 -   Injects **W3C Trace Context** (`traceparent`/`tracestate`) by default.
--   Optionally injects **`X-Cloud-Trace-Context`** (span ID in **decimal**; `o=1` when sampled).
+-   Injects **`X-Cloud-Trace-Context`** (span ID in **decimal**; `o=1` when sampled) unless disabled.
 -   Skips injection if headers are already present on the request.
--   You can restrict propagation using a filter.
+-   You can restrict propagation using a predicate.
 
 **Options**
-- `WithHeaderPropagation(enabled bool)` — default `true` (W3C).
-- `WithXCloudPropagation(enabled bool)` — default `true` (legacy Google header).
-- `WithShouldPropagate(func(*http.Request) bool)` — return `false` to skip (e.g., for external domains).
+- `WithInjectTraceparent(enabled bool)` — defaults to `true`.
+- `WithInjectXCloud(enabled bool)` — defaults to `true`.
+- `WithSkip(func(*http.Request) bool)` — return `true` to skip propagation (e.g., for external domains).
 
 **Usage**
 ```go
 client := &http.Client{
-    Transport: slogcphttp.NewPropagatingTransport(nil, // nil -> http.DefaultTransport
-        slogcphttp.WithShouldPropagate(func(r *http.Request) bool {
-            // Example: only internal calls
-            return strings.HasSuffix(r.URL.Host, ".svc.cluster.local") ||
-                   strings.HasSuffix(r.URL.Host, ".corp.example.com")
+    Transport: slogcphttp.NewTraceRoundTripper(nil, // wrap DefaultTransport
+        slogcphttp.WithSkip(func(r *http.Request) bool {
+            // Skip propagation when the host is outside the internal suffix list.
+            return !strings.HasSuffix(r.URL.Host, ".svc.cluster.local") &&
+                   !strings.HasSuffix(r.URL.Host, ".corp.example.com")
         }),
     ),
 }
