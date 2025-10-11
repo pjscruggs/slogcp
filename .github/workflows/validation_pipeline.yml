@@ -47,11 +47,34 @@ jobs:
           else
             echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
           fi
-      
+
+      - name: 🔢 Determine Go version
+        id: go-version
+        run: |
+          GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')
+          if [ -z "$GO_VERSION" ]; then
+            echo "Unable to determine Go version from go.mod" >&2
+            exit 1
+          fi
+
+          SCRIPT="${GITHUB_WORKSPACE}/.github/scripts/go_latest_patch.py"
+          if [ ! -x "$SCRIPT" ]; then
+            echo "Helper script $SCRIPT is missing or not executable" >&2
+            exit 1
+          fi
+
+          LATEST=$(python "$SCRIPT" "$GO_VERSION")
+          if [ -z "$LATEST" ]; then
+            echo "Unable to determine latest Go version, using $GO_VERSION" >&2
+            LATEST="$GO_VERSION"
+          fi
+
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+
       - name: 🏗️ Set up Go
         uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
         with:
-          go-version-file: 'go.mod'
+          go-version: ${{ steps.go-version.outputs.version }}
           cache: true
       
       - name: 🛠️ Install golangci-lint
