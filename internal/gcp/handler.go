@@ -461,25 +461,6 @@ func (h *gcpHandler) emitRedirectJSON(
 	return nil
 }
 
-// getNestedMap navigates or creates nested maps per group path.
-func getNestedMap(base map[string]any, groups []string) map[string]any {
-	curr := base
-	for _, g := range groups {
-		if g == "" {
-			continue
-		}
-		next, ok := curr[g]
-		if m, ok2 := next.(map[string]any); ok && ok2 {
-			curr = m
-			continue
-		}
-		newMap := make(map[string]any)
-		curr[g] = newMap
-		curr = newMap
-	}
-	return curr
-}
-
 func containsGroup(groups []string, target string) bool {
 	for i := range groups {
 		if groups[i] == target {
