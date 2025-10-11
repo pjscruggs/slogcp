@@ -84,7 +84,7 @@ jobs:
       
       - name: Generate App Token for E2E Dispatch
         id: app_token
-        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -115,7 +115,7 @@ jobs:
             core.setOutput('check_run_id', checkRun.id);
           
       - name: Dispatch E2E Tests
-        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
+        uses: peter-evans/repository-dispatch@5fc4efd1a4797ddb68ffd0714a238564e4cc0e6f # v4
         with:
           token: ${{ steps.app_token.outputs.token }}
           repository: pjscruggs/slogcp-test

@@ -28,6 +28,8 @@ jobs:
       github.event_name == 'workflow_call'
     name: Fix and Validate Code
     runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: auto
     steps:
       - name: 🛒 Checkout Code
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
@@ -63,7 +65,11 @@ jobs:
           go install golang.org/x/tools/cmd/goimports@latest
           gofmt -w .
           goimports -local github.com/pjscruggs/slogcp -w .
-      
+
+      - name: 🧹 Ensure module metadata is tidy
+        run: |
+          go mod tidy
+
       - name: 📅🕰️ Get current year in US Central Time
         id: year
         run: |
@@ -111,7 +117,15 @@ jobs:
             git fetch
             git checkout origin/${{ steps.get-branch.outputs.BRANCH_NAME }}
           fi
-      
+
+      - name: ✅ Ensure working tree is clean
+        run: |
+          if ! git diff --quiet; then
+            echo "Working tree has uncommitted changes after maintenance steps."
+            git status --short
+            exit 1
+          fi
+
       - name: 🧐 Verify Linting
         run: golangci-lint run ./...
       
@@ -228,7 +242,7 @@ jobs:
       - name: Generate App Token for Check Run
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: check_run_token
-        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -305,7 +319,7 @@ jobs:
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: app_token
-        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -314,7 +328,7 @@ jobs:
 
       - name: Dispatch E2E Tests
         if: steps.app_token.outputs.token != ''
-        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
+        uses: peter-evans/repository-dispatch@5fc4efd1a4797ddb68ffd0714a238564e4cc0e6f # v4
         with:
           token: ${{ steps.app_token.outputs.token }}
           repository: pjscruggs/slogcp-test
