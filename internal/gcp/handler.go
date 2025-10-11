@@ -15,6 +15,7 @@
 package gcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -40,6 +42,12 @@ type entryLogger interface {
 type groupedAttr struct {
 	groups []string
 	attr   slog.Attr
+}
+
+var labelStringBufferPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
 }
 
 // gcpHandler formats slog.Records for Google Cloud Logging or JSON output.
@@ -140,60 +148,123 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 	baseGroups := append([]string(nil), h.groups...)
 	h.mu.Unlock()
 
-	payload := make(map[string]any)
+	estimatedFields := len(baseAttrs) + int(r.NumAttrs())
+	if estimatedFields < 4 {
+		estimatedFields = 4
+	}
+	payload := make(map[string]any, estimatedFields)
 	var httpReq *logging.HTTPRequest
 	var firstErr error
 	var stackStr string
-	dynamicLabels := make(map[string]string)
+	var dynamicLabels map[string]string
 
 	const labelsGroupName = "logging.googleapis.com/labels"
 
-	// Recursively walk attributes, treating both handler-scoped groups and inline slog.Group(...) the same.
-	var walkAttr func(ga groupedAttr)
-	walkAttr = func(ga groupedAttr) {
-		a := ga.attr
+	ensureLabels := func() map[string]string {
+		if dynamicLabels == nil {
+			dynamicLabels = make(map[string]string, 4)
+		}
+		return dynamicLabels
+	}
+
+	ensureGroupMap := func(parent map[string]any, key string, hint int) map[string]any {
+		if key == "" {
+			return parent
+		}
+		if existing, ok := parent[key]; ok {
+			if m, ok2 := existing.(map[string]any); ok && ok2 {
+				return m
+			}
+		}
+		if hint <= 0 {
+			hint = 4
+		}
+		child := make(map[string]any, hint)
+		parent[key] = child
+		return child
+	}
+
+	groupStack := make([]string, 0, len(baseGroups)+4)
+
+	loadGroups := func(groups []string) (int, map[string]any) {
+		groupStack = append(groupStack[:0], groups...)
+
+		curr := payload
+		for _, g := range groups {
+			if g != "" && g != labelsGroupName {
+				curr = ensureGroupMap(curr, g, 0)
+			}
+		}
+		return len(groupStack), curr
+	}
+
+	// walkAttr recursively processes handler and record attributes, preserving the current
+	// group context and map pointer so nested maps are only materialized when needed.
+	var walkAttr func(depth int, currMap map[string]any, a slog.Attr, inLabels bool)
+	walkAttr = func(depth int, currMap map[string]any, a slog.Attr, inLabels bool) {
+		groupsView := groupStack[:depth]
 		if h.cfg.ReplaceAttrFunc != nil {
-			a = h.cfg.ReplaceAttrFunc(ga.groups, a)
+			a = h.cfg.ReplaceAttrFunc(groupsView, a)
 			if a.Equal(slog.Attr{}) {
 				return
 			}
 		}
 
-		// Descend into inline group values, appending the group's key to the current path.
+		// Descend into inline slog.Group values, extending the current group stack and
+		// reusing an existing child map for non-label groups where possible.
 		if a.Value.Kind() == slog.KindGroup {
 			children := a.Value.Group()
 			if len(children) == 0 {
 				return
 			}
-			newPath := append([]string(nil), ga.groups...)
+			nextDepth := depth
+			appended := false
+			nextMap := currMap
 			if a.Key != "" {
-				newPath = append(newPath, a.Key)
+				if len(groupStack) == nextDepth {
+					groupStack = append(groupStack, a.Key)
+				} else {
+					groupStack[nextDepth] = a.Key
+					groupStack = groupStack[:nextDepth+1]
+				}
+				if a.Key != labelsGroupName {
+					nextMap = ensureGroupMap(currMap, a.Key, len(children))
+				}
+				nextDepth++
+				appended = true
+			} else {
+				nextMap = currMap
 			}
-			for _, child := range children {
-				walkAttr(groupedAttr{groups: newPath, attr: child})
+			nextInLabels := inLabels
+			if !nextInLabels && a.Key == labelsGroupName {
+				nextInLabels = true
+			}
+			for i := range children {
+				walkAttr(nextDepth, nextMap, children[i], nextInLabels)
+			}
+			if appended {
+				groupStack = groupStack[:depth]
 			}
 			return
 		}
 
-		// Determine if the effective path is under the special labels group.
-		inLabelsGroup := false
-		for _, g := range ga.groups {
-			if g == labelsGroupName {
-				inLabelsGroup = true
-				break
-			}
+		// Determine whether the attribute should be treated as a label without repeatedly
+		// scanning the full group stack when we already know we're inside the labels group.
+		if !inLabels {
+			inLabels = containsGroup(groupsView, labelsGroupName)
 		}
-
-		if inLabelsGroup {
-			// Labels are flat string key/value pairs.
-			val := resolveSlogValue(a.Value)
-			if val != nil && a.Key != "" {
-				dynamicLabels[a.Key] = convertToString(val)
+		if inLabels {
+			// Labels are surfaced as flat string key/value pairs.
+			if a.Key == "" {
+				return
+			}
+			if s, ok := labelValueToString(a.Value); ok {
+				ensureLabels()[a.Key] = s
 			}
 			return
 		}
 
-		// Pull out HTTP request if present.
+		// Pull out HTTP request attributes early so they can hydrate the structured entry.
 		if a.Key == httpRequestKey {
 			if req, ok := a.Value.Any().(*logging.HTTPRequest); ok && httpReq == nil {
 				httpReq = req
@@ -203,23 +274,30 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 
 		// Normal structured payload handling.
 		val := resolveSlogValue(a.Value)
+		if val == nil {
+			return
+		}
 		if errVal, ok := val.(error); ok && firstErr == nil {
 			firstErr = errVal
 		}
-		d := getNestedMap(payload, ga.groups)
-		if a.Key != "" {
-			d[a.Key] = val
+		if a.Key == "" {
+			return
 		}
+		currMap[a.Key] = val
 	}
 
-	// Walk initial handler attrs.
-	for _, ga := range baseAttrs {
-		walkAttr(ga)
+	// Walk initial handler attributes.
+	for i := range baseAttrs {
+		ga := baseAttrs[i]
+		depth, curr := loadGroups(ga.groups)
+		walkAttr(depth, curr, ga.attr, containsGroup(ga.groups, labelsGroupName))
 	}
 
-	// Walk record attrs.
+	// Walk the record attributes with the handler's base group context.
+	baseDepth, baseMap := loadGroups(baseGroups)
+	baseInLabels := containsGroup(baseGroups, labelsGroupName)
 	r.Attrs(func(a slog.Attr) bool {
-		walkAttr(groupedAttr{groups: baseGroups, attr: a})
+		walkAttr(baseDepth, baseMap, a, baseInLabels)
 		return true
 	})
 
@@ -383,23 +461,65 @@ func (h *gcpHandler) emitRedirectJSON(
 	return nil
 }
 
-// getNestedMap navigates or creates nested maps per group path.
-func getNestedMap(base map[string]any, groups []string) map[string]any {
-	curr := base
-	for _, g := range groups {
-		if g == "" {
-			continue
+func containsGroup(groups []string, target string) bool {
+	for i := range groups {
+		if groups[i] == target {
+			return true
 		}
-		next, ok := curr[g]
-		if m, ok2 := next.(map[string]any); ok && ok2 {
-			curr = m
-			continue
-		}
-		newMap := make(map[string]any)
-		curr[g] = newMap
-		curr = newMap
 	}
-	return curr
+	return false
+}
+
+// labelValueToString converts a slog.Value into its string form suitable for Cloud Logging label
+// emission, returning false when the value cannot be represented as a string label.
+func labelValueToString(v slog.Value) (string, bool) {
+	rv := v.Resolve()
+	switch rv.Kind() {
+	case slog.KindString:
+		return rv.String(), true
+	case slog.KindInt64:
+		return strconv.FormatInt(rv.Int64(), 10), true
+	case slog.KindUint64:
+		return strconv.FormatUint(rv.Uint64(), 10), true
+	case slog.KindFloat64:
+		return strconv.FormatFloat(rv.Float64(), 'g', -1, 64), true
+	case slog.KindBool:
+		if rv.Bool() {
+			return "true", true
+		}
+		return "false", true
+	case slog.KindDuration:
+		return rv.Duration().String(), true
+	case slog.KindTime:
+		return rv.Time().Format(time.RFC3339), true
+	case slog.KindAny:
+		val := rv.Any()
+		if val == nil {
+			return "", false
+		}
+		switch x := val.(type) {
+		case time.Duration:
+			return x.String(), true
+		case time.Time:
+			return x.Format(time.RFC3339), true
+		case string:
+			return x, true
+		case []byte:
+			return string(x), true
+		case fmt.Stringer:
+			return x.String(), true
+		case error:
+			return x.Error(), true
+		}
+		buf := labelStringBufferPool.Get().(*bytes.Buffer)
+		buf.Reset()
+		fmt.Fprint(buf, val)
+		s := buf.String()
+		buf.Reset()
+		labelStringBufferPool.Put(buf)
+		return s, true
+	}
+	return "", false
 }
 
 // resolveSourceLocation turns a slog.Record into a LogEntrySourceLocation.

@@ -193,38 +193,6 @@ func flattenHTTPRequestToMap(req *logging.HTTPRequest) map[string]any {
 	return m
 }
 
-// convertToString converts any supported slog value type to a string suitable
-// for use as a Cloud Logging label value. This follows GCP's requirements that
-// all label values must be strings.
-func convertToString(v any) string {
-	if v == nil {
-		return ""
-	}
-
-	switch val := v.(type) {
-	case string:
-		return val
-	case int64:
-		return strconv.FormatInt(val, 10)
-	case uint64:
-		return strconv.FormatUint(val, 10)
-	case float64:
-		return strconv.FormatFloat(val, 'g', -1, 64)
-	case bool:
-		if val {
-			return "true"
-		}
-		return "false"
-	case time.Time:
-		return val.Format(time.RFC3339)
-	case time.Duration:
-		return val.String()
-	default:
-		// For any other type, use fmt.Sprintf
-		return fmt.Sprintf("%v", val)
-	}
-}
-
 // ExtractOperationFromRecord scans a slog.Record for a group named
 // "logging.googleapis.com/operation" and builds a LogEntryOperation.
 //
