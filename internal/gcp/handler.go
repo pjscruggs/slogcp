@@ -487,7 +487,7 @@ func (h *gcpHandler) buildPayload(r slog.Record, buildProto bool, state *payload
 		errMsg = fe.Message
 		stackStr = origin
 		if stackStr == "" && h.cfg.StackTraceEnabled && r.Level >= h.cfg.StackTraceLevel {
-			stackStr = captureAndFormatFallbackStack(3)
+			stackStr = captureAndFormatFallbackStack()
 		}
 	}
 
@@ -822,15 +822,19 @@ func (h *gcpHandler) cloneLocked() *gcpHandler {
 }
 
 // captureAndFormatFallbackStack captures a stack trace for fallback.
-func captureAndFormatFallbackStack(skip int) string {
+func captureAndFormatFallbackStack() string {
 	bufPtr := pcBufferPool.Get().(*[]uintptr)
 	pcs := (*bufPtr)[:cap(*bufPtr)]
-	n := runtime.Callers(skip+1, pcs)
+	n := runtime.Callers(0, pcs)
 	if n == 0 {
 		pcBufferPool.Put(bufPtr)
 		return ""
 	}
-	stack := formatPCsToStackString(pcs[:n])
+	trimmed := trimFallbackStackPCs(pcs[:n])
+	if len(trimmed) == 0 {
+		trimmed = pcs[:n]
+	}
+	stack := formatPCsToStackString(trimmed)
 	pcBufferPool.Put(bufPtr)
 	return stack
 }
