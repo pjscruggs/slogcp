@@ -96,3 +96,49 @@ func formatPCsToStackString(pcs []uintptr) string {
 	// Return the built string, removing the final newline.
 	return strings.TrimSuffix(sb.String(), "\n")
 }
+
+// trimFallbackStackPCs removes leading stack frames that belong to slogcp's internal
+// logging pipeline or the standard library wrappers that invoke it. This produces
+// stack traces that begin at the user's call-site without relying on a fixed frame count.
+func trimFallbackStackPCs(pcs []uintptr) []uintptr {
+	if len(pcs) == 0 {
+		return pcs
+	}
+
+	frames := runtime.CallersFrames(pcs)
+	skip := 0
+	for {
+		frame, more := frames.Next()
+		if !shouldSkipFallbackFrame(frame.Function) {
+			break
+		}
+		skip++
+		if !more {
+			return nil
+		}
+	}
+	if skip == 0 {
+		return pcs
+	}
+	return pcs[skip:]
+}
+
+func shouldSkipFallbackFrame(funcName string) bool {
+	if funcName == "" {
+		return false
+	}
+	switch funcName {
+	case "runtime.Callers":
+		return true
+	}
+	if strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/internal/gcp.") {
+		return true
+	}
+	if strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp.(*Logger).") {
+		return true
+	}
+	if strings.HasPrefix(funcName, "log/slog.") {
+		return true
+	}
+	return false
+}
