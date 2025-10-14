@@ -754,15 +754,20 @@ func (h *gcpHandler) resolveSourceLocation(r slog.Record) *loggingpb.LogEntrySou
 		return nil
 	}
 
-	if src := r.Source(); src != nil {
-		if src.File != "" || src.Function != "" || src.Line != 0 {
-			return &loggingpb.LogEntrySourceLocation{
-				File:     src.File,
-				Line:     int64(src.Line),
-				Function: src.Function,
-			}
-		}
-	}
+	// TODO: After cloud.google.com/go/logging officially moves to Go 1.25, prefer
+	// the Source-aware fast path below to reuse compiler-provided file,
+	// function, and line information instead of walking CallersFrames. That lets
+	// us preserve upstream source rewriting and avoid the extra runtime work.
+	//
+	//	if src := r.Source(); src != nil {
+	//		if src.File != "" || src.Function != "" || src.Line != 0 {
+	//			return &loggingpb.LogEntrySourceLocation{
+	//				File:     src.File,
+	//				Line:     int64(src.Line),
+	//				Function: src.Function,
+	//			}
+	//		}
+	//	}
 
 	frames := runtime.CallersFrames([]uintptr{r.PC})
 	frame, _ := frames.Next() // more is irrelevant for a single frame
