@@ -445,6 +445,23 @@ func (h *gcpHandler) buildPayload(r slog.Record, buildProto bool, state *payload
 			return
 		}
 		currMap[a.Key] = val
+
+		if protoSuccess && currProto != nil {
+			if currProto.Fields == nil {
+				currProto.Fields = make(map[string]*structpb.Value, 4)
+			}
+			var protoVal *structpb.Value
+			if v, ok := slogValueToProto(a.Value); ok {
+				protoVal = v
+			} else if v, ok := anyToProtoValue(val, 0); ok {
+				protoVal = v
+			} else {
+				protoSuccess = false
+				protoRoot = nil
+				return
+			}
+			currProto.Fields[a.Key] = protoVal
+		}
 	}
 
 	// Walk initial handler attributes.
