@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -89,18 +90,18 @@ func anyToProtoValue(value any, depth int) (*structpb.Value, bool) {
 	case *structpb.Value:
 		return v, true
 	case structpb.Value:
-		clone := v
-		return &clone, true
+		cloned := proto.Clone(&v)
+		return cloned.(*structpb.Value), true
 	case *structpb.Struct:
 		return structpb.NewStructValue(v), true
 	case structpb.Struct:
-		clone := v
-		return structpb.NewStructValue(&clone), true
+		cloned := proto.Clone(&v)
+		return structpb.NewStructValue(cloned.(*structpb.Struct)), true
 	case *structpb.ListValue:
 		return structpb.NewListValue(v), true
 	case structpb.ListValue:
-		clone := v
-		return structpb.NewListValue(&clone), true
+		cloned := proto.Clone(&v)
+		return structpb.NewListValue(cloned.(*structpb.ListValue)), true
 	case bool:
 		return structpb.NewBoolValue(v), true
 	case string:
@@ -110,8 +111,6 @@ func anyToProtoValue(value any, depth int) (*structpb.Value, bool) {
 		return structpb.NewStringValue(v), true
 	case []byte:
 		return structpb.NewStringValue(base64.StdEncoding.EncodeToString(v)), true
-	case fmt.Stringer:
-		return structpb.NewStringValue(v.String()), true
 	case error:
 		return structpb.NewStringValue(v.Error()), true
 	case json.Number:
@@ -148,6 +147,8 @@ func anyToProtoValue(value any, depth int) (*structpb.Value, bool) {
 		return structpb.NewStringValue(v.String()), true
 	case time.Time:
 		return structpb.NewStringValue(v.UTC().Format(time.RFC3339Nano)), true
+	case fmt.Stringer:
+		return structpb.NewStringValue(v.String()), true
 	case map[string]any:
 		s, ok := payloadToStruct(v)
 		if !ok {
