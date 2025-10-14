@@ -30,6 +30,7 @@ import (
 
 	"cloud.google.com/go/logging"
 	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // entryLogger defines the minimal interface for sending log entries.
@@ -44,9 +45,93 @@ type groupedAttr struct {
 	attr   slog.Attr
 }
 
+type payloadState struct {
+	root     map[string]any
+	labels   map[string]string
+	freeMaps []map[string]any
+	usedMaps []map[string]any
+}
+
+func (ps *payloadState) prepare(capacity int) map[string]any {
+	if capacity < 4 {
+		capacity = 4
+	}
+	if ps.root == nil {
+		ps.root = make(map[string]any, capacity)
+	} else {
+		clearMapAny(ps.root)
+	}
+	ps.usedMaps = ps.usedMaps[:0]
+	return ps.root
+}
+
+func (ps *payloadState) borrowMap(hint int) map[string]any {
+	if hint < 4 {
+		hint = 4
+	}
+	var m map[string]any
+	if n := len(ps.freeMaps); n > 0 {
+		m = ps.freeMaps[n-1]
+		ps.freeMaps = ps.freeMaps[:n-1]
+		clearMapAny(m)
+	} else {
+		m = make(map[string]any, hint)
+	}
+	ps.usedMaps = append(ps.usedMaps, m)
+	return m
+}
+
+func (ps *payloadState) obtainLabels() map[string]string {
+	if ps.labels == nil {
+		ps.labels = make(map[string]string, 4)
+	} else {
+		clearStringMap(ps.labels)
+	}
+	return ps.labels
+}
+
+func (ps *payloadState) recycle() {
+	for _, m := range ps.usedMaps {
+		clearMapAny(m)
+		ps.freeMaps = append(ps.freeMaps, m)
+	}
+	ps.usedMaps = ps.usedMaps[:0]
+	if ps.root != nil {
+		clearMapAny(ps.root)
+	}
+	if ps.labels != nil {
+		clearStringMap(ps.labels)
+	}
+}
+
+var payloadStatePool = sync.Pool{
+	New: func() any {
+		return &payloadState{}
+	},
+}
+
+func clearMapAny(m map[string]any) {
+	for k := range m {
+		delete(m, k)
+	}
+}
+
+func clearStringMap(m map[string]string) {
+	for k := range m {
+		delete(m, k)
+	}
+}
+
 var labelStringBufferPool = sync.Pool{
 	New: func() any {
 		return new(bytes.Buffer)
+	},
+}
+
+var pcBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]uintptr, 64)
+		return &buf
 	},
 }
 
@@ -122,22 +207,52 @@ func (h *gcpHandler) Handle(ctx context.Context, r slog.Record) error {
 	// Extract trace info
 	fmtTrace, rawTraceID, rawSpanID, sampled, _ := ExtractTraceSpan(ctx, projectForTrace)
 
-	// Build payload and extract HTTP request, error, stack details, and labels
-	payload, httpReq, errType, errMsg, stackStr, dynamicLabels := h.buildPayload(r)
-
-	// Output mode
 	if h.cfg.LogTarget == LogTargetGCP {
+		payload, protoPayload, httpReq, _, _, stackStr, dynamicLabels := h.buildPayload(r, true, nil)
 		if stackStr != "" {
 			payload[stackTraceKey] = stackStr
+			if protoPayload != nil {
+				if protoPayload.Fields == nil {
+					protoPayload.Fields = make(map[string]*structpb.Value, 4)
+				}
+				protoPayload.Fields[stackTraceKey] = structpb.NewStringValue(stackStr)
+			}
 		}
-		return h.emitGCPEntry(r, payload, httpReq, sourceLoc, fmtTrace, rawSpanID, sampled, dynamicLabels)
+		return h.emitGCPEntry(r, payload, protoPayload, httpReq, sourceLoc, fmtTrace, rawSpanID, sampled, dynamicLabels)
 	}
-	return h.emitRedirectJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr, dynamicLabels)
+
+	state := payloadStatePool.Get().(*payloadState)
+	defer func() {
+		state.recycle()
+		payloadStatePool.Put(state)
+	}()
+
+	payload, _, httpReq, errType, errMsg, stackStr, dynamicLabels := h.buildPayload(r, false, state)
+
+	var mergedLabels map[string]string
+	if len(h.cfg.GCPCommonLabels) > 0 || len(dynamicLabels) > 0 {
+		if dynamicLabels != nil {
+			mergedLabels = dynamicLabels
+		} else {
+			mergedLabels = state.obtainLabels()
+		}
+		for k, v := range h.cfg.GCPCommonLabels {
+			if _, exists := mergedLabels[k]; !exists {
+				mergedLabels[k] = v
+			}
+		}
+		if len(mergedLabels) > 0 {
+			payload["logging.googleapis.com/labels"] = mergedLabels
+		}
+	}
+
+	return h.emitRedirectJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr, mergedLabels)
 }
 
 // buildPayload assembles the structured payload, extracts HTTPRequest, error type/message, stack trace, and labels.
-func (h *gcpHandler) buildPayload(r slog.Record) (
+func (h *gcpHandler) buildPayload(r slog.Record, buildProto bool, state *payloadState) (
 	map[string]any,
+	*structpb.Struct,
 	*logging.HTTPRequest,
 	string, string, string,
 	map[string]string,
@@ -152,17 +267,31 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 	if estimatedFields < 4 {
 		estimatedFields = 4
 	}
-	payload := make(map[string]any, estimatedFields)
+	var payload map[string]any
+	if state != nil {
+		payload = state.prepare(estimatedFields)
+	} else {
+		payload = make(map[string]any, estimatedFields)
+	}
 	var httpReq *logging.HTTPRequest
 	var firstErr error
 	var stackStr string
 	var dynamicLabels map[string]string
+	var protoRoot *structpb.Struct
+	protoSuccess := buildProto
+	if buildProto {
+		protoRoot = &structpb.Struct{Fields: make(map[string]*structpb.Value, estimatedFields)}
+	}
 
 	const labelsGroupName = "logging.googleapis.com/labels"
 
 	ensureLabels := func() map[string]string {
 		if dynamicLabels == nil {
-			dynamicLabels = make(map[string]string, 4)
+			if state != nil {
+				dynamicLabels = state.obtainLabels()
+			} else {
+				dynamicLabels = make(map[string]string, 4)
+			}
 		}
 		return dynamicLabels
 	}
@@ -172,36 +301,68 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 			return parent
 		}
 		if existing, ok := parent[key]; ok {
-			if m, ok2 := existing.(map[string]any); ok && ok2 {
+			if m, ok2 := existing.(map[string]any); ok2 {
 				return m
+			}
+		}
+		var child map[string]any
+		if state != nil {
+			child = state.borrowMap(hint)
+		} else {
+			if hint <= 0 {
+				hint = 4
+			}
+			child = make(map[string]any, hint)
+		}
+		parent[key] = child
+		return child
+	}
+
+	ensureProtoStruct := func(parent *structpb.Struct, key string, hint int) *structpb.Struct {
+		if parent == nil {
+			return nil
+		}
+		if parent.Fields == nil {
+			if hint <= 0 {
+				hint = 4
+			}
+			parent.Fields = make(map[string]*structpb.Value, hint)
+		}
+		if existing, ok := parent.Fields[key]; ok {
+			if s := existing.GetStructValue(); s != nil {
+				return s
 			}
 		}
 		if hint <= 0 {
 			hint = 4
 		}
-		child := make(map[string]any, hint)
-		parent[key] = child
+		child := &structpb.Struct{Fields: make(map[string]*structpb.Value, hint)}
+		parent.Fields[key] = structpb.NewStructValue(child)
 		return child
 	}
 
 	groupStack := make([]string, 0, len(baseGroups)+4)
 
-	loadGroups := func(groups []string) (int, map[string]any) {
+	loadGroups := func(groups []string) (int, map[string]any, *structpb.Struct) {
 		groupStack = append(groupStack[:0], groups...)
 
 		curr := payload
+		currProto := protoRoot
 		for _, g := range groups {
 			if g != "" && g != labelsGroupName {
 				curr = ensureGroupMap(curr, g, 0)
+				if protoSuccess {
+					currProto = ensureProtoStruct(currProto, g, 0)
+				}
 			}
 		}
-		return len(groupStack), curr
+		return len(groupStack), curr, currProto
 	}
 
 	// walkAttr recursively processes handler and record attributes, preserving the current
 	// group context and map pointer so nested maps are only materialized when needed.
-	var walkAttr func(depth int, currMap map[string]any, a slog.Attr, inLabels bool)
-	walkAttr = func(depth int, currMap map[string]any, a slog.Attr, inLabels bool) {
+	var walkAttr func(depth int, currMap map[string]any, currProto *structpb.Struct, a slog.Attr, inLabels bool)
+	walkAttr = func(depth int, currMap map[string]any, currProto *structpb.Struct, a slog.Attr, inLabels bool) {
 		groupsView := groupStack[:depth]
 		if h.cfg.ReplaceAttrFunc != nil {
 			a = h.cfg.ReplaceAttrFunc(groupsView, a)
@@ -220,6 +381,7 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 			nextDepth := depth
 			appended := false
 			nextMap := currMap
+			nextProto := currProto
 			if a.Key != "" {
 				if len(groupStack) == nextDepth {
 					groupStack = append(groupStack, a.Key)
@@ -229,6 +391,9 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 				}
 				if a.Key != labelsGroupName {
 					nextMap = ensureGroupMap(currMap, a.Key, len(children))
+					if protoSuccess {
+						nextProto = ensureProtoStruct(currProto, a.Key, len(children))
+					}
 				}
 				nextDepth++
 				appended = true
@@ -240,7 +405,7 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 				nextInLabels = true
 			}
 			for i := range children {
-				walkAttr(nextDepth, nextMap, children[i], nextInLabels)
+				walkAttr(nextDepth, nextMap, nextProto, children[i], nextInLabels)
 			}
 			if appended {
 				groupStack = groupStack[:depth]
@@ -248,11 +413,7 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 			return
 		}
 
-		// Determine whether the attribute should be treated as a label without repeatedly
-		// scanning the full group stack when we already know we're inside the labels group.
-		if !inLabels {
-			inLabels = containsGroup(groupsView, labelsGroupName)
-		}
+		// Attributes inside the labels group are converted to flat string key/value pairs.
 		if inLabels {
 			// Labels are surfaced as flat string key/value pairs.
 			if a.Key == "" {
@@ -289,15 +450,15 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 	// Walk initial handler attributes.
 	for i := range baseAttrs {
 		ga := baseAttrs[i]
-		depth, curr := loadGroups(ga.groups)
-		walkAttr(depth, curr, ga.attr, containsGroup(ga.groups, labelsGroupName))
+		depth, currMap, currProto := loadGroups(ga.groups)
+		walkAttr(depth, currMap, currProto, ga.attr, containsGroup(ga.groups, labelsGroupName))
 	}
 
 	// Walk the record attributes with the handler's base group context.
-	baseDepth, baseMap := loadGroups(baseGroups)
+	baseDepth, baseMap, baseProto := loadGroups(baseGroups)
 	baseInLabels := containsGroup(baseGroups, labelsGroupName)
 	r.Attrs(func(a slog.Attr) bool {
-		walkAttr(baseDepth, baseMap, a, baseInLabels)
+		walkAttr(baseDepth, baseMap, baseProto, a, baseInLabels)
 		return true
 	})
 
@@ -313,13 +474,17 @@ func (h *gcpHandler) buildPayload(r slog.Record) (
 		}
 	}
 
-	return payload, httpReq, errType, errMsg, stackStr, dynamicLabels
+	if !protoSuccess {
+		protoRoot = nil
+	}
+	return payload, protoRoot, httpReq, errType, errMsg, stackStr, dynamicLabels
 }
 
 // emitGCPEntry logs a structured Entry to Cloud Logging.
 func (h *gcpHandler) emitGCPEntry(
 	r slog.Record,
 	payload map[string]any,
+	protoPayload *structpb.Struct,
 	httpReq *logging.HTTPRequest,
 	sourceLoc *loggingpb.LogEntrySourceLocation,
 	fmtTrace, spanID string,
@@ -333,19 +498,51 @@ func (h *gcpHandler) emitGCPEntry(
 	}
 	if r.Message != "" {
 		payload[messageKey] = r.Message
+		if protoPayload != nil {
+			if protoPayload.Fields == nil {
+				protoPayload.Fields = make(map[string]*structpb.Value, 4)
+			}
+			protoPayload.Fields[messageKey] = structpb.NewStringValue(r.Message)
+		}
 	}
 
 	// Merge common labels with dynamic labels (dynamic takes precedence)
 	var labels map[string]string
-	if len(h.cfg.GCPCommonLabels) > 0 || len(dynamicLabels) > 0 {
-		labels = make(map[string]string)
-		// Start with common labels
+	switch {
+	case len(dynamicLabels) == 0:
+		if len(h.cfg.GCPCommonLabels) > 0 {
+			labels = h.cfg.GCPCommonLabels
+		}
+	case len(h.cfg.GCPCommonLabels) == 0:
+		labels = dynamicLabels
+	default:
+		labels = make(map[string]string, len(h.cfg.GCPCommonLabels)+len(dynamicLabels))
 		for k, v := range h.cfg.GCPCommonLabels {
 			labels[k] = v
 		}
-		// Override with dynamic labels
 		for k, v := range dynamicLabels {
 			labels[k] = v
+		}
+	}
+
+	if len(h.cfg.GCPCommonLabels) > 0 || len(dynamicLabels) > 0 {
+		mergedLabels := make(map[string]string, len(h.cfg.GCPCommonLabels)+len(dynamicLabels))
+		for k, v := range h.cfg.GCPCommonLabels {
+			mergedLabels[k] = v
+		}
+		for k, v := range dynamicLabels {
+			mergedLabels[k] = v
+		}
+		payload["logging.googleapis.com/labels"] = mergedLabels
+		if protoPayload != nil {
+			if protoPayload.Fields == nil {
+				protoPayload.Fields = make(map[string]*structpb.Value, 4)
+			}
+			labelStruct := &structpb.Struct{Fields: make(map[string]*structpb.Value, len(mergedLabels))}
+			for k, v := range mergedLabels {
+				labelStruct.Fields[k] = structpb.NewStringValue(v)
+			}
+			protoPayload.Fields["logging.googleapis.com/labels"] = structpb.NewStructValue(labelStruct)
 		}
 	}
 
@@ -356,11 +553,16 @@ func (h *gcpHandler) emitGCPEntry(
 		op = ExtractOperationFromPayload(payload)
 	}
 
+	entryPayload := any(payload)
+	if protoPayload != nil {
+		entryPayload = protoPayload
+	}
+
 	// Build the base entry.
 	entry := logging.Entry{
 		Timestamp:      ts,
 		Severity:       sev,
-		Payload:        payload,
+		Payload:        entryPayload,
 		Labels:         labels,
 		SourceLocation: sourceLoc,
 		HTTPRequest:    httpReq,
@@ -422,18 +624,25 @@ func (h *gcpHandler) emitRedirectJSON(
 		}
 	}
 
-	// Merge common labels with dynamic labels
-	if len(h.cfg.GCPCommonLabels) > 0 || len(dynamicLabels) > 0 {
-		mergedLabels := make(map[string]string)
-		// Start with common labels
-		for k, v := range h.cfg.GCPCommonLabels {
-			mergedLabels[k] = v
+	// Merge common labels with dynamic labels (skip if already populated upstream)
+	if _, exists := jsonPayload["logging.googleapis.com/labels"]; !exists {
+		switch {
+		case len(dynamicLabels) == 0:
+			if len(h.cfg.GCPCommonLabels) > 0 {
+				jsonPayload["logging.googleapis.com/labels"] = h.cfg.GCPCommonLabels
+			}
+		case len(h.cfg.GCPCommonLabels) == 0:
+			jsonPayload["logging.googleapis.com/labels"] = dynamicLabels
+		default:
+			mergedLabels := make(map[string]string, len(h.cfg.GCPCommonLabels)+len(dynamicLabels))
+			for k, v := range h.cfg.GCPCommonLabels {
+				mergedLabels[k] = v
+			}
+			for k, v := range dynamicLabels {
+				mergedLabels[k] = v
+			}
+			jsonPayload["logging.googleapis.com/labels"] = mergedLabels
 		}
-		// Override with dynamic labels
-		for k, v := range dynamicLabels {
-			mergedLabels[k] = v
-		}
-		jsonPayload["logging.googleapis.com/labels"] = mergedLabels
 	}
 
 	// Optional request grouping via operation, emitted under the canonical key.
@@ -528,6 +737,16 @@ func (h *gcpHandler) resolveSourceLocation(r slog.Record) *loggingpb.LogEntrySou
 		return nil
 	}
 
+	if src := r.Source(); src != nil {
+		if src.File != "" || src.Function != "" || src.Line != 0 {
+			return &loggingpb.LogEntrySourceLocation{
+				File:     src.File,
+				Line:     int64(src.Line),
+				Function: src.Function,
+			}
+		}
+	}
+
 	frames := runtime.CallersFrames([]uintptr{r.PC})
 	frame, _ := frames.Next() // more is irrelevant for a single frame
 
@@ -587,12 +806,16 @@ func (h *gcpHandler) cloneLocked() *gcpHandler {
 
 // captureAndFormatFallbackStack captures a stack trace for fallback.
 func captureAndFormatFallbackStack(skip int) string {
-	pcs := make([]uintptr, 64)
+	bufPtr := pcBufferPool.Get().(*[]uintptr)
+	pcs := (*bufPtr)[:cap(*bufPtr)]
 	n := runtime.Callers(skip+1, pcs)
 	if n == 0 {
+		pcBufferPool.Put(bufPtr)
 		return ""
 	}
-	return formatPCsToStackString(pcs[:n])
+	stack := formatPCsToStackString(pcs[:n])
+	pcBufferPool.Put(bufPtr)
+	return stack
 }
 
 // Ensure gcpHandler implements slog.Handler.

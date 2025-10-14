@@ -153,44 +153,58 @@ func resolveSlogValue(v slog.Value) any {
 	}
 }
 
-// flattenHTTPRequestToMap converts a *logging.HTTPRequest struct into a map
-// suitable for embedding within the `httpRequest` field of a structured JSON log entry,
-// following GCP's expected field names. Includes zero/false/empty values for consistency.
-func flattenHTTPRequestToMap(req *logging.HTTPRequest) map[string]any {
+type httpRequestPayload struct {
+	RequestMethod                  string `json:"requestMethod"`
+	RequestURL                     string `json:"requestUrl"`
+	UserAgent                      string `json:"userAgent"`
+	Referer                        string `json:"referer"`
+	Protocol                       string `json:"protocol"`
+	RequestSize                    string `json:"requestSize"`
+	Status                         int    `json:"status"`
+	ResponseSize                   string `json:"responseSize"`
+	Latency                        string `json:"latency,omitempty"`
+	RemoteIP                       string `json:"remoteIp"`
+	ServerIP                       string `json:"serverIp"`
+	CacheHit                       bool   `json:"cacheHit"`
+	CacheValidatedWithOriginServer bool   `json:"cacheValidatedWithOriginServer"`
+	CacheFillBytes                 string `json:"cacheFillBytes"`
+	CacheLookup                    bool   `json:"cacheLookup"`
+}
+
+// flattenHTTPRequestToMap converts a *logging.HTTPRequest struct into a JSON-friendly payload
+// suitable for embedding within the `httpRequest` field of a structured log entry.
+func flattenHTTPRequestToMap(req *logging.HTTPRequest) *httpRequestPayload {
 	if req == nil {
 		return nil
 	}
-	m := make(map[string]any)
-	// Use keys expected by GCP structured logging for httpRequest
-	if req.Request != nil {
-		m["requestMethod"] = req.Request.Method // Empty string if not set
-		if req.Request.URL != nil {
-			m["requestUrl"] = req.Request.URL.String() // Empty string if not set
-		} else {
-			m["requestUrl"] = ""
-		}
-		m["userAgent"] = req.Request.UserAgent() // Empty string if not set
-		m["referer"] = req.Request.Referer()     // Empty string if not set
-		m["protocol"] = req.Request.Proto        // Empty string if not set
-	}
-	// GCP expects sizes as strings
-	m["requestSize"] = strconv.FormatInt(req.RequestSize, 10)   // "0" if zero
-	m["status"] = req.Status                                    // 0 if not set (though usually set)
-	m["responseSize"] = strconv.FormatInt(req.ResponseSize, 10) // "0" if zero
-	// GCP expects latency as "Ns" string (e.g., "3.5s")
-	if req.Latency > 0 { // Only include latency if positive
-		m["latency"] = fmt.Sprintf("%.9fs", req.Latency.Seconds())
-	}
-	m["remoteIp"] = req.RemoteIP // Empty string if not set
-	m["serverIp"] = req.LocalIP  // Empty string if not set
-	// Booleans are included directly
-	m["cacheHit"] = req.CacheHit
-	m["cacheValidatedWithOriginServer"] = req.CacheValidatedWithOriginServer
-	m["cacheFillBytes"] = strconv.FormatInt(req.CacheFillBytes, 10) // "0" if zero
-	m["cacheLookup"] = req.CacheLookup
 
-	// Return the map, even if it only contains default values.
-	return m
+	payload := httpRequestPayload{
+		RequestSize:                    strconv.FormatInt(req.RequestSize, 10),
+		Status:                         req.Status,
+		ResponseSize:                   strconv.FormatInt(req.ResponseSize, 10),
+		RemoteIP:                       req.RemoteIP,
+		ServerIP:                       req.LocalIP,
+		CacheHit:                       req.CacheHit,
+		CacheValidatedWithOriginServer: req.CacheValidatedWithOriginServer,
+		CacheFillBytes:                 strconv.FormatInt(req.CacheFillBytes, 10),
+		CacheLookup:                    req.CacheLookup,
+	}
+
+	if req.Request != nil {
+		payload.RequestMethod = req.Request.Method
+		if req.Request.URL != nil {
+			payload.RequestURL = req.Request.URL.String()
+		}
+		payload.UserAgent = req.Request.UserAgent()
+		payload.Referer = req.Request.Referer()
+		payload.Protocol = req.Request.Proto
+	}
+
+	if req.Latency > 0 {
+		payload.Latency = fmt.Sprintf("%.9fs", req.Latency.Seconds())
+	}
+
+	return &payload
 }
 
 // ExtractOperationFromRecord scans a slog.Record for a group named
