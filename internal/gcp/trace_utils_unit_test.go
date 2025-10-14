@@ -18,7 +18,10 @@
 package gcp
 
 import (
+	"context"
 	"testing"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestFormatTraceResource(t *testing.T) {
@@ -64,4 +67,61 @@ func TestBuildXCloudTraceContext(t *testing.T) {
 			t.Errorf("BuildXCloudTraceContext(%q,%q,%v) = %q, want %q", tc.traceID, tc.spanHex, tc.sampled, got, tc.want)
 		}
 	}
+}
+
+func TestExtractTraceSpanEmptyContext(t *testing.T) {
+	formatted, traceID, spanID, sampled, sc := ExtractTraceSpan(context.Background(), "proj")
+	if formatted != "" || traceID != "" || spanID != "" || sampled {
+		t.Fatalf("expected zero values, got formatted=%q trace=%q span=%q sampled=%v", formatted, traceID, spanID, sampled)
+	}
+	if sc.IsValid() {
+		t.Fatalf("expected invalid span context")
+	}
+}
+
+func TestExtractTraceSpanWithProject(t *testing.T) {
+	traceID := mustTraceID(t, "70f5c2c7b3c0d8eead4837399ac5b327")
+	spanID := mustSpanID(t, "5fa1c6de0d1e3e11")
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+	formatted, rawTrace, rawSpan, sampled, retrieved := ExtractTraceSpan(ctx, "demo-project")
+
+	if formatted != "projects/demo-project/traces/"+traceID.String() {
+		t.Fatalf("formatted trace = %q, want projects/demo-project/traces/%s", formatted, traceID.String())
+	}
+	if rawTrace != traceID.String() {
+		t.Fatalf("raw trace = %q, want %s", rawTrace, traceID.String())
+	}
+	if rawSpan != spanID.String() {
+		t.Fatalf("raw span = %q, want %s", rawSpan, spanID.String())
+	}
+	if !sampled {
+		t.Fatal("expected sampled true")
+	}
+	if retrieved.TraceID() != sc.TraceID() || retrieved.SpanID() != sc.SpanID() || retrieved.TraceFlags() != sc.TraceFlags() {
+		t.Fatalf("retrieved span context mismatch: got %v, want %v", retrieved, sc)
+	}
+}
+
+func mustTraceID(t *testing.T, hex string) trace.TraceID {
+	t.Helper()
+	id, err := trace.TraceIDFromHex(hex)
+	if err != nil {
+		t.Fatalf("TraceIDFromHex(%q) failed: %v", hex, err)
+	}
+	return id
+}
+
+func mustSpanID(t *testing.T, hex string) trace.SpanID {
+	t.Helper()
+	id, err := trace.SpanIDFromHex(hex)
+	if err != nil {
+		t.Fatalf("SpanIDFromHex(%q) failed: %v", hex, err)
+	}
+	return id
 }
