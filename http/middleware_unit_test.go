@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -104,4 +105,138 @@ func (s *recordingState) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.records)
+}
+
+func TestResolveRemoteIP(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	req.RemoteAddr = "192.0.2.1:443"
+	if got := resolveRemoteIP(req, false); got != "192.0.2.1" {
+		t.Fatalf("resolveRemoteIP without proxy headers = %q, want 192.0.2.1", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	req.RemoteAddr = "198.51.100.10:1234"
+	req.Header.Add("X-Forwarded-For", " , , 203.0.113.5 , 10.0.0.1")
+	req.Header.Add("X-Forwarded-For", " 198.51.100.9")
+	if got := resolveRemoteIP(req, true); got != "203.0.113.5" {
+		t.Fatalf("resolveRemoteIP with X-Forwarded-For = %q, want 203.0.113.5", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	req.RemoteAddr = "198.51.100.10:1234"
+	req.Header.Set("X-Real-IP", "2001:db8::1")
+	if got := resolveRemoteIP(req, true); got != "2001:db8::1" {
+		t.Fatalf("resolveRemoteIP with X-Real-IP = %q, want 2001:db8::1", got)
+	}
+}
+
+func TestHeadersGroupAttr(t *testing.T) {
+	header := http.Header{}
+	header.Add("X-Test", "one")
+	header.Add("X-Test", "two")
+	header.Set("X-Other", "value")
+
+	attr, ok := headersGroupAttr("requestHeaders", header, []string{"X-Test", "Missing", "", "X-Other"})
+	if !ok {
+		t.Fatal("expected headersGroupAttr to return attr")
+	}
+	if attr.Key != "requestHeaders" {
+		t.Fatalf("attr key = %q, want requestHeaders", attr.Key)
+	}
+	group := attr.Value.Group()
+	if len(group) != 2 {
+		t.Fatalf("group len = %d, want 2", len(group))
+	}
+	for _, child := range group {
+		values, ok := child.Value.Any().([]string)
+		if !ok {
+			t.Fatalf("child %q value type = %T, want []string", child.Key, child.Value.Any())
+		}
+		original := append([]string(nil), values...)
+		if strings.EqualFold(child.Key, "X-Test") {
+			if len(values) != 2 || values[0] != "one" || values[1] != "two" {
+				t.Fatalf("X-Test values = %v, want [one two]", values)
+			}
+			header["X-Test"][0] = "mutated"
+			if values[0] != original[0] {
+				t.Fatal("values slice should be copied; mutation propagated")
+			}
+		}
+		if strings.EqualFold(child.Key, "X-Other") && (len(values) != 1 || values[0] != "value") {
+			t.Fatalf("X-Other values = %v, want [value]", values)
+		}
+	}
+
+	if _, ok := headersGroupAttr("empty", header, nil); ok {
+		t.Fatal("expected ok=false when keys slice empty")
+	}
+	if _, ok := headersGroupAttr("missing", header, []string{"Not-Present"}); ok {
+		t.Fatal("expected ok=false when no headers match")
+	}
+}
+
+func TestCappedBuffer(t *testing.T) {
+	cb := newCappedBuffer(5)
+	if cb == nil {
+		t.Fatal("expected non-nil cappedBuffer for positive limit")
+	}
+	if n, err := cb.Write([]byte("hello")); err != nil || n != len("hello") {
+		t.Fatalf("first write = (%d,%v), want (%d,nil)", n, err, len("hello"))
+	}
+	if cb.Truncated() {
+		t.Fatal("buffer reports truncated after fit write")
+	}
+	if cb.String() != "hello" || cb.Len() != 5 {
+		t.Fatalf("buffer contents %q len %d, want hello len 5", cb.String(), cb.Len())
+	}
+
+	if n, err := cb.Write([]byte(" world")); err != nil || n != len(" world") {
+		t.Fatalf("second write = (%d,%v), want (%d,nil)", n, err, len(" world"))
+	}
+	if !cb.Truncated() {
+		t.Fatal("expected truncated flag after overflow write")
+	}
+	if cb.String() != "hello" {
+		t.Fatalf("buffer contents = %q, want hello", cb.String())
+	}
+	if cb.Len() != 5 {
+		t.Fatalf("buffer len = %d, want 5", cb.Len())
+	}
+
+	if n, err := cb.Write([]byte("!")); err != nil || n != 1 {
+		t.Fatalf("third write = (%d,%v), want (1,nil)", n, err)
+	}
+	if !cb.Truncated() {
+		t.Fatal("expected truncated to remain true")
+	}
+
+	var nilBuf *cappedBuffer
+	if n, err := nilBuf.Write([]byte("abc")); err != nil || n != len("abc") {
+		t.Fatalf("nil buffer write = (%d,%v), want (%d,nil)", n, err, len("abc"))
+	}
+	if nilBuf.Truncated() || nilBuf.Len() != 0 || nilBuf.String() != "" {
+		t.Fatal("nil buffer should behave like disabled capture")
+	}
+
+	if newCappedBuffer(0) != nil {
+		t.Fatal("expected limit<=0 to return nil buffer")
+	}
+
+	// ensure String respects captured bytes even if underlying buffer mutated
+	if _, err := cb.Write([]byte{}); err != nil {
+		t.Fatalf("zero write returned error: %v", err)
+	}
+	if cb.String() != "hello" {
+		t.Fatalf("buffer contents changed unexpectedly: %q", cb.String())
+	}
+
+	if ip := extractIP("[2001:db8::1]:443"); ip != "2001:db8::1" {
+		t.Fatalf("extractIP IPv6 = %q, want 2001:db8::1", ip)
+	}
+	if ip := extractIP("198.51.100.20:80"); ip != "198.51.100.20" {
+		t.Fatalf("extractIP IPv4 = %q, want 198.51.100.20", ip)
+	}
+	if ip := extractIP("invalid"); ip != "invalid" {
+		t.Fatalf("extractIP invalid = %q, want original string", ip)
+	}
 }
