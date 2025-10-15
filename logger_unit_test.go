@@ -456,6 +456,156 @@ func TestLogTargets(t *testing.T) {
 	}
 }
 
+func TestWithAttrsAndGroupOption(t *testing.T) {
+	output := captureOutput(t, &os.Stdout, func() {
+		logger, err := slogcp.New(
+			slogcp.WithRedirectToStdout(),
+			slogcp.WithGroup("app"),
+			slogcp.WithAttrs([]slog.Attr{
+				slog.String("env", "prod"),
+			}),
+			slogcp.WithAttrs([]slog.Attr{
+				slog.Int("build", 42),
+			}),
+		)
+		if err != nil {
+			t.Fatalf("Failed to create logger: %v", err)
+		}
+		defer logger.Close()
+
+		logger.Info("grouped message", slog.String("request", "abc123"))
+	})
+
+	var entry map[string]any
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.Contains(line, "grouped message") {
+			continue
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("Failed to unmarshal JSON: %v", err)
+		}
+		break
+	}
+	if entry == nil {
+		t.Fatal("no log entry captured")
+	}
+
+	app, ok := entry["app"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested app group, got %T", entry["app"])
+	}
+	if got := app["env"]; got != "prod" {
+		t.Fatalf("app.env = %v, want prod", got)
+	}
+	if got, ok := app["build"].(float64); !ok || got != 42 {
+		t.Fatalf("app.build = %v, want 42", app["build"])
+	}
+
+	// request attribute may be grouped or top-level depending on handler setup; accept either.
+	if req, ok := app["request"].(string); ok {
+		if req != "abc123" {
+			t.Fatalf("request attribute in group = %q, want abc123", req)
+		}
+	} else if req, ok := entry["request"].(string); !ok || req != "abc123" {
+		t.Fatalf("request attribute missing or incorrect: %v", entry["request"])
+	}
+}
+
+func TestLoggerAttrsContextHelpers(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name         string
+		call         func(*slogcp.Logger)
+		wantSeverity string
+		attrKey      string
+		attrValue    string
+	}{
+		{
+			name: "DefaultAttrsContext",
+			call: func(l *slogcp.Logger) {
+				l.DefaultAttrsContext(ctx, "default attrs", slog.String("marker", "default"))
+			},
+			wantSeverity: "DEFAULT",
+			attrKey:      "marker",
+			attrValue:    "default",
+		},
+		{
+			name: "NoticeAttrsContext",
+			call: func(l *slogcp.Logger) {
+				l.NoticeAttrsContext(ctx, "notice attrs", slog.String("marker", "notice"))
+			},
+			wantSeverity: "NOTICE",
+			attrKey:      "marker",
+			attrValue:    "notice",
+		},
+		{
+			name: "CriticalAttrsContext",
+			call: func(l *slogcp.Logger) {
+				l.CriticalAttrsContext(ctx, "critical attrs", slog.String("marker", "critical"))
+			},
+			wantSeverity: "CRITICAL",
+			attrKey:      "marker",
+			attrValue:    "critical",
+		},
+		{
+			name: "AlertAttrsContext",
+			call: func(l *slogcp.Logger) {
+				l.AlertAttrsContext(ctx, "alert attrs", slog.String("marker", "alert"))
+			},
+			wantSeverity: "ALERT",
+			attrKey:      "marker",
+			attrValue:    "alert",
+		},
+		{
+			name: "EmergencyAttrsContext",
+			call: func(l *slogcp.Logger) {
+				l.EmergencyAttrsContext(ctx, "emergency attrs", slog.String("marker", "emergency"))
+			},
+			wantSeverity: "EMERGENCY",
+			attrKey:      "marker",
+			attrValue:    "emergency",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			output := captureOutput(t, &os.Stdout, func() {
+				logger, err := slogcp.New(slogcp.WithRedirectToStdout())
+				if err != nil {
+					t.Fatalf("Failed to create logger: %v", err)
+				}
+				defer logger.Close()
+
+				tc.call(logger)
+			})
+
+			var entry map[string]any
+			scanner := bufio.NewScanner(strings.NewReader(output))
+			for scanner.Scan() {
+				line := scanner.Text()
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatalf("Failed to decode JSON: %v", err)
+				}
+				break
+			}
+			if entry == nil {
+				t.Fatalf("no log entry captured")
+			}
+
+			if got := entry["severity"]; got != tc.wantSeverity {
+				t.Fatalf("severity = %v, want %s", got, tc.wantSeverity)
+			}
+			if got := entry[tc.attrKey]; got != tc.attrValue {
+				t.Fatalf("attribute %q = %v, want %s", tc.attrKey, got, tc.attrValue)
+			}
+		})
+	}
+}
+
 // TestFallbackMode tests that the logger automatically falls back to stdout
 // logging when GCP logging cannot be initialized.
 func TestFallbackMode(t *testing.T) {

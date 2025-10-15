@@ -15,7 +15,10 @@
 package http
 
 import (
+	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -122,6 +125,81 @@ func TestParseBoolFlag(t *testing.T) {
 				t.Fatalf("got = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestMiddlewareOptionHelpers(t *testing.T) {
+	opts := defaultMiddlewareOptions()
+
+	var shouldLogCalled bool
+	WithShouldLog(func(ctx context.Context, r *http.Request) bool {
+		shouldLogCalled = true
+		return false
+	})(&opts)
+	if opts.ShouldLog == nil {
+		t.Fatal("ShouldLog not set")
+	}
+	if opts.ShouldLog(context.Background(), httptest.NewRequest(http.MethodGet, "http://example.com", nil)) {
+		t.Fatal("ShouldLog should return false")
+	}
+	if !shouldLogCalled {
+		t.Fatal("ShouldLog predicate never invoked")
+	}
+
+	WithSkipPathSubstrings("  foo ", "", "bar")(&opts)
+	if got, want := opts.SkipPathSubstrings, []string{"foo", "bar"}; !slicesEqual(got, want) {
+		t.Fatalf("SkipPathSubstrings = %v, want %v", got, want)
+	}
+
+	WithSuppressUnsampledBelow(slog.LevelWarn)(&opts)
+	if opts.SuppressUnsampledBelow == nil || *opts.SuppressUnsampledBelow != slog.LevelWarn {
+		t.Fatalf("SuppressUnsampledBelow = %v, want %v", opts.SuppressUnsampledBelow, slog.LevelWarn)
+	}
+
+	WithLogRequestHeaderKeys("x-custom", "X-Second")(&opts)
+	if got, want := opts.LogRequestHeaderKeys, []string{"X-Custom", "X-Second"}; !slicesEqual(got, want) {
+		t.Fatalf("LogRequestHeaderKeys = %v, want %v", got, want)
+	}
+
+	WithLogResponseHeaderKeys("retry-after", "content-type")(&opts)
+	if got, want := opts.LogResponseHeaderKeys, []string{"Retry-After", "Content-Type"}; !slicesEqual(got, want) {
+		t.Fatalf("LogResponseHeaderKeys = %v, want %v", got, want)
+	}
+
+	WithRequestBodyLimit(128)(&opts)
+	if opts.RequestBodyLimit != 128 {
+		t.Fatalf("RequestBodyLimit = %d, want 128", opts.RequestBodyLimit)
+	}
+	WithRequestBodyLimit(-1)(&opts)
+	if opts.RequestBodyLimit != 0 {
+		t.Fatalf("negative RequestBodyLimit should clamp to 0, got %d", opts.RequestBodyLimit)
+	}
+
+	WithResponseBodyLimit(256)(&opts)
+	if opts.ResponseBodyLimit != 256 {
+		t.Fatalf("ResponseBodyLimit = %d, want 256", opts.ResponseBodyLimit)
+	}
+	WithResponseBodyLimit(-5)(&opts)
+	if opts.ResponseBodyLimit != 0 {
+		t.Fatalf("negative ResponseBodyLimit should clamp to 0, got %d", opts.ResponseBodyLimit)
+	}
+
+	WithRecoverPanics(true)(&opts)
+	if !opts.RecoverPanics {
+		t.Fatal("RecoverPanics not set to true")
+	}
+	WithRecoverPanics(false)(&opts)
+	if opts.RecoverPanics {
+		t.Fatal("RecoverPanics not reset to false")
+	}
+
+	WithTrustProxyHeaders(true)(&opts)
+	if !opts.TrustProxyHeaders {
+		t.Fatal("TrustProxyHeaders not set to true")
+	}
+	WithTrustProxyHeaders(false)(&opts)
+	if opts.TrustProxyHeaders {
+		t.Fatal("TrustProxyHeaders not reset to false")
 	}
 }
 
