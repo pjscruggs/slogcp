@@ -172,12 +172,11 @@ func TestEmitGCPEntryUsesProtoPayload(t *testing.T) {
 		t.Fatalf("struct payload message = %q, want %q", got, "hello")
 	}
 
-	labelStruct := structPayload.Fields["logging.googleapis.com/labels"].GetStructValue()
-	if labelStruct == nil {
-		t.Fatalf("proto labels struct is nil")
+	if _, exists := structPayload.Fields["logging.googleapis.com/labels"]; exists {
+		t.Fatalf("proto payload unexpectedly contains logging.googleapis.com/labels field")
 	}
-	if got := labelStruct.Fields["env"].GetStringValue(); got != "dev" {
-		t.Fatalf("proto label env = %q, want %q", got, "dev")
+	if got := entry.Labels["env"]; got != "dev" {
+		t.Fatalf("entry labels missing env, got %q", got)
 	}
 }
 
