@@ -542,27 +542,6 @@ func (h *gcpHandler) emitGCPEntry(
 		}
 	}
 
-	if len(h.cfg.GCPCommonLabels) > 0 || len(dynamicLabels) > 0 {
-		mergedLabels := make(map[string]string, len(h.cfg.GCPCommonLabels)+len(dynamicLabels))
-		for k, v := range h.cfg.GCPCommonLabels {
-			mergedLabels[k] = v
-		}
-		for k, v := range dynamicLabels {
-			mergedLabels[k] = v
-		}
-		payload["logging.googleapis.com/labels"] = mergedLabels
-		if protoPayload != nil {
-			if protoPayload.Fields == nil {
-				protoPayload.Fields = make(map[string]*structpb.Value, 4)
-			}
-			labelStruct := &structpb.Struct{Fields: make(map[string]*structpb.Value, len(mergedLabels))}
-			for k, v := range mergedLabels {
-				labelStruct.Fields[k] = structpb.NewStringValue(v)
-			}
-			protoPayload.Fields["logging.googleapis.com/labels"] = structpb.NewStructValue(labelStruct)
-		}
-	}
-
 	// Optional request grouping via operation.
 	op := ExtractOperationFromRecord(r)
 	if op == nil {
