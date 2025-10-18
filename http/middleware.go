@@ -37,6 +37,7 @@ const instrumentationName = "github.com/pjscruggs/slogcp/http"
 const (
 	captureBufferMaxPrealloc = 64 << 10
 	defaultAttrSliceCap      = 12
+	bodyPreviewInlineLimit   = 2 << 10 // Clamp string conversion to 2 KiB to avoid large quoting work.
 )
 
 var cappedBufferPool = sync.Pool{
@@ -316,18 +317,8 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				attrs = append(attrs, attr)
 			}
 
-			if requestBodyBuf != nil && (requestBodyBuf.Len() > 0 || requestBodyBuf.Truncated()) {
-				attrs = append(attrs, slog.String("requestBody", requestBodyBuf.String()))
-				if requestBodyBuf.Truncated() {
-					attrs = append(attrs, slog.Bool("requestBodyTruncated", true))
-				}
-			}
-			if responseBodyBuf != nil && (responseBodyBuf.Len() > 0 || responseBodyBuf.Truncated()) {
-				attrs = append(attrs, slog.String("responseBody", responseBodyBuf.String()))
-				if responseBodyBuf.Truncated() {
-					attrs = append(attrs, slog.Bool("responseBodyTruncated", true))
-				}
-			}
+			attrs = appendBodyAttrs(attrs, "requestBody", requestBodyBuf)
+			attrs = appendBodyAttrs(attrs, "responseBody", responseBodyBuf)
 
 			message := "HTTP request processed"
 			if recovered != nil {
@@ -435,6 +426,41 @@ func headersGroupAttr(name string, header http.Header, keys []string) (slog.Attr
 		Key:   name,
 		Value: slog.GroupValue(attrs...),
 	}, true
+}
+
+// appendBodyAttrs adds logging attributes for a captured request/response body.
+// It clamps the preview string to a small inline limit so that large payloads
+// avoid expensive quoting in slog's text handler while still surfacing the size
+// and truncation status.
+func appendBodyAttrs(attrs []slog.Attr, key string, buf *cappedBuffer) []slog.Attr {
+	if buf == nil {
+		return attrs
+	}
+	length := buf.Len()
+	truncated := buf.Truncated()
+	if length == 0 && !truncated {
+		return attrs
+	}
+
+	previewLen := length
+	previewClipped := false
+	if bodyPreviewInlineLimit > 0 && previewLen > bodyPreviewInlineLimit {
+		previewLen = bodyPreviewInlineLimit
+		previewClipped = true
+	}
+
+	if previewLen > 0 {
+		preview := string(buf.data[:previewLen])
+		attrs = append(attrs, slog.String(key, preview))
+	}
+	if truncated || previewClipped {
+		attrs = append(attrs, slog.Bool(key+"Truncated", true))
+	}
+	attrs = append(attrs, slog.Int(key+"Bytes", length))
+	if previewClipped {
+		attrs = append(attrs, slog.Int(key+"PreviewBytes", previewLen))
+	}
+	return attrs
 }
 
 // teeReadCloser combines a reader and closer, allowing the middleware to wrap
