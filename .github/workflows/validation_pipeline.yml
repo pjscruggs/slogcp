@@ -158,17 +158,21 @@ jobs:
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
+
+      - name: 🛠️ Install Go Test Tools
+        run: |
+          go install github.com/mfridman/tparse@ba2512e7be150bfcbd6f6220d517d3741f8f2f75
       
       - name: 💨 Run Local Smoke Tests (Tier 1)
         id: go-smoke-tests
         run: |
-          go test -v -race -tags=smoke -coverprofile=coverage-smoke.out ./...
+          go test -json -race -tags=smoke -coverprofile=coverage-smoke.out ./... | tparse -all -notests
 
       - name: 🧪 Run Unit Tests (Tier 2)
         if: success()
         id: go-unit-tests
         run: |
-          go test -v -race -tags=unit -coverprofile=coverage-unit.out ./...
+          go test -json -race -tags=unit -coverprofile=coverage-unit.out ./... | tparse -all -notests
 
       - name: 📄 Print Coverage Report
         if: always()
