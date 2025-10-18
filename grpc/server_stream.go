@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/healthcheck"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -140,7 +141,9 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 
 		// Extract inbound trace context from metadata via global OTel propagator,
 		// fallback to X-Cloud-Trace-Context if none found.
+		var incomingMD metadata.MD
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			incomingMD = md
 			ctxExtracted := otel.GetTextMapPropagator().Extract(ctx, metadataCarrier{md: md})
 			if !trace.SpanContextFromContext(ctxExtracted).IsValid() {
 				if vals := md.Get(xCloudTraceContextHeaderMD); len(vals) > 0 {
@@ -161,18 +164,42 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			defer startedSpan.End()
 		}
 
+		peerAddr := "unknown"
+		if p, ok := peer.FromContext(ctx); ok {
+			peerAddr = p.Addr.String()
+		}
+
+		var hcDecision healthcheck.Decision
+		if cfg.healthCheckFilter != nil {
+			var metadataMap map[string][]string
+			if len(incomingMD) > 0 {
+				metadataMap = metadataToHeader(incomingMD)
+			}
+			hcDecision = cfg.healthCheckFilter.MatchGRPC(info.FullMethod, metadataMap, peerAddr)
+			if hcDecision.Matched {
+				ctx = healthcheck.ContextWithDecision(ctx, hcDecision)
+			}
+		}
+
 		activeLogger := logger
 		if cfg.attachLogger {
 			reqLogger := logger
 			if attrs, ok := slogcp.TraceAttributes(ctx, cfg.traceProjectID); ok {
 				reqLogger = loggerWithAttrs(reqLogger, attrs)
 			}
-			ctx = slogcp.ContextWithLogger(ctx, reqLogger)
+			if hcDecision.ShouldTag() {
+				reqLogger = reqLogger.With(slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
+			}
 			activeLogger = reqLogger
+			ctx = slogcp.ContextWithLogger(ctx, reqLogger)
 		}
 
 		// Check if this call should be logged based on the filter function.
-		if !cfg.shouldLogFunc(ctx, info.FullMethod) {
+		shouldLog := cfg.shouldLogFunc(ctx, info.FullMethod)
+		if hcDecision.Matched && hcDecision.Mode == healthcheck.ModeDrop {
+			shouldLog = false
+		}
+		if !shouldLog {
 			// Ensure the handler sees the enriched context, but do not attach
 			// any logging hooks.
 			streamToUse := &contextOnlyServerStream{
@@ -182,18 +209,12 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			return handler(srv, streamToUse)
 		}
 
-		// Extract initial info for logging.
-		peerAddr := "unknown"
-		if p, ok := peer.FromContext(ctx); ok {
-			peerAddr = p.Addr.String()
-		}
 		serviceName, methodName := splitMethodName(info.FullMethod)
 
 		// Prepare metadata attribute slice early if needed for the final log.
 		var metadataAttrs []slog.Attr
 		if cfg.logMetadata {
 			// Extract and filter incoming metadata *before* calling the handler.
-			incomingMD, _ := metadata.FromIncomingContext(ctx)
 			filteredIncomingMD := filterMetadata(incomingMD, cfg.metadataFilterFunc)
 			if filteredIncomingMD != nil {
 				metadataAttrs = append(metadataAttrs, slog.Group(grpcRequestMetadataKey, slog.Any(metadataValuesKey, filteredIncomingMD)))
@@ -202,6 +223,7 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 
 		// Log the "start" event.
 		// Pass the original context (ctx) so the handler can extract trace info.
+		startLevel := hcDecision.ApplyLevel(slog.LevelInfo)
 		startAttrs := []slog.Attr{
 			slog.String(grpcServiceKey, serviceName),
 			slog.String(grpcMethodKey, methodName),
@@ -210,7 +232,10 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 		if cfg.logCategory != "" {
 			startAttrs = append(startAttrs, slog.String(categoryKey, cfg.logCategory))
 		}
-		activeLogger.LogAttrs(ctx, slog.LevelInfo, "Starting gRPC stream", startAttrs...)
+		if hcDecision.ShouldTag() {
+			startAttrs = append(startAttrs, slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
+		}
+		activeLogger.LogAttrs(ctx, startLevel, "Starting gRPC stream", startAttrs...)
 
 		// Setup panic recovery and final logging. This defer runs after the handler returns or panics.
 		defer func() {
@@ -228,6 +253,7 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			if isPanic {
 				level = internalLevelCritical // Override level for panics.
 			}
+			level = hcDecision.ApplyLevel(level)
 
 			// Assemble final log attributes using helpers.
 			finishAttrs := assembleFinishAttrs(duration, err, peerAddr)
@@ -244,6 +270,9 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			}
 			logAttrs = append(logAttrs, finishAttrs...)
 			logAttrs = append(logAttrs, metadataAttrs...)
+			if hcDecision.ShouldTag() {
+				logAttrs = append(logAttrs, slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
+			}
 
 			logMsg := "Finished gRPC stream"
 			// Panic message is logged separately in handlePanic.

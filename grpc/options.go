@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pjscruggs/slogcp/healthcheck"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 )
@@ -75,7 +76,8 @@ type options struct {
 	startSpanIfAbsent     bool               // Whether to start a span if none exists.
 	tracer                trace.Tracer       // Tracer used when starting spans.
 	traceProjectID        string             // Project used for trace attributes.
-	skipHealthChecks      bool               // Automatically skip gRPC health checks.
+	healthCheckConfig     healthcheck.Config // Shared health-check configuration.
+	healthCheckFilter     *healthcheck.Filter
 }
 
 const (
@@ -301,7 +303,20 @@ func WithTraceProjectID(projectID string) Option {
 // Default behaviour is to skip logging for the standard gRPC health service.
 func WithSkipHealthChecks(enabled bool) Option {
 	return func(o *options) {
-		o.skipHealthChecks = enabled
+		cfg := healthcheck.DefaultConfig()
+		if enabled {
+			cfg.Enabled = true
+			cfg.Mode = healthcheck.ModeDrop
+		}
+		o.healthCheckConfig = cfg
+	}
+}
+
+// WithHealthCheckFilter installs the shared health-check configuration used by gRPC interceptors.
+// The configuration is cloned to avoid caller mutation.
+func WithHealthCheckFilter(cfg healthcheck.Config) Option {
+	return func(o *options) {
+		o.healthCheckConfig = cfg.Clone()
 	}
 }
 
@@ -341,7 +356,7 @@ func processOptions(opts ...Option) *options {
 		propagateTraceHeaders: true, // Default: enable propagation where supported
 		attachLogger:          true,
 		startSpanIfAbsent:     true,
-		skipHealthChecks:      true,
+		healthCheckConfig:     healthcheck.DefaultConfig(),
 	}
 
 	// Apply each provided Option function to modify the defaults.
@@ -351,9 +366,7 @@ func processOptions(opts ...Option) *options {
 		}
 	}
 
-	if opt.skipHealthChecks {
-		opt.skipPaths = append(opt.skipPaths, "/grpc.health.v1.Health/Check", "/grpc.health.v1.Health/Watch")
-	}
+	opt.healthCheckFilter = healthcheck.NewFilter(opt.healthCheckConfig)
 
 	// Store the original user-provided shouldLogFunc for composition.
 	originalShouldLog := opt.shouldLogFunc

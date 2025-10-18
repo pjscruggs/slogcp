@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pjscruggs/slogcp/healthcheck"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -45,7 +46,7 @@ type MiddlewareOptions struct {
 	AttachLogger           bool
 	StartSpanIfAbsent      bool
 	Tracer                 trace.Tracer
-	SkipGoogleHealthChecks bool
+	HealthCheckFilter      healthcheck.Config
 	TrustProxyDecisionFunc func(*http.Request) bool
 	TraceProjectID         string
 }
@@ -59,7 +60,7 @@ func defaultMiddlewareOptions() MiddlewareOptions {
 	return MiddlewareOptions{
 		AttachLogger:           true,
 		StartSpanIfAbsent:      true,
-		SkipGoogleHealthChecks: true,
+		HealthCheckFilter:      healthcheck.DefaultConfig(),
 		TrustProxyDecisionFunc: isGoogleProxyRequest,
 	}
 }
@@ -116,7 +117,12 @@ func loadMiddlewareOptionsFromEnv() MiddlewareOptions {
 	}
 	if raw, ok := os.LookupEnv("SLOGCP_HTTP_SKIP_GOOGLE_HEALTHCHECKS"); ok {
 		if v, ok := parseBoolFlag(raw); ok {
-			opts.SkipGoogleHealthChecks = v
+			cfg := healthcheck.DefaultConfig()
+			if v {
+				cfg.Enabled = true
+				cfg.Mode = healthcheck.ModeDrop
+			}
+			opts.HealthCheckFilter = cfg
 		}
 	}
 	if raw, ok := os.LookupEnv("SLOGCP_HTTP_TRACE_PROJECT_ID"); ok {
@@ -238,11 +244,25 @@ func WithTracer(tr trace.Tracer) Option {
 	}
 }
 
-// WithSkipGoogleHealthChecks controls whether known Google Cloud load-balancer
-// health checks should be skipped automatically. Default is true.
+// WithSkipGoogleHealthChecks retains the legacy toggle by configuring the shared
+// health-check filter to drop Google Cloud health checks when enabled.
+// Deprecated: prefer WithHealthCheckFilter for finer control.
 func WithSkipGoogleHealthChecks(enabled bool) Option {
 	return func(o *MiddlewareOptions) {
-		o.SkipGoogleHealthChecks = enabled
+		cfg := healthcheck.DefaultConfig()
+		if enabled {
+			cfg.Enabled = true
+			cfg.Mode = healthcheck.ModeDrop
+		}
+		o.HealthCheckFilter = cfg
+	}
+}
+
+// WithHealthCheckFilter installs the provided health-check configuration. The
+// configuration is cloned to avoid caller mutation.
+func WithHealthCheckFilter(cfg healthcheck.Config) Option {
+	return func(o *MiddlewareOptions) {
+		o.HealthCheckFilter = cfg.Clone()
 	}
 }
 

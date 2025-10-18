@@ -24,6 +24,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/pjscruggs/slogcp/healthcheck"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 )
@@ -60,6 +61,63 @@ func TestMiddlewareSuppressUnsampledBelowRespectsServerErrors(t *testing.T) {
 
 	if count := records.Count(); count != 1 {
 		t.Fatalf("unsampled 500 request logged %d records, want 1", count)
+	}
+}
+
+func TestMiddlewareHealthCheckDrop(t *testing.T) {
+	logger, records := newRecordingLogger()
+	cfg := healthcheck.DefaultConfig()
+	cfg.Enabled = true
+	cfg.Mode = healthcheck.ModeDrop
+	cfg.Paths = []string{"/healthz"}
+
+	mw := Middleware(logger, WithHealthCheckFilter(cfg))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/healthz", nil)
+	rr := httptest.NewRecorder()
+
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr, req)
+
+	if rr.Result().StatusCode != http.StatusOK {
+		t.Fatalf("response code = %d, want %d", rr.Result().StatusCode, http.StatusOK)
+	}
+	if count := records.Count(); count != 0 {
+		t.Fatalf("expected no logs for dropped health check, got %d", count)
+	}
+}
+
+func TestMiddlewareHealthCheckDemote(t *testing.T) {
+	logger, records := newRecordingLogger()
+	cfg := healthcheck.DefaultConfig()
+	cfg.Enabled = true
+	cfg.Mode = healthcheck.ModeDemote
+	debug := slog.LevelDebug
+	cfg.DemoteTo = &debug
+	cfg.Paths = []string{"/status"}
+
+	mw := Middleware(logger, WithHealthCheckFilter(cfg))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/status", nil)
+	rr := httptest.NewRecorder()
+
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr, req)
+
+	snap := records.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("expected exactly one log entry, got %d", len(snap))
+	}
+	rec := snap[0]
+	if rec.Level != slog.LevelDebug {
+		t.Fatalf("record level = %v, want %v", rec.Level, slog.LevelDebug)
+	}
+	attrs := recordAttrsToMap(rec)
+	attr, ok := attrs["is_health_check"]
+	if !ok || !attr.Bool() {
+		t.Fatalf("health-check tag missing or false: %#v", attrs)
 	}
 }
 

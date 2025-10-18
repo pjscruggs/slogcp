@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/healthcheck"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -66,7 +67,9 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 
 		// Extract inbound trace context from gRPC metadata using the global OTel propagator.
 		// Fallback to X-Cloud-Trace-Context if no valid span was found.
+		var incomingMD metadata.MD
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			incomingMD = md
 			ctxExtracted := otel.GetTextMapPropagator().Extract(ctx, metadataCarrier{md: md})
 			if !trace.SpanContextFromContext(ctxExtracted).IsValid() {
 				if vals := md.Get(xCloudTraceContextHeaderMD); len(vals) > 0 {
@@ -87,8 +90,29 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 			defer startedSpan.End()
 		}
 
+		peerAddr := "unknown"
+		if p, ok := peer.FromContext(ctx); ok {
+			peerAddr = p.Addr.String()
+		}
+
+		var hcDecision healthcheck.Decision
+		if cfg.healthCheckFilter != nil {
+			var metadataMap map[string][]string
+			if len(incomingMD) > 0 {
+				metadataMap = metadataToHeader(incomingMD)
+			}
+			hcDecision = cfg.healthCheckFilter.MatchGRPC(info.FullMethod, metadataMap, peerAddr)
+			if hcDecision.Matched {
+				ctx = healthcheck.ContextWithDecision(ctx, hcDecision)
+			}
+		}
+
 		// Check if this call should be logged based on the filter function.
-		if !cfg.shouldLogFunc(ctx, info.FullMethod) {
+		shouldLog := cfg.shouldLogFunc(ctx, info.FullMethod)
+		if hcDecision.Matched && hcDecision.Mode == healthcheck.ModeDrop {
+			shouldLog = false
+		}
+		if !shouldLog {
 			return handler(ctx, req)
 		}
 
@@ -101,6 +125,9 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 			reqLogger := logger
 			if attrs, ok := slogcp.TraceAttributes(ctx, cfg.traceProjectID); ok {
 				reqLogger = loggerWithAttrs(reqLogger, attrs)
+			}
+			if hcDecision.ShouldTag() {
+				reqLogger = reqLogger.With(slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
 			}
 			ctx = slogcp.ContextWithLogger(ctx, reqLogger)
 			activeLogger = reqLogger
@@ -117,14 +144,9 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 			}
 		}
 
-		// Extract peer address from the context.
-		peerAddr := "unknown"
-		if p, ok := peer.FromContext(ctx); ok {
-			peerAddr = p.Addr.String()
-		}
-
 		// Log the "start" event.
 		// Pass the original context (ctx) so the handler can extract trace info.
+		startLevel := hcDecision.ApplyLevel(slog.LevelInfo)
 		startAttrs := []slog.Attr{
 			slog.String(grpcServiceKey, serviceName),
 			slog.String(grpcMethodKey, methodName),
@@ -133,7 +155,10 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 		if cfg.logCategory != "" {
 			startAttrs = append(startAttrs, slog.String(categoryKey, cfg.logCategory))
 		}
-		activeLogger.LogAttrs(ctx, slog.LevelInfo, "Starting gRPC call", startAttrs...)
+		if hcDecision.ShouldTag() {
+			startAttrs = append(startAttrs, slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
+		}
+		activeLogger.LogAttrs(ctx, startLevel, "Starting gRPC call", startAttrs...)
 
 		// Log request payload if enabled.
 		if cfg.logPayloads {
@@ -156,6 +181,7 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 			if isPanic {
 				level = internalLevelCritical // Override level for panics.
 			}
+			level = hcDecision.ApplyLevel(level)
 
 			// Assemble final log attributes using helpers.
 			finishAttrs := assembleFinishAttrs(duration, err, peerAddr)
@@ -171,6 +197,9 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 			}
 			logAttrs = append(logAttrs, finishAttrs...)
 			logAttrs = append(logAttrs, metadataAttrs...)
+			if hcDecision.ShouldTag() {
+				logAttrs = append(logAttrs, slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
+			}
 
 			logMsg := "Finished gRPC call"
 			// Panic message is logged separately in handlePanic.

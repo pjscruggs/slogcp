@@ -23,6 +23,7 @@ go get github.com/pjscruggs/slogcp
 - **Automatic trace context extraction and propagation** (gRPC by default; optional HTTP client transport)
 - **Optional HTTP client transport** that injects W3C Trace Context (and optionally `X-Cloud-Trace-Context`) on outbound requests
 - **Ready-to-use HTTP and gRPC middleware** with optimized GCP-friendly log structuring
+- **Shared health-check filter** that can tag, demote, or drop Cloud Run / load-balancer probes without custom conditionals
 - **Request-scoped loggers** via `slogcp.Logger(ctx)` so handlers can add rich context without plumbing
 - **Configurable log level via options or `LOG_LEVEL`**
 - **Error logging with optional stack traces** for efficient debugging
@@ -217,6 +218,24 @@ func myHandler(w http.ResponseWriter, r *http.Request) {
     slogcp.Logger(r.Context()).Info("handling request")
     w.WriteHeader(http.StatusOK)
 }
+```
+
+#### Health-check filtering
+
+Use the shared filter to demote or drop noisy probes without bespoke conditionals:
+
+```go
+import (
+    slogcphttp "github.com/pjscruggs/slogcp/http"
+    "github.com/pjscruggs/slogcp/healthcheck"
+)
+
+hc := healthcheck.DefaultConfig()
+hc.Enabled = true
+hc.Mode = healthcheck.ModeDrop
+hc.Paths = []string{"/healthz", "/_ah/health"}
+
+wrapped := slogcphttp.Middleware(logger, slogcphttp.WithHealthCheckFilter(hc))(http.HandlerFunc(myHandler))
 ```
 
 ### HTTP Example (Client propagation)
