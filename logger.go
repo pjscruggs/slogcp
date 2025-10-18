@@ -95,18 +95,26 @@ func (l *Logger) IsInFallbackMode() bool {
 //   - SLOGCP_LOG_TARGET environment variable
 //   - SLOGCP_REDIRECT_AS_JSON_TARGET environment variable
 //
-// This helps distinguish between using the default target (which can fall back)
-// and the user explicitly choosing a target (which should not fall back).
+// Fallback policy: explicitly configuring a redirect destination (a writer or file,
+// or SLOGCP_REDIRECT_AS_JSON_TARGET) suppresses automatic fallback to stdout. A
+// programmatic WithLogTarget(LogTargetGCP) alone does not prevent automatic
+// fallback when no redirect destination is provided.
 func wasTargetExplicitlyConfigured(builderState *options, envLogTargetStr, envRedirectTargetStr string) bool {
-	// Check programmatic options
-	if builderState.logTarget != nil ||
-		builderState.redirectFilePath != nil ||
-		builderState.redirectWriter != nil {
+	// Check for explicit programmatic redirects
+	if builderState.redirectFilePath != nil || builderState.redirectWriter != nil {
 		return true
 	}
 
-	// Check environment variables
-	if envLogTargetStr != "" || envRedirectTargetStr != "" {
+	// Check for explicit environment variable redirects
+	if envRedirectTargetStr != "" {
+		return true
+	}
+
+	// Check if a non-GCP target was set programmatically or via environment variable
+	if builderState.logTarget != nil && *builderState.logTarget != gcp.LogTargetGCP {
+		return true
+	}
+	if envLogTargetStr != "" && envLogTargetStr != "gcp" {
 		return true
 	}
 
@@ -171,6 +179,13 @@ func applyProgrammaticOptions(cfg *gcp.Config, builderState *options, baseConfig
 	// Process log target
 	if builderState.logTarget != nil {
 		cfg.LogTarget = *builderState.logTarget
+		// If a log target is explicitly set to something other than stdout/stderr,
+		// we must clear any default redirect writer that might have been set by LoadConfig.
+		// This ensures that validation for targets like LogTargetFile (which requires a
+		// path or a specific writer) works correctly.
+		if cfg.LogTarget != gcp.LogTargetStdout && cfg.LogTarget != gcp.LogTargetStderr {
+			cfg.RedirectWriter = nil
+		}
 	}
 
 	// Handle file path option (takes precedence over direct writer if both were somehow set,
@@ -207,8 +222,10 @@ func applyProgrammaticOptions(cfg *gcp.Config, builderState *options, baseConfig
 			case os.Stderr:
 				cfg.LogTarget = gcp.LogTargetStderr
 			}
-			// If it's a custom writer, LogTarget might remain default (GCP) or be set by user.
-			// Conflicts are checked later.
+			// For custom writers, if target isn't specified, it remains the default
+			// from LoadConfig (stdout). If the user wants GCP with a custom writer
+			// (an invalid combo), they must set LogTarget explicitly, and it will
+			// be caught by validation later.
 		}
 	}
 
@@ -228,6 +245,9 @@ func applyProgrammaticOptions(cfg *gcp.Config, builderState *options, baseConfig
 		return err
 	}
 
+	if builderState.traceProjectID != nil {
+		cfg.TraceProjectID = *builderState.traceProjectID
+	}
 	if builderState.gcpLogID != nil {
 		cfg.GCPLogID = *builderState.gcpLogID
 	}
@@ -429,16 +449,20 @@ func initializeLogger(cfg *gcp.Config, levelV *slog.LevelVar, userAgent string) 
 //  3. Programmatic options override environment variables
 //
 // Default Behavior and Fallback:
-// If no logging target is explicitly specified (via options or environment
-// variables), New attempts to use the Google Cloud Logging API as the default
-// target. If this default GCP initialization fails (e.g., due to missing
-// credentials in local development), New will automatically fall back to
-// structured JSON logging to stdout.
+// If no logging redirect destination is explicitly configured (via a redirect
+// writer/file option or the SLOGCP_REDIRECT_AS_JSON_TARGET environment variable),
+// New attempts to use the Google Cloud Logging API as the default target. If GCP
+// initialization fails (for example, due to missing credentials when running
+// locally), New will automatically fall back to structured JSON logging to stdout.
 //
-// Applications can detect this fallback using the IsInFallbackMode() method.
+// Applications can detect this fallback using IsInFallbackMode().
 //
-// When a target IS explicitly configured (e.g., WithLogTarget(LogTargetGCP)),
-// fallback does not occur, and initialization errors are returned to the caller.
+// Explicitly configuring a redirect destination (WithRedirectWriter,
+// WithRedirectToFile, WithRedirectToStdout/WithRedirectToStderr, or
+// SLOGCP_REDIRECT_AS_JSON_TARGET) suppresses automatic fallback. A programmatic
+// WithLogTarget(LogTargetGCP) alone does not prevent fallback; it indicates the
+// caller's intent to use GCP but does not veto automatic fallback when no
+// redirect destination was provided.
 //
 // The returned Logger should have its Close() method called during application
 // shutdown to ensure all logs are flushed and resources are released properly.
@@ -467,24 +491,25 @@ func New(opts ...Option) (*Logger, error) {
 	levelV := new(slog.LevelVar)
 	logger, initErr := initializeLogger(&currentCfg, levelV, UserAgent)
 
-	if initErr != nil && !explicitTargetConfigured && currentCfg.LogTarget == gcp.LogTargetGCP {
+	// Fallback logic: if GCP was the target and initialization failed,
+	// and no explicit redirect was configured, fall back to stdout.
+	if initErr != nil && currentCfg.LogTarget == gcp.LogTargetGCP && !explicitTargetConfigured {
 		fmt.Fprintf(os.Stderr, "[slogcp] WARNING: Failed to initialize GCP logging: %v\n", initErr)
 		fmt.Fprintf(os.Stderr, "[slogcp] INFO: Falling back to structured JSON logging on stdout\n")
 
-		stdoutFallbackCfg := gcp.Config{
-			LogTarget:         gcp.LogTargetStdout,
-			RedirectWriter:    os.Stdout, // Explicitly stdout for fallback
-			InitialLevel:      currentCfg.InitialLevel,
-			AddSource:         currentCfg.AddSource,
-			StackTraceEnabled: currentCfg.StackTraceEnabled,
-			StackTraceLevel:   currentCfg.StackTraceLevel,
-			ReplaceAttrFunc:   currentCfg.ReplaceAttrFunc,
-			Middlewares:       currentCfg.Middlewares,
-			InitialAttrs:      currentCfg.InitialAttrs,
-			InitialGroup:      currentCfg.InitialGroup,
-			ProjectID:         currentCfg.ProjectID,
-			// OpenedFilePath and ClosableUserWriter should be empty/nil for stdout fallback
+		// Create a fresh config for fallback to avoid side effects.
+		stdoutFallbackCfg, _ := gcp.LoadConfig() // Ignore error, we are overriding target anyway
+		// Re-apply options to a clean slate to ensure correct state.
+		if err := applyProgrammaticOptions(&stdoutFallbackCfg, builderState, baseConfigLoadErr); err != nil {
+			// This should be unlikely if the first apply succeeded, but handle it.
+			return nil, fmt.Errorf("failed to re-apply options for fallback: %w", err)
 		}
+
+		// Force the fallback target and writer.
+		stdoutFallbackCfg.LogTarget = gcp.LogTargetStdout
+		stdoutFallbackCfg.RedirectWriter = os.Stdout
+		stdoutFallbackCfg.OpenedFilePath = ""
+		stdoutFallbackCfg.ClosableUserWriter = nil
 
 		fallbackLogger, fallbackErr := initializeLogger(&stdoutFallbackCfg, levelV, UserAgent)
 		if fallbackErr != nil {
@@ -648,6 +673,10 @@ func (l *Logger) ProjectID() string { return l.resolvedCfg.ProjectID }
 // Parent returns the resolved Google Cloud resource parent string used by the logger
 // (e.g., "projects/my-proj", "folders/123"). May be empty if not configured.
 func (l *Logger) Parent() string { return l.resolvedCfg.Parent }
+
+// TraceProjectID returns the project ID used for formatting trace resource names.
+// If not explicitly set, this falls back to the main ProjectID.
+func (l *Logger) TraceProjectID() string { return l.resolvedCfg.TraceProjectID }
 
 // GCPLogID returns the normalized Cloud Logging log ID in use.
 func (l *Logger) GCPLogID() string { return l.resolvedCfg.GCPLogID }

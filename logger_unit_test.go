@@ -28,6 +28,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,7 +56,10 @@ func captureOutput(t *testing.T, stream **os.File, action func()) string {
 	})
 
 	outC := make(chan string)
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		var buf bytes.Buffer
 		_, copyErr := io.Copy(&buf, r)
 		// Ignore pipe closed errors, which can happen normally during cleanup.
@@ -70,6 +74,7 @@ func captureOutput(t *testing.T, stream **os.File, action func()) string {
 	// Ignore error as the reader might have already closed the pipe.
 	_ = w.Close()
 
+	wg.Wait() // Wait for the reading goroutine to finish.
 	return <-outC
 }
 
@@ -406,8 +411,17 @@ func TestLogTargets(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			done := make(chan struct{})
+
 			output := captureOutput(t, tc.targetStream, func() {
-				logger, err := slogcp.New(tc.createOptions...)
+				// Use a middleware to signal when the log has been handled.
+				mw := func(h slog.Handler) slog.Handler {
+					return &waitGroupHandler{next: h, done: done}
+				}
+
+				// Prepend the wait group middleware to ensure it's the outermost wrapper.
+				opts := append([]slogcp.Option{slogcp.WithMiddleware(mw)}, tc.createOptions...)
+				logger, err := slogcp.New(opts...)
 				if err != nil {
 					t.Fatalf("Failed to create logger: %v", err)
 				}
@@ -419,7 +433,7 @@ func TestLogTargets(t *testing.T) {
 
 			// Verify that the log message appears in the output
 			if !strings.Contains(output, "target test message") {
-				t.Errorf("Log message not found in captured output")
+				t.Errorf("Log message not found in captured output. Got: %q", output)
 			}
 
 			// Parse JSON to verify structure
@@ -610,13 +624,15 @@ func TestLoggerAttrsContextHelpers(t *testing.T) {
 // logging when GCP logging cannot be initialized.
 func TestFallbackMode(t *testing.T) {
 	output := captureOutput(t, &os.Stdout, func() {
+		// Setting a non-existent credentials file and ensuring no project is set
+		// will cause GCP client initialization to fail, triggering fallback.
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/dev/null/nonexistent.json")
 		t.Setenv("GOOGLE_CLOUD_PROJECT", "")
-		t.Setenv("SLOGCP_GCP_PARENT", "")
 		t.Setenv("SLOGCP_PROJECT_ID", "")
-		t.Setenv("SLOGCP_LOG_TARGET", "")
+		t.Setenv("SLOGCP_GCP_PARENT", "")
 
-		l, err := slogcp.New()
+		// Explicitly request GCP to trigger fallback logic.
+		l, err := slogcp.New(slogcp.WithLogTarget(slogcp.LogTargetGCP))
 		if err != nil {
 			t.Fatalf("create logger error: %v", err)
 		}
@@ -634,6 +650,32 @@ func TestFallbackMode(t *testing.T) {
 	if !strings.Contains(output, "\"severity\":\"INFO\"") {
 		t.Error("log not recognized as structured JSON")
 	}
+}
+
+// waitGroupHandler is a test helper to synchronize on a log record being handled.
+type waitGroupHandler struct {
+	next slog.Handler
+	wg   *sync.WaitGroup
+	done chan<- struct{}
+}
+
+func (h *waitGroupHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.next.Enabled(ctx, l)
+}
+func (h *waitGroupHandler) Handle(ctx context.Context, r slog.Record) error {
+	if h.wg != nil {
+		defer h.wg.Done()
+	}
+	if h.done != nil {
+		defer close(h.done)
+	}
+	return h.next.Handle(ctx, r)
+}
+func (h *waitGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &waitGroupHandler{next: h.next.WithAttrs(attrs), wg: h.wg, done: h.done}
+}
+func (h *waitGroupHandler) WithGroup(name string) slog.Handler {
+	return &waitGroupHandler{next: h.next.WithGroup(name), wg: h.wg, done: h.done}
 }
 
 // TestLogLevelFromEnvironment verifies that log level can be set via environment variable

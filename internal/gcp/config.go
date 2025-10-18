@@ -34,9 +34,9 @@ import (
 type LogTarget int
 
 const (
-	// LogTargetGCP directs logs to the Google Cloud Logging API (default).
+	// LogTargetGCP directs logs to the Google Cloud Logging API.
 	LogTargetGCP LogTarget = iota
-	// LogTargetStdout directs logs to standard output as structured JSON.
+	// LogTargetStdout directs logs to standard output as structured JSON (default).
 	LogTargetStdout
 	// LogTargetStderr directs logs to standard error as structured JSON.
 	LogTargetStderr
@@ -101,13 +101,14 @@ const (
 	slogcpDefaultAddSource            = false
 	slogcpDefaultStackTraceEnabled    = false
 	slogcpDefaultStackTraceLevel      = slog.LevelError
-	slogcpDefaultLogTarget            = LogTargetGCP
+	slogcpDefaultLogTarget            = LogTargetStdout
 	EnvLogTarget                      = envLogTarget
 	EnvRedirectAsJSONTarget           = envRedirectAsJSONTarget
 	EnvGCPLogID                       = envGCPLogID
 	slogcpDefaultGCPBufferedByteLimit = 100 * 1024 * 1024 // 100 MiB
 	slogcpDefaultGCPLogID             = "app"
 	defaultClientInitTimeout          = 10 * time.Second
+	metadataDetectTimeout             = 200 * time.Millisecond
 )
 
 // Config holds all resolved configuration values after processing defaults,
@@ -151,7 +152,7 @@ type Config struct {
 
 	// Parent is the full resource parent (e.g., "projects/PROJECT_ID").
 	Parent   string
-	GCPLogID string // Cloud Logging log ID (defaults to "app")
+	GCPLogID string // Cloud Logging log ID (defaults to "app"). This is only used if LogTarget is GCP.
 
 	ClientScopes      []string    // nil means use GCP default
 	ClientOnErrorFunc func(error) // nil means use slogcp default (stderr)
@@ -179,8 +180,10 @@ type Config struct {
 //  3. GCP metadata server (for project ID, if running on GCP)
 //
 // If LogTarget is GCP and no project ID or parent can be resolved from any source,
-// it returns ErrProjectIDMissing. Other errors are returned for invalid redirect
-// targets or file operations.
+// it returns ErrProjectIDMissing. The slogcp.New function is responsible for
+// handling this error and initiating automatic fallback if appropriate.
+//
+// Other errors are returned for invalid redirect targets or file operations.
 func LoadConfig() (Config, error) {
 	// Initialize with slogcp's hardcoded defaults
 	cfg := Config{
@@ -205,7 +208,7 @@ func LoadConfig() (Config, error) {
 		case strings.HasPrefix(envRedirectTargetStr, "file:"):
 			filePath := strings.TrimPrefix(envRedirectTargetStr, "file:")
 			if filePath == "" {
-				return Config{}, fmt.Errorf("invalid redirect target: file path missing in %s=%s", envRedirectAsJSONTarget, envRedirectTargetStr)
+				return Config{}, fmt.Errorf("%w: file path missing in %s=%s", ErrInvalidRedirectTarget, envRedirectAsJSONTarget, envRedirectTargetStr)
 			}
 			// Store the path; actual file opening is deferred to initializeLogger.
 			cfg.OpenedFilePath = filePath
@@ -230,7 +233,7 @@ func LoadConfig() (Config, error) {
 			// if no programmatic option provides a path or writer.
 		default:
 			// An unrecognized value for SLOGCP_REDIRECT_AS_JSON_TARGET.
-			return Config{}, fmt.Errorf("invalid redirect target specified in %s: %s", envRedirectAsJSONTarget, envRedirectTargetStr)
+			return Config{}, fmt.Errorf("%w: unrecognized value %q in %s", ErrInvalidRedirectTarget, envRedirectTargetStr, envRedirectAsJSONTarget)
 		}
 	}
 
@@ -259,13 +262,13 @@ func LoadConfig() (Config, error) {
 		cfg.Parent = "projects/" + envGoogleCloudProject
 	} else if cfg.LogTarget == LogTargetGCP {
 		// Try metadata server as last resort for GCP target
-		if metadata.OnGCE() {
-			ctx := context.Background() // Use Background context for metadata calls
+		if detectOnGCE(metadataDetectTimeout) {
+			ctx, cancel := context.WithTimeout(context.Background(), defaultClientInitTimeout)
+			defer cancel()
 			id, err := metadata.ProjectIDWithContext(ctx)
 			if err == nil && id != "" {
 				cfg.ProjectID = id
 				cfg.Parent = "projects/" + id
-				fmt.Fprintf(os.Stderr, "[slogcp config] INFO: Using project ID %q from metadata server\n", id)
 			} else if err != nil {
 				fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: OnGCE but failed to get project ID from metadata: %v\n", err)
 			}
@@ -548,4 +551,18 @@ func normalizeLogID(s string) (string, error) {
 // NormalizeLogID exposes normalizeLogID for use by other packages.
 func NormalizeLogID(s string) (string, error) {
 	return normalizeLogID(s)
+}
+
+func detectOnGCE(timeout time.Duration) bool {
+	resultCh := make(chan bool, 1)
+	go func() {
+		resultCh <- metadata.OnGCE()
+	}()
+	select {
+	case onGCE := <-resultCh:
+		return onGCE
+	case <-time.After(timeout):
+		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: metadata.OnGCE() did not return within %s; assuming not running on GCE\n", timeout)
+		return false
+	}
 }

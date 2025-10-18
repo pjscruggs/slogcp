@@ -19,15 +19,15 @@ go get github.com/pjscruggs/slogcp
 ## Features
 
 * {🪵} **Structured JSON logging** for powerful filtering and analysis in Cloud Logging
-* ☁️  **GCP Cloud Logging API integration** for increased reliability and throughput over `stdout` / `stderr`
 * 🌈  **Complete GCP severity level support** (DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY)
 * 📡  **Automatic trace context extraction and propagation** (gRPC by default; optional HTTP client transport)
 * 🚚  **Optional HTTP client transport** that injects W3C Trace Context (and optionally `X-Cloud-Trace-Context`) on outbound requests
 * 🧩  **Ready-to-use HTTP and gRPC middleware** with optimized GCP-friendly log structuring
 * 🎚️  **Dynamic log level control** without application restart
 * 🐛  **Error logging with optional stack traces** for efficient debugging
+* ☁️  **Optional GCP Cloud Logging API integration** when you need increased reliability and throughput over `stdout` / `stderr`
 * 🏷️  **Automatic GCP resource detection** for proper log association
-* 🔄  **Smart environment detection** that automatically falls back to local logging when needed
+* 🔄  **Smart environment detection** that keeps stdout/stderr as the default target while offering GCP Cloud Logging when requested
 * 🪂  **Graceful shutdown handling** with automatic buffered log flushing
 
 ## Quick Start
@@ -43,7 +43,7 @@ import (
 )
 
 func main() {
-	// Create a logger with default settings
+	// Create a logger with default settings (logs go to stdout everywhere, including GCP)
 	logger, err := slogcp.New()
 	if err != nil {
 		log.Fatalf("Failed to create logger: %v", err)
@@ -96,7 +96,7 @@ Core environment variables for configuring slogcp:
 
 | Variable                  | Description                                                | Default |
 | ------------------------- | ---------------------------------------------------------- | ------- |
-| `SLOGCP_LOG_TARGET`       | Where to send logs: `gcp`, `stdout`, `stderr`, `file`      | `gcp`   |
+| `SLOGCP_LOG_TARGET`       | Where to send logs: `gcp`, `stdout`, `stderr`, `file`      | `stdout`   |
 | `LOG_LEVEL`               | Minimum log level (`debug`, `info`, `warn`, `error`, etc.) | `info`  |
 | `LOG_SOURCE_LOCATION`     | Include source file/line (`true`, `false`)                 | `false` |
 | `LOG_STACK_TRACE_ENABLED` | Enable stack traces (`true`, `false`)                      | `false` |
@@ -106,10 +106,19 @@ Core environment variables for configuring slogcp:
 ### In Google Cloud
 
 ```go
-// In Cloud Run, GCE, GKE, etc., logs automatically go to Cloud Logging
-logger, err := slogcp.New() // No options needed for default GCP behavior
+// In Cloud Run, Cloud Functions, App Engine, and GKE stdout/stderr are ingested by Cloud Logging automatically
+logger, err := slogcp.New() // Defaults to stdout; no extra configuration required
 
 // Or with additional options
+logger, err := slogcp.New(
+    slogcp.WithLevel(slog.LevelInfo),
+    slogcp.WithGCPCommonLabel("service", "user-api"),
+)
+```
+
+```go
+// On GCE, install and configure the Ops Agent to forward stdout/stderr to Cloud Logging
+// Opt in to the Cloud Logging API client for direct ingestion
 logger, err := slogcp.New(
     slogcp.WithLevel(slog.LevelInfo),
     slogcp.WithGCPCommonLabel("service", "user-api"),

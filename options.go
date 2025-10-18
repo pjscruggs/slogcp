@@ -31,12 +31,10 @@ import (
 type LogTarget = gcp.LogTarget
 
 const (
-	// LogTargetGCP directs logs to the Google Cloud Logging API (default).
-	// This requires a GCP project ID to be available either through environment
-	// variables or explicit configuration.
+	// LogTargetGCP directs logs to the Google Cloud Logging API.
 	LogTargetGCP LogTarget = gcp.LogTargetGCP
 
-	// LogTargetStdout directs logs to standard output as structured JSON.
+	// LogTargetStdout directs logs to standard output as structured JSON (default).
 	// Use this for local development or when running in environments without
 	// GCP integration.
 	LogTargetStdout LogTarget = gcp.LogTargetStdout
@@ -81,6 +79,7 @@ type options struct {
 	// GCP Client/Logger passthrough fields
 	projectID                *string
 	parent                   *string
+	traceProjectID           *string
 	gcpLogID                 *string
 	clientScopes             []string // Use slice directly, nil means unset
 	clientOnErrorFunc        func(error)
@@ -248,6 +247,12 @@ func WithProjectID(id string) Option { return func(o *options) { o.projectID = &
 // This controls where logs are stored in the GCP resource hierarchy.
 // This overrides SLOGCP_GCP_PARENT and any parent derived from ProjectID.
 func WithParent(parent string) Option { return func(o *options) { o.parent = &parent } }
+
+// WithTraceProjectID returns an Option that sets the project ID used for
+// formatting trace resource names in log entries. If not set, the main
+// ProjectID is used. This overrides the SLOGCP_TRACE_PROJECT_ID environment
+// variable.
+func WithTraceProjectID(id string) Option { return func(o *options) { o.traceProjectID = &id } }
 
 // WithGCPLogID returns an Option that explicitly sets the Cloud Logging log ID.
 // The log ID identifies the specific log within Cloud Logging where entries are written.

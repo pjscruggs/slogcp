@@ -87,6 +87,8 @@ func TestLoggerOptionInteraction(t *testing.T) {
 		)
 		if err == nil {
 			t.Error("WithLogTarget(File) without path should fail but succeeded")
+		} else if !strings.Contains(err.Error(), "requires a file path") {
+			t.Errorf("Expected error about missing file path, got: %v", err)
 		}
 
 		// File target with path should succeed
@@ -105,6 +107,17 @@ func TestLoggerOptionInteraction(t *testing.T) {
 		_, err = os.Stat(tmpFile)
 		if err != nil {
 			t.Errorf("Log file wasn't created: %v", err)
+		}
+
+		// GCP target with redirect writer should fail
+		_, err = slogcp.New(
+			slogcp.WithLogTarget(slogcp.LogTargetGCP),
+			slogcp.WithRedirectWriter(os.Stdout),
+		)
+		if err == nil {
+			t.Error("WithLogTarget(GCP) with redirect writer should fail but succeeded")
+		} else if !strings.Contains(err.Error(), "conflicting options") {
+			t.Errorf("Expected error about conflicting options, got: %v", err)
 		}
 	})
 
