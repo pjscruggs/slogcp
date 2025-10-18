@@ -15,14 +15,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package grpc_test contains smoke tests for slogcp’s gRPC interceptors.
-// The tests call the unary‑server interceptor directly, passing a dummy
-// handler and minimal grpc.UnaryServerInfo, to confirm that happy‑path
+// Package grpc_test contains smoke tests for slogcp's gRPC interceptors.
+// The tests call the unary server interceptor directly, passing a dummy
+// handler and minimal grpc.UnaryServerInfo, to confirm that happy-path
 // invocations complete without error and propagate the response value.
 package grpc_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -31,29 +33,29 @@ import (
 	slogcpgrpc "github.com/pjscruggs/slogcp/grpc"
 )
 
-func newTestLogger(t *testing.T) *slogcp.Logger {
+func newTestLogger(t *testing.T) *slog.Logger {
 	t.Helper()
 
-	lg, err := slogcp.New(slogcp.WithRedirectToStdout())
+	handler, err := slogcp.NewHandler(io.Discard, slogcp.WithLogTarget(slogcp.LogTargetStdout))
 	if err != nil {
-		t.Fatalf("slogcp.New() returned %v, want nil", err)
+		t.Fatalf("slogcp.NewHandler() returned %v, want nil", err)
 	}
-	return lg
+	t.Cleanup(func() {
+		if cerr := handler.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+	return slog.New(handler)
 }
 
-// TestUnaryServerInterceptorSmoke invokes the unary‑server interceptor with a
+// TestUnaryServerInterceptorSmoke invokes the unary server interceptor with a
 // dummy handler and asserts that it forwards the call and returns nil error.
 func TestUnaryServerInterceptorSmoke(t *testing.T) {
 	t.Parallel()
 
-	lg := newTestLogger(t)
-	defer func() {
-		if err := lg.Close(); err != nil {
-			t.Errorf("Logger.Close() returned %v, want nil", err)
-		}
-	}()
+	logger := newTestLogger(t)
 
-	interceptor := slogcpgrpc.UnaryServerInterceptor(lg)
+	interceptor := slogcpgrpc.UnaryServerInterceptor(logger)
 
 	info := &grpc.UnaryServerInfo{FullMethod: "/pkg.Service/Method"}
 	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }

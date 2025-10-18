@@ -27,7 +27,7 @@ import (
 // Cloud Logging resources when operating in GCP API mode. This represents
 // the boundary between the public API and the internal implementation.
 //
-// The Logger type holds a reference to an implementation of this interface
+// The Handler returned by slogcp holds a reference to an implementation of this interface
 // and delegates client operations to it. By defining this interface, the
 // slogcp package can mock Cloud Logging for testing while providing a
 // consistent API to application code.

@@ -15,20 +15,42 @@
 package http
 
 import (
-	"bytes"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/logging"
+	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/internal/gcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
+
+const instrumentationName = "github.com/pjscruggs/slogcp/http"
+
+const (
+	captureBufferMaxPrealloc = 64 << 10
+	defaultAttrSliceCap      = 12
+)
+
+var cappedBufferPool = sync.Pool{
+	New: func() any {
+		return &cappedBuffer{}
+	},
+}
+
+var attrSlicePool = sync.Pool{
+	New: func() any {
+		slice := make([]slog.Attr, 0, defaultAttrSliceCap)
+		return &slice
+	},
+}
 
 // responseWriter wraps an http.ResponseWriter to capture the HTTP status code
 // written by the handler, the total size of the response body, and an optional
@@ -127,6 +149,11 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 	}
 
 	propagator := otel.GetTextMapPropagator()
+	tracer := merged.Tracer
+	if tracer == nil {
+		tracer = otel.Tracer(instrumentationName)
+	}
+	traceProjectID := merged.TraceProjectID
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +162,12 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				if header := r.Header.Get(XCloudTraceContextHeader); header != "" {
 					ctx = injectTraceContextFromHeader(ctx, header)
 				}
+			}
+			if merged.StartSpanIfAbsent && !trace.SpanContextFromContext(ctx).IsValid() {
+				spanName := fmt.Sprintf("%s %s", r.Method, r.URL.Path)
+				var span trace.Span
+				ctx, span = tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
+				defer span.End()
 			}
 			r = r.WithContext(ctx)
 
@@ -147,6 +180,10 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 						break
 					}
 				}
+			}
+
+			if shouldLog && merged.SkipGoogleHealthChecks && isGoogleHealthCheckRequest(r) {
+				shouldLog = false
 			}
 
 			if !shouldLog && !merged.RecoverPanics {
@@ -162,6 +199,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 			if captureBodies && merged.RequestBodyLimit > 0 && r.Body != nil {
 				requestBodyBuf = newCappedBuffer(merged.RequestBodyLimit)
 				if requestBodyBuf != nil {
+					defer putCappedBuffer(requestBodyBuf)
 					originalBody := r.Body
 					r.Body = &teeReadCloser{
 						Reader: io.TeeReader(originalBody, requestBodyBuf),
@@ -173,6 +211,9 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 			var responseBodyBuf *cappedBuffer
 			if captureBodies {
 				responseBodyBuf = newCappedBuffer(merged.ResponseBodyLimit)
+				if responseBodyBuf != nil {
+					defer putCappedBuffer(responseBodyBuf)
+				}
 			}
 
 			rw := &responseWriter{
@@ -181,15 +222,29 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				body:           responseBodyBuf,
 			}
 
+			if merged.AttachLogger {
+				traceAttrs, hasTrace := slogcp.TraceAttributes(ctx, traceProjectID)
+				requestLogger := logger
+				if hasTrace {
+					requestLogger = withAttrs(requestLogger, traceAttrs)
+				}
+				requestLogger = requestLogger.With(
+					slog.String("http.request.method", r.Method),
+					slog.String("http.route", r.URL.Path),
+				)
+				ctx = slogcp.ContextWithLogger(ctx, requestLogger)
+				r = r.WithContext(ctx)
+			}
+
 			var recovered any
-			var stack []byte
+			var stack string
 
 			if merged.RecoverPanics {
 				func() {
 					defer func() {
 						if rec := recover(); rec != nil {
 							recovered = rec
-							stack = debug.Stack()
+							stack, _ = gcp.CaptureStack(nil)
 							if !rw.wroteHeader {
 								rw.WriteHeader(http.StatusInternalServerError)
 							}
@@ -232,19 +287,27 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				return
 			}
 
+			trustProxy := merged.TrustProxyHeaders
+			if !trustProxy && merged.TrustProxyDecisionFunc != nil && merged.TrustProxyDecisionFunc(r) {
+				trustProxy = true
+			}
+
 			reqStruct := &logging.HTTPRequest{
 				Request:      r,
 				RequestSize:  r.ContentLength,
 				Status:       finalStatusCode,
 				ResponseSize: rw.size,
 				Latency:      duration,
-				RemoteIP:     resolveRemoteIP(r, merged.TrustProxyHeaders),
+				RemoteIP:     resolveRemoteIP(r, trustProxy, merged.TrustProxyDecisionFunc),
 			}
 
-			attrs := []slog.Attr{
+			attrsPtr := attrSlicePool.Get().(*[]slog.Attr)
+			attrs := (*attrsPtr)[:0]
+
+			attrs = append(attrs,
 				slog.Any(httpRequestKey, reqStruct),
 				slog.Duration("duration", duration),
-			}
+			)
 
 			if attr, ok := headersGroupAttr("requestHeaders", r.Header, merged.LogRequestHeaderKeys); ok {
 				attrs = append(attrs, attr)
@@ -271,11 +334,14 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				message = "HTTP panic recovered"
 				attrs = append(attrs,
 					slog.Any("panic", recovered),
-					slog.String("panicStack", string(stack)),
+					slog.String("panicStack", stack),
 				)
 			}
 
 			logger.LogAttrs(ctx, level, message, attrs...)
+
+			*attrsPtr = attrs[:0]
+			attrSlicePool.Put(attrsPtr)
 		})
 	}
 }
@@ -283,7 +349,10 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 // resolveRemoteIP returns the best-effort client IP address for the provided
 // request. When trustProxyHeaders is true, the function prefers values from
 // X-Forwarded-For and X-Real-IP headers before falling back to RemoteAddr.
-func resolveRemoteIP(r *http.Request, trustProxyHeaders bool) string {
+func resolveRemoteIP(r *http.Request, trustProxyHeaders bool, trustProxyFunc func(*http.Request) bool) string {
+	if trustProxyFunc != nil && trustProxyFunc(r) {
+		trustProxyHeaders = true
+	}
 	if trustProxyHeaders {
 		if values := r.Header.Values("X-Forwarded-For"); len(values) > 0 {
 			for _, value := range values {
@@ -307,6 +376,42 @@ func resolveRemoteIP(r *http.Request, trustProxyHeaders bool) string {
 	return extractIP(r.RemoteAddr)
 }
 
+func withAttrs(logger *slog.Logger, attrs []slog.Attr) *slog.Logger {
+	if logger == nil || len(attrs) == 0 {
+		return logger
+	}
+	args := make([]any, len(attrs))
+	for i, attr := range attrs {
+		args[i] = attr
+	}
+	return logger.With(args...)
+}
+
+func isGoogleHealthCheckRequest(r *http.Request) bool {
+	ua := r.Header.Get("User-Agent")
+	if strings.HasPrefix(ua, "GoogleHC/") || strings.HasPrefix(ua, "GoogleHC-") {
+		return true
+	}
+	if ua == "" && strings.EqualFold(r.Method, http.MethodGet) && r.URL != nil && r.URL.Path == "/" {
+		if strings.EqualFold(r.Header.Get("Via"), "1.1 google") {
+			return true
+		}
+	}
+	return false
+}
+
+func isGoogleProxyRequest(r *http.Request) bool {
+	via := strings.ToLower(strings.TrimSpace(r.Header.Get("Via")))
+	if via == "1.1 google" || strings.Contains(via, "google") {
+		return true
+	}
+	forwardedBy := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-By")))
+	if forwardedBy != "" && strings.Contains(forwardedBy, "google") {
+		return true
+	}
+	return false
+}
+
 // headersGroupAttr materialises a slog.Group containing the requested header
 // keys. It returns false when no requested headers are present.
 func headersGroupAttr(name string, header http.Header, keys []string) (slog.Attr, bool) {
@@ -326,11 +431,10 @@ func headersGroupAttr(name string, header http.Header, keys []string) (slog.Attr
 	if len(attrs) == 0 {
 		return slog.Attr{}, false
 	}
-	groupArgs := make([]any, 0, len(attrs))
-	for _, attr := range attrs {
-		groupArgs = append(groupArgs, attr)
-	}
-	return slog.Group(name, groupArgs...), true
+	return slog.Attr{
+		Key:   name,
+		Value: slog.GroupValue(attrs...),
+	}, true
 }
 
 // teeReadCloser combines a reader and closer, allowing the middleware to wrap
@@ -341,20 +445,59 @@ type teeReadCloser struct {
 }
 
 // cappedBuffer captures up to a configured limit of bytes and notes whether
-// truncation occurred.
+// truncation occurred. Buffers are pooled to amortize allocations across
+// requests.
 type cappedBuffer struct {
-	buf       bytes.Buffer
+	data      []byte
 	remaining int64
 	truncated bool
 }
 
-// newCappedBuffer allocates a cappedBuffer when limit is positive. A nil result
+// newCappedBuffer acquires a cappedBuffer when limit is positive. A nil result
 // signals that capture is disabled, which keeps call sites straightforward.
 func newCappedBuffer(limit int64) *cappedBuffer {
 	if limit <= 0 {
 		return nil
 	}
-	return &cappedBuffer{remaining: limit}
+	cb := cappedBufferPool.Get().(*cappedBuffer)
+	cb.reset(limit)
+	return cb
+}
+
+func putCappedBuffer(cb *cappedBuffer) {
+	if cb == nil {
+		return
+	}
+	if cap(cb.data) > captureBufferMaxPrealloc {
+		cb.data = nil
+	} else {
+		cb.data = cb.data[:0]
+	}
+	cb.remaining = 0
+	cb.truncated = false
+	cappedBufferPool.Put(cb)
+}
+
+func (cb *cappedBuffer) reset(limit int64) {
+	cb.remaining = limit
+	cb.truncated = false
+
+	desired := limit
+	if desired < 0 {
+		desired = 0
+	}
+	if desired > int64(captureBufferMaxPrealloc) {
+		desired = int64(captureBufferMaxPrealloc)
+	}
+	if desired == 0 {
+		cb.data = cb.data[:0]
+		return
+	}
+	if int64(cap(cb.data)) < desired {
+		cb.data = make([]byte, 0, int(desired))
+	} else {
+		cb.data = cb.data[:0]
+	}
 }
 
 // Write records payload bytes up to the configured limit and notes when
@@ -370,9 +513,7 @@ func (cb *cappedBuffer) Write(p []byte) (int, error) {
 			writeLen = int(cb.remaining)
 		}
 		if writeLen > 0 {
-			if _, err := cb.buf.Write(p[:writeLen]); err != nil {
-				return 0, err
-			}
+			cb.data = append(cb.data, p[:writeLen]...)
 			cb.remaining -= int64(writeLen)
 		}
 		if writeLen < len(p) {
@@ -389,7 +530,7 @@ func (cb *cappedBuffer) String() string {
 	if cb == nil {
 		return ""
 	}
-	return cb.buf.String()
+	return string(cb.data)
 }
 
 // Len reports the number of bytes captured so far.
@@ -397,7 +538,7 @@ func (cb *cappedBuffer) Len() int {
 	if cb == nil {
 		return 0
 	}
-	return cb.buf.Len()
+	return len(cb.data)
 }
 
 // Truncated reports whether any data exceeded the configured limit.

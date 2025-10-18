@@ -45,14 +45,16 @@
 //
 // # Basic Usage (Server)
 //
-// First, obtain a logger instance from the main slogcp package:
+// First, obtain a handler instance from the main slogcp package:
 //
 //	// Assumes GOOGLE_CLOUD_PROJECT is set or running on GCP.
-//	slogcpLogger, err := slogcp.New()
+//	handler, err := slogcp.NewHandler(os.Stdout)
 //	if err != nil {
-//	    log.Fatalf("Failed to create slogcp logger: %v", err)
+//	    log.Fatalf("Failed to create slogcp handler: %v", err)
 //	}
-//	defer slogcpLogger.Close()
+//	defer handler.Close()
+//
+//	logger := slog.New(handler)
 //
 // Then, create your gRPC server, applying the interceptors:
 //
@@ -61,11 +63,11 @@
 //
 //	server := grpc.NewServer(
 //	    grpc.ChainUnaryInterceptor(
-//	        slogcpgrpc.UnaryServerInterceptor(slogcpLogger),
+//	        slogcpgrpc.UnaryServerInterceptor(logger),
 //	        // Add other unary interceptors here...
 //	    ),
 //	    grpc.ChainStreamInterceptor(
-//	        slogcpgrpc.StreamServerInterceptor(slogcpLogger),
+//	        slogcpgrpc.StreamServerInterceptor(logger),
 //	        // Add other stream interceptors here...
 //	    ),
 //	    // ... other server options (credentials, etc.)
@@ -116,5 +118,5 @@
 // Ensure the slogcp interceptor runs after interceptors that populate context
 // (like tracing or auth) if its logging depends on that context information.
 // For complex scenarios involving multiple cross-cutting concerns, consider
-// writing a custom interceptor that calls the `slogcp.Logger` directly.
+// writing a custom interceptor that calls the `*slog.Logger` directly.
 package grpc

@@ -20,12 +20,12 @@
 //
 // ⚠️ This module is untested, and not recommended for any production use. ⚠️
 //
-// The core of the package is the [Logger] type, which can be configured to
+// The core of the package is the [Handler] type, which can be configured to
 // send structured JSON logs directly to the Cloud Logging API or to local
-// destinations like stdout, stderr, or a file. It intelligently detects
-// the environment, automatically falling back to local logging (e.g., stdout)
-// when GCP credentials or project information are unavailable, simplifying
-// local development.
+// destinations such as stdout, stderr, or a file. Handlers integrate with the
+// standard library via [slog.New], and automatically fall back to local logging
+// (for example, stdout) when GCP credentials or project information are
+// unavailable—great for local development and CI environments.
 //
 // # Key Features
 //
@@ -38,12 +38,10 @@
 //     DEBUG to EMERGENCY, extending standard slog levels via the [Level] type.
 //   - Trace Correlation: Automatically extracts and injects trace context
 //     (Trace ID, Span ID) for seamless log correlation in Cloud Trace.
-//   - Dynamic Log Levels: Adjust logging verbosity at runtime without
-//     restarting the application using [Logger.SetLevel].
 //   - Enhanced Error Reporting: Includes options for automatic stack trace
 //     capture with errors.
 //   - Graceful Shutdown: Ensures buffered logs are flushed before application exit
-//     via [Logger.Close].
+//     via [Handler.Close].
 //
 // # Subpackages
 //
@@ -58,26 +56,25 @@
 //
 // # Quick Start
 //
-// To get started, create a new logger:
+// To get started, create a new handler and wrap it with slog:
 //
-//	// Create a logger with default settings.
+//	// Create a handler with default settings.
 //	// Assumes GOOGLE_CLOUD_PROJECT is set or running on GCP.
-//	logger, err := slogcp.New()
+//	handler, err := slogcp.NewHandler(os.Stdout)
 //	if err != nil {
-//	    log.Fatalf("Failed to create logger: %v", err)
+//	    log.Fatalf("Failed to create handler: %v", err)
 //	}
-//	// Important: Always call Close to flush buffered logs, especially in GCP mode.
-//	defer logger.Close()
+//	defer handler.Close() // Flushes buffered logs on shutdown.
 //
-//	// Log a simple message.
+//	logger := slog.New(handler)
 //	logger.Info("Application started successfully")
 //
 // # Configuration
 //
-// The [New] function accepts various [Option] functions to customize behavior,
+// The [NewHandler] function accepts various [Option] functions to customize behavior,
 // such as setting the log level ([WithLevel]), enabling source location
 // ([WithSourceLocationEnabled]), or configuring GCP-specific parameters
 // (e.g., [WithGCPCommonLabel], [WithGCPEntryCountThreshold]).
 // Many settings can also be controlled via environment variables.
-// See the [Logger] type and specific option functions for more details.
+// See the [Handler] type and specific option functions for more details.
 package slogcp

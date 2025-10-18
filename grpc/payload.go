@@ -21,13 +21,11 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-
-	"github.com/pjscruggs/slogcp"
 )
 
 // logPayload handles the logic for marshalling, truncating, and logging a message payload.
 // It's called by stream wrappers and unary interceptors when payload logging is enabled.
-func logPayload(ctx context.Context, logger *slogcp.Logger, opts *options, direction string, m any) {
+func logPayload(ctx context.Context, logger *slog.Logger, opts *options, direction string, m any) {
 	// Check if the message is a proto.Message.
 	p, ok := m.(proto.Message)
 	if !ok {

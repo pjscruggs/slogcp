@@ -61,6 +61,13 @@ func (lt LogTarget) String() string {
 	}
 }
 
+func logDiagnostic(logger *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
+	if logger == nil {
+		return
+	}
+	logger.LogAttrs(context.Background(), level, msg, attrs...)
+}
+
 // Environment variable names used for configuration.
 // These can be set in the runtime environment to control logger behavior.
 const (
@@ -129,7 +136,7 @@ type Config struct {
 	RedirectWriter io.Writer
 
 	// ClosableUserWriter stores the user-provided io.Writer if it implements
-	// io.Closer. This allows slogcp.Logger.Close() to correctly
+	// io.Closer. This allows slogcp.Handler.Close() to correctly
 	// close writers such as lumberjack.Logger instances that are passed
 	// via slogcp.WithRedirectWriter.
 	ClosableUserWriter io.Closer
@@ -184,7 +191,7 @@ type Config struct {
 // handling this error and initiating automatic fallback if appropriate.
 //
 // Other errors are returned for invalid redirect targets or file operations.
-func LoadConfig() (Config, error) {
+func LoadConfig(internalLogger *slog.Logger) (Config, error) {
 	// Initialize with slogcp's hardcoded defaults
 	cfg := Config{
 		InitialLevel:         slogcpDefaultLogLevel,
@@ -198,7 +205,7 @@ func LoadConfig() (Config, error) {
 
 	// Process the log target and redirect target
 	envTargetStr := os.Getenv(envLogTarget)
-	cfg.LogTarget = parseLogTargetEnv(envTargetStr, slogcpDefaultLogTarget)
+	cfg.LogTarget = parseLogTargetEnv(envTargetStr, slogcpDefaultLogTarget, internalLogger)
 
 	envRedirectTargetStr := os.Getenv(envRedirectAsJSONTarget)
 	// Only process SLOGCP_REDIRECT_AS_JSON_TARGET if LogTarget is not GCP.
@@ -249,20 +256,21 @@ func LoadConfig() (Config, error) {
 	envSlogcpProjectIDOverride := os.Getenv(envSlogcpProjectIDOverride)
 	envGoogleCloudProject := os.Getenv("GOOGLE_CLOUD_PROJECT")
 
-	if envParent != "" {
+	switch {
+	case envParent != "":
 		cfg.Parent = envParent
 		if strings.HasPrefix(envParent, "projects/") {
 			cfg.ProjectID = strings.TrimPrefix(envParent, "projects/")
 		}
-	} else if envSlogcpProjectIDOverride != "" {
+	case envSlogcpProjectIDOverride != "":
 		cfg.ProjectID = envSlogcpProjectIDOverride
 		cfg.Parent = "projects/" + envSlogcpProjectIDOverride
-	} else if envGoogleCloudProject != "" {
+	case envGoogleCloudProject != "":
 		cfg.ProjectID = envGoogleCloudProject
 		cfg.Parent = "projects/" + envGoogleCloudProject
-	} else if cfg.LogTarget == LogTargetGCP {
+	case cfg.LogTarget == LogTargetGCP:
 		// Try metadata server as last resort for GCP target
-		if detectOnGCE(metadataDetectTimeout) {
+		if detectOnGCE(metadataDetectTimeout, internalLogger) {
 			ctx, cancel := context.WithTimeout(context.Background(), defaultClientInitTimeout)
 			defer cancel()
 			id, err := metadata.ProjectIDWithContext(ctx)
@@ -270,7 +278,9 @@ func LoadConfig() (Config, error) {
 				cfg.ProjectID = id
 				cfg.Parent = "projects/" + id
 			} else if err != nil {
-				fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: OnGCE but failed to get project ID from metadata: %v\n", err)
+				logDiagnostic(internalLogger, slog.LevelWarn, "Failed to retrieve project ID from metadata server",
+					slog.Any("error", err),
+				)
 			}
 		}
 	}
@@ -281,10 +291,10 @@ func LoadConfig() (Config, error) {
 	}
 
 	// Process core logging settings
-	cfg.InitialLevel = parseLevelEnv(os.Getenv(envLogLevel), cfg.InitialLevel)
-	cfg.AddSource = parseBoolEnv(os.Getenv(envLogSourceLocation), cfg.AddSource)
-	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv(envStackTraceEnabled), cfg.StackTraceEnabled)
-	cfg.StackTraceLevel = parseLevelEnv(os.Getenv(envStackTraceLevel), cfg.StackTraceLevel)
+	cfg.InitialLevel = parseLevelEnv(os.Getenv(envLogLevel), cfg.InitialLevel, internalLogger)
+	cfg.AddSource = parseBoolEnv(os.Getenv(envLogSourceLocation), cfg.AddSource, internalLogger)
+	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv(envStackTraceEnabled), cfg.StackTraceEnabled, internalLogger)
+	cfg.StackTraceLevel = parseLevelEnv(os.Getenv(envStackTraceLevel), cfg.StackTraceLevel, internalLogger)
 
 	// Process client scopes (comma-separated list)
 	if val := os.Getenv(envGCPClientScopes); val != "" {
@@ -306,7 +316,10 @@ func LoadConfig() (Config, error) {
 	labels := make(map[string]string)
 	if jsonStr := os.Getenv(envGCPCommonLabelsJSON); jsonStr != "" {
 		if err := json.Unmarshal([]byte(jsonStr), &labels); err != nil {
-			fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Failed to parse JSON from %s: %v\n", envGCPCommonLabelsJSON, err)
+			logDiagnostic(internalLogger, slog.LevelWarn, "Failed to parse JSON common labels",
+				slog.String("env", envGCPCommonLabelsJSON),
+				slog.Any("error", err),
+			)
 		}
 	}
 	for _, e := range os.Environ() {
@@ -340,13 +353,13 @@ func LoadConfig() (Config, error) {
 	}
 
 	// Process Cloud Logging client buffering and behavior options
-	cfg.GCPConcurrentWriteLimit = parseIntPtrEnv(os.Getenv(envGCPConcurrentWriteLimit))
-	cfg.GCPDelayThreshold = parseDurationPtrEnvMS(os.Getenv(envGCPDelayThresholdMS))
-	cfg.GCPEntryCountThreshold = parseIntPtrEnv(os.Getenv(envGCPEntryCountThreshold))
-	cfg.GCPEntryByteThreshold = parseIntPtrEnv(os.Getenv(envGCPEntryByteThreshold))
-	cfg.GCPEntryByteLimit = parseIntPtrEnv(os.Getenv(envGCPEntryByteLimit))
+	cfg.GCPConcurrentWriteLimit = parseIntPtrEnv(os.Getenv(envGCPConcurrentWriteLimit), internalLogger)
+	cfg.GCPDelayThreshold = parseDurationPtrEnvMS(os.Getenv(envGCPDelayThresholdMS), internalLogger)
+	cfg.GCPEntryCountThreshold = parseIntPtrEnv(os.Getenv(envGCPEntryCountThreshold), internalLogger)
+	cfg.GCPEntryByteThreshold = parseIntPtrEnv(os.Getenv(envGCPEntryByteThreshold), internalLogger)
+	cfg.GCPEntryByteLimit = parseIntPtrEnv(os.Getenv(envGCPEntryByteLimit), internalLogger)
 	if valStr := os.Getenv(envGCPBufferedByteLimit); valStr != "" {
-		cfg.GCPBufferedByteLimit = parseIntPtrEnv(valStr) // Override slogcp default if set
+		cfg.GCPBufferedByteLimit = parseIntPtrEnv(valStr, internalLogger) // Override slogcp default if set
 	}
 
 	// Process context timeout for background API operations
@@ -354,10 +367,14 @@ func LoadConfig() (Config, error) {
 		if ms, err := strconv.Atoi(valStr); err == nil && ms > 0 {
 			cfg.GCPDefaultContextTimeout = time.Duration(ms) * time.Millisecond
 		} else if err != nil {
-			fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid integer value for %s: %s\n", envGCPContextFuncTimeoutMS, valStr)
+			logDiagnostic(internalLogger, slog.LevelWarn, "Invalid integer value for context timeout environment variable",
+				slog.String("env", envGCPContextFuncTimeoutMS),
+				slog.String("value", valStr),
+				slog.Any("error", err),
+			)
 		}
 	}
-	cfg.GCPPartialSuccess = parseBoolPtrEnv(os.Getenv(envGCPPartialSuccess))
+	cfg.GCPPartialSuccess = parseBoolPtrEnv(os.Getenv(envGCPPartialSuccess), internalLogger)
 
 	// If targeting GCP, ensure we have a parent.
 	if cfg.LogTarget == LogTargetGCP && cfg.Parent == "" {
@@ -376,7 +393,7 @@ func LoadConfig() (Config, error) {
 // parseLogTargetEnv converts a string from the environment into a LogTarget enum.
 // It handles case-insensitive matching and falls back to the provided default
 // if the string is empty or unrecognized.
-func parseLogTargetEnv(valStr string, defaultVal LogTarget) LogTarget {
+func parseLogTargetEnv(valStr string, defaultVal LogTarget, internalLogger *slog.Logger) LogTarget {
 	switch strings.ToLower(strings.TrimSpace(valStr)) {
 	case "gcp":
 		return LogTargetGCP
@@ -389,7 +406,10 @@ func parseLogTargetEnv(valStr string, defaultVal LogTarget) LogTarget {
 	case "": // Empty string means use default
 		return defaultVal
 	default:
-		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid log target value %q in env var, defaulting to %v\n", valStr, defaultVal)
+		logDiagnostic(internalLogger, slog.LevelWarn, "Invalid log target value from environment",
+			slog.String("value", valStr),
+			slog.String("default", defaultVal.String()),
+		)
 		return defaultVal
 	}
 }
@@ -397,7 +417,7 @@ func parseLogTargetEnv(valStr string, defaultVal LogTarget) LogTarget {
 // parseLevelEnv converts a level string from the environment into a slog.Level.
 // It handles standard slog levels, extended GCP levels, and numeric values.
 // Falls back to the provided default if the string is empty or invalid.
-func parseLevelEnv(levelStr string, defaultLvl slog.Level) slog.Level {
+func parseLevelEnv(levelStr string, defaultLvl slog.Level, internalLogger *slog.Logger) slog.Level {
 	trimmedLevelStr := strings.ToLower(strings.TrimSpace(levelStr))
 	if trimmedLevelStr == "" {
 		return defaultLvl
@@ -426,7 +446,10 @@ func parseLevelEnv(levelStr string, defaultLvl slog.Level) slog.Level {
 		if levelVal, err := strconv.Atoi(trimmedLevelStr); err == nil {
 			return slog.Level(levelVal)
 		}
-		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid log level value %q in env var, defaulting to %v\n", levelStr, defaultLvl)
+		logDiagnostic(internalLogger, slog.LevelWarn, "Invalid slog level value from environment",
+			slog.String("value", levelStr),
+			slog.Any("default", defaultLvl),
+		)
 		return defaultLvl
 	}
 }
@@ -434,7 +457,7 @@ func parseLevelEnv(levelStr string, defaultLvl slog.Level) slog.Level {
 // parseBoolEnv converts a boolean string from the environment into a bool.
 // It understands various representations (true/false, yes/no, 1/0, on/off).
 // Falls back to the provided default if the string is empty or unrecognized.
-func parseBoolEnv(boolStr string, defaultVal bool) bool {
+func parseBoolEnv(boolStr string, defaultVal bool, internalLogger *slog.Logger) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(boolStr))
 	if trimmed == "" {
 		return defaultVal
@@ -445,7 +468,10 @@ func parseBoolEnv(boolStr string, defaultVal bool) bool {
 	case "false", "0", "no", "off":
 		return false
 	default:
-		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid boolean value %q in env var, defaulting to %v\n", boolStr, defaultVal)
+		logDiagnostic(internalLogger, slog.LevelWarn, "Invalid boolean value from environment",
+			slog.String("value", boolStr),
+			slog.Bool("default", defaultVal),
+		)
 		return defaultVal
 	}
 }
@@ -453,7 +479,7 @@ func parseBoolEnv(boolStr string, defaultVal bool) bool {
 // parseIntPtrEnv converts an integer string from the environment into an *int.
 // Returns nil if the string is empty or invalid, which allows distinguishing
 // between unset values and explicit zeros in the configuration.
-func parseIntPtrEnv(valStr string) *int {
+func parseIntPtrEnv(valStr string, internalLogger *slog.Logger) *int {
 	trimmed := strings.TrimSpace(valStr)
 	if trimmed == "" {
 		return nil
@@ -461,14 +487,16 @@ func parseIntPtrEnv(valStr string) *int {
 	if i, err := strconv.Atoi(trimmed); err == nil {
 		return &i
 	}
-	fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid integer value %q in env var, ignoring\n", valStr)
+	logDiagnostic(internalLogger, slog.LevelWarn, "Invalid integer value from environment",
+		slog.String("value", valStr),
+	)
 	return nil
 }
 
 // parseDurationPtrEnvMS converts a millisecond value from the environment into a *time.Duration.
 // Returns nil if the string is empty or invalid, or if the parsed value is negative.
 // This is used for timeout and threshold settings that require a duration.
-func parseDurationPtrEnvMS(valStr string) *time.Duration {
+func parseDurationPtrEnvMS(valStr string, internalLogger *slog.Logger) *time.Duration {
 	trimmed := strings.TrimSpace(valStr)
 	if trimmed == "" {
 		return nil
@@ -477,14 +505,16 @@ func parseDurationPtrEnvMS(valStr string) *time.Duration {
 		d := time.Duration(ms) * time.Millisecond
 		return &d
 	}
-	fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid non-negative millisecond value %q in env var, ignoring\n", valStr)
+	logDiagnostic(internalLogger, slog.LevelWarn, "Invalid millisecond duration value from environment",
+		slog.String("value", valStr),
+	)
 	return nil
 }
 
 // parseBoolPtrEnv converts a boolean string from the environment into a *bool.
 // Returns nil if the string is empty or invalid, which allows distinguishing
 // between unset values and explicit false values in the configuration.
-func parseBoolPtrEnv(valStr string) *bool {
+func parseBoolPtrEnv(valStr string, internalLogger *slog.Logger) *bool {
 	trimmed := strings.ToLower(strings.TrimSpace(valStr))
 	if trimmed == "" {
 		return nil
@@ -497,7 +527,9 @@ func parseBoolPtrEnv(valStr string) *bool {
 		b := false
 		return &b
 	default:
-		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: Invalid boolean value %q in env var, ignoring\n", valStr)
+		logDiagnostic(internalLogger, slog.LevelWarn, "Invalid boolean pointer value from environment",
+			slog.String("value", valStr),
+		)
 		return nil
 	}
 }
@@ -553,7 +585,7 @@ func NormalizeLogID(s string) (string, error) {
 	return normalizeLogID(s)
 }
 
-func detectOnGCE(timeout time.Duration) bool {
+func detectOnGCE(timeout time.Duration, internalLogger *slog.Logger) bool {
 	resultCh := make(chan bool, 1)
 	go func() {
 		resultCh <- metadata.OnGCE()
@@ -562,7 +594,9 @@ func detectOnGCE(timeout time.Duration) bool {
 	case onGCE := <-resultCh:
 		return onGCE
 	case <-time.After(timeout):
-		fmt.Fprintf(os.Stderr, "[slogcp config] WARNING: metadata.OnGCE() did not return within %s; assuming not running on GCE\n", timeout)
+		logDiagnostic(internalLogger, slog.LevelWarn, "metadata.OnGCE did not return before timeout",
+			slog.Duration("timeout", timeout),
+		)
 		return false
 	}
 }

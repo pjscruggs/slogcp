@@ -26,8 +26,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-
-	"github.com/pjscruggs/slogcp"
 )
 
 // wrappedClientStream wraps an existing grpc.ClientStream to provide logging.
@@ -35,7 +33,7 @@ type wrappedClientStream struct {
 	grpc.ClientStream // Embed the original stream interface.
 
 	// Immutable fields set on creation
-	logger    *slogcp.Logger  // Logger instance for recording events.
+	logger    *slog.Logger    // Logger instance for recording events.
 	opts      *options        // Processed configuration options for logging behavior.
 	ctx       context.Context // Original context, retaining trace information.
 	startTime time.Time       // Timestamp when the interceptor was invoked.
@@ -54,7 +52,7 @@ type wrappedClientStream struct {
 }
 
 // NewStreamClientInterceptor returns a new streaming client interceptor.
-func NewStreamClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.StreamClientInterceptor {
+func NewStreamClientInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamClientInterceptor {
 	cfg := processOptions(opts...) // Process configuration options.
 
 	return func(

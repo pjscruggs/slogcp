@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"os"
 	"sync"
 
 	"cloud.google.com/go/logging"
@@ -58,9 +57,10 @@ func (r *RealGcpLogger) Flush() error        { return r.Logger.Flush() }
 // ClientManager manages the lifecycle and interactions with the Cloud Logging client.
 // It structurally implements the public slogcp.ClientManagerInterface.
 type ClientManager struct {
-	cfg         Config
-	userAgent   string
-	newClientFn newClientFuncType // Uses internal gcpClientAPI
+	cfg            Config
+	userAgent      string
+	newClientFn    newClientFuncType // Uses internal gcpClientAPI
+	internalLogger *slog.Logger
 
 	client    gcpClientAPI   // Holds internal interface
 	logger    *RealGcpLogger // Holds the concrete logger type
@@ -74,12 +74,14 @@ type ClientManager struct {
 type newClientFuncType func(ctx context.Context, parent string, onError func(error), opts ...option.ClientOption) (gcpClientAPI, error)
 
 // NewClientManager creates a new ClientManager. This is the internal constructor.
-// It requires the resolved Config, user agent string, and the slog.LevelVar.
-func NewClientManager(cfg Config, userAgent string, levelVar *slog.LevelVar) *ClientManager {
+// It requires the resolved Config, user agent string, slog.LevelVar, and an optional
+// internal diagnostics logger used for reporting lifecycle events.
+func NewClientManager(cfg Config, userAgent string, levelVar *slog.LevelVar, internalLogger *slog.Logger) *ClientManager {
 	cm := &ClientManager{
-		cfg:       cfg,
-		userAgent: userAgent,
-		levelVar:  levelVar,
+		cfg:            cfg,
+		userAgent:      userAgent,
+		levelVar:       levelVar,
+		internalLogger: internalLogger,
 	}
 	// Assign the production factory function for creating the real client.
 	cm.newClientFn = func(ctx context.Context, parent string, onError func(error), clientAPIOpts ...option.ClientOption) (gcpClientAPI, error) {
@@ -88,13 +90,12 @@ func NewClientManager(cfg Config, userAgent string, levelVar *slog.LevelVar) *Cl
 			return nil, err
 		}
 		// Set OnError immediately after creation using the provided function.
-		// If onError is nil, use a default that logs to stderr.
+		// If onError is nil, use a default that logs through the diagnostics logger.
 		if onError != nil {
 			realClient.OnError = onError
 		} else {
 			realClient.OnError = func(err error) {
-				// Default error handler logs to stderr.
-				fmt.Fprintf(os.Stderr, "[slogcp client background] ERROR: %v\n", err)
+				logDiagnostic(cm.internalLogger, slog.LevelError, "Cloud Logging background error", slog.Any("error", err))
 			}
 		}
 		return &realGcpClientWrapper{realClient: realClient}, nil
@@ -223,41 +224,47 @@ func (cm *ClientManager) Close() error {
 	var closeErr error
 	cm.closeOnce.Do(func() {
 		if cm.initErr != nil {
-			fmt.Fprintf(os.Stderr, "[slogcp client] INFO: Close called but initialization previously failed: %v\n", cm.initErr)
+			logDiagnostic(cm.internalLogger, slog.LevelInfo, "Close called after initialization failure",
+				slog.Any("error", cm.initErr),
+			)
 			closeErr = cm.initErr
 			return
 		}
 		if cm.client == nil {
-			fmt.Fprintf(os.Stderr, "[slogcp client] INFO: Close called but client is nil (not initialized).\n")
+			logDiagnostic(cm.internalLogger, slog.LevelInfo, "Close called before client initialization")
 			closeErr = ErrClientNotInitialized
 			return
 		}
 
-		fmt.Fprintf(os.Stderr, "[slogcp client] INFO: Closing Cloud Logging client...\n")
+		logDiagnostic(cm.internalLogger, slog.LevelInfo, "Closing Cloud Logging client")
 		if cm.logger != nil {
-			fmt.Fprintf(os.Stderr, "[slogcp client] INFO: Flushing logs...\n")
+			logDiagnostic(cm.internalLogger, slog.LevelInfo, "Flushing Cloud Logging client")
 			// Call concrete type's method
 			if flushErr := cm.logger.Flush(); flushErr != nil {
 				if closeErr == nil {
 					closeErr = flushErr
 				}
-				fmt.Fprintf(os.Stderr, "[slogcp client] WARNING: Error flushing logs during close: %v\n", flushErr)
+				logDiagnostic(cm.internalLogger, slog.LevelWarn, "Error flushing logs during close",
+					slog.Any("error", flushErr),
+				)
 			} else {
-				fmt.Fprintf(os.Stderr, "[slogcp client] INFO: Log flush completed.\n")
+				logDiagnostic(cm.internalLogger, slog.LevelInfo, "Log flush completed")
 			}
 		} else {
-			fmt.Fprintf(os.Stderr, "[slogcp client] WARNING: Client exists but logger is nil during close, cannot flush.\n")
+			logDiagnostic(cm.internalLogger, slog.LevelWarn, "Client exists but logger is nil during close; skipping flush")
 			if closeErr == nil {
 				closeErr = errors.New("internal inconsistency: client exists but logger is nil during close")
 			}
 		}
 		// Close the underlying client connection via the internal interface
 		if clientCloseErr := cm.client.Close(); clientCloseErr != nil {
-			fmt.Fprintf(os.Stderr, "[slogcp client] ERROR: Error closing cloud logging client: %v\n", clientCloseErr)
+			logDiagnostic(cm.internalLogger, slog.LevelError, "Error closing Cloud Logging client",
+				slog.Any("error", clientCloseErr),
+			)
 			// Prioritize client close error
 			closeErr = clientCloseErr
 		} else {
-			fmt.Fprintf(os.Stderr, "[slogcp client] INFO: Cloud Logging client closed.\n")
+			logDiagnostic(cm.internalLogger, slog.LevelInfo, "Cloud Logging client closed")
 		}
 	})
 	return closeErr
@@ -275,7 +282,9 @@ func (cm *ClientManager) Flush() error {
 	// Call concrete type's method
 	err := cm.logger.Flush()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[slogcp client] ERROR: Failed to flush logs: %v\n", err)
+		logDiagnostic(cm.internalLogger, slog.LevelError, "Failed to flush Cloud Logging client",
+			slog.Any("error", err),
+		)
 		return err
 	}
 	return nil

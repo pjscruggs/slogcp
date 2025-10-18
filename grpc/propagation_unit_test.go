@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -34,11 +35,16 @@ import (
 
 func TestWithTracePropagationUnaryClient(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
-	lg, err := slogcp.New(slogcp.WithRedirectWriter(io.Discard), slogcp.WithLogTarget(slogcp.LogTargetStdout))
+	h, err := slogcp.NewHandler(io.Discard, slogcp.WithLogTarget(slogcp.LogTargetStdout))
 	if err != nil {
-		t.Fatalf("slogcp.New() returned %v", err)
+		t.Fatalf("NewHandler() returned %v", err)
 	}
-	defer lg.Close()
+	defer func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v", cerr)
+		}
+	}()
+	lg := slog.New(h)
 
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    mustTraceID(t, "70f5c2c7b3c0d8eead4837399ac5b327"),
@@ -84,11 +90,20 @@ func TestWithTracePropagationUnaryClient(t *testing.T) {
 func TestContextOnlyServerStream(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	var buf bytes.Buffer
-	lg, err := slogcp.New(slogcp.WithRedirectWriter(&buf), slogcp.WithLogTarget(slogcp.LogTargetStdout))
+	h, err := slogcp.NewHandler(io.Discard,
+		slogcp.WithLogTarget(slogcp.LogTargetStdout),
+		slogcp.WithRedirectWriter(&buf),
+	)
 	if err != nil {
-		t.Fatalf("slogcp.New() returned %v", err)
+		t.Fatalf("NewHandler() returned %v", err)
 	}
-	defer lg.Close()
+	defer func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v", cerr)
+		}
+	}()
+
+	lg := slog.New(h)
 
 	interceptor := StreamServerInterceptor(lg, WithShouldLog(func(context.Context, string) bool { return false }), WithMetadataLogging(true), WithPayloadLogging(true))
 

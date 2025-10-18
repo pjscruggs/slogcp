@@ -24,13 +24,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-
-	"github.com/pjscruggs/slogcp"
 )
 
 // NewUnaryClientInterceptor creates a gRPC unary client interceptor that logs RPC calls
-// using the provided slogcp logger and configuration options.
-func NewUnaryClientInterceptor(logger *slogcp.Logger, opts ...Option) grpc.UnaryClientInterceptor {
+// using the provided slog logger and configuration options.
+func NewUnaryClientInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryClientInterceptor {
 	// Process the provided options to get the final configuration.
 	cfg := processOptions(opts...)
 

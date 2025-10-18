@@ -25,14 +25,14 @@ import (
 // gcpHandler when slogcp is configured to log to a specific file path,
 // for example, when using the slogcp.WithRedirectToFile option.
 //
-// This design enables the slogcp.Logger.ReopenLogFile method to update the
+// This design enables the slogcp.Handler.ReopenLogFile method to update the
 // handler's output destination (e.g., after an external log rotation event)
 // without needing to reconstruct the entire logging handler chain.
 //
 // SwitchableWriter also implements io.Closer. Its Close method attempts to
 // close the underlying writer if it implements io.Closer and then sets the
 // internal writer to io.Discard to prevent further writes. The actual closing
-// of file resources managed by slogcp is handled by the slogcp.Logger.
+// of file resources managed by slogcp is handled by the slogcp.Handler.
 type SwitchableWriter struct {
 	mu sync.Mutex
 	w  io.Writer

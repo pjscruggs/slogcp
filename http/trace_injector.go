@@ -75,9 +75,9 @@ func injectTraceContextFromHeader(ctx context.Context, header string) context.Co
 	// Split once on ';' to separate options (if present).
 	idPart := header
 	optionsStr := ""
-	if semi := strings.Index(header, ";"); semi != -1 {
-		idPart = header[:semi]
-		optionsStr = header[semi+1:]
+	if cutID, opts, ok := strings.Cut(header, ";"); ok {
+		idPart = cutID
+		optionsStr = opts
 	}
 
 	// idPart may be just TRACE_ID or TRACE_ID/SPAN_ID

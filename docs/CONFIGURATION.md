@@ -6,8 +6,8 @@ This document provides a comprehensive guide to configuring the `slogcp` library
 
 `slogcp` uses a layered configuration approach:
 1.  **Defaults**: Sensible defaults are applied first.
-2.  **Environment Variables**: Override defaults. These are loaded when `slogcp.New()` is called.
-3.  **Programmatic Options**: Options passed to `slogcp.New(opts ...Option)` override both defaults and environment variables.
+2.  **Environment Variables**: Override defaults. These are loaded when `slogcp.NewHandler(defaultWriter)` is called.
+3.  **Programmatic Options**: Options passed to `slogcp.NewHandler(defaultWriter, opts ...Option)` override both defaults and environment variables.
 
 This allows for flexible configuration suitable for various deployment environments.
 
@@ -15,9 +15,9 @@ This allows for flexible configuration suitable for various deployment environme
 
 All boolean environment variables in `slogcp` accept `true`, `1`, `yes`, or `on` (case-insensitive) to enable a feature. They accept `false`, `0`, `no`, or `off` to disable it. If any other value is supplied, the configuration keeps its default.
 
-## Core Logger Configuration (`slogcp.New`)
+## Core Handler Configuration (`slogcp.NewHandler`)
 
-These options configure the main `slogcp.Logger` instance.
+These options configure the main `*slog.Logger` instance.
 
 ### Log Level
 
@@ -71,7 +71,7 @@ Determines where log entries are sent.
 #### Custom `io.Writer`
 -   Use `slogcp.WithRedirectWriter(writer)` to log to any `io.Writer`.
 -   This is ideal for integrating with libraries like `lumberjack` for self-rotating logs.
--   If the provided writer implements `io.Closer`, `logger.Close()` will call the writer's `Close()` method.
+-   If the provided writer implements `io.Closer`, `handler.Close()` will call the writer's `Close()` method.
 
 ### Source Code Location
 
@@ -141,7 +141,7 @@ Required when `LogTarget` is `LogTargetGCP`. The Parent resource (e.g., `project
     2.  `SLOGCP_PROJECT_ID`: Sets the Project ID. Parent defaults to `projects/YOUR_SLOGCP_PROJECT_ID`.
     3.  `GOOGLE_CLOUD_PROJECT`: Standard GCP environment variable for Project ID. Parent defaults to `projects/YOUR_GOOGLE_CLOUD_PROJECT`.
 -   **Metadata Server**: If running on GCP (e.g., GCE, GKE, Cloud Run) and no environment variables are set, the Project ID is auto-detected from the metadata server. Parent defaults to `projects/DETECTED_PROJECT_ID`.
--   **Default**: None. If `LogTargetGCP` is used and no Project ID/Parent can be resolved, `slogcp.New()` will either return an error or automatically fall back to `stdout` logging (see below).
+-   **Default**: None. If `LogTargetGCP` is used and no Project ID/Parent can be resolved, `slogcp.NewHandler(defaultWriter)` will either return an error or automatically fall back to `stdout` logging (see below).
 
 ### Cross-project Trace Linking
 
@@ -155,7 +155,7 @@ When logs are written in one project but traces live in another, you can direct 
 
 ### Automatic Fallback Mode
 
-If `LogTargetGCP` is explicitly configured (e.g., via `slogcp.WithLogTarget(slogcp.LogTargetGCP)` or `SLOGCP_LOG_TARGET=gcp`) and initialization fails (e.g., due to missing credentials or project ID when running locally), `slogcp.New()` will automatically fall back to structured JSON logging on `stdout`.
+If `LogTargetGCP` is explicitly configured (e.g., via `slogcp.WithLogTarget(slogcp.LogTargetGCP)` or `SLOGCP_LOG_TARGET=gcp`) and initialization fails (e.g., due to missing credentials or project ID when running locally), `slogcp.NewHandler(defaultWriter)` will automatically fall back to structured JSON logging on `stdout`.
 
 This behavior is designed to simplify local development, allowing the same code to log to GCP in production and `stdout` locally without changes.
 
@@ -197,8 +197,8 @@ Invalid values are ignored so that programmatic options can supply explicit over
 
 It's crucial to close the logger to ensure all buffered logs are flushed and resources are released.
 
--   **Method**: `logger.Close() error`
--   Call this method during application shutdown, typically using `defer logger.Close()`.
+-   **Method**: `handler.Close() error`
+-   Call this method during application shutdown, typically using `defer handler.Close()`.
 -   `Close()` is idempotent (safe to call multiple times).
 -   Behavior:
     -   **GCP Mode**: Flushes logs to Cloud Logging and closes the client.
@@ -322,7 +322,7 @@ The `github.com/pjscruggs/slogcp/http` subpackage provides server middleware **a
 `slogcphttp.Middleware(logger *slog.Logger) func(http.Handler) http.Handler`
 
 Wraps an `http.Handler` to log request and response details.
--   **Input**: Requires an `*slog.Logger`. You can pass `slogcpLogger.Logger`.
+-   **Input**: Requires an `*slog.Logger`. You can pass `logger`.
 -   **Log Content**:
     -   Method, URL, request size (from `Content-Length`), status code, response size, latency, and remote IP.
     -   These fields populate a `logging.HTTPRequest`, which `slogcp`'s handler forwards to the `httpRequest` field in Cloud Logging.
@@ -340,7 +340,7 @@ Wraps an `http.Handler` to log request and response details.
 Specifically processes the `X-Cloud-Trace-Context` header (used by Google Cloud services like Load Balancers and App Engine) and injects the parsed trace information into the request's `context.Context`.
 -   **Usage**: Place this middleware *before* `slogcphttp.Middleware` or any other middleware that consumes trace context if you need to ensure `X-Cloud-Trace-Context` is prioritized or handled when a global OTel propagator might not be configured for it.
     ```go
-    handler := slogcphttp.Middleware(slogcpLogger.Logger)(
+    handler := slogcphttp.Middleware(logger)(
         slogcphttp.InjectTraceContextMiddleware()(myAppHandler),
     )
     ```
@@ -405,8 +405,8 @@ These options are applicable to both client and server interceptors. They are pa
 
 ### Server Interceptors
 
-* `slogcpgrpc.UnaryServerInterceptor(logger *slogcp.Logger, opts ...Option)`
-* `slogcpgrpc.StreamServerInterceptor(logger *slogcp.Logger, opts ...Option)`
+* `slogcpgrpc.UnaryServerInterceptor(logger *slog.Logger, opts ...Option)`
+* `slogcpgrpc.StreamServerInterceptor(logger *slog.Logger, opts ...Option)`
 
 These interceptors log:
 
@@ -421,8 +421,8 @@ Trace context is extracted from the incoming `context.Context` and included in l
 
 ### Client Interceptors
 
-* `slogcpgrpc.NewUnaryClientInterceptor(logger *slogcp.Logger, opts ...Option)`
-* `slogcpgrpc.NewStreamClientInterceptor(logger *slogcp.Logger, opts ...Option)`
+* `slogcpgrpc.NewUnaryClientInterceptor(logger *slog.Logger, opts ...Option)`
+* `slogcpgrpc.NewStreamClientInterceptor(logger *slog.Logger, opts ...Option)`
 
 These interceptors log:
 
@@ -506,11 +506,11 @@ import (
 )
 
 func main() {
-	logger, err := slogcp.New()
+	logger, err := slogcp.NewHandler(defaultWriter)
 	if err != nil {
 		log.Fatalf("Failed to create logger: %v", err)
 	}
-	defer logger.Close() // Crucial for flushing logs
+	defer handler.Close() // Crucial for flushing logs
 
 	logger.Info("Application started", "version", "1.0.0", "pid", 12345)
 	logger.Error("Something went wrong", "error", "simulated error", "retry_count", 3)
@@ -536,7 +536,8 @@ import (
 )
 
 func main() {
-	logger, err := slogcp.New(
+	handler, err := slogcp.NewHandler(os.Stdout,
+
 		slogcp.WithRedirectToStdout(),
 		slogcp.WithLevel(slog.LevelDebug), // Use standard slog.LevelDebug
 		slogcp.WithSourceLocationEnabled(true),
@@ -544,7 +545,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create logger: %v", err)
 	}
-	defer logger.Close()
+	defer handler.Close()
 
 	logger.Debug("This is a debug message", "detail", "some internal state")
 	logger.Info("Application running in local mode")
@@ -581,15 +582,16 @@ func main() {
 		Compress:   true,
 	}
 
-	logger, err := slogcp.New(
+	handler, err := slogcp.NewHandler(os.Stdout,
+
 		slogcp.WithRedirectWriter(logFile), // Pass the lumberjack writer
 		slogcp.WithLevel(slogcp.LevelInfo),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create logger: %v", err)
 	}
-	// logger.Close() will also call logFile.Close() because lumberjack.Logger implements io.Closer
-	defer logger.Close() 
+	// handler.Close() will also call logFile.Close() because lumberjack.Logger implements io.Closer
+	defer handler.Close() 
 
 	logger.Info("Logging to a rotating file", "path", logFile.Filename)
 }
@@ -617,11 +619,13 @@ import (
 )
 
 func main() {
-	slogcpLogger, err := slogcp.New(slogcp.WithRedirectToStdout()) // Local example
+	handler, err := slogcp.NewHandler(os.Stdout,
+    slogcp.WithRedirectToStdout(),
+) // Local example
 	if err != nil {
 		log.Fatalf("Failed to create slogcp logger: %v", err)
 	}
-	defer slogcpLogger.Close()
+	defer slogcphandler.Close()
 
 	shouldLogRPC := func(ctx context.Context, fullMethodName string) bool {
 		return !strings.HasPrefix(fullMethodName, "/grpc.health.v1.Health/")
@@ -629,13 +633,13 @@ func main() {
 
 	server := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
-			slogcpgrpc.UnaryServerInterceptor(slogcpLogger,
+			slogcpgrpc.UnaryServerInterceptor(logger,
 				slogcpgrpc.WithShouldLog(shouldLogRPC),
 				slogcpgrpc.WithMetadataLogging(true),
 			),
 		),
 		grpc.ChainStreamInterceptor(
-			slogcpgrpc.StreamServerInterceptor(slogcpLogger,
+			slogcpgrpc.StreamServerInterceptor(logger,
 				slogcpgrpc.WithShouldLog(shouldLogRPC),
 			),
 		),
@@ -649,9 +653,9 @@ func main() {
 		log.Fatalf("Failed to listen: %v", err)
 	}
 
-	slogcpLogger.Info("gRPC server starting", "address", lis.Addr().String())
+	logger.Info("gRPC server starting", "address", lis.Addr().String())
 	if err := server.Serve(lis); err != nil {
-		slogcpLogger.Error("gRPC server failed", "error", err)
+		logger.Error("gRPC server failed", "error", err)
 	}
 }
 ```
@@ -676,3 +680,6 @@ resp, err := client.Do(req)
 ```
 
 > Downstream services that use `slogcp` (or the Cloud Logging Go client) will auto-link their logs to the same trace when `HTTPRequest.Request` is passed in their handler and the headers are present.
+
+
+
