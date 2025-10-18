@@ -110,7 +110,7 @@ func (s *recordingState) Count() int {
 func TestResolveRemoteIP(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	req.RemoteAddr = "192.0.2.1:443"
-	if got := resolveRemoteIP(req, false); got != "192.0.2.1" {
+	if got := resolveRemoteIP(req, false, nil); got != "192.0.2.1" {
 		t.Fatalf("resolveRemoteIP without proxy headers = %q, want 192.0.2.1", got)
 	}
 
@@ -118,14 +118,14 @@ func TestResolveRemoteIP(t *testing.T) {
 	req.RemoteAddr = "198.51.100.10:1234"
 	req.Header.Add("X-Forwarded-For", " , , 203.0.113.5 , 10.0.0.1")
 	req.Header.Add("X-Forwarded-For", " 198.51.100.9")
-	if got := resolveRemoteIP(req, true); got != "203.0.113.5" {
+	if got := resolveRemoteIP(req, true, nil); got != "203.0.113.5" {
 		t.Fatalf("resolveRemoteIP with X-Forwarded-For = %q, want 203.0.113.5", got)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	req.RemoteAddr = "198.51.100.10:1234"
 	req.Header.Set("X-Real-IP", "2001:db8::1")
-	if got := resolveRemoteIP(req, true); got != "2001:db8::1" {
+	if got := resolveRemoteIP(req, true, nil); got != "2001:db8::1" {
 		t.Fatalf("resolveRemoteIP with X-Real-IP = %q, want 2001:db8::1", got)
 	}
 }

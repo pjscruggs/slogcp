@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"runtime"
 	"strconv"
 	"sync"
@@ -46,10 +45,11 @@ type groupedAttr struct {
 }
 
 type payloadState struct {
-	root     map[string]any
-	labels   map[string]string
-	freeMaps []map[string]any
-	usedMaps []map[string]any
+	root       map[string]any
+	labels     map[string]string
+	freeMaps   []map[string]any
+	usedMaps   []map[string]any
+	groupStack []string
 }
 
 func (ps *payloadState) prepare(capacity int) map[string]any {
@@ -102,6 +102,7 @@ func (ps *payloadState) recycle() {
 	if ps.labels != nil {
 		clearStringMap(ps.labels)
 	}
+	ps.groupStack = ps.groupStack[:0]
 }
 
 var payloadStatePool = sync.Pool{
@@ -128,13 +129,6 @@ var labelStringBufferPool = sync.Pool{
 	},
 }
 
-var pcBufferPool = sync.Pool{
-	New: func() any {
-		buf := make([]uintptr, 64)
-		return &buf
-	},
-}
-
 // gcpHandler formats slog.Records for Google Cloud Logging or JSON output.
 type gcpHandler struct {
 	mu             sync.Mutex
@@ -142,9 +136,14 @@ type gcpHandler struct {
 	entryLog       entryLogger
 	redirectWriter io.Writer
 	leveler        slog.Leveler
+	internalLogger *slog.Logger
 
 	groupedAttrs []groupedAttr
 	groups       []string
+
+	runtimeLabels            map[string]string
+	runtimeServiceContext    map[string]string
+	runtimeServiceContextAny map[string]any
 }
 
 // NewGcpHandler returns a new gcpHandler configured for Google Cloud Logging or JSON output.
@@ -152,6 +151,8 @@ func NewGcpHandler(
 	cfg Config,
 	gcpEntryLogger entryLogger,
 	leveler slog.Leveler,
+	internalLogger *slog.Logger,
+	runtime RuntimeInfo,
 ) *gcpHandler {
 	if leveler == nil {
 		leveler = slog.LevelInfo
@@ -163,6 +164,16 @@ func NewGcpHandler(
 		leveler:        leveler,
 		groupedAttrs:   make([]groupedAttr, 0, len(cfg.InitialAttrs)),
 		groups:         make([]string, 0, 1),
+		internalLogger: internalLogger,
+	}
+	if len(runtime.Labels) > 0 {
+		h.runtimeLabels = cloneStringMap(runtime.Labels)
+	}
+	if len(runtime.ServiceContext) > 0 {
+		h.runtimeServiceContext = cloneStringMap(runtime.ServiceContext)
+		if len(h.runtimeServiceContext) > 0 {
+			h.runtimeServiceContextAny = stringMapToAny(h.runtimeServiceContext)
+		}
 	}
 	if cfg.InitialGroup != "" {
 		h.groups = append(h.groups, cfg.InitialGroup)
@@ -241,12 +252,19 @@ func (h *gcpHandler) Handle(ctx context.Context, r slog.Record) error {
 				mergedLabels[k] = v
 			}
 		}
-		if len(mergedLabels) > 0 {
-			payload["logging.googleapis.com/labels"] = mergedLabels
+	}
+
+	finalLabels := mergeStringMaps(h.runtimeLabels, mergedLabels)
+	if len(finalLabels) > 0 {
+		payload["logging.googleapis.com/labels"] = finalLabels
+	}
+	if len(h.runtimeServiceContext) > 0 {
+		if _, exists := payload["serviceContext"]; !exists {
+			payload["serviceContext"] = h.runtimeServiceContextAny
 		}
 	}
 
-	return h.emitRedirectJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr, mergedLabels)
+	return h.emitRedirectJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr, finalLabels)
 }
 
 // buildPayload assembles the structured payload, extracts HTTPRequest, error type/message, stack trace, and labels.
@@ -341,7 +359,19 @@ func (h *gcpHandler) buildPayload(r slog.Record, buildProto bool, state *payload
 		return child
 	}
 
-	groupStack := make([]string, 0, len(baseGroups)+4)
+	requiredStackCap := len(baseGroups) + 4
+	if requiredStackCap < 4 {
+		requiredStackCap = 4
+	}
+	var groupStack []string
+	if state != nil {
+		groupStack = state.groupStack[:0]
+		if cap(groupStack) < requiredStackCap {
+			groupStack = make([]string, 0, requiredStackCap)
+		}
+	} else {
+		groupStack = make([]string, 0, requiredStackCap)
+	}
 
 	loadGroups := func(groups []string) (int, map[string]any, *structpb.Struct) {
 		groupStack = append(groupStack[:0], groups...)
@@ -450,12 +480,8 @@ func (h *gcpHandler) buildPayload(r slog.Record, buildProto bool, state *payload
 			if currProto.Fields == nil {
 				currProto.Fields = make(map[string]*structpb.Value, 4)
 			}
-			var protoVal *structpb.Value
-			if v, ok := slogValueToProto(a.Value); ok {
-				protoVal = v
-			} else if v, ok := anyToProtoValue(val, 0); ok {
-				protoVal = v
-			} else {
+			protoVal, ok := anyToProtoValue(val, 0)
+			if !ok {
 				protoSuccess = false
 				protoRoot = nil
 				return
@@ -493,6 +519,9 @@ func (h *gcpHandler) buildPayload(r slog.Record, buildProto bool, state *payload
 
 	if !protoSuccess {
 		protoRoot = nil
+	}
+	if state != nil {
+		state.groupStack = groupStack[:0]
 	}
 	return payload, protoRoot, httpReq, errType, errMsg, stackStr, dynamicLabels
 }
@@ -614,6 +643,11 @@ func (h *gcpHandler) emitRedirectJSON(
 	if stackStr != "" {
 		jsonPayload["stack_trace"] = stackStr
 	}
+	if len(h.runtimeServiceContext) > 0 {
+		if _, exists := jsonPayload["serviceContext"]; !exists {
+			jsonPayload["serviceContext"] = h.runtimeServiceContextAny
+		}
+	}
 	if httpReq != nil {
 		if m := flattenHTTPRequestToMap(httpReq); m != nil {
 			jsonPayload["httpRequest"] = m
@@ -661,10 +695,54 @@ func (h *gcpHandler) emitRedirectJSON(
 	enc.SetEscapeHTML(false)
 	err := enc.Encode(jsonPayload)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[slogcp handler redirect] ERROR writing log entry: %v\n", err)
+		logDiagnostic(h.internalLogger, slog.LevelError, "Failed to write JSON log entry to redirect writer",
+			slog.Any("error", err),
+		)
 		return err
 	}
 	return nil
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dup := make(map[string]string, len(src))
+	for k, v := range src {
+		dup[k] = v
+	}
+	return dup
+}
+
+func mergeStringMaps(base, overlay map[string]string) map[string]string {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	if len(base) == 0 {
+		return cloneStringMap(overlay)
+	}
+	if len(overlay) == 0 {
+		return cloneStringMap(base)
+	}
+	merged := make(map[string]string, len(base)+len(overlay))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range overlay {
+		merged[k] = v
+	}
+	return merged
+}
+
+func stringMapToAny(src map[string]string) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 func containsGroup(groups []string, target string) bool {
@@ -749,7 +827,9 @@ func (h *gcpHandler) resolveSourceLocation(r slog.Record) *loggingpb.LogEntrySou
 	//		}
 	//	}
 
-	frames := runtime.CallersFrames([]uintptr{r.PC})
+	var pcs [1]uintptr
+	pcs[0] = r.PC
+	frames := runtime.CallersFrames(pcs[:])
 	frame, _ := frames.Next() // more is irrelevant for a single frame
 
 	if frame.Function == "" { // defensive: runtime couldn't resolve symbol
@@ -808,19 +888,7 @@ func (h *gcpHandler) cloneLocked() *gcpHandler {
 
 // captureAndFormatFallbackStack captures a stack trace for fallback.
 func captureAndFormatFallbackStack() string {
-	bufPtr := pcBufferPool.Get().(*[]uintptr)
-	pcs := (*bufPtr)[:cap(*bufPtr)]
-	n := runtime.Callers(0, pcs)
-	if n == 0 {
-		pcBufferPool.Put(bufPtr)
-		return ""
-	}
-	trimmed := trimFallbackStackPCs(pcs[:n])
-	if len(trimmed) == 0 {
-		trimmed = pcs[:n]
-	}
-	stack := formatPCsToStackString(trimmed)
-	pcBufferPool.Put(bufPtr)
+	stack, _ := CaptureStack(SkipInternalStackFrame)
 	return stack
 }
 

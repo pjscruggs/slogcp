@@ -40,11 +40,13 @@
 // # Basic Usage (server)
 //
 //	// Assumes GOOGLE_CLOUD_PROJECT is set or running on GCP.
-//	slogcpLogger, err := slogcp.New()
+//	handler, err := slogcp.NewHandler(os.Stdout)
 //	if err != nil {
-//	    log.Fatalf("failed to create slogcp logger: %v", err)
+//	    log.Fatalf("failed to create slogcp handler: %v", err)
 //	}
-//	defer slogcpLogger.Close()
+//	defer handler.Close()
+//
+//	logger := slog.New(handler)
 //
 //	// Import the middleware package
 //	import slogcphttp "github.com/pjscruggs/slogcp/http"
@@ -55,7 +57,7 @@
 //	})
 //
 //	// The trace injector should come before the main logging middleware.
-//	handler := slogcphttp.Middleware(slogcpLogger.Logger)(
+//	wrapped := slogcphttp.Middleware(logger)(
 //	    slogcphttp.InjectTraceContextMiddleware()(myHandler),
 //	)
 //

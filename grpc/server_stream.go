@@ -19,15 +19,16 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-
-	"github.com/pjscruggs/slogcp"
 )
+
+const streamServerInstrumentation = "github.com/pjscruggs/slogcp/grpc/serverstream"
 
 // wrappedServerStream wraps an existing grpc.ServerStream to intercept SendMsg
 // and RecvMsg calls. This allows for optional logging of message payloads
@@ -37,7 +38,7 @@ import (
 type wrappedServerStream struct {
 	grpc.ServerStream
 	ctx    context.Context // The context associated with this stream, potentially modified by interceptors.
-	logger *slogcp.Logger  // The logger instance used for payload logging.
+	logger *slog.Logger    // The logger instance used for payload logging.
 	opts   *options        // Configuration options determining logging behavior (e.g., payload logging enabled).
 }
 
@@ -96,7 +97,7 @@ func (w *wrappedServerStream) Context() context.Context {
 }
 
 // StreamServerInterceptor returns a new streaming server interceptor ([grpc.StreamServerInterceptor])
-// that logs incoming gRPC streams using the provided [slogcp.Logger].
+// that logs incoming gRPC streams using the provided [slog.Logger].
 //
 // It automatically logs the gRPC service and method name, stream duration, final
 // gRPC status code, peer address, and any error returned by the handler upon
@@ -120,7 +121,7 @@ func (w *wrappedServerStream) Context() context.Context {
 // Behavior can be further customized using other [Option] functions like [WithLevels]
 // and [WithShouldLog]. By default, all streams are logged, payloads are not logged,
 // and a standard mapping from gRPC status codes to log levels is used.
-func StreamServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.StreamServerInterceptor {
+func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamServerInterceptor {
 	// Process functional options to get the final configuration.
 	cfg := processOptions(opts...)
 
@@ -147,6 +148,27 @@ func StreamServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.StreamS
 				}
 			}
 			ctx = ctxExtracted
+		}
+
+		tracer := cfg.tracer
+		if tracer == nil {
+			tracer = otel.Tracer(streamServerInstrumentation)
+		}
+
+		var startedSpan trace.Span
+		if cfg.startSpanIfAbsent && !trace.SpanContextFromContext(ctx).IsValid() {
+			ctx, startedSpan = tracer.Start(ctx, info.FullMethod, trace.WithSpanKind(trace.SpanKindServer))
+			defer startedSpan.End()
+		}
+
+		activeLogger := logger
+		if cfg.attachLogger {
+			reqLogger := logger
+			if attrs, ok := slogcp.TraceAttributes(ctx, cfg.traceProjectID); ok {
+				reqLogger = loggerWithAttrs(reqLogger, attrs)
+			}
+			ctx = slogcp.ContextWithLogger(ctx, reqLogger)
+			activeLogger = reqLogger
 		}
 
 		// Check if this call should be logged based on the filter function.
@@ -188,14 +210,14 @@ func StreamServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.StreamS
 		if cfg.logCategory != "" {
 			startAttrs = append(startAttrs, slog.String(categoryKey, cfg.logCategory))
 		}
-		logger.LogAttrs(ctx, slog.LevelInfo, "Starting gRPC stream", startAttrs...)
+		activeLogger.LogAttrs(ctx, slog.LevelInfo, "Starting gRPC stream", startAttrs...)
 
 		// Setup panic recovery and final logging. This defer runs after the handler returns or panics.
 		defer func() {
 			// Handle potential panics from the handler.
 			// Pass logger and context to handlePanic for immediate logging.
 			// handlePanic uses the logger directly, which uses the context-aware handler.
-			isPanic, panicErr := handlePanic(ctx, logger.Logger, recover()) // Pass embedded *slog.Logger
+			isPanic, panicErr := handlePanic(ctx, activeLogger, recover()) // Pass embedded *slog.Logger
 			if isPanic {
 				err = panicErr // Overwrite handler error with internal error on panic.
 			}
@@ -231,7 +253,7 @@ func StreamServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.StreamS
 			}
 			// Log the final completion event using the original context (ctx).
 			// The handler will extract trace info from ctx.
-			logger.LogAttrs(ctx, level, logMsg, logAttrs...)
+			activeLogger.LogAttrs(ctx, level, logMsg, logAttrs...)
 
 		}() // End of defer function for panic recovery and logging.
 
@@ -239,7 +261,7 @@ func StreamServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.StreamS
 		streamToUse := &wrappedServerStream{
 			ServerStream: ss,
 			ctx:          ctx,
-			logger:       logger,
+			logger:       activeLogger,
 			opts:         cfg,
 		}
 

@@ -22,6 +22,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ShouldLogFunc decides whether a request should emit a structured log entry.
@@ -39,6 +41,13 @@ type MiddlewareOptions struct {
 	ResponseBodyLimit      int64
 	RecoverPanics          bool
 	TrustProxyHeaders      bool
+
+	AttachLogger           bool
+	StartSpanIfAbsent      bool
+	Tracer                 trace.Tracer
+	SkipGoogleHealthChecks bool
+	TrustProxyDecisionFunc func(*http.Request) bool
+	TraceProjectID         string
 }
 
 // Option mutates MiddlewareOptions.
@@ -47,7 +56,12 @@ type Option func(*MiddlewareOptions)
 // defaultMiddlewareOptions returns the zero-value configuration used before
 // environment variables and functional options are applied.
 func defaultMiddlewareOptions() MiddlewareOptions {
-	return MiddlewareOptions{}
+	return MiddlewareOptions{
+		AttachLogger:           true,
+		StartSpanIfAbsent:      true,
+		SkipGoogleHealthChecks: true,
+		TrustProxyDecisionFunc: isGoogleProxyRequest,
+	}
 }
 
 // loadMiddlewareOptionsFromEnv builds MiddlewareOptions from the current
@@ -89,6 +103,24 @@ func loadMiddlewareOptionsFromEnv() MiddlewareOptions {
 		if v, ok := parseBoolFlag(raw); ok {
 			opts.TrustProxyHeaders = v
 		}
+	}
+	if raw, ok := os.LookupEnv("SLOGCP_HTTP_ATTACH_LOGGER"); ok {
+		if v, ok := parseBoolFlag(raw); ok {
+			opts.AttachLogger = v
+		}
+	}
+	if raw, ok := os.LookupEnv("SLOGCP_HTTP_START_SPAN_IF_ABSENT"); ok {
+		if v, ok := parseBoolFlag(raw); ok {
+			opts.StartSpanIfAbsent = v
+		}
+	}
+	if raw, ok := os.LookupEnv("SLOGCP_HTTP_SKIP_GOOGLE_HEALTHCHECKS"); ok {
+		if v, ok := parseBoolFlag(raw); ok {
+			opts.SkipGoogleHealthChecks = v
+		}
+	}
+	if raw, ok := os.LookupEnv("SLOGCP_HTTP_TRACE_PROJECT_ID"); ok {
+		opts.TraceProjectID = strings.TrimSpace(raw)
 	}
 
 	return opts
@@ -177,6 +209,57 @@ func WithRecoverPanics(recover bool) Option {
 func WithTrustProxyHeaders(trust bool) Option {
 	return func(o *MiddlewareOptions) {
 		o.TrustProxyHeaders = trust
+	}
+}
+
+// WithContextLogger controls whether the middleware creates a request-scoped
+// logger and stores it in the request context via slogcp.ContextWithLogger.
+// Default is true.
+func WithContextLogger(enabled bool) Option {
+	return func(o *MiddlewareOptions) {
+		o.AttachLogger = enabled
+	}
+}
+
+// WithStartSpanIfAbsent controls whether the middleware should start a server
+// span when no valid span context is present after propagation. Default is true.
+func WithStartSpanIfAbsent(enabled bool) Option {
+	return func(o *MiddlewareOptions) {
+		o.StartSpanIfAbsent = enabled
+	}
+}
+
+// WithTracer overrides the tracer used when WithStartSpanIfAbsent is enabled.
+// When nil, the middleware uses a package-level tracer derived from the global
+// provider.
+func WithTracer(tr trace.Tracer) Option {
+	return func(o *MiddlewareOptions) {
+		o.Tracer = tr
+	}
+}
+
+// WithSkipGoogleHealthChecks controls whether known Google Cloud load-balancer
+// health checks should be skipped automatically. Default is true.
+func WithSkipGoogleHealthChecks(enabled bool) Option {
+	return func(o *MiddlewareOptions) {
+		o.SkipGoogleHealthChecks = enabled
+	}
+}
+
+// WithTrustProxyEvaluator supplies a predicate that determines on a per-request
+// basis whether proxy headers should be trusted. It is evaluated only when
+// TrustProxyHeaders is true or the predicate itself returns true.
+func WithTrustProxyEvaluator(fn func(*http.Request) bool) Option {
+	return func(o *MiddlewareOptions) {
+		o.TrustProxyDecisionFunc = fn
+	}
+}
+
+// WithTraceProjectID sets the project ID used when decorating request-scoped
+// loggers with Cloud Trace aware fields.
+func WithTraceProjectID(projectID string) Option {
+	return func(o *MiddlewareOptions) {
+		o.TraceProjectID = strings.TrimSpace(projectID)
 	}
 }
 

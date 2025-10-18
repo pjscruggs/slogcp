@@ -24,9 +24,9 @@ func TestLoadConfigTraceProjectID(t *testing.T) {
 	t.Setenv("SLOGCP_PROJECT_ID", "base")
 	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "trace")
 
-	cfg, err := LoadConfig()
+	cfg, err := LoadConfig(nil)
 	if err != nil {
-		t.Fatalf("LoadConfig() returned %v, want nil", err)
+		t.Fatalf("LoadConfig(nil) returned %v, want nil", err)
 	}
 	if cfg.ProjectID != "base" {
 		t.Errorf("ProjectID = %q, want %q", cfg.ProjectID, "base")
@@ -40,9 +40,9 @@ func TestLoadConfigTraceProjectIDDefault(t *testing.T) {
 	t.Setenv("SLOGCP_LOG_TARGET", "stdout")
 	t.Setenv("SLOGCP_PROJECT_ID", "base")
 
-	cfg, err := LoadConfig()
+	cfg, err := LoadConfig(nil)
 	if err != nil {
-		t.Fatalf("LoadConfig() returned %v, want nil", err)
+		t.Fatalf("LoadConfig(nil) returned %v, want nil", err)
 	}
 	if cfg.TraceProjectID != "base" {
 		t.Errorf("TraceProjectID = %q, want %q", cfg.TraceProjectID, "base")
@@ -54,9 +54,9 @@ func TestLoadConfigTraceProjectIDPrecedence(t *testing.T) {
 	t.Setenv("SLOGCP_PROJECT_ID", "base")
 	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "trace-env")
 
-	cfg, err := LoadConfig()
+	cfg, err := LoadConfig(nil)
 	if err != nil {
-		t.Fatalf("LoadConfig() returned %v, want nil", err)
+		t.Fatalf("LoadConfig(nil) returned %v, want nil", err)
 	}
 	if cfg.TraceProjectID != "trace-env" {
 		t.Errorf("TraceProjectID from env = %q, want %q", cfg.TraceProjectID, "trace-env")

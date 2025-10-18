@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 )
 
@@ -70,6 +71,11 @@ type options struct {
 	samplingRate          float64            // 0.0-1.0, percentage of requests to log.
 	logCategory           string             // Optional category name to distinguish logs.
 	propagateTraceHeaders bool               // Whether to propagate trace context headers/metadata when supported.
+	attachLogger          bool               // Whether to attach request-scoped logger into context.
+	startSpanIfAbsent     bool               // Whether to start a span if none exists.
+	tracer                trace.Tracer       // Tracer used when starting spans.
+	traceProjectID        string             // Project used for trace attributes.
+	skipHealthChecks      bool               // Automatically skip gRPC health checks.
 }
 
 const (
@@ -258,6 +264,47 @@ func WithAutoStackTrace(enabled bool) Option {
 	}
 }
 
+// WithContextLogger controls whether interceptors attach a request-scoped
+// logger to the context for downstream handlers to use. Default is true.
+func WithContextLogger(enabled bool) Option {
+	return func(o *options) {
+		o.attachLogger = enabled
+	}
+}
+
+// WithStartSpanIfAbsent controls whether interceptors create a new span when
+// the incoming context does not already carry one. Default is true.
+func WithStartSpanIfAbsent(enabled bool) Option {
+	return func(o *options) {
+		o.startSpanIfAbsent = enabled
+	}
+}
+
+// WithTracer sets the tracer used when WithStartSpanIfAbsent is enabled.
+// When unset the interceptors fall back to a package-level tracer derived
+// from the global provider.
+func WithTracer(tr trace.Tracer) Option {
+	return func(o *options) {
+		o.tracer = tr
+	}
+}
+
+// WithTraceProjectID sets the project ID used to format Cloud Trace aware
+// attributes when attaching request-scoped loggers.
+func WithTraceProjectID(projectID string) Option {
+	return func(o *options) {
+		o.traceProjectID = strings.TrimSpace(projectID)
+	}
+}
+
+// WithSkipHealthChecks toggles automatic suppression of gRPC health-check RPCs.
+// Default behaviour is to skip logging for the standard gRPC health service.
+func WithSkipHealthChecks(enabled bool) Option {
+	return func(o *options) {
+		o.skipHealthChecks = enabled
+	}
+}
+
 // WithTracePropagation controls whether interceptors managed by this package
 // propagate trace context when they support doing so. When enabled, client-side
 // interceptors inject W3C Trace Context (traceparent/tracestate) and the
@@ -292,6 +339,9 @@ func processOptions(opts ...Option) *options {
 		samplingRate:          1.0, // Default: log all requests
 		logCategory:           defaultLogCategory,
 		propagateTraceHeaders: true, // Default: enable propagation where supported
+		attachLogger:          true,
+		startSpanIfAbsent:     true,
+		skipHealthChecks:      true,
 	}
 
 	// Apply each provided Option function to modify the defaults.
@@ -299,6 +349,10 @@ func processOptions(opts ...Option) *options {
 		if o != nil { // Guard against nil options in the slice
 			o(opt)
 		}
+	}
+
+	if opt.skipHealthChecks {
+		opt.skipPaths = append(opt.skipPaths, "/grpc.health.v1.Health/Check", "/grpc.health.v1.Health/Watch")
 	}
 
 	// Store the original user-provided shouldLogFunc for composition.

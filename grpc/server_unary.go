@@ -19,18 +19,19 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-
-	"github.com/pjscruggs/slogcp"
 )
 
+const unaryServerInstrumentation = "github.com/pjscruggs/slogcp/grpc/server"
+
 // UnaryServerInterceptor returns a new unary server interceptor ([grpc.UnaryServerInterceptor])
-// that logs incoming gRPC calls using the provided [slogcp.Logger].
+// that logs incoming gRPC calls using the provided [slog.Logger].
 //
 // It automatically logs the gRPC service and method name, call duration, final
 // gRPC status code, peer address, and any error returned by the handler upon
@@ -51,7 +52,7 @@ import (
 // [WithShouldLog], [WithMetadataFilter]). By default, all calls are logged,
 // metadata and payloads are not logged, and a standard mapping from gRPC status
 // codes to log levels is used.
-func UnaryServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.UnaryServerInterceptor {
+func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServerInterceptor {
 	// Process the provided options to get the final configuration.
 	cfg := processOptions(opts...)
 
@@ -75,6 +76,17 @@ func UnaryServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.UnarySer
 			ctx = ctxExtracted
 		}
 
+		tracer := cfg.tracer
+		if tracer == nil {
+			tracer = otel.Tracer(unaryServerInstrumentation)
+		}
+
+		var startedSpan trace.Span
+		if cfg.startSpanIfAbsent && !trace.SpanContextFromContext(ctx).IsValid() {
+			ctx, startedSpan = tracer.Start(ctx, info.FullMethod, trace.WithSpanKind(trace.SpanKindServer))
+			defer startedSpan.End()
+		}
+
 		// Check if this call should be logged based on the filter function.
 		if !cfg.shouldLogFunc(ctx, info.FullMethod) {
 			return handler(ctx, req)
@@ -83,6 +95,16 @@ func UnaryServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.UnarySer
 		// Record start time and split method name.
 		startTime := time.Now()
 		serviceName, methodName := splitMethodName(info.FullMethod)
+
+		activeLogger := logger
+		if cfg.attachLogger {
+			reqLogger := logger
+			if attrs, ok := slogcp.TraceAttributes(ctx, cfg.traceProjectID); ok {
+				reqLogger = loggerWithAttrs(reqLogger, attrs)
+			}
+			ctx = slogcp.ContextWithLogger(ctx, reqLogger)
+			activeLogger = reqLogger
+		}
 
 		// Prepare slice to hold metadata attributes for the final log.
 		var metadataAttrs []slog.Attr
@@ -111,18 +133,18 @@ func UnaryServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.UnarySer
 		if cfg.logCategory != "" {
 			startAttrs = append(startAttrs, slog.String(categoryKey, cfg.logCategory))
 		}
-		logger.LogAttrs(ctx, slog.LevelInfo, "Starting gRPC call", startAttrs...)
+		activeLogger.LogAttrs(ctx, slog.LevelInfo, "Starting gRPC call", startAttrs...)
 
 		// Log request payload if enabled.
 		if cfg.logPayloads {
-			logPayload(ctx, logger, cfg, "received", req)
+			logPayload(ctx, activeLogger, cfg, "received", req)
 		}
 
 		// Setup panic recovery and final logging. This defer runs after the handler returns or panics.
 		defer func() {
 			// Handle potential panics from the handler.
 			// Pass logger and context to handlePanic for immediate logging.
-			isPanic, panicErr := handlePanic(ctx, logger.Logger, recover()) // Pass embedded *slog.Logger
+			isPanic, panicErr := handlePanic(ctx, activeLogger, recover()) // Pass embedded *slog.Logger
 			if isPanic {
 				err = panicErr // Overwrite handler error with internal error on panic.
 				resp = nil     // Ensure response is nil on panic.
@@ -156,7 +178,7 @@ func UnaryServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.UnarySer
 			if isPanic {
 				logMsg = "Finished gRPC call after panic recovery"
 			}
-			logger.LogAttrs(ctx, level, logMsg, logAttrs...)
+			activeLogger.LogAttrs(ctx, level, logMsg, logAttrs...)
 
 		}() // End of defer function for panic recovery and logging.
 
@@ -169,7 +191,7 @@ func UnaryServerInterceptor(logger *slogcp.Logger, opts ...Option) grpc.UnarySer
 		// This check happens *before* the defer logs the final status,
 		// using the 'err' returned directly from the handler.
 		if err == nil && cfg.logPayloads {
-			logPayload(ctx, logger, cfg, "sent", resp)
+			logPayload(ctx, activeLogger, cfg, "sent", resp)
 		}
 
 		// Return the response and error (potentially modified by the defer func).

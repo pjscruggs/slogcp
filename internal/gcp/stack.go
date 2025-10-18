@@ -19,12 +19,20 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Constants defining the maximum stack frames to capture for fallback traces.
 const (
 	maxStackFrames = 64
 )
+
+var stackPCPool = sync.Pool{
+	New: func() any {
+		buf := make([]uintptr, maxStackFrames)
+		return &buf
+	},
+}
 
 // stackTracer defines an interface errors can implement to provide their own stack trace
 // in the form of program counters. Compatible with github.com/pkg/errors.
@@ -61,6 +69,7 @@ func formatPCsToStackString(pcs []uintptr) string {
 	}
 
 	var sb strings.Builder
+	var intBuf [20]byte
 	frames := runtime.CallersFrames(pcs)
 
 	for {
@@ -85,7 +94,8 @@ func formatPCsToStackString(pcs []uintptr) string {
 		sb.WriteByte('\t')
 		sb.WriteString(frame.File)
 		sb.WriteByte(':')
-		sb.WriteString(strconv.Itoa(frame.Line))
+		lineBytes := strconv.AppendInt(intBuf[:0], int64(frame.Line), 10)
+		sb.Write(lineBytes)
 		sb.WriteByte('\n')
 
 		if !more {
@@ -97,10 +107,7 @@ func formatPCsToStackString(pcs []uintptr) string {
 	return strings.TrimSuffix(sb.String(), "\n")
 }
 
-// trimFallbackStackPCs removes leading stack frames that belong to slogcp's internal
-// logging pipeline or the standard library wrappers that invoke it. This produces
-// stack traces that begin at the user's call-site without relying on a fixed frame count.
-func trimFallbackStackPCs(pcs []uintptr) []uintptr {
+func trimStackPCs(pcs []uintptr, skipFn func(string) bool) []uintptr {
 	if len(pcs) == 0 {
 		return pcs
 	}
@@ -109,7 +116,7 @@ func trimFallbackStackPCs(pcs []uintptr) []uintptr {
 	skip := 0
 	for {
 		frame, more := frames.Next()
-		if !shouldSkipFallbackFrame(frame.Function) {
+		if skipFn == nil || !skipFn(frame.Function) {
 			break
 		}
 		skip++
@@ -123,22 +130,61 @@ func trimFallbackStackPCs(pcs []uintptr) []uintptr {
 	return pcs[skip:]
 }
 
-func shouldSkipFallbackFrame(funcName string) bool {
+// SkipInternalStackFrame reports whether a stack frame belongs to slogcp or
+// runtime internals and should be skipped when presenting stack traces to users.
+func SkipInternalStackFrame(funcName string) bool {
 	if funcName == "" {
 		return false
 	}
 	switch funcName {
-	case "runtime.Callers":
+	case "runtime.Callers", "runtime.goexit":
 		return true
 	}
-	if strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/internal/gcp.") {
+	if strings.HasPrefix(funcName, "runtime.") {
 		return true
 	}
-	if strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp.(*Logger).") {
+	if strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/internal/gcp.") ||
+		strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/http.") ||
+		strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/grpc.") ||
+		strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/errorreporting.") ||
+		strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp.") {
 		return true
 	}
 	if strings.HasPrefix(funcName, "log/slog.") {
 		return true
 	}
 	return false
+}
+
+// CaptureStack captures the current goroutine stack, trimming internal frames using skipFn
+// (or SkipInternalStackFrame when nil). It returns the formatted stack trace string and
+// the first remaining frame for use in report locations.
+func CaptureStack(skipFn func(string) bool) (string, runtime.Frame) {
+	bufPtr := stackPCPool.Get().(*[]uintptr)
+	pcs := (*bufPtr)[:cap(*bufPtr)]
+
+	n := runtime.Callers(0, pcs)
+	if n == 0 {
+		stackPCPool.Put(bufPtr)
+		return "", runtime.Frame{}
+	}
+	pcs = pcs[:n]
+
+	if skipFn == nil {
+		skipFn = SkipInternalStackFrame
+	}
+	trimmed := trimStackPCs(pcs, skipFn)
+	if len(trimmed) == 0 {
+		trimmed = pcs
+	}
+
+	var top runtime.Frame
+	if len(trimmed) > 0 {
+		iter := runtime.CallersFrames(trimmed)
+		top, _ = iter.Next()
+	}
+
+	stack := formatPCsToStackString(trimmed)
+	stackPCPool.Put(bufPtr)
+	return stack, top
 }

@@ -4,7 +4,7 @@
 
 A "batteries included" structured logging module for Google Cloud Platform with built-in HTTP and gRPC interceptors.
 
-## ⚠️ EXPERIMENTAL: DO NOT USE IN PRODUCTION ⚠️
+## WARNING: EXPERIMENTAL - DO NOT USE IN PRODUCTION
 
 This module is untested, and not recommended for any production use.
 
@@ -18,17 +18,20 @@ go get github.com/pjscruggs/slogcp
 
 ## Features
 
-* {🪵} **Structured JSON logging** for powerful filtering and analysis in Cloud Logging
-* 🌈  **Complete GCP severity level support** (DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY)
-* 📡  **Automatic trace context extraction and propagation** (gRPC by default; optional HTTP client transport)
-* 🚚  **Optional HTTP client transport** that injects W3C Trace Context (and optionally `X-Cloud-Trace-Context`) on outbound requests
-* 🧩  **Ready-to-use HTTP and gRPC middleware** with optimized GCP-friendly log structuring
-* 🎚️  **Dynamic log level control** without application restart
-* 🐛  **Error logging with optional stack traces** for efficient debugging
-* ☁️  **Optional GCP Cloud Logging API integration** when you need increased reliability and throughput over `stdout` / `stderr`
-* 🏷️  **Automatic GCP resource detection** for proper log association
-* 🔄  **Smart environment detection** that keeps stdout/stderr as the default target while offering GCP Cloud Logging when requested
-* 🪂  **Graceful shutdown handling** with automatic buffered log flushing
+- **Structured JSON logging** for powerful filtering and analysis in Cloud Logging
+- **Complete GCP severity level support** (DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY)
+- **Automatic trace context extraction and propagation** (gRPC by default; optional HTTP client transport)
+- **Optional HTTP client transport** that injects W3C Trace Context (and optionally `X-Cloud-Trace-Context`) on outbound requests
+- **Ready-to-use HTTP and gRPC middleware** with optimized GCP-friendly log structuring
+- **Request-scoped loggers** via `slogcp.Logger(ctx)` so handlers can add rich context without plumbing
+- **Configurable log level via options or `LOG_LEVEL`**
+- **Error logging with optional stack traces** for efficient debugging
+- **Cloud Error Reporting helper** to emit `serviceContext`, stack traces, and report locations in one call
+- **Optional GCP Cloud Logging API integration** when you need increased reliability and throughput over `stdout` / `stderr`
+- **Configurable GCP resource and label support** for proper log association
+- **Automatic Cloud Run/Functions metadata** added to stdout/stderr JSON payloads for parity with the Logging API
+- **Smart environment fallback** that keeps stdout/stderr as the default target while offering GCP Cloud Logging when requested
+- **Graceful shutdown handling** with automatic buffered log flushing
 
 ## Quick Start
 
@@ -38,20 +41,21 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
+	"os"
 
 	"github.com/pjscruggs/slogcp"
 )
 
 func main() {
-	// Create a logger with default settings (logs go to stdout everywhere, including GCP)
-	logger, err := slogcp.New()
+	handler, err := slogcp.NewHandler(os.Stdout)
 	if err != nil {
-		log.Fatalf("Failed to create logger: %v", err)
+		log.Fatalf("Failed to create handler: %v", err)
 	}
-	defer logger.Close() // Always call Close() to flush buffered logs
+	defer handler.Close() // Always call Close() to flush buffered logs
 
-	// Log a simple message
-	logger.Info("Application started")
+	logger := slog.New(handler)
+	logger.InfoContext(context.Background(), "Application started")
 }
 ```
 
@@ -66,7 +70,7 @@ For comprehensive configuration options, environment variables, and advanced usa
 If you don't want to read any more documentation right now, these are the configurations you're the most likely to care about:
 
 ```go
-logger, err := slogcp.New(
+handler, err := slogcp.NewHandler(os.Stdout,
     // Set minimum log level
     slogcp.WithLevel(slog.LevelDebug),
     
@@ -76,6 +80,10 @@ logger, err := slogcp.New(
     // Add common labels to all logs
     slogcp.WithGCPCommonLabel("service", "user-api"),
 )
+if err != nil {
+    log.Fatalf("failed to create handler: %v", err)
+}
+logger := slog.New(handler)
 ```
 
 ### GCP Logging Client Access
@@ -83,11 +91,15 @@ logger, err := slogcp.New(
 slogcp exposes all the underlying Google Cloud Logging client's configurables through passthrough options. Most of these can be configured both programmatically and with environmental variables.
 
 ```go
-logger, err := slogcp.New(
+handler, err := slogcp.NewHandler(os.Stdout,
     // Example: Tune buffering parameters
     slogcp.WithGCPEntryCountThreshold(500),
     slogcp.WithGCPDelayThreshold(time.Second * 2),
 )
+if err != nil {
+    log.Fatalf("failed to create handler: %v", err)
+}
+logger := slog.New(handler)
 ```
 
 ### Environment Variables
@@ -107,22 +119,28 @@ Core environment variables for configuring slogcp:
 
 ```go
 // In Cloud Run, Cloud Functions, App Engine, and GKE stdout/stderr are ingested by Cloud Logging automatically
-logger, err := slogcp.New() // Defaults to stdout; no extra configuration required
+handler, err := slogcp.NewHandler(os.Stdout) // Defaults to stdout; no extra configuration required
+if err != nil {
+    log.Fatalf("failed to create handler: %v", err)
+}
+defer handler.Close()
 
-// Or with additional options
-logger, err := slogcp.New(
-    slogcp.WithLevel(slog.LevelInfo),
-    slogcp.WithGCPCommonLabel("service", "user-api"),
-)
+logger := slog.New(handler)
+logger.Info("service ready")
 ```
 
 ```go
-// On GCE, install and configure the Ops Agent to forward stdout/stderr to Cloud Logging
-// Opt in to the Cloud Logging API client for direct ingestion
-logger, err := slogcp.New(
-    slogcp.WithLevel(slog.LevelInfo),
-    slogcp.WithGCPCommonLabel("service", "user-api"),
+// On GCE you can opt into the Cloud Logging API client for direct ingestion
+handler, err := slogcp.NewHandler(os.Stdout,
+    slogcp.WithLogTarget(slogcp.LogTargetGCP),
+    slogcp.WithProjectID("my-project"),
 )
+if err != nil {
+    log.Fatalf("failed to create handler: %v", err)
+}
+defer handler.Close()
+
+logger := slog.New(handler)
 ```
 
 ### Local Development
@@ -130,23 +148,30 @@ logger, err := slogcp.New(
 #### Automatic Fallback
 
 ```go
-// Automatic fallback to stdout when GCP credentials aren't available
-logger, err := slogcp.New()
-if logger.IsInFallbackMode() {
-    // Customize local development behavior if needed
-    logger.SetLevel(slog.LevelDebug)
+handler, err := slogcp.NewHandler(os.Stdout)
+if err != nil {
+    log.Fatalf("failed to create handler: %v", err)
+}
+defer handler.Close()
+
+if handler.IsInFallbackMode() {
+    slog.New(handler).Debug("Automatic fallback to local logging is active")
 }
 ```
 
 #### Explicit Local Configuration
 
 ```go
-// Explicitly configure for local development
-logger, err := slogcp.New(
-    slogcp.WithRedirectToStdout(),
+handler, err := slogcp.NewHandler(os.Stdout,
     slogcp.WithLevel(slog.LevelDebug),
     slogcp.WithSourceLocationEnabled(true), // Helpful for debugging
 )
+if err != nil {
+    log.Fatalf("failed to create handler: %v", err)
+}
+defer handler.Close()
+
+logger := slog.New(handler)
 ```
 
 ## HTTP and gRPC Middleware
@@ -157,25 +182,40 @@ slogcp provides ready-to-use middleware for HTTP servers and gRPC services.
 
 ```go
 import (
+    "context"
+    "log"
+    "log/slog"
     "net/http"
-    
+    "os"
+
     "github.com/pjscruggs/slogcp"
     slogcphttp "github.com/pjscruggs/slogcp/http"
 )
 
 func main() {
-    logger, _ := slogcp.New()
-    defer logger.Close()
-    
-    // Apply middleware to your handler
-    handler := slogcphttp.Middleware(logger.Logger)(
+    handler, err := slogcp.NewHandler(os.Stdout)
+    if err != nil {
+        log.Fatalf("failed to create handler: %v", err)
+    }
+    defer handler.Close()
+
+    logger := slog.New(handler)
+    wrapped := slogcphttp.Middleware(logger)(
         slogcphttp.InjectTraceContextMiddleware()(
             http.HandlerFunc(myHandler),
         ),
     )
-    
-    http.Handle("/api", handler)
-    http.ListenAndServe(":8080", nil)
+
+    http.Handle("/api", wrapped)
+    if err := http.ListenAndServe(":8080", nil); err != nil {
+        logger.ErrorContext(context.Background(), "HTTP server failed", slog.String("error", err.Error()))
+    }
+}
+
+func myHandler(w http.ResponseWriter, r *http.Request) {
+    // Grab the per-request logger populated by the middleware.
+    slogcp.Logger(r.Context()).Info("handling request")
+    w.WriteHeader(http.StatusOK)
 }
 ```
 
@@ -200,9 +240,19 @@ resp, err := client.Do(req)
 ### gRPC
 
 * Client interceptors inject W3C `traceparent` into outgoing metadata by default; server interceptors extract context for correlation.
-* “Manual” injectors (`InjectUnaryTraceContextInterceptor` / `InjectStreamTraceContextInterceptor`) are available for servers **without** OTel propagation configured.
+* "Manual" injectors (`InjectUnaryTraceContextInterceptor` / `InjectStreamTraceContextInterceptor`) are available for servers **without** OTel propagation configured.
 
 For gRPC interceptors and more advanced middleware options, see the [Configuration Documentation](docs/CONFIGURATION.md).
+
+### Error reporting helper
+
+Use `slogcp.ReportError` (or `slogcp.ErrorReportingAttrs`) to emit Cloud Error Reporting friendly payloads without hand-crafting `serviceContext`, `context.reportLocation`, or stack traces.
+
+```go
+if err := svc.Save(ctx, input); err != nil {
+    slogcp.ReportError(ctx, logger, err, "Save failed")
+}
+```
 
 ## License
 

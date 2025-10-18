@@ -20,11 +20,11 @@ import (
 	"encoding/binary"
 	"log/slog"
 	"path"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/pjscruggs/slogcp/internal/gcp"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -51,10 +51,6 @@ const (
 	// Panic recovery logging - used when a handler panics
 	panicValueKey = "panic.value"       // The value recovered from the panic
 	panicStackKey = "panic.stack_trace" // Formatted stack trace from the panic site
-
-	// Buffer size for stack trace capture during panic recovery
-	// 8KB is typically sufficient for capturing the relevant part of deep stacks
-	defaultPanicStackBufSize = 8192
 
 	// Payload logging keys - used when payload logging is enabled
 	// These keys are used in payload.go for request/response body logging
@@ -146,15 +142,13 @@ func handlePanic(ctx context.Context, logger *slog.Logger, recoveredValue any) (
 
 	isPanic = true
 
-	// Capture the stack trace at the point of panic
-	stackBuf := make([]byte, defaultPanicStackBufSize)
-	stackBytesWritten := runtime.Stack(stackBuf, false)
+	stackStr, _ := gcp.CaptureStack(nil)
 
 	// Log the panic immediately with all available details
 	logger.LogAttrs(ctx, internalLevelCritical,
 		"Recovered panic during gRPC call",
 		slog.Any(panicValueKey, recoveredValue),
-		slog.String(panicStackKey, string(stackBuf[:stackBytesWritten])),
+		slog.String(panicStackKey, stackStr),
 	)
 
 	// Return a sanitized error to the client that doesn't expose internal details
@@ -265,4 +259,15 @@ func formatXCloudTraceContextFromSpanContext(sc trace.SpanContext) string {
 		o = "1"
 	}
 	return sc.TraceID().String() + "/" + strconv.FormatUint(u, 10) + ";o=" + o
+}
+
+func loggerWithAttrs(logger *slog.Logger, attrs []slog.Attr) *slog.Logger {
+	if logger == nil || len(attrs) == 0 {
+		return logger
+	}
+	args := make([]any, len(attrs))
+	for i, attr := range attrs {
+		args[i] = attr
+	}
+	return logger.With(args...)
 }
