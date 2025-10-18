@@ -620,24 +620,25 @@ func (h *gcpHandler) emitRedirectJSON(
 		}
 	}
 
-	// Merge common labels with dynamic labels (skip if already populated upstream)
+	// Merge common labels with dynamic labels, but only if the labels field
+	// was not already populated by buildPayload (which handles the labels group).
 	if _, exists := jsonPayload["logging.googleapis.com/labels"]; !exists {
-		switch {
-		case len(dynamicLabels) == 0:
-			if len(h.cfg.GCPCommonLabels) > 0 {
-				jsonPayload["logging.googleapis.com/labels"] = h.cfg.GCPCommonLabels
+		var mergedLabels map[string]string
+		if len(h.cfg.GCPCommonLabels) > 0 || len(dynamicLabels) > 0 {
+			if dynamicLabels != nil {
+				mergedLabels = dynamicLabels
+			} else {
+				// This allocation is safe because we checked for len > 0 above.
+				mergedLabels = make(map[string]string, len(h.cfg.GCPCommonLabels))
 			}
-		case len(h.cfg.GCPCommonLabels) == 0:
-			jsonPayload["logging.googleapis.com/labels"] = dynamicLabels
-		default:
-			mergedLabels := make(map[string]string, len(h.cfg.GCPCommonLabels)+len(dynamicLabels))
 			for k, v := range h.cfg.GCPCommonLabels {
-				mergedLabels[k] = v
+				if _, exists := mergedLabels[k]; !exists {
+					mergedLabels[k] = v
+				}
 			}
-			for k, v := range dynamicLabels {
-				mergedLabels[k] = v
+			if len(mergedLabels) > 0 {
+				jsonPayload["logging.googleapis.com/labels"] = mergedLabels
 			}
-			jsonPayload["logging.googleapis.com/labels"] = mergedLabels
 		}
 	}
 

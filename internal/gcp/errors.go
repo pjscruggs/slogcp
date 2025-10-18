@@ -21,6 +21,10 @@ import "errors"
 // options, environment variables, or the metadata server.
 var ErrProjectIDMissing = errors.New("gcp: parent resource (e.g., projects/PROJECT_ID) required for GCP target but not found")
 
+// ErrInvalidRedirectTarget indicates that the value for SLOGCP_REDIRECT_AS_JSON_TARGET
+// was malformed or invalid.
+var ErrInvalidRedirectTarget = errors.New("gcp: invalid redirect target")
+
 // ErrClientInitializationFailed indicates that an error occurred during the
 // creation or initialization of the underlying `cloud.google.com/go/logging` client.
 // The original error from the client library is typically wrapped.

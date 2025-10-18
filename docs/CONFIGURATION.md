@@ -47,16 +47,16 @@ Determines where log entries are sent.
         -   `stdout`: Redirects to standard output.
         -   `stderr`: Redirects to standard error.
         -   `file:/path/to/your.log`: Redirects to the specified file.
--   **Default**: `gcp` (`slogcp.LogTargetGCP`)
+-   **Default**: `stdout` (`slogcp.LogTargetStdout`). See [Automatic Fallback Mode](#automatic-fallback-mode) for behavior when `LogTargetGCP` is used.
 
 **Target-Specific Notes:**
 
-#### GCP Cloud Logging API (Default)
+#### GCP Cloud Logging API
 -   Requires GCP project information (see [GCP Project ID and Parent Resource](#gcp-project-id-and-parent-resource)).
 -   Uses the `cloud.google.com/go/logging` client.
 -   Log entries are sent to a log named `app` by default (configurable, see [Log ID](#log-id)).
 
-#### Standard Output (stdout)
+#### Standard Output (stdout) (Default)
 -   Logs structured JSON to `os.Stdout`.
 -   Useful for local development or containerized environments where logs are collected from stdout.
 
@@ -129,6 +129,8 @@ Adds attributes or a group to all log records produced by the logger.
 
 ### GCP Project ID and Parent Resource
 
+**Note**: These settings are used to configure the GCP API client. If the `LogTarget` is not `LogTargetGCP`, these settings have no effect on where logs are sent, but the `ProjectID` is still used to format the `trace` field in structured JSON logs.
+
 Required when `LogTarget` is `LogTargetGCP`. The Parent resource (e.g., `projects/PROJECT_ID`) determines where logs are written. The Project ID is also used for formatting trace IDs.
 
 -   **Programmatic**:
@@ -139,23 +141,26 @@ Required when `LogTarget` is `LogTargetGCP`. The Parent resource (e.g., `project
     2.  `SLOGCP_PROJECT_ID`: Sets the Project ID. Parent defaults to `projects/YOUR_SLOGCP_PROJECT_ID`.
     3.  `GOOGLE_CLOUD_PROJECT`: Standard GCP environment variable for Project ID. Parent defaults to `projects/YOUR_GOOGLE_CLOUD_PROJECT`.
 -   **Metadata Server**: If running on GCP (e.g., GCE, GKE, Cloud Run) and no environment variables are set, the Project ID is auto-detected from the metadata server. Parent defaults to `projects/DETECTED_PROJECT_ID`.
--   **Default**: None. If `LogTargetGCP` is used and no Project ID/Parent can be resolved, `slogcp.New()` returns an error.
+-   **Default**: None. If `LogTargetGCP` is used and no Project ID/Parent can be resolved, `slogcp.New()` will either return an error or automatically fall back to `stdout` logging (see below).
 
 ### Cross-project Trace Linking
 
+**Note**: This setting is used to format the `trace` field in structured logs, regardless of the `LogTarget`. It is most relevant when logs from one project need to link to traces in another.
+
 When logs are written in one project but traces live in another, you can direct trace formatting to a different project.
 
--   **Programmatic**: `slogcp.WithTraceProjectID(id string)` (falls back to `WithProjectID` when empty)
+-   **Programmatic**: `slogcp.WithTraceProjectID(id string)`
 -   **Environment Variable**: `SLOGCP_TRACE_PROJECT_ID`
--   **Behavior**: The handler formats the `Trace` as `projects/{TraceProjectID}/traces/{traceID}` while still writing log entries under the configured parent.
+-   **Behavior**: The handler formats the `Trace` as `projects/{TraceProjectID}/traces/{traceID}` while still writing log entries under the configured parent. If `TraceProjectID` is not set, it falls back to the main `ProjectID`.
 
 ### Automatic Fallback Mode
 
-If no log target is explicitly configured (via options or environment variables) and the default `LogTargetGCP` initialization fails (e.g., due to missing credentials or project ID locally), `slogcp.New()` will automatically fall back to structured JSON logging on `stdout`.
+If `LogTargetGCP` is explicitly configured (e.g., via `slogcp.WithLogTarget(slogcp.LogTargetGCP)` or `SLOGCP_LOG_TARGET=gcp`) and initialization fails (e.g., due to missing credentials or project ID when running locally), `slogcp.New()` will automatically fall back to structured JSON logging on `stdout`.
+
+This behavior is designed to simplify local development, allowing the same code to log to GCP in production and `stdout` locally without changes.
 
 -   **Detection**: Use `logger.IsInFallbackMode() bool` to check if the logger is operating in this fallback mode.
--   This behavior simplifies local development, as the same code can log to GCP in production and `stdout` locally without changes.
--   If a target *is* explicitly configured, fallback does not occur, and initialization errors are returned.
+-   **Suppression**: Fallback is suppressed if any explicit redirect target is configured. This includes using options like `WithRedirectToFile()`, `WithRedirectToStdout()`, `WithRedirectToStderr()`, `WithRedirectWriter()`, or setting the `SLOGCP_REDIRECT_AS_JSON_TARGET` environment variable. In these cases, initialization errors are returned directly.
 
 ## HTTP Middleware Options (`slogcp/http`)
 
@@ -201,6 +206,8 @@ It's crucial to close the logger to ensure all buffered logs are flushed and res
     -   **Custom `io.Writer` Mode**: If the writer implements `io.Closer`, its `Close()` method is called.
 
 ## GCP Client Options (for `LogTargetGCP`)
+
+**Note**: The options in this section configure the GCP Cloud Logging API client. They have no effect if the `LogTarget` is not `LogTargetGCP` (e.g., when logging to `stdout`, `stderr`, or a file).
 
 These options fine-tune the behavior of the underlying Google Cloud Logging client when `LogTarget` is `LogTargetGCP`. Many correspond to options in `cloud.google.com/go/logging.ClientOptions` or `logging.LoggerOptions`.
 
@@ -255,7 +262,7 @@ Sets the `MonitoredResource` for log entries, associating them with specific GCP
 
 ### Buffering and Batching
 
-Controls how the GCP client buffers log entries before sending them in batches.
+Controls how the GCP client buffers log entries before sending them in batches. 
 
 -   **`WithGCPConcurrentWriteLimit(n int)` / `SLOGCP_GCP_CONCURRENT_WRITE_LIMIT`**:
     Number of goroutines for sending log entries. Default: `1`.
@@ -371,7 +378,7 @@ client := &http.Client{
 
 req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://svc.api/", nil)
 resp, err := client.Do(req)
-````
+```
 
 > If you already use `otelhttp.NewTransport`, prefer that for full tracing (it injects W3C). Do not double-wrap. The transport here is for lightweight **propagation** (log/trace correlation) without full OTel.
 
@@ -461,8 +468,8 @@ logger.Info("request start",
 | `LOG_SOURCE_LOCATION`                | Include source file/line in logs (`true`/`false`)                           | `false`                             |
 | `LOG_STACK_TRACE_ENABLED`            | Enable stack traces for errors (`true`/`false`)                             | `false`                             |
 | `LOG_STACK_TRACE_LEVEL`              | Minimum level for stack traces (e.g., `error`)                              | `error`                             |
-| `SLOGCP_LOG_TARGET`                  | Primary log destination (`gcp`, `stdout`, `stderr`, `file`)                 | `gcp`                               |
-| `SLOGCP_REDIRECT_AS_JSON_TARGET`     | Specific target for non-GCP modes (`stdout`, `stderr`, `file:/path/to.log`) | (depends on `SLOGCP_LOG_TARGET`)    |
+| `SLOGCP_LOG_TARGET`                  | Primary log destination (`gcp`, `stdout`, `stderr`, `file`)                 | `stdout`                            |
+| `SLOGCP_REDIRECT_AS_JSON_TARGET`     | Specific target for non-GCP modes (`stdout`, `stderr`, `file:/path/to.log`) | (none)                              |
 | `SLOGCP_PROJECT_ID`                  | GCP Project ID (overrides `GOOGLE_CLOUD_PROJECT` and metadata)              | (derived)                           |
 | `GOOGLE_CLOUD_PROJECT`               | GCP Project ID (standard env var)                                           | (derived from metadata if on GCP)   |
 | `SLOGCP_GCP_PARENT`                  | GCP Parent resource (e.g., `projects/ID`, `folders/ID`)                     | (derived from Project ID)           |
@@ -480,7 +487,7 @@ logger.Info("request start",
 | `SLOGCP_GCP_BUFFERED_BYTE_LIMIT`     | Total memory limit (bytes) for buffered log entries for GCP                 | 104857600 (100MiB)                  |
 | `SLOGCP_GCP_CONTEXT_FUNC_TIMEOUT_MS` | Timeout (ms) for default context used in background GCP client operations   | (none, client init has 10s default) |
 | `SLOGCP_GCP_PARTIAL_SUCCESS`         | Enable partial success for GCP log writes (`true`/`false`)                  | `false`                             |
-| `SLOGCP_TRACE_PROJECT_ID`            | Project ID used to format fully-qualified trace names                       | (falls back to `SLOGCP_PROJECT_ID`) |
+| `SLOGCP_TRACE_PROJECT_ID`            | Project ID used to format fully-qualified trace names                       | (falls back to main Project ID)     |
 
 ## Examples
 
@@ -655,11 +662,11 @@ Propagate the current trace to downstream HTTP services (for log/trace correlati
 
 ```go
 client := &http.Client{
-    Transport: slogcphttp.NewPropagatingTransport(nil, // wrap DefaultTransport
-        slogcphttp.WithShouldPropagate(func(r *http.Request) bool {
-            return strings.HasSuffix(r.URL.Host, ".svc.cluster.local")
+    Transport: slogcphttp.NewTraceRoundTripper(nil, // wrap DefaultTransport
+        slogcphttp.WithSkip(func(r *http.Request) bool {
+            return !strings.HasSuffix(r.URL.Host, ".svc.cluster.local")
         }),
-        // slogcphttp.WithXCloudPropagation(false), // opt out of legacy header if desired
+        // slogcphttp.WithInjectXCloud(false), // opt out of legacy header if desired
     ),
 }
 
