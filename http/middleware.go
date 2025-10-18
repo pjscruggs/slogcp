@@ -26,6 +26,7 @@ import (
 
 	"cloud.google.com/go/logging"
 	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/healthcheck"
 	"github.com/pjscruggs/slogcp/internal/gcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -142,6 +143,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 	merged.ResponseBodyLimit = envOptions.ResponseBodyLimit
 	merged.RecoverPanics = envOptions.RecoverPanics
 	merged.TrustProxyHeaders = envOptions.TrustProxyHeaders
+	merged.HealthCheckFilter = envOptions.HealthCheckFilter.Clone()
 
 	for _, opt := range opts {
 		if opt != nil {
@@ -155,6 +157,8 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 		tracer = otel.Tracer(instrumentationName)
 	}
 	traceProjectID := merged.TraceProjectID
+
+	hcFilter := healthcheck.NewFilter(merged.HealthCheckFilter)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -183,8 +187,16 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				}
 			}
 
-			if shouldLog && merged.SkipGoogleHealthChecks && isGoogleHealthCheckRequest(r) {
-				shouldLog = false
+			var hcDecision healthcheck.Decision
+			if hcFilter != nil {
+				hcDecision = hcFilter.MatchHTTP(r)
+				if hcDecision.Matched {
+					ctx = healthcheck.ContextWithDecision(ctx, hcDecision)
+					r = r.WithContext(ctx)
+					if hcDecision.Mode == healthcheck.ModeDrop {
+						shouldLog = false
+					}
+				}
 			}
 
 			if !shouldLog && !merged.RecoverPanics {
@@ -229,6 +241,9 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				if hasTrace {
 					requestLogger = withAttrs(requestLogger, traceAttrs)
 				}
+				if hcDecision.ShouldTag() {
+					requestLogger = requestLogger.With(slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
+				}
 				requestLogger = requestLogger.With(
 					slog.String("http.request.method", r.Method),
 					slog.String("http.route", r.URL.Path),
@@ -272,6 +287,8 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				level = slog.LevelError
 			}
 
+			level = hcDecision.ApplyLevel(level)
+
 			spanCtx := trace.SpanContextFromContext(ctx)
 			unsampled := spanCtx.IsValid() && !spanCtx.IsSampled()
 
@@ -309,6 +326,10 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				slog.Any(httpRequestKey, reqStruct),
 				slog.Duration("duration", duration),
 			)
+
+			if hcDecision.ShouldTag() {
+				attrs = append(attrs, slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
+			}
 
 			if attr, ok := headersGroupAttr("requestHeaders", r.Header, merged.LogRequestHeaderKeys); ok {
 				attrs = append(attrs, attr)
@@ -376,19 +397,6 @@ func withAttrs(logger *slog.Logger, attrs []slog.Attr) *slog.Logger {
 		args[i] = attr
 	}
 	return logger.With(args...)
-}
-
-func isGoogleHealthCheckRequest(r *http.Request) bool {
-	ua := r.Header.Get("User-Agent")
-	if strings.HasPrefix(ua, "GoogleHC/") || strings.HasPrefix(ua, "GoogleHC-") {
-		return true
-	}
-	if ua == "" && strings.EqualFold(r.Method, http.MethodGet) && r.URL != nil && r.URL.Path == "/" {
-		if strings.EqualFold(r.Header.Get("Via"), "1.1 google") {
-			return true
-		}
-	}
-	return false
 }
 
 func isGoogleProxyRequest(r *http.Request) bool {

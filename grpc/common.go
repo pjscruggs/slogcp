@@ -95,6 +95,20 @@ func defaultMetadataFilter(key string) bool {
 	}
 }
 
+// metadataToHeader converts gRPC metadata into a case-insensitive map suitable
+// for reuse by shared helpers such as the health-check filter.
+func metadataToHeader(md metadata.MD) map[string][]string {
+	if len(md) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(md))
+	for k, v := range md {
+		lower := strings.ToLower(k)
+		out[lower] = append([]string(nil), v...)
+	}
+	return out
+}
+
 // filterMetadata applies a filtering function to gRPC metadata.
 func filterMetadata(md metadata.MD, filterFunc MetadataFilterFunc) metadata.MD {
 	if filterFunc == nil {

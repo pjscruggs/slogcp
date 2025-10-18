@@ -15,12 +15,14 @@
 package gcp
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"testing"
 	"time"
 
 	"cloud.google.com/go/logging"
+	"github.com/pjscruggs/slogcp/healthcheck"
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -36,6 +38,71 @@ func (r *recordingEntryLogger) Log(entry logging.Entry) {
 
 func (r *recordingEntryLogger) Flush() error {
 	return nil
+}
+
+func TestHandleHonorsHealthCheckDecision(t *testing.T) {
+	t.Run("drop", func(t *testing.T) {
+		logger := &recordingEntryLogger{}
+		handler := &gcpHandler{
+			cfg:      Config{LogTarget: LogTargetGCP},
+			entryLog: logger,
+			leveler:  slog.LevelInfo,
+		}
+		ctx := healthcheck.ContextWithDecision(context.Background(), healthcheck.Decision{
+			Matched: true,
+			Mode:    healthcheck.ModeDrop,
+		})
+		record := slog.NewRecord(time.Now(), slog.LevelInfo, "health-check", 0)
+		if err := handler.Handle(ctx, record); err != nil {
+			t.Fatalf("Handle returned error: %v", err)
+		}
+		if got := len(logger.entries); got != 0 {
+			t.Fatalf("expected no entries for dropped health check, got %d", got)
+		}
+	})
+
+	t.Run("demote", func(t *testing.T) {
+		logger := &recordingEntryLogger{}
+		handler := &gcpHandler{
+			cfg:      Config{LogTarget: LogTargetGCP},
+			entryLog: logger,
+			leveler:  slog.LevelDebug,
+		}
+		decision := healthcheck.Decision{
+			Matched:     true,
+			Mode:        healthcheck.ModeDemote,
+			TagKey:      "is_health_check",
+			TagValue:    true,
+			DemoteLevel: slog.LevelDebug,
+			HasDemote:   true,
+		}
+		ctx := healthcheck.ContextWithDecision(context.Background(), decision)
+		record := slog.NewRecord(time.Now(), slog.LevelInfo, "health-check", 0)
+		if err := handler.Handle(ctx, record); err != nil {
+			t.Fatalf("Handle returned error: %v", err)
+		}
+		if got := len(logger.entries); got != 1 {
+			t.Fatalf("expected one entry, got %d", got)
+		}
+		entry := logger.entries[0]
+		if entry.Severity != logging.Debug {
+			t.Fatalf("entry severity = %v, want %v", entry.Severity, logging.Debug)
+		}
+		switch payload := entry.Payload.(type) {
+		case map[string]any:
+			tag, ok := payload["is_health_check"]
+			if !ok || tag != true {
+				t.Fatalf("health-check tag missing or false: %#v", payload)
+			}
+		case *structpb.Struct:
+			field, ok := payload.Fields["is_health_check"]
+			if !ok || field.GetBoolValue() != true {
+				t.Fatalf("health-check tag missing or false: %#v", payload.Fields)
+			}
+		default:
+			t.Fatalf("unexpected payload type %T", payload)
+		}
+	})
 }
 
 func TestBuildPayloadPopulatesProto(t *testing.T) {

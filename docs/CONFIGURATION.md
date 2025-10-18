@@ -177,6 +177,23 @@ Unless configured otherwise, the middleware logs every request, does not recover
 | `WithRequestBodyLimit(limit int64)` / `WithResponseBodyLimit(limit int64)` | Captures up to `limit` bytes of the body for debugging. Zero disables capture. |
 | `WithRecoverPanics(enabled bool)` | Wraps the handler with panic recovery that logs and converts panics into HTTP 500 responses. |
 | `WithTrustProxyHeaders(enabled bool)` | When true, `X-Forwarded-For` and `X-Real-IP` headers are trusted when computing the client IP. |
+| `WithHealthCheckFilter(cfg healthcheck.Config)` | Enables configurable health-check detection (disabled by default). Supports tagging, demoting, or dropping matched probes without imposing specific paths or headers. |
+
+The shared filter type lives in `github.com/pjscruggs/slogcp/healthcheck`. It ships with disabled defaults so you can opt in explicitly and refine the behaviour you want:
+
+```go
+import (
+    slogcphttp "github.com/pjscruggs/slogcp/http"
+    "github.com/pjscruggs/slogcp/healthcheck"
+)
+
+hc := healthcheck.DefaultConfig()
+hc.Enabled = true
+hc.Mode = healthcheck.ModeDemote
+hc.Paths = []string{"/healthz"}
+
+middleware := slogcphttp.Middleware(logger, slogcphttp.WithHealthCheckFilter(hc))
+```
 
 ### Environment Variables
 
@@ -190,6 +207,7 @@ Unless configured otherwise, the middleware logs every request, does not recover
 | `SLOGCP_HTTP_RESPONSE_BODY_LIMIT` | Integer byte limit for response body capture. | `0` (disabled) |
 | `SLOGCP_HTTP_RECOVER_PANICS` | Enables panic recovery when set to true. | `false` |
 | `SLOGCP_HTTP_TRUST_PROXY_HEADERS` | Enables proxy header trust when set to true. | `false` |
+| `SLOGCP_HTTP_SKIP_GOOGLE_HEALTHCHECKS` | Legacy toggle that enables the health-check filter in drop mode when set to true. | `false` |
 
 Invalid values are ignored so that programmatic options can supply explicit overrides without extra error handling.
 
@@ -399,9 +417,12 @@ These options are applicable to both client and server interceptors. They are pa
 * **`WithPanicRecovery(enabled bool)`** (Server): Interceptor recovers and logs panics as `Internal`.
 * **`WithAutoStackTrace(enabled bool)`** (Server): Attach stack traces to logged errors.
 * **`WithSkipPaths(paths []string)`**: Exclude method paths from logging.
+* **`WithHealthCheckFilter(cfg healthcheck.Config)`**: Shares the same configurable health-check detection used by the HTTP middleware so you can tag, demote, or drop common probes without hand-written filters.
 * **`WithSamplingRate(rate float64)`**: Sample logs (0.0..1.0).
 * **`WithLogCategory(category string)`**: Adds a `log.category` attribute (default `"grpc_request"`).
 * **`WithTracePropagation(enabled bool)`**: When `true` (default), **client** interceptors inject **W3C** (`traceparent`/`tracestate`) into outgoing metadata using the global OTel propagator. They **do not** add `x-cloud-trace-context` to gRPC metadata. If `traceparent` already exists, they do not overwrite it.
+
+The filter example shown for HTTP also applies here; reuse the same `healthcheck.Config` to keep behaviour consistent across transport layers.
 
 ### Server Interceptors
 
@@ -599,48 +620,49 @@ func main() {
 
 ### Customizing gRPC Server Logging
 
-Configure gRPC server interceptors to skip health checks and log payloads for debugging.
+Configure gRPC server interceptors to demote health checks and log payloads for debugging.
 
 ```go
 package main
 
 import (
-	"context"
 	"log"
+	"log/slog"
 	"net"
-	"strings"
-	"time"
+	"os"
 
 	"github.com/pjscruggs/slogcp"
 	slogcpgrpc "github.com/pjscruggs/slogcp/grpc"
+	"github.com/pjscruggs/slogcp/healthcheck"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	// ... your_pb_definitions
 )
 
 func main() {
 	handler, err := slogcp.NewHandler(os.Stdout,
-    slogcp.WithRedirectToStdout(),
-) // Local example
+		slogcp.WithRedirectToStdout(),
+	) // Local example
 	if err != nil {
 		log.Fatalf("Failed to create slogcp logger: %v", err)
 	}
-	defer slogcphandler.Close()
+	defer handler.Close()
+	logger := slog.New(handler)
 
-	shouldLogRPC := func(ctx context.Context, fullMethodName string) bool {
-		return !strings.HasPrefix(fullMethodName, "/grpc.health.v1.Health/")
-	}
+	hc := healthcheck.DefaultConfig()
+	hc.Enabled = true
+	hc.Mode = healthcheck.ModeDemote
+	hc.Methods = []string{"/grpc.health.v1.Health/Check", "/grpc.health.v1.Health/Watch"}
 
 	server := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			slogcpgrpc.UnaryServerInterceptor(logger,
-				slogcpgrpc.WithShouldLog(shouldLogRPC),
+				slogcpgrpc.WithHealthCheckFilter(hc),
 				slogcpgrpc.WithMetadataLogging(true),
 			),
 		),
 		grpc.ChainStreamInterceptor(
 			slogcpgrpc.StreamServerInterceptor(logger,
-				slogcpgrpc.WithShouldLog(shouldLogRPC),
+				slogcpgrpc.WithHealthCheckFilter(hc),
 			),
 		),
 	)
