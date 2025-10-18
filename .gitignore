@@ -15,6 +15,7 @@
 
 # Go pprof files
 *.pprof
+*.prof
 
 # Directories
 /vendor/
