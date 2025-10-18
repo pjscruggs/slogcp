@@ -16,6 +16,7 @@ package http
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -107,6 +108,14 @@ func (s *recordingState) Count() int {
 	return len(s.records)
 }
 
+func (s *recordingState) Snapshot() []slog.Record {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	copied := make([]slog.Record, len(s.records))
+	copy(copied, s.records)
+	return copied
+}
+
 func TestResolveRemoteIP(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	req.RemoteAddr = "192.0.2.1:443"
@@ -175,6 +184,103 @@ func TestHeadersGroupAttr(t *testing.T) {
 	}
 }
 
+func TestMiddlewareBodyPreviewClamp(t *testing.T) {
+	logger, records := newRecordingLogger()
+	body := strings.Repeat("x", bodyPreviewInlineLimit+64)
+
+	mw := Middleware(
+		logger,
+		WithRequestBodyLimit(int64(len(body))),
+		WithResponseBodyLimit(int64(len(body))),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Fatalf("failed to drain request: %v", err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatalf("failed to write response: %v", err)
+		}
+	})).ServeHTTP(rr, req)
+
+	snapshot := records.Snapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("expected exactly one log record, got %d", len(snapshot))
+	}
+	attrMap := recordAttrsToMap(snapshot[0])
+
+	requestPreview, ok := attrMap["requestBody"]
+	if !ok {
+		t.Fatal("requestBody attribute missing")
+	}
+	if requestPreview.Kind() != slog.KindString {
+		t.Fatalf("requestBody kind = %v, want KindString", requestPreview.Kind())
+	}
+	if gotLen := len(requestPreview.String()); gotLen != bodyPreviewInlineLimit {
+		t.Fatalf("requestBody preview length = %d, want %d", gotLen, bodyPreviewInlineLimit)
+	}
+	truncatedAttr, ok := attrMap["requestBodyTruncated"]
+	if !ok {
+		t.Fatal("requestBodyTruncated attribute missing")
+	}
+	if !truncatedAttr.Bool() {
+		t.Fatal("requestBodyTruncated attribute should be true")
+	}
+	sizeAttr, ok := attrMap["requestBodyBytes"]
+	if !ok {
+		t.Fatal("requestBodyBytes attribute missing")
+	}
+	if sizeAttr.Int64() != int64(len(body)) {
+		t.Fatalf("requestBodyBytes = %d, want %d", sizeAttr.Int64(), len(body))
+	}
+
+	responsePreview, ok := attrMap["responseBody"]
+	if !ok {
+		t.Fatal("responseBody attribute missing")
+	}
+	if gotLen := len(responsePreview.String()); gotLen != bodyPreviewInlineLimit {
+		t.Fatalf("responseBody preview length = %d, want %d", gotLen, bodyPreviewInlineLimit)
+	}
+	respTruncatedAttr, ok := attrMap["responseBodyTruncated"]
+	if !ok {
+		t.Fatal("responseBodyTruncated attribute missing")
+	}
+	if !respTruncatedAttr.Bool() {
+		t.Fatal("responseBodyTruncated attribute should be true")
+	}
+	respSizeAttr, ok := attrMap["responseBodyBytes"]
+	if !ok {
+		t.Fatal("responseBodyBytes attribute missing")
+	}
+	if respSizeAttr.Int64() != int64(len(body)) {
+		t.Fatalf("responseBodyBytes = %d, want %d", respSizeAttr.Int64(), len(body))
+	}
+}
+
+func TestAppendBodyAttrsSmallPayload(t *testing.T) {
+	cb := newCappedBuffer(64)
+	if cb == nil {
+		t.Fatal("expected capped buffer to be allocated")
+	}
+	if _, err := cb.Write([]byte("ok")); err != nil {
+		t.Fatalf("failed to write buffer: %v", err)
+	}
+
+	attrs := appendBodyAttrs(nil, "body", cb)
+	if len(attrs) != 2 {
+		t.Fatalf("appendBodyAttrs returned %d attrs, want 2", len(attrs))
+	}
+	if attrs[0].Key != "body" || attrs[0].Value.String() != "ok" {
+		t.Fatalf("first attr = (%q,%q), want (body,ok)", attrs[0].Key, attrs[0].Value.String())
+	}
+	if attrs[1].Key != "bodyBytes" || attrs[1].Value.Int64() != 2 {
+		t.Fatalf("second attr = (%q,%d), want (bodyBytes,2)", attrs[1].Key, attrs[1].Value.Int64())
+	}
+}
+
 func TestCappedBuffer(t *testing.T) {
 	cb := newCappedBuffer(5)
 	if cb == nil {
@@ -239,4 +345,13 @@ func TestCappedBuffer(t *testing.T) {
 	if ip := extractIP("invalid"); ip != "invalid" {
 		t.Fatalf("extractIP invalid = %q, want original string", ip)
 	}
+}
+
+func recordAttrsToMap(rec slog.Record) map[string]slog.Value {
+	result := make(map[string]slog.Value)
+	rec.Attrs(func(attr slog.Attr) bool {
+		result[attr.Key] = attr.Value
+		return true
+	})
+	return result
 }
