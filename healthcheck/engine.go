@@ -783,27 +783,23 @@ func selectForwardedIP(values []string, trustedHops int) string {
 	if trustedHops < 0 {
 		trustedHops = 0
 	}
+	tokens := make([]string, 0, len(values))
 	for _, raw := range values {
 		parts := strings.Split(raw, ",")
-		for i := range parts {
-			parts[i] = strings.TrimSpace(parts[i])
-		}
-		filtered := make([]string, 0, len(parts))
-		for _, p := range parts {
-			if p != "" {
-				filtered = append(filtered, p)
+		for _, part := range parts {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				tokens = append(tokens, trimmed)
 			}
 		}
-		if len(filtered) == 0 {
-			continue
-		}
-		index := len(filtered) - trustedHops - 1
-		if index < 0 || index >= len(filtered) {
-			continue
-		}
-		return filtered[index]
 	}
-	return ""
+	if len(tokens) == 0 {
+		return ""
+	}
+	index := len(tokens) - trustedHops - 1
+	if index < 0 || index >= len(tokens) {
+		return ""
+	}
+	return tokens[index]
 }
 
 func matchCIDR(ip string, cidrs []*net.IPNet) bool {
@@ -1035,15 +1031,21 @@ func (e *Engine) FinalizeGRPC(decision *Decision, code string, latency time.Dura
 	if decision == nil {
 		return
 	}
+	forcedError := false
 	if decision.Matched && decision.ignoreStatusOKOnly && !ok {
-		decision.ForceLog = true
-		decision.SafetyRail = SafetyRailError
-		decision.EffectiveAction = ActionMark
+		*decision = decision.WithSafetyRail(SafetyRailError)
+		forcedError = true
 	}
 	if decision.Matched {
 		e.metrics.IncFiltered(decision.Protocol, decision.Reason, decision.ActiveAction())
 	}
 	if decision.Matched && e.cfg.AlwaysLogErrors && !ok {
+		if !forcedError {
+			*decision = decision.WithSafetyRail(SafetyRailError)
+			forcedError = true
+		}
+	}
+	if forcedError {
 		*decision = decision.WithSafetyRail(SafetyRailError)
 		e.metrics.IncForced(decision.Protocol, SafetyRailError)
 	}
