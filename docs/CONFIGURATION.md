@@ -207,7 +207,8 @@ middleware := slogcphttp.Middleware(logger, slogcphttp.WithHealthCheckFilter(hc)
 | `SLOGCP_HTTP_RESPONSE_BODY_LIMIT` | Integer byte limit for response body capture. | `0` (disabled) |
 | `SLOGCP_HTTP_RECOVER_PANICS` | Enables panic recovery when set to true. | `false` |
 | `SLOGCP_HTTP_TRUST_PROXY_HEADERS` | Enables proxy header trust when set to true. | `false` |
-| `SLOGCP_HTTP_SKIP_GOOGLE_HEALTHCHECKS` | Legacy toggle that enables the health-check filter in drop mode when set to true. | `false` |
+| `SLOGCP_HTTP_HEALTHCHECK_ENABLED` | Enables or disables the shared health-check filter (`true`/`false`). | `false` |
+| `SLOGCP_HTTP_HEALTHCHECK_MODE` | Overrides the health-check filter mode (`tag`, `demote`, `drop`). Setting a mode implicitly enables the filter unless you also set `SLOGCP_HTTP_HEALTHCHECK_ENABLED=false`. | (none) |
 
 Invalid values are ignored so that programmatic options can supply explicit overrides without extra error handling.
 

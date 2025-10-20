@@ -115,15 +115,38 @@ func loadMiddlewareOptionsFromEnv() MiddlewareOptions {
 			opts.StartSpanIfAbsent = v
 		}
 	}
-	if raw, ok := os.LookupEnv("SLOGCP_HTTP_SKIP_GOOGLE_HEALTHCHECKS"); ok {
+	filterCfg := opts.HealthCheckFilter.Clone()
+	filterChanged := false
+	modeConfigured := false
+	enableConfigured := false
+	if raw, ok := os.LookupEnv("SLOGCP_HTTP_HEALTHCHECK_ENABLED"); ok {
 		if v, ok := parseBoolFlag(raw); ok {
-			cfg := healthcheck.DefaultConfig()
-			if v {
-				cfg.Enabled = true
-				cfg.Mode = healthcheck.ModeDrop
-			}
-			opts.HealthCheckFilter = cfg
+			filterCfg.Enabled = v
+			filterChanged = true
+			enableConfigured = true
 		}
+	}
+	if raw, ok := os.LookupEnv("SLOGCP_HTTP_HEALTHCHECK_MODE"); ok {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "tag":
+			filterCfg.Mode = healthcheck.ModeTag
+			filterChanged = true
+			modeConfigured = true
+		case "demote":
+			filterCfg.Mode = healthcheck.ModeDemote
+			filterChanged = true
+			modeConfigured = true
+		case "drop":
+			filterCfg.Mode = healthcheck.ModeDrop
+			filterChanged = true
+			modeConfigured = true
+		}
+	}
+	if modeConfigured && !enableConfigured {
+		filterCfg.Enabled = true
+	}
+	if filterChanged {
+		opts.HealthCheckFilter = filterCfg
 	}
 	if raw, ok := os.LookupEnv("SLOGCP_HTTP_TRACE_PROJECT_ID"); ok {
 		opts.TraceProjectID = strings.TrimSpace(raw)
@@ -241,20 +264,6 @@ func WithStartSpanIfAbsent(enabled bool) Option {
 func WithTracer(tr trace.Tracer) Option {
 	return func(o *MiddlewareOptions) {
 		o.Tracer = tr
-	}
-}
-
-// WithSkipGoogleHealthChecks retains the legacy toggle by configuring the shared
-// health-check filter to drop Google Cloud health checks when enabled.
-// Deprecated: prefer WithHealthCheckFilter for finer control.
-func WithSkipGoogleHealthChecks(enabled bool) Option {
-	return func(o *MiddlewareOptions) {
-		cfg := healthcheck.DefaultConfig()
-		if enabled {
-			cfg.Enabled = true
-			cfg.Mode = healthcheck.ModeDrop
-		}
-		o.HealthCheckFilter = cfg
 	}
 }
 
