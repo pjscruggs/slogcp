@@ -131,7 +131,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 // [WithLogResponseHeaderKeys], [WithRequestBodyLimit],
 // [WithResponseBodyLimit], [WithRecoverPanics], and
 // [WithTrustProxyHeaders] provide programmatic control over the same
-// behaviours exposed through environment variables.
+// behaviors exposed through environment variables.
 func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Handler {
 	envOptions := loadMiddlewareOptionsFromEnv()
 	merged := defaultMiddlewareOptions()
@@ -143,7 +143,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 	merged.ResponseBodyLimit = envOptions.ResponseBodyLimit
 	merged.RecoverPanics = envOptions.RecoverPanics
 	merged.TrustProxyHeaders = envOptions.TrustProxyHeaders
-	merged.HealthCheckFilter = envOptions.HealthCheckFilter.Clone()
+	merged.ChatterConfig = envOptions.ChatterConfig.Clone()
 
 	for _, opt := range opts {
 		if opt != nil {
@@ -157,8 +157,12 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 		tracer = otel.Tracer(instrumentationName)
 	}
 	traceProjectID := merged.TraceProjectID
-
-	hcFilter := healthcheck.NewFilter(merged.HealthCheckFilter)
+	chatterConfig := merged.ChatterConfig.Clone()
+	auditKeys := chatterConfig.Audit.Keys()
+	chatterEngine, _ := healthcheck.NewEngine(chatterConfig)
+	if chatterEngine != nil {
+		emitChatterConfig(logger, chatterEngine)
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -187,15 +191,12 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				}
 			}
 
-			var hcDecision healthcheck.Decision
-			if hcFilter != nil {
-				hcDecision = hcFilter.MatchHTTP(r)
-				if hcDecision.Matched {
-					ctx = healthcheck.ContextWithDecision(ctx, hcDecision)
+			var chatterDecision *healthcheck.Decision
+			if chatterEngine != nil {
+				chatterDecision = chatterEngine.EvaluateHTTP(r)
+				if chatterDecision != nil && chatterDecision.Matched {
+					ctx = healthcheck.ContextWithDecision(ctx, chatterDecision)
 					r = r.WithContext(ctx)
-					if hcDecision.Mode == healthcheck.ModeDrop {
-						shouldLog = false
-					}
 				}
 			}
 
@@ -241,9 +242,6 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				if hasTrace {
 					requestLogger = withAttrs(requestLogger, traceAttrs)
 				}
-				if hcDecision.ShouldTag() {
-					requestLogger = requestLogger.With(slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
-				}
 				requestLogger = requestLogger.With(
 					slog.String("http.request.method", r.Method),
 					slog.String("http.route", r.URL.Path),
@@ -275,6 +273,10 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 			duration := time.Since(startTime)
 			finalStatusCode := rw.statusCode
 
+			if chatterEngine != nil && chatterDecision != nil {
+				chatterEngine.FinalizeHTTP(chatterDecision, finalStatusCode, duration)
+			}
+
 			level := slog.LevelInfo
 			serverError := finalStatusCode >= 500
 			if serverError {
@@ -287,13 +289,30 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				level = slog.LevelError
 			}
 
-			level = hcDecision.ApplyLevel(level)
+			if chatterDecision != nil {
+				switch strings.ToUpper(chatterDecision.SeverityHint()) {
+				case "WARN":
+					if level < slog.LevelWarn {
+						level = slog.LevelWarn
+					}
+				}
+			}
 
 			spanCtx := trace.SpanContextFromContext(ctx)
 			unsampled := spanCtx.IsValid() && !spanCtx.IsSampled()
 
+			forcedLog := chatterDecision != nil && chatterDecision.ForceLog
+
 			emitLog := shouldLog || recovered != nil
-			if emitLog && recovered == nil {
+			if chatterDecision != nil {
+				if chatterDecision.ShouldLog() {
+					emitLog = true
+				} else if recovered == nil {
+					emitLog = false
+				}
+			}
+
+			if emitLog && !forcedLog && recovered == nil {
 				if threshold := merged.SuppressUnsampledBelow; threshold != nil && unsampled && !serverError && level < *threshold {
 					emitLog = false
 				}
@@ -327,9 +346,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				slog.Duration("duration", duration),
 			)
 
-			if hcDecision.ShouldTag() {
-				attrs = append(attrs, slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
-			}
+			attrs = appendChatterAnnotations(attrs, chatterDecision, auditKeys)
 
 			if attr, ok := headersGroupAttr("requestHeaders", r.Header, merged.LogRequestHeaderKeys); ok {
 				attrs = append(attrs, attr)
@@ -355,6 +372,17 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 			*attrsPtr = attrs[:0]
 			attrSlicePool.Put(attrsPtr)
 		})
+	}
+}
+
+func emitChatterConfig(logger *slog.Logger, engine *healthcheck.Engine) {
+	if engine == nil {
+		return
+	}
+	if logger != nil {
+		for _, warn := range engine.Warnings() {
+			logger.Warn("Chatter reduction warning", slog.String("message", warn))
+		}
 	}
 }
 
@@ -411,7 +439,7 @@ func isGoogleProxyRequest(r *http.Request) bool {
 	return false
 }
 
-// headersGroupAttr materialises a slog.Group containing the requested header
+// headersGroupAttr materializes a slog.Group containing the requested header
 // keys. It returns false when no requested headers are present.
 func headersGroupAttr(name string, header http.Header, keys []string) (slog.Attr, bool) {
 	if len(keys) == 0 {
@@ -469,6 +497,71 @@ func appendBodyAttrs(attrs []slog.Attr, key string, buf *cappedBuffer) []slog.At
 		attrs = append(attrs, slog.Int(key+"PreviewBytes", previewLen))
 	}
 	return attrs
+}
+
+func appendChatterAnnotations(attrs []slog.Attr, decision *healthcheck.Decision, keys healthcheck.AuditKeys) []slog.Attr {
+	if decision == nil || !decision.Matched {
+		return attrs
+	}
+
+	decisionValue := ""
+	switch {
+	case decision.MarkOnly():
+		decisionValue = "would_suppress"
+	case decision.ForceLog:
+		decisionValue = "suppressed"
+	default:
+		decisionValue = "kept"
+	}
+
+	fieldAttrs := make([]slog.Attr, 0, 4)
+	if keys.Decision != "" && decisionValue != "" {
+		fieldAttrs = append(fieldAttrs, slog.String(keys.Decision, decisionValue))
+	}
+	if keys.Reason != "" && decision.Reason != healthcheck.ReasonUnknown {
+		fieldAttrs = append(fieldAttrs, slog.String(keys.Reason, string(decision.Reason)))
+	}
+	if keys.Rule != "" && decision.Rule != "" {
+		fieldAttrs = append(fieldAttrs, slog.String(keys.Rule, decision.Rule))
+	}
+	if keys.SafetyRail != "" && decision.SafetyRail != healthcheck.SafetyRailNone {
+		fieldAttrs = append(fieldAttrs, slog.String(keys.SafetyRail, string(decision.SafetyRail)))
+	}
+
+	if len(fieldAttrs) == 0 {
+		return attrs
+	}
+
+	if keys.Prefix == "" {
+		return append(attrs, fieldAttrs...)
+	}
+
+	group := buildChatterGroup(keys.Prefix, fieldAttrs)
+	return append(attrs, group)
+}
+
+func buildChatterGroup(prefix string, attrs []slog.Attr) slog.Attr {
+	segments := strings.Split(prefix, ".")
+	lastIdx := len(segments) - 1
+	lastKey := strings.TrimSpace(segments[lastIdx])
+	if lastKey == "" {
+		lastKey = prefix
+	}
+	group := slog.Attr{
+		Key:   lastKey,
+		Value: slog.GroupValue(attrs...),
+	}
+	for i := len(segments) - 2; i >= 0; i-- {
+		name := strings.TrimSpace(segments[i])
+		if name == "" {
+			continue
+		}
+		group = slog.Attr{
+			Key:   name,
+			Value: slog.GroupValue(group),
+		}
+	}
+	return group
 }
 
 // teeReadCloser combines a reader and closer, allowing the middleware to wrap

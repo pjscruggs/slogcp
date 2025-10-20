@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pjscruggs/slogcp/healthcheck"
@@ -74,10 +75,12 @@ type options struct {
 	propagateTraceHeaders bool               // Whether to propagate trace context headers/metadata when supported.
 	attachLogger          bool               // Whether to attach request-scoped logger into context.
 	startSpanIfAbsent     bool               // Whether to start a span if none exists.
-	tracer                trace.Tracer       // Tracer used when starting spans.
-	traceProjectID        string             // Project used for trace attributes.
-	healthCheckConfig     healthcheck.Config // Shared health-check configuration.
-	healthCheckFilter     *healthcheck.Filter
+	tracer         trace.Tracer              // Tracer used when starting spans.
+	traceProjectID string                    // Project used for trace attributes.
+	chatterConfig  healthcheck.Config        // Shared chatter reduction configuration.
+	chatterEngine  *healthcheck.Engine
+	auditKeys      healthcheck.AuditKeys
+	configLogOnce  sync.Once
 }
 
 const (
@@ -207,11 +210,8 @@ func WithPayloadLogging(enabled bool) Option {
 // Defaults to 0 (no limit). This option has no effect if payload logging is disabled.
 func WithMaxPayloadSize(sizeBytes int) Option {
 	return func(o *options) {
-		if sizeBytes <= 0 {
-			o.maxPayloadLogSize = 0 // Treat non-positive as no limit
-		} else {
-			o.maxPayloadLogSize = sizeBytes
-		}
+		// Treat non-positive as no limit.
+		o.maxPayloadLogSize = max(sizeBytes, 0)
 	}
 }
 
@@ -305,19 +305,26 @@ func WithSkipHealthChecks(enabled bool) Option {
 	return func(o *options) {
 		cfg := healthcheck.DefaultConfig()
 		if enabled {
-			cfg.Enabled = true
-			cfg.Mode = healthcheck.ModeDrop
+			cfg.Mode = healthcheck.ModeOn
+			cfg.Action = healthcheck.ActionDrop
+			cfg.GRPC.IgnoreMethods = append([]string(nil), cfg.GRPC.IgnoreMethods...)
+		} else {
+			cfg.Mode = healthcheck.ModeOff
 		}
-		o.healthCheckConfig = cfg
+		o.chatterConfig = cfg
 	}
 }
 
-// WithHealthCheckFilter installs the shared health-check configuration used by gRPC interceptors.
-// The configuration is cloned to avoid caller mutation.
-func WithHealthCheckFilter(cfg healthcheck.Config) Option {
+// WithChatterConfig installs the shared chatter reduction configuration.
+func WithChatterConfig(cfg healthcheck.Config) Option {
 	return func(o *options) {
-		o.healthCheckConfig = cfg.Clone()
+		o.chatterConfig = cfg.Clone()
 	}
+}
+
+// WithHealthCheckFilter is retained for backwards compatibility and forwards to WithChatterConfig.
+func WithHealthCheckFilter(cfg healthcheck.Config) Option {
+	return WithChatterConfig(cfg)
 }
 
 // WithTracePropagation controls whether interceptors managed by this package
@@ -356,7 +363,7 @@ func processOptions(opts ...Option) *options {
 		propagateTraceHeaders: true, // Default: enable propagation where supported
 		attachLogger:          true,
 		startSpanIfAbsent:     true,
-		healthCheckConfig:     healthcheck.DefaultConfig(),
+		chatterConfig:         healthcheck.DefaultConfig(),
 	}
 
 	// Apply each provided Option function to modify the defaults.
@@ -366,7 +373,9 @@ func processOptions(opts ...Option) *options {
 		}
 	}
 
-	opt.healthCheckFilter = healthcheck.NewFilter(opt.healthCheckConfig)
+	opt.auditKeys = opt.chatterConfig.Audit.Keys()
+	engine, _ := healthcheck.NewEngine(opt.chatterConfig)
+	opt.chatterEngine = engine
 
 	// Store the original user-provided shouldLogFunc for composition.
 	originalShouldLog := opt.shouldLogFunc

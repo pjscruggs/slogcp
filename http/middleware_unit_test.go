@@ -64,14 +64,14 @@ func TestMiddlewareSuppressUnsampledBelowRespectsServerErrors(t *testing.T) {
 	}
 }
 
-func TestMiddlewareHealthCheckDrop(t *testing.T) {
+func TestMiddlewareChatterDrop(t *testing.T) {
 	logger, records := newRecordingLogger()
 	cfg := healthcheck.DefaultConfig()
-	cfg.Enabled = true
-	cfg.Mode = healthcheck.ModeDrop
-	cfg.Paths = []string{"/healthz"}
+	cfg.Mode = healthcheck.ModeOn
+	cfg.HTTP.Paths = []string{"/healthz"}
+	cfg.Action = healthcheck.ActionDrop
 
-	mw := Middleware(logger, WithHealthCheckFilter(cfg))
+	mw := Middleware(logger, WithChatterConfig(cfg))
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/healthz", nil)
 	rr := httptest.NewRecorder()
@@ -88,18 +88,41 @@ func TestMiddlewareHealthCheckDrop(t *testing.T) {
 	}
 }
 
-func TestMiddlewareHealthCheckDemote(t *testing.T) {
+func TestMiddlewareChatterSafetyRailOnError(t *testing.T) {
 	logger, records := newRecordingLogger()
 	cfg := healthcheck.DefaultConfig()
-	cfg.Enabled = true
-	cfg.Mode = healthcheck.ModeDemote
-	debug := slog.LevelDebug
-	cfg.DemoteTo = &debug
-	cfg.Paths = []string{"/status"}
+	cfg.Mode = healthcheck.ModeOn
+	cfg.HTTP.Paths = []string{"/healthz"}
 
-	mw := Middleware(logger, WithHealthCheckFilter(cfg))
+	mw := Middleware(logger, WithChatterConfig(cfg))
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/healthz", nil)
+	rr := httptest.NewRecorder()
+
+	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})).ServeHTTP(rr, req)
+
+	snap := records.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("expected safety rail to force log, got %d entries", len(snap))
+	}
+	rec := snap[0]
+	attrMap := recordAttrsToMap(rec)
+	if v, ok := attrMap["observability.chatter.safety_rail"]; !ok || v.String() != "error" {
+		t.Fatalf("safety rail annotation missing or wrong: %#v", attrMap)
+	}
+}
+
+func TestMiddlewareChatterCronMarkAnnotations(t *testing.T) {
+	logger, records := newRecordingLogger()
+	cfg := healthcheck.DefaultConfig()
+	cfg.Mode = healthcheck.ModeOn
+
+	mw := Middleware(logger, WithChatterConfig(cfg))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/task", nil)
+	req.Header.Set("X-Appengine-Cron", "true")
 	rr := httptest.NewRecorder()
 
 	mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -111,13 +134,15 @@ func TestMiddlewareHealthCheckDemote(t *testing.T) {
 		t.Fatalf("expected exactly one log entry, got %d", len(snap))
 	}
 	rec := snap[0]
-	if rec.Level != slog.LevelDebug {
-		t.Fatalf("record level = %v, want %v", rec.Level, slog.LevelDebug)
+	attrMap := recordAttrsToMap(rec)
+	if v := attrMap["observability.chatter.decision"].String(); v != "would_suppress" {
+		t.Fatalf("decision annotation = %q, want would_suppress", v)
 	}
-	attrs := recordAttrsToMap(rec)
-	attr, ok := attrs["is_health_check"]
-	if !ok || !attr.Bool() {
-		t.Fatalf("health-check tag missing or false: %#v", attrs)
+	if v := attrMap["observability.chatter.reason"].String(); v != "appengine_cron" {
+		t.Fatalf("reason annotation = %q, want appengine_cron", v)
+	}
+	if v := attrMap["observability.chatter.rule"].String(); v != "X-Appengine-Cron" {
+		t.Fatalf("rule annotation = %q, want X-Appengine-Cron", v)
 	}
 }
 

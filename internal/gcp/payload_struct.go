@@ -18,7 +18,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"reflect"
 	"time"
 	"unicode/utf8"
@@ -42,55 +41,6 @@ func payloadToStruct(payload map[string]any) (*structpb.Struct, bool) {
 		fields[key] = v
 	}
 	return &structpb.Struct{Fields: fields}, true
-}
-
-func slogValueToProto(v slog.Value) (*structpb.Value, bool) {
-	return slogValueToProtoWithDepth(v, 0)
-}
-
-func slogValueToProtoWithDepth(v slog.Value, depth int) (*structpb.Value, bool) {
-	if depth > maxProtoStructDepth {
-		return nil, false
-	}
-	resolved := v.Resolve()
-	switch resolved.Kind() {
-	case slog.KindBool:
-		return structpb.NewBoolValue(resolved.Bool()), true
-	case slog.KindDuration:
-		return structpb.NewStringValue(resolved.Duration().String()), true
-	case slog.KindFloat64:
-		return structpb.NewNumberValue(resolved.Float64()), true
-	case slog.KindInt64:
-		return structpb.NewNumberValue(float64(resolved.Int64())), true
-	case slog.KindString:
-		return structpb.NewStringValue(resolved.String()), true
-	case slog.KindTime:
-		return structpb.NewStringValue(resolved.Time().UTC().Format(time.RFC3339Nano)), true
-	case slog.KindUint64:
-		return structpb.NewNumberValue(float64(resolved.Uint64())), true
-	case slog.KindAny:
-		return anyToProtoValue(resolved.Any(), depth+1)
-	case slog.KindGroup:
-		children := resolved.Group()
-		if len(children) == 0 {
-			return structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{}}), true
-		}
-		fields := make(map[string]*structpb.Value, len(children))
-		for i := range children {
-			childAttr := children[i]
-			if childAttr.Key == "" {
-				continue
-			}
-			childVal, ok := slogValueToProtoWithDepth(childAttr.Value, depth+1)
-			if !ok {
-				return nil, false
-			}
-			fields[childAttr.Key] = childVal
-		}
-		return structpb.NewStructValue(&structpb.Struct{Fields: fields}), true
-	default:
-		return nil, false
-	}
 }
 
 func anyToProtoValue(value any, depth int) (*structpb.Value, bool) {
