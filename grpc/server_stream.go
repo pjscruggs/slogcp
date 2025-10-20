@@ -17,6 +17,7 @@ package grpc
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/pjscruggs/slogcp"
@@ -24,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
@@ -126,6 +128,10 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 	// Process functional options to get the final configuration.
 	cfg := processOptions(opts...)
 
+	cfg.configLogOnce.Do(func() {
+		emitChatterConfig(logger, cfg.chatterEngine)
+	})
+
 	// Return the actual interceptor function.
 	return func(
 		srv interface{}, // The service implementation.
@@ -169,15 +175,15 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			peerAddr = p.Addr.String()
 		}
 
-		var hcDecision healthcheck.Decision
-		if cfg.healthCheckFilter != nil {
+		var chatterDecision *healthcheck.Decision
+		if engine := cfg.chatterEngine; engine != nil {
 			var metadataMap map[string][]string
 			if len(incomingMD) > 0 {
 				metadataMap = metadataToHeader(incomingMD)
 			}
-			hcDecision = cfg.healthCheckFilter.MatchGRPC(info.FullMethod, metadataMap, peerAddr)
-			if hcDecision.Matched {
-				ctx = healthcheck.ContextWithDecision(ctx, hcDecision)
+			chatterDecision = engine.EvaluateGRPC(info.FullMethod, metadataMap, peerAddr)
+			if chatterDecision != nil && chatterDecision.Matched {
+				ctx = healthcheck.ContextWithDecision(ctx, chatterDecision)
 			}
 		}
 
@@ -187,17 +193,18 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			if attrs, ok := slogcp.TraceAttributes(ctx, cfg.traceProjectID); ok {
 				reqLogger = loggerWithAttrs(reqLogger, attrs)
 			}
-			if hcDecision.ShouldTag() {
-				reqLogger = reqLogger.With(slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
-			}
 			activeLogger = reqLogger
 			ctx = slogcp.ContextWithLogger(ctx, reqLogger)
 		}
 
 		// Check if this call should be logged based on the filter function.
 		shouldLog := cfg.shouldLogFunc(ctx, info.FullMethod)
-		if hcDecision.Matched && hcDecision.Mode == healthcheck.ModeDrop {
+		forcedLog := chatterDecision != nil && chatterDecision.ForceLog
+		if chatterDecision != nil && !chatterDecision.ShouldLog() && !forcedLog {
 			shouldLog = false
+		}
+		if forcedLog {
+			shouldLog = true
 		}
 		if !shouldLog {
 			// Ensure the handler sees the enriched context, but do not attach
@@ -223,7 +230,7 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 
 		// Log the "start" event.
 		// Pass the original context (ctx) so the handler can extract trace info.
-		startLevel := hcDecision.ApplyLevel(slog.LevelInfo)
+		startLevel := slog.LevelInfo
 		startAttrs := []slog.Attr{
 			slog.String(grpcServiceKey, serviceName),
 			slog.String(grpcMethodKey, methodName),
@@ -231,9 +238,6 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 		}
 		if cfg.logCategory != "" {
 			startAttrs = append(startAttrs, slog.String(categoryKey, cfg.logCategory))
-		}
-		if hcDecision.ShouldTag() {
-			startAttrs = append(startAttrs, slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
 		}
 		activeLogger.LogAttrs(ctx, startLevel, "Starting gRPC stream", startAttrs...)
 
@@ -249,11 +253,26 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 
 			// Calculate duration and determine final status/level.
 			duration := time.Since(startTime)
-			level := cfg.levelFunc(status.Code(err)) // Determine level based on final error.
+			code := status.Code(err)
+			if cfg.chatterEngine != nil && chatterDecision != nil {
+				cfg.chatterEngine.FinalizeGRPC(chatterDecision, code.String(), duration, code == codes.OK)
+			}
+			level := cfg.levelFunc(code) // Determine level based on final error.
 			if isPanic {
 				level = internalLevelCritical // Override level for panics.
 			}
-			level = hcDecision.ApplyLevel(level)
+			if chatterDecision != nil {
+				switch strings.ToUpper(chatterDecision.SeverityHint()) {
+				case "WARN":
+					if level < slog.LevelWarn {
+						level = slog.LevelWarn
+					}
+				case "ERROR":
+					if level < slog.LevelError {
+						level = slog.LevelError
+					}
+				}
+			}
 
 			// Assemble final log attributes using helpers.
 			finishAttrs := assembleFinishAttrs(duration, err, peerAddr)
@@ -270,9 +289,7 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			}
 			logAttrs = append(logAttrs, finishAttrs...)
 			logAttrs = append(logAttrs, metadataAttrs...)
-			if hcDecision.ShouldTag() {
-				logAttrs = append(logAttrs, slog.Bool(hcDecision.TagKey, hcDecision.TagValue))
-			}
+			logAttrs = appendChatterAnnotations(logAttrs, chatterDecision, cfg.auditKeys)
 
 			logMsg := "Finished gRPC stream"
 			// Panic message is logged separately in handlePanic.

@@ -46,7 +46,7 @@ type MiddlewareOptions struct {
 	AttachLogger           bool
 	StartSpanIfAbsent      bool
 	Tracer                 trace.Tracer
-	HealthCheckFilter      healthcheck.Config
+	ChatterConfig          healthcheck.Config
 	TrustProxyDecisionFunc func(*http.Request) bool
 	TraceProjectID         string
 }
@@ -60,7 +60,7 @@ func defaultMiddlewareOptions() MiddlewareOptions {
 	return MiddlewareOptions{
 		AttachLogger:           true,
 		StartSpanIfAbsent:      true,
-		HealthCheckFilter:      healthcheck.DefaultConfig(),
+		ChatterConfig:          healthcheck.DefaultConfig(),
 		TrustProxyDecisionFunc: isGoogleProxyRequest,
 	}
 }
@@ -115,38 +115,8 @@ func loadMiddlewareOptionsFromEnv() MiddlewareOptions {
 			opts.StartSpanIfAbsent = v
 		}
 	}
-	filterCfg := opts.HealthCheckFilter.Clone()
-	filterChanged := false
-	modeConfigured := false
-	enableConfigured := false
-	if raw, ok := os.LookupEnv("SLOGCP_HTTP_HEALTHCHECK_ENABLED"); ok {
-		if v, ok := parseBoolFlag(raw); ok {
-			filterCfg.Enabled = v
-			filterChanged = true
-			enableConfigured = true
-		}
-	}
-	if raw, ok := os.LookupEnv("SLOGCP_HTTP_HEALTHCHECK_MODE"); ok {
-		switch strings.ToLower(strings.TrimSpace(raw)) {
-		case "tag":
-			filterCfg.Mode = healthcheck.ModeTag
-			filterChanged = true
-			modeConfigured = true
-		case "demote":
-			filterCfg.Mode = healthcheck.ModeDemote
-			filterChanged = true
-			modeConfigured = true
-		case "drop":
-			filterCfg.Mode = healthcheck.ModeDrop
-			filterChanged = true
-			modeConfigured = true
-		}
-	}
-	if modeConfigured && !enableConfigured {
-		filterCfg.Enabled = true
-	}
-	if filterChanged {
-		opts.HealthCheckFilter = filterCfg
+	if cfg, _ := healthcheck.LoadConfigFromEnv(os.LookupEnv); true {
+		opts.ChatterConfig = cfg.Clone()
 	}
 	if raw, ok := os.LookupEnv("SLOGCP_HTTP_TRACE_PROJECT_ID"); ok {
 		opts.TraceProjectID = strings.TrimSpace(raw)
@@ -267,11 +237,17 @@ func WithTracer(tr trace.Tracer) Option {
 	}
 }
 
-// WithHealthCheckFilter installs the provided health-check configuration. The
-// configuration is cloned to avoid caller mutation.
+// WithChatterConfig installs the provided chatter reduction configuration.
+func WithChatterConfig(cfg healthcheck.Config) Option {
+	return func(o *MiddlewareOptions) {
+		o.ChatterConfig = cfg.Clone()
+	}
+}
+
+// WithHealthCheckFilter is deprecated; use WithChatterConfig instead.
 func WithHealthCheckFilter(cfg healthcheck.Config) Option {
 	return func(o *MiddlewareOptions) {
-		o.HealthCheckFilter = cfg.Clone()
+		o.ChatterConfig = cfg.Clone()
 	}
 }
 
@@ -292,7 +268,7 @@ func WithTraceProjectID(projectID string) Option {
 	}
 }
 
-// splitAndClean normalises comma-separated configuration strings into a slice
+// splitAndClean normalizes comma-separated configuration strings into a slice
 // of trimmed, non-empty values.
 func splitAndClean(input string) []string {
 	parts := strings.Split(input, ",")
@@ -307,8 +283,8 @@ func splitAndClean(input string) []string {
 	return cleaned
 }
 
-// cleanHeaderKeys canonicalises and filters header keys, matching the
-// behaviour of the net/http package when normalising request and response
+// cleanHeaderKeys canonicalizes and filters header keys, matching the
+// behaviour of the net/http package when normalizing request and response
 // headers.
 func cleanHeaderKeys(keys []string) []string {
 	cleaned := make([]string, 0, len(keys))

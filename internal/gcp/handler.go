@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -203,15 +204,19 @@ func (h *gcpHandler) Enabled(_ context.Context, level slog.Level) bool {
 
 // Handle processes a slog.Record and writes it to Google Cloud Logging or as JSON.
 func (h *gcpHandler) Handle(ctx context.Context, r slog.Record) error {
-	if decision, ok := healthcheck.DecisionFromContext(ctx); ok {
-		if decision.Mode == healthcheck.ModeDrop {
+	if decision, ok := healthcheck.DecisionFromContext(ctx); ok && decision != nil {
+		if decision.ShouldDrop() {
 			return nil
 		}
-		if decision.Mode == healthcheck.ModeDemote && decision.HasDemote && r.Level > decision.DemoteLevel {
-			r.Level = decision.DemoteLevel
-		}
-		if decision.ShouldTag() && !recordHasAttr(r, decision.TagKey) {
-			r.AddAttrs(slog.Bool(decision.TagKey, decision.TagValue))
+		switch strings.ToUpper(decision.SeverityHint()) {
+		case "WARN":
+			if r.Level < slog.LevelWarn {
+				r.Level = slog.LevelWarn
+			}
+		case "ERROR":
+			if r.Level < slog.LevelError {
+				r.Level = slog.LevelError
+			}
 		}
 	}
 
@@ -897,21 +902,6 @@ func (h *gcpHandler) cloneLocked() *gcpHandler {
 		groups:         append([]string(nil), h.groups...),
 	}
 	return h2
-}
-
-func recordHasAttr(r slog.Record, key string) bool {
-	if key == "" {
-		return false
-	}
-	found := false
-	r.Attrs(func(attr slog.Attr) bool {
-		if attr.Key == key {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
 }
 
 // captureAndFormatFallbackStack captures a stack trace for fallback.

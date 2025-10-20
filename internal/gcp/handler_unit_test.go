@@ -48,9 +48,9 @@ func TestHandleHonorsHealthCheckDecision(t *testing.T) {
 			entryLog: logger,
 			leveler:  slog.LevelInfo,
 		}
-		ctx := healthcheck.ContextWithDecision(context.Background(), healthcheck.Decision{
+		ctx := healthcheck.ContextWithDecision(context.Background(), &healthcheck.Decision{
 			Matched: true,
-			Mode:    healthcheck.ModeDrop,
+			Action:  healthcheck.ActionDrop,
 		})
 		record := slog.NewRecord(time.Now(), slog.LevelInfo, "health-check", 0)
 		if err := handler.Handle(ctx, record); err != nil {
@@ -61,20 +61,17 @@ func TestHandleHonorsHealthCheckDecision(t *testing.T) {
 		}
 	})
 
-	t.Run("demote", func(t *testing.T) {
+	t.Run("forceLogOverride", func(t *testing.T) {
 		logger := &recordingEntryLogger{}
 		handler := &gcpHandler{
 			cfg:      Config{LogTarget: LogTargetGCP},
 			entryLog: logger,
-			leveler:  slog.LevelDebug,
+			leveler:  slog.LevelInfo,
 		}
-		decision := healthcheck.Decision{
-			Matched:     true,
-			Mode:        healthcheck.ModeDemote,
-			TagKey:      "is_health_check",
-			TagValue:    true,
-			DemoteLevel: slog.LevelDebug,
-			HasDemote:   true,
+		decision := &healthcheck.Decision{
+			Matched:  true,
+			Action:   healthcheck.ActionDrop,
+			ForceLog: true,
 		}
 		ctx := healthcheck.ContextWithDecision(context.Background(), decision)
 		record := slog.NewRecord(time.Now(), slog.LevelInfo, "health-check", 0)
@@ -84,23 +81,8 @@ func TestHandleHonorsHealthCheckDecision(t *testing.T) {
 		if got := len(logger.entries); got != 1 {
 			t.Fatalf("expected one entry, got %d", got)
 		}
-		entry := logger.entries[0]
-		if entry.Severity != logging.Debug {
-			t.Fatalf("entry severity = %v, want %v", entry.Severity, logging.Debug)
-		}
-		switch payload := entry.Payload.(type) {
-		case map[string]any:
-			tag, ok := payload["is_health_check"]
-			if !ok || tag != true {
-				t.Fatalf("health-check tag missing or false: %#v", payload)
-			}
-		case *structpb.Struct:
-			field, ok := payload.Fields["is_health_check"]
-			if !ok || field.GetBoolValue() != true {
-				t.Fatalf("health-check tag missing or false: %#v", payload.Fields)
-			}
-		default:
-			t.Fatalf("unexpected payload type %T", payload)
+		if logger.entries[0].Severity != logging.Info {
+			t.Fatalf("entry severity = %v, want %v", logger.entries[0].Severity, logging.Info)
 		}
 	})
 }
