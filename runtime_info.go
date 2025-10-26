@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package gcp
+package slogcp
 
 import (
 	"os"
@@ -20,7 +20,7 @@ import (
 	"sync"
 )
 
-// RuntimeInfo captures metadata about the current Google Cloud environment.
+// RuntimeInfo captures metadata about the current cloud environment.
 type RuntimeInfo struct {
 	Labels         map[string]string
 	ServiceContext map[string]string

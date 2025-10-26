@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package gcp
+package slogcp
 
 import (
 	"errors"
@@ -68,43 +68,72 @@ func formatPCsToStackString(pcs []uintptr) string {
 		return ""
 	}
 
+	header := currentGoroutineHeader()
+
 	var sb strings.Builder
+	if header != "" {
+		sb.Grow(len(header) + len(pcs)*64)
+		sb.WriteString(header)
+		sb.WriteByte('\n')
+	} else {
+		sb.Grow(len(pcs) * 64)
+	}
+
 	var intBuf [20]byte
 	frames := runtime.CallersFrames(pcs)
+	frameCount := 0
 
 	for {
 		frame, more := frames.Next()
 
-		// Basic frame validity check.
 		if frame.PC == 0 {
-			break // Should not happen with valid pcs, but safeguard.
+			break
 		}
 
-		// Skip runtime finalizers or exit points.
 		if frame.Function == "runtime.goexit" {
 			if !more {
 				break
-			} // Stop if it's the last frame
-			continue // Skip this frame and continue if more exist
+			}
+			continue
 		}
 
-		// Format the frame in standard Go stack trace format.
+		if frame.Function == "" {
+			if !more {
+				break
+			}
+			continue
+		}
+
 		sb.WriteString(frame.Function)
 		sb.WriteByte('\n')
 		sb.WriteByte('\t')
 		sb.WriteString(frame.File)
 		sb.WriteByte(':')
+
 		lineBytes := strconv.AppendInt(intBuf[:0], int64(frame.Line), 10)
 		sb.Write(lineBytes)
+
+		if frame.PC != 0 && frame.Entry != 0 {
+			var offset uintptr
+			if frame.PC >= frame.Entry {
+				offset = frame.PC - frame.Entry
+			}
+			if offset > 0 {
+				sb.WriteString(" +0x")
+				hexBytes := strconv.AppendUint(intBuf[:0], uint64(offset), 16)
+				sb.Write(hexBytes)
+			}
+		}
+
 		sb.WriteByte('\n')
 
-		if !more {
-			break // No more frames to process.
+		frameCount++
+		if !more || frameCount >= maxStackFrames {
+			break
 		}
 	}
 
-	// Return the built string, removing the final newline.
-	return strings.TrimSuffix(sb.String(), "\n")
+	return sb.String()
 }
 
 func trimStackPCs(pcs []uintptr, skipFn func(string) bool) []uintptr {
@@ -143,14 +172,9 @@ func SkipInternalStackFrame(funcName string) bool {
 	if strings.HasPrefix(funcName, "runtime.") {
 		return true
 	}
-	if strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/internal/gcp.") ||
-		strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/http.") ||
-		strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/grpc.") ||
-		strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/errorreporting.") ||
-		strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp.") {
-		return true
-	}
-	if strings.HasPrefix(funcName, "log/slog.") {
+	if strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/") ||
+		strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp.") ||
+		strings.HasPrefix(funcName, "log/slog.") {
 		return true
 	}
 	return false
@@ -187,4 +211,25 @@ func CaptureStack(skipFn func(string) bool) (string, runtime.Frame) {
 	stack := formatPCsToStackString(trimmed)
 	stackPCPool.Put(bufPtr)
 	return stack, top
+}
+
+func currentGoroutineHeader() string {
+	const fallbackHeader = "goroutine 0 [running]:"
+
+	var buf [128]byte
+	n := runtime.Stack(buf[:], false)
+	if n <= 0 {
+		return fallbackHeader
+	}
+
+	header := string(buf[:n])
+	if idx := strings.IndexByte(header, '\n'); idx >= 0 {
+		header = header[:idx]
+	}
+	header = strings.TrimSuffix(header, "\r")
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return fallbackHeader
+	}
+	return header
 }

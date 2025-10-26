@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package gcp
+package slogcp
 
 import (
 	"context"
@@ -52,7 +52,7 @@ const (
 // X-Cloud-Trace-Context injector) before calling this helper.
 //
 // For cross-project linking, pass the desired project that owns the trace as
-// projectID (often Config.TraceProjectID). If empty, only raw IDs are returned.
+// projectID. If empty, only raw IDs are returned.
 func ExtractTraceSpan(ctx context.Context, projectID string) (formattedTraceID, rawTraceID, rawSpanID string, sampled bool, otelCtx trace.SpanContext) {
 	otelCtx = trace.SpanContextFromContext(ctx)
 	if !otelCtx.IsValid() {

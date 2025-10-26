@@ -17,29 +17,29 @@
 // The package offers:
 //
 //  1. [Middleware]: wraps an [http.Handler] to log request/response details
-//     with a provided *slog.Logger (from slogcp). Behaviour is configurable via
-//     functional options or environment variables such as
-//     SLOGCP_HTTP_SKIP_PATH_SUBSTRINGS, SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW,
-//     SLOGCP_HTTP_LOG_REQUEST_HEADER_KEYS, SLOGCP_HTTP_LOG_RESPONSE_HEADER_KEYS,
-//     SLOGCP_HTTP_REQUEST_BODY_LIMIT, SLOGCP_HTTP_RESPONSE_BODY_LIMIT,
-//     SLOGCP_HTTP_RECOVER_PANICS, and SLOGCP_HTTP_TRUST_PROXY_HEADERS.
+//     with an application logger. Behaviour is configurable via functional
+//     options or environment variables such as SLOGCP_HTTP_SKIP_PATH_SUBSTRINGS,
+//     SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW, SLOGCP_HTTP_LOG_REQUEST_HEADER_KEYS,
+//     SLOGCP_HTTP_LOG_RESPONSE_HEADER_KEYS, SLOGCP_HTTP_REQUEST_BODY_LIMIT,
+//     SLOGCP_HTTP_RESPONSE_BODY_LIMIT, SLOGCP_HTTP_RECOVER_PANICS, and
+//     SLOGCP_HTTP_TRUST_PROXY_HEADERS.
 //
 //  2. [InjectTraceContextMiddleware]: extracts the legacy X-Cloud-Trace-Context
 //     header and injects a remote span context into the request’s context.
-//     Use this only when you’re not already using an OpenTelemetry HTTP
-//     server middleware.
+//     Use this only when you are not already relying on OpenTelemetry HTTP
+//     server instrumentation to do the same.
 //
 //  3. [NewTraceRoundTripper]: an opt-in client transport that propagates the
 //     current span context on outbound requests (injects W3C traceparent and,
 //     by default, X-Cloud-Trace-Context). This is useful when you are not
 //     using a full OpenTelemetry HTTP client wrapper.
 //
-// These helpers make it easy to correlate HTTP traffic with Cloud Logging and
-// Cloud Trace by ensuring trace context is present on inbound and outbound calls.
+// These helpers keep inbound and outbound traffic correlated with the JSON
+// payload produced by slogcp’s handler, maintaining trace IDs and the
+// `httpRequest` structure expected by Google Cloud log sinks.
 //
 // # Basic Usage (server)
 //
-//	// Assumes GOOGLE_CLOUD_PROJECT is set or running on GCP.
 //	handler, err := slogcp.NewHandler(os.Stdout)
 //	if err != nil {
 //	    log.Fatalf("failed to create slogcp handler: %v", err)
@@ -62,7 +62,7 @@
 //	)
 //
 //	log.Println("Starting server on :8080")
-//	if err := http.ListenAndServe(":8080", handler); err != nil {
+//	if err := http.ListenAndServe(":8080", wrapped); err != nil {
 //	    log.Fatalf("server failed: %v", err)
 //	}
 //
