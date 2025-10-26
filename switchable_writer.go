@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package gcp
+package slogcp
 
 import (
 	"io"
@@ -21,28 +21,23 @@ import (
 )
 
 // SwitchableWriter is an io.Writer that allows its underlying writer to be
-// changed atomically. It is used internally by the slogcp library's
-// gcpHandler when slogcp is configured to log to a specific file path,
-// for example, when using the slogcp.WithRedirectToFile option.
-//
-// This design enables the slogcp.Handler.ReopenLogFile method to update the
-// handler's output destination (e.g., after an external log rotation event)
-// without needing to reconstruct the entire logging handler chain.
+// changed atomically. It is used internally when slogcp is configured to log to
+// a specific file path (for example, via WithRedirectToFile) so that
+// Handler.ReopenLogFile can update the output destination without rebuilding
+// the entire handler chain.
 //
 // SwitchableWriter also implements io.Closer. Its Close method attempts to
 // close the underlying writer if it implements io.Closer and then sets the
 // internal writer to io.Discard to prevent further writes. The actual closing
-// of file resources managed by slogcp is handled by the slogcp.Handler.
+// of file resources managed by slogcp is handled by the Handler itself.
 type SwitchableWriter struct {
 	mu sync.Mutex
 	w  io.Writer
 }
 
 // NewSwitchableWriter creates a new SwitchableWriter, initializing it with
-// the provided initialWriter.
-// If initialWriter is nil, the SwitchableWriter defaults to using io.Discard
-// for its underlying writer to prevent nil pointer dereferences during
-// subsequent Write calls.
+// the provided initialWriter. If initialWriter is nil, the SwitchableWriter
+// defaults to using io.Discard.
 func NewSwitchableWriter(initialWriter io.Writer) *SwitchableWriter {
 	if initialWriter == nil {
 		initialWriter = io.Discard
@@ -51,9 +46,8 @@ func NewSwitchableWriter(initialWriter io.Writer) *SwitchableWriter {
 }
 
 // Write directs the given bytes to the current underlying writer.
-// It is safe for concurrent use. If the SwitchableWriter has been closed
-// or its writer set to nil (or io.Discard), Write may return an error
-// (such as os.ErrClosed) or write to io.Discard.
+// It is safe for concurrent use. If the SwitchableWriter has been closed or its
+// writer set to nil, Write may return an error (such as os.ErrClosed).
 func (sw *SwitchableWriter) Write(p []byte) (n int, err error) {
 	sw.mu.Lock()
 	currentWriter := sw.w
@@ -66,11 +60,9 @@ func (sw *SwitchableWriter) Write(p []byte) (n int, err error) {
 }
 
 // SetWriter atomically updates the underlying writer for this SwitchableWriter.
-// The previously configured writer is NOT closed by this method; managing the
-// lifecycle of the old writer is the responsibility of the caller if needed.
-// This method is safe for concurrent use.
-// If newWriter is nil, the SwitchableWriter will subsequently direct writes
-// to io.Discard.
+// The previously configured writer is not closed by this method; managing its
+// lifecycle is the caller's responsibility. If newWriter is nil, the
+// SwitchableWriter will subsequently direct writes to io.Discard.
 func (sw *SwitchableWriter) SetWriter(newWriter io.Writer) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
@@ -82,12 +74,9 @@ func (sw *SwitchableWriter) SetWriter(newWriter io.Writer) {
 }
 
 // GetCurrentWriter returns the current underlying io.Writer that this
-// SwitchableWriter is directing writes to.
-// This method is safe for concurrent use.
-// The returned writer should generally not be stored or used for extended
-// periods if SetWriter might be called concurrently, as the underlying
-// writer could change. It is primarily intended for internal uses, such as
-// attempting to flush the actual target writer.
+// SwitchableWriter is directing writes to. This method is safe for concurrent
+// use but callers should avoid holding on to the returned writer across calls to
+// SetWriter.
 func (sw *SwitchableWriter) GetCurrentWriter() io.Writer {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
@@ -95,17 +84,13 @@ func (sw *SwitchableWriter) GetCurrentWriter() io.Writer {
 }
 
 // Close attempts to close the current underlying writer if it implements
-// the io.Closer interface. After attempting to close the underlying writer,
-// or if the underlying writer is not closable, the SwitchableWriter's
-// internal writer is set to io.Discard to prevent further writes to the
-// (potentially closed or replaced) original writer.
-// This method is safe for concurrent use and is idempotent regarding the
-// state of the SwitchableWriter (i.e., subsequent calls will operate on
-// io.Discard).
+// io.Closer. After attempting to close the writer (or if it is not closable),
+// the SwitchableWriter's internal writer is set to io.Discard to prevent
+// further writes. This method is safe for concurrent use and idempotent.
 func (sw *SwitchableWriter) Close() error {
 	sw.mu.Lock()
 	writerToClose := sw.w
-	sw.w = io.Discard // Ensure future writes go to discard after Close is called.
+	sw.w = io.Discard
 	sw.mu.Unlock()
 
 	if c, ok := writerToClose.(io.Closer); ok {

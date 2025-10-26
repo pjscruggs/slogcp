@@ -19,8 +19,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-
-	"github.com/pjscruggs/slogcp/internal/gcp"
 )
 
 // TraceAttributes extracts Cloud Trace aware attributes from ctx. The returned
@@ -45,18 +43,18 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 		projectID = strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT"))
 	}
 
-	fmtTrace, rawTrace, rawSpan, sampled, sc := gcp.ExtractTraceSpan(ctx, projectID)
+	fmtTrace, rawTrace, rawSpan, sampled, sc := ExtractTraceSpan(ctx, projectID)
 	if !sc.IsValid() {
 		return nil, false
 	}
 
 	attrs := []slog.Attr{
 		slog.String("trace_id", rawTrace),
-		slog.String(gcp.SpanKey, rawSpan),
-		slog.Bool(gcp.SampledKey, sampled),
+		slog.String(SpanKey, rawSpan),
+		slog.Bool(SampledKey, sampled),
 	}
 	if fmtTrace != "" {
-		attrs = append(attrs, slog.String(gcp.TraceKey, fmtTrace))
+		attrs = append(attrs, slog.String(TraceKey, fmtTrace))
 	}
 	return attrs, true
 }

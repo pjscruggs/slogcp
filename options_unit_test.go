@@ -5,7 +5,7 @@ package slogcp_test
 
 import (
 	"bytes"
-	"encoding/json"
+	json "encoding/json/v2"
 	"io"
 	"log/slog"
 	"strings"
@@ -19,7 +19,6 @@ func TestWithLevelControlsLogging(t *testing.T) {
 
 	var buf bytes.Buffer
 	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithLogTarget(slogcp.LogTargetStdout),
 		slogcp.WithRedirectWriter(&buf),
 		slogcp.WithLevel(slog.LevelWarn),
 	)
@@ -50,7 +49,6 @@ func TestWithAttrsAddsStaticAttributes(t *testing.T) {
 
 	var buf bytes.Buffer
 	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithLogTarget(slogcp.LogTargetStdout),
 		slogcp.WithRedirectWriter(&buf),
 		slogcp.WithAttrs([]slog.Attr{slog.String("global", "yes")}),
 	)
@@ -79,7 +77,6 @@ func TestWithGroupNestsAttributes(t *testing.T) {
 
 	var buf bytes.Buffer
 	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithLogTarget(slogcp.LogTargetStdout),
 		slogcp.WithRedirectWriter(&buf),
 		slogcp.WithGroup("service"),
 	)

@@ -23,7 +23,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/pjscruggs/slogcp/internal/gcp"
+	"github.com/pjscruggs/slogcp"
 )
 
 // mustTraceID converts a 32‑character hexadecimal string into a trace.TraceID.
@@ -142,7 +142,7 @@ func TestExtractTraceSpan(t *testing.T) {
 			t.Parallel()
 
 			gotFmt, gotRawTrace, gotRawSpan, gotSampled, gotSC :=
-				gcp.ExtractTraceSpan(tc.ctx, tc.projectID)
+				slogcp.ExtractTraceSpan(tc.ctx, tc.projectID)
 
 			if gotFmt != tc.wantFmtTraceID {
 				t.Errorf("formattedTraceID = %q, want %q", gotFmt, tc.wantFmtTraceID)

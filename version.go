@@ -21,8 +21,9 @@ import "fmt"
 // It can be overridden at build time via -ldflags.
 var Version = "v0.1.6-alpha"
 
-// UserAgent is the string sent with Cloud Logging API requests, identifying this library.
-// Initialized based on the Version variable.
+// UserAgent identifies this library when helper components need to report a
+// version string. It is initialised from Version and can be overridden at
+// build time.
 var UserAgent string
 
 func init() {

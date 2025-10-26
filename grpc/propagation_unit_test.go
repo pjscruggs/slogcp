@@ -35,7 +35,7 @@ import (
 
 func TestWithTracePropagationUnaryClient(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
-	h, err := slogcp.NewHandler(io.Discard, slogcp.WithLogTarget(slogcp.LogTargetStdout))
+	h, err := slogcp.NewHandler(io.Discard)
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v", err)
 	}
@@ -90,10 +90,7 @@ func TestWithTracePropagationUnaryClient(t *testing.T) {
 func TestContextOnlyServerStream(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	var buf bytes.Buffer
-	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithLogTarget(slogcp.LogTargetStdout),
-		slogcp.WithRedirectWriter(&buf),
-	)
+	h, err := slogcp.NewHandler(io.Discard, slogcp.WithRedirectWriter(&buf))
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v", err)
 	}

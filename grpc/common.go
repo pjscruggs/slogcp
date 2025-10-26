@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pjscruggs/slogcp/internal/gcp"
+	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -156,7 +156,7 @@ func handlePanic(ctx context.Context, logger *slog.Logger, recoveredValue any) (
 
 	isPanic = true
 
-	stackStr, _ := gcp.CaptureStack(nil)
+	stackStr, _ := slogcp.CaptureStack(nil)
 
 	// Log the panic immediately with all available details
 	logger.LogAttrs(ctx, internalLevelCritical,

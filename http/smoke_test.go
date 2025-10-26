@@ -36,7 +36,7 @@ import (
 func newTestLogger(t *testing.T) *slog.Logger {
 	t.Helper()
 
-	handler, err := slogcp.NewHandler(io.Discard, slogcp.WithLogTarget(slogcp.LogTargetStdout))
+	handler, err := slogcp.NewHandler(io.Discard)
 	if err != nil {
 		t.Fatalf("slogcp.NewHandler() returned %v, want nil", err)
 	}

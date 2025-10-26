@@ -24,10 +24,8 @@ import (
 	"sync"
 	"time"
 
-	"cloud.google.com/go/logging"
 	"github.com/pjscruggs/slogcp"
 	"github.com/pjscruggs/slogcp/healthcheck"
-	"github.com/pjscruggs/slogcp/internal/gcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -122,7 +120,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 //  5. Calculates request latency, determines the log level from the status
 //     code (5xx=Error, 4xx=Warn, others=Info), and applies sampling or logger
 //     level gating before emitting a log entry.
-//  6. Logs a final message including the [logging.HTTPRequest] struct (via the
+//  6. Logs a final message including the [slogcp.HTTPRequest] struct (via the
 //     special httpRequestKey attribute) along with optional request/response
 //     headers, body excerpts, and panic information when recovery is enabled.
 //
@@ -258,7 +256,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 					defer func() {
 						if rec := recover(); rec != nil {
 							recovered = rec
-							stack, _ = gcp.CaptureStack(nil)
+							stack, _ = slogcp.CaptureStack(nil)
 							if !rw.wroteHeader {
 								rw.WriteHeader(http.StatusInternalServerError)
 							}
@@ -329,7 +327,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				trustProxy = true
 			}
 
-			reqStruct := &logging.HTTPRequest{
+			reqStruct := &slogcp.HTTPRequest{
 				Request:      r,
 				RequestSize:  r.ContentLength,
 				Status:       finalStatusCode,
@@ -337,6 +335,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				Latency:      duration,
 				RemoteIP:     resolveRemoteIP(r, trustProxy, merged.TrustProxyDecisionFunc),
 			}
+			slogcp.PrepareHTTPRequest(reqStruct)
 
 			attrsPtr := attrSlicePool.Get().(*[]slog.Attr)
 			attrs := (*attrsPtr)[:0]
@@ -458,10 +457,7 @@ func headersGroupAttr(name string, header http.Header, keys []string) (slog.Attr
 	if len(attrs) == 0 {
 		return slog.Attr{}, false
 	}
-	return slog.Attr{
-		Key:   name,
-		Value: slog.GroupValue(attrs...),
-	}, true
+	return slog.GroupAttrs(name, attrs...), true
 }
 
 // appendBodyAttrs adds logging attributes for a captured request/response body.
@@ -547,19 +543,13 @@ func buildChatterGroup(prefix string, attrs []slog.Attr) slog.Attr {
 	if lastKey == "" {
 		lastKey = prefix
 	}
-	group := slog.Attr{
-		Key:   lastKey,
-		Value: slog.GroupValue(attrs...),
-	}
+	group := slog.GroupAttrs(lastKey, attrs...)
 	for i := len(segments) - 2; i >= 0; i-- {
 		name := strings.TrimSpace(segments[i])
 		if name == "" {
 			continue
 		}
-		group = slog.Attr{
-			Key:   name,
-			Value: slog.GroupValue(group),
-		}
+		group = slog.GroupAttrs(name, group)
 	}
 	return group
 }
@@ -710,8 +700,8 @@ func extractIP(addr string) string {
 	return addr
 }
 
-// httpRequestKey is the attribute key used when logging the [logging.HTTPRequest]
+// httpRequestKey is the attribute key used when logging the [slogcp.HTTPRequest]
 // struct via [slog.Any]. The core slogcp handler specifically looks for this key
 // to extract the struct and populate the corresponding `httpRequest` field in the
-// Cloud Logging entry, removing this attribute from the final JSON payload.
+// emitted JSON payload, removing this attribute from the final object.
 const httpRequestKey = "httpRequest"

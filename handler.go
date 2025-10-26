@@ -1,463 +1,323 @@
-// Copyright 2025 Patrick J. Scruggs
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-// Package slogcp provides a "batteries included" structured logging solution
-// tailored for Google Cloud Platform (GCP). It provides a [slog.Handler] that
-// integrates seamlessly with the standard Go [log/slog] package and offers
-// enhanced features for cloud environments.
-//
-// The core of the package is the [Handler] type, which can be configured to
-// send structured JSON logs directly to the Cloud Logging API or to local
-// destinations like stdout, stderr, or a file.
 package slogcp
 
 import (
-	"maps"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
-	"time"
-
-	"github.com/pjscruggs/slogcp/internal/gcp"
-	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 )
 
-// LabelsGroup is the special slog.Group name used to specify dynamic labels
-// that should be added to the Cloud Logging "labels" field rather than the
-// main "jsonPayload".
 const LabelsGroup = "logging.googleapis.com/labels"
 
-// Handler is a [slog.Handler] that writes structured logs optimized for
-// Google Cloud Platform or to a local destination as JSON. It manages the
-// GCP client lifecycle and must be closed via its Close method to ensure logs
-// are flushed before application termination.
-//
-// A Handler is safe for concurrent use by multiple goroutines.
+var (
+	ErrInvalidRedirectTarget = errors.New("slogcp: invalid redirect target")
+	errUnsupportedTarget     = errors.New("slogcp: logging to the Cloud Logging API has been removed")
+)
+
+type Option func(*options)
+
+type Middleware func(slog.Handler) slog.Handler
+
 type Handler struct {
-	slog.Handler // Embed the core handler.
+	slog.Handler
 
-	clientMgr      ClientManagerInterface // Manages GCP client lifecycle.
-	resolvedCfg    gcp.Config             // Final resolved configuration.
-	inFallbackMode bool                   // Indicates if the handler is in automatic fallback mode.
-	closeOnce      sync.Once
-	internalLogger *slog.Logger
+	cfg              *handlerConfig
+	internalLogger   *slog.Logger
+	switchableWriter *SwitchableWriter
+	ownedFile        *os.File
 
-	mu              sync.Mutex // Protects ownedFileHandle
-	ownedFileHandle *os.File   // The *os.File if slogcp opened it via path
+	mu        sync.Mutex
+	closeOnce sync.Once
 }
 
-// NewHandler creates a [slog.Handler] configured by programmatic [Option] functions
-// and environment variables. This is the main entry point for the library.
-//
-// The defaultWriter is used if the configuration resolves to a local target
-// (like stdout, stderr, or file) but no specific writer is provided through
-// options or environment variables. It is ignored if the target is GCP.
-//
-// It is crucial to call the returned handler's Close method on application
-// shutdown to flush buffered logs and release resources.
-//
-// Example for local development:
-//
-//	handler, err := slogcp.NewHandler(os.Stdout,
-//		slogcp.WithLevel(slog.LevelDebug),
-//		slogcp.WithSourceLocationEnabled(true),
-//	)
-//	if err != nil {
-//		log.Fatalf("failed to create handler: %v", err)
-//	}
-//	defer handler.Close()
-//
-//	logger := slog.New(handler)
-//	logger.Debug("This is a debug message.")
+type handlerConfig struct {
+	Level             slog.Level
+	AddSource         bool
+	StackTraceEnabled bool
+	StackTraceLevel   slog.Level
+	TraceProjectID    string
+	Writer            io.Writer
+	ClosableWriter    io.Closer
+	FilePath          string
+	ReplaceAttr       func([]string, slog.Attr) slog.Attr
+	Middlewares       []Middleware
+	InitialAttrs      []slog.Attr
+	InitialGroup      string
+
+	runtimeLabels            map[string]string
+	runtimeServiceContext    map[string]string
+	runtimeServiceContextAny map[string]any
+}
+
+type options struct {
+	level             *slog.Level
+	addSource         *bool
+	stackTraceEnabled *bool
+	stackTraceLevel   *slog.Level
+	traceProjectID    *string
+	writer            io.Writer
+	writerFilePath    *string
+	replaceAttr       func([]string, slog.Attr) slog.Attr
+	middlewares       []Middleware
+	attrs             [][]slog.Attr
+	group             *string
+	internalLogger    *slog.Logger
+}
+
 func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
-	builderState := &options{}
+	builder := &options{}
 	for _, opt := range opts {
 		if opt != nil {
-			opt(builderState)
+			opt(builder)
 		}
 	}
 
-	// Set up the internal logger for the library's own diagnostics.
-	// Default to a disabled logger if none is provided by the user.
-	internalLogger := builderState.internalLogger
+	internalLogger := builder.internalLogger
 	if internalLogger == nil {
 		internalLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
-	baseCfg, baseConfigLoadErr := gcp.LoadConfig(internalLogger)
-	if baseConfigLoadErr != nil && !errors.Is(baseConfigLoadErr, gcp.ErrProjectIDMissing) {
-		return nil, baseConfigLoadErr
-	}
-
-	envLogTargetStr := os.Getenv(gcp.EnvLogTarget)
-	envRedirectTargetStr := os.Getenv(gcp.EnvRedirectAsJSONTarget)
-	explicitTargetConfigured := wasTargetExplicitlyConfigured(builderState, envLogTargetStr, envRedirectTargetStr)
-
-	currentCfg := baseCfg
-	if err := applyProgrammaticOptions(&currentCfg, builderState, internalLogger); err != nil {
+	cfg, err := loadConfigFromEnv(internalLogger)
+	if err != nil {
 		return nil, err
 	}
 
-	// If no writer was configured for a local target, use the provided default.
-	if currentCfg.LogTarget != gcp.LogTargetGCP && currentCfg.RedirectWriter == nil && currentCfg.OpenedFilePath == "" {
-		currentCfg.RedirectWriter = defaultWriter
+	applyOptions(&cfg, builder)
+
+	if cfg.Writer == nil && cfg.FilePath == "" {
+		if defaultWriter != nil {
+			cfg.Writer = defaultWriter
+		} else {
+			cfg.Writer = os.Stdout
+		}
 	}
 
-	levelV := new(slog.LevelVar)
-	handler, initErr := initializeHandler(&currentCfg, levelV, UserAgent, internalLogger)
+	var (
+		ownedFile    *os.File
+		switchWriter *SwitchableWriter
+	)
 
-	// Fallback logic: if GCP was the target and initialization failed,
-	// and no explicit redirect was configured, fall back to a local writer.
-	if initErr != nil && currentCfg.LogTarget == gcp.LogTargetGCP && !explicitTargetConfigured {
-		var fallbackWriter io.Writer = os.Stdout
-		if builderState.fallbackWriter != nil {
-			fallbackWriter = builderState.fallbackWriter
-		}
-
-		fallbackDest := "the configured fallback writer"
-		if f, ok := fallbackWriter.(*os.File); ok {
-			if f.Name() == os.Stdout.Name() {
-				fallbackDest = "stdout"
-			} else if f.Name() == os.Stderr.Name() {
-				fallbackDest = "stderr"
-			}
-		}
-
-		internalLogger.Warn("Failed to initialize GCP logging, falling back to local writer", "error", initErr, "destination", fallbackDest)
-
-		fallbackCfg, _ := gcp.LoadConfig(internalLogger)
-		if err := applyProgrammaticOptions(&fallbackCfg, builderState, internalLogger); err != nil {
-			return nil, fmt.Errorf("failed to re-apply options for fallback: %w", err)
-		}
-
-		fallbackCfg.RedirectWriter = fallbackWriter
-		fallbackCfg.OpenedFilePath = ""
-		fallbackCfg.ClosableUserWriter = nil
-
-		if c, ok := fallbackWriter.(io.Closer); ok {
-			if f, isFile := fallbackWriter.(*os.File); !isStdStream(f, isFile) {
-				fallbackCfg.ClosableUserWriter = c
-			}
-		}
-
-		switch f := fallbackWriter.(type) {
-		case *os.File:
-			if f.Name() == os.Stderr.Name() {
-				fallbackCfg.LogTarget = gcp.LogTargetStderr
-			} else {
-				fallbackCfg.LogTarget = gcp.LogTargetStdout
-			}
-		default:
-			fallbackCfg.LogTarget = gcp.LogTargetStdout
-		}
-
-		fallbackHandler, fallbackErr := initializeHandler(&fallbackCfg, levelV, UserAgent, internalLogger)
-		if fallbackErr != nil {
-			return nil, fmt.Errorf("fallback logging failed to initialize: %w (original GCP init error: %v)", fallbackErr, initErr)
-		}
-		fallbackHandler.inFallbackMode = true
-		return fallbackHandler, nil
-	}
-
-	return handler, initErr
-}
-
-func isStdStream(f *os.File, ok bool) bool {
-	if !ok || f == nil {
-		return false
-	}
-	name := f.Name()
-	return name == os.Stdout.Name() || name == os.Stderr.Name()
-}
-
-// initializeHandler creates a Handler instance with the provided configuration.
-func initializeHandler(cfg *gcp.Config, levelV *slog.LevelVar, userAgent string, internalLogger *slog.Logger) (*Handler, error) {
-	levelV.Set(cfg.InitialLevel)
-
-	var cMgr ClientManagerInterface
-	var slogCoreHandler slog.Handler
-	var ownedFileHandleForLogger *os.File
-
-	runtimeInfo := gcp.DetectRuntimeInfo()
-
-	if cfg.LogTarget == gcp.LogTargetFile && cfg.OpenedFilePath != "" {
-		f, err := os.OpenFile(cfg.OpenedFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if cfg.FilePath != "" {
+		file, err := os.OpenFile(cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
-			return nil, fmt.Errorf("slogcp: failed to open log file %q: %w", cfg.OpenedFilePath, err)
+			return nil, fmt.Errorf("slogcp: open log file %q: %w", cfg.FilePath, err)
 		}
-		cfg.RedirectWriter = gcp.NewSwitchableWriter(f)
-		ownedFileHandleForLogger = f
+		ownedFile = file
+		switchWriter = NewSwitchableWriter(file)
+		cfg.Writer = switchWriter
+		cfg.ClosableWriter = nil
 	}
 
-	if cfg.LogTarget == gcp.LogTargetGCP {
-		concreteMgr := gcp.NewClientManager(*cfg, userAgent, levelV, internalLogger)
-		if err := concreteMgr.Initialize(); err != nil {
-			_ = concreteMgr.Close()
-			return nil, fmt.Errorf("failed to initialize GCP client manager: %w", err)
-		}
-		gcpAPILogger, err := concreteMgr.GetLogger()
-		if err != nil {
-			_ = concreteMgr.Close()
-			return nil, fmt.Errorf("failed to get GCP logger after initialization: %w", err)
-		}
-		slogCoreHandler = gcp.NewGcpHandler(*cfg, gcpAPILogger, levelV, internalLogger, runtimeInfo)
-		cMgr = concreteMgr
-	} else {
-		if cfg.RedirectWriter == nil {
-			return nil, fmt.Errorf("internal error: log target %s selected but no writer available", cfg.LogTarget)
-		}
-		slogCoreHandler = gcp.NewGcpHandler(*cfg, nil, levelV, internalLogger, runtimeInfo)
+	if cfg.Writer == nil {
+		cfg.Writer = os.Stdout
 	}
 
-	for i := len(cfg.Middlewares) - 1; i >= 0; i-- {
-		if mw := cfg.Middlewares[i]; mw != nil {
-			slogCoreHandler = mw(slogCoreHandler)
+	if cfg.ClosableWriter == nil {
+		if c, ok := cfg.Writer.(io.Closer); ok && !isStdStream(cfg.Writer) {
+			cfg.ClosableWriter = c
 		}
 	}
 
-	if cfg.AddSource {
-		slogCoreHandler = sourceAwareHandler{Handler: slogCoreHandler}
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(cfg.Level)
+
+	runtimeInfo := DetectRuntimeInfo()
+	cfg.runtimeLabels = cloneStringMap(runtimeInfo.Labels)
+	cfg.runtimeServiceContext = cloneStringMap(runtimeInfo.ServiceContext)
+	cfg.runtimeServiceContextAny = stringMapToAny(cfg.runtimeServiceContext)
+
+	cfgPtr := &cfg
+	core := newJSONHandler(cfgPtr, levelVar, internalLogger)
+	handler := slog.Handler(core)
+	for i := len(cfgPtr.Middlewares) - 1; i >= 0; i-- {
+		handler = cfgPtr.Middlewares[i](handler)
+	}
+	if cfgPtr.AddSource {
+		handler = sourceAwareHandler{Handler: handler}
 	}
 
 	h := &Handler{
-		Handler:         slogCoreHandler,
-		clientMgr:       cMgr,
-		resolvedCfg:     *cfg,
-		ownedFileHandle: ownedFileHandleForLogger,
-		internalLogger:  internalLogger,
+		Handler:          handler,
+		cfg:              cfgPtr,
+		internalLogger:   internalLogger,
+		switchableWriter: switchWriter,
+		ownedFile:        ownedFile,
 	}
+
 	return h, nil
 }
 
-// Close flushes any buffered logs and releases resources. For GCP mode, it closes
-// the Cloud Logging client. It also closes any user-provided [io.Writer] that
-// implements [io.Closer] or any file opened by slogcp.
-//
-// Close is safe to call concurrently and repeatedly; only the first call will
-// perform the shutdown. It returns the first error encountered during the
-// process. It is typically called via defer immediately after the handler is
-// created.
-//
-//	handler, err := slogcp.NewHandler(os.Stdout, nil)
-//	if err != nil {
-//		log.Fatalf("failed to create handler: %v", err)
-//	}
-//	defer handler.Close()
 func (h *Handler) Close() error {
 	var firstErr error
 	h.closeOnce.Do(func() {
-		if h.clientMgr != nil {
-			if err := h.clientMgr.Close(); err != nil {
-				firstErr = err
-				h.internalLogger.Error("Error closing GCP client manager", "error", err)
-			}
-		}
-
 		h.mu.Lock()
-		if h.ownedFileHandle != nil {
-			if err := h.ownedFileHandle.Close(); err != nil {
+		closeOwnedFile := h.ownedFile != nil
+		if h.switchableWriter != nil {
+			if err := h.switchableWriter.Close(); err != nil {
 				if firstErr == nil {
 					firstErr = err
+					h.internalLogger.Error("failed to close switchable writer", slog.Any("error", err))
 				}
-				h.internalLogger.Error("Error closing owned log file", "error", err)
+			} else {
+				closeOwnedFile = false
 			}
-			h.ownedFileHandle = nil
+			h.switchableWriter = nil
 		}
+		if closeOwnedFile && h.ownedFile != nil {
+			if err := h.ownedFile.Close(); err != nil && firstErr == nil {
+				firstErr = err
+				h.internalLogger.Error("failed to close log file", slog.Any("error", err))
+			}
+		}
+		h.ownedFile = nil
 		h.mu.Unlock()
 
-		if h.resolvedCfg.ClosableUserWriter != nil {
-			if err := h.resolvedCfg.ClosableUserWriter.Close(); err != nil {
-				if firstErr == nil {
-					firstErr = err
-				}
-				h.internalLogger.Error("Error closing user-provided writer", "error", err)
+		if h.cfg != nil && h.cfg.ClosableWriter != nil {
+			if err := h.cfg.ClosableWriter.Close(); err != nil && firstErr == nil {
+				firstErr = err
+				h.internalLogger.Error("failed to close writer", slog.Any("error", err))
 			}
 		}
 	})
 	return firstErr
 }
 
-// ReopenLogFile closes and reopens the log file if it was configured by path
-// using [WithRedirectToFile] or the SLOGCP_REDIRECT_AS_JSON_TARGET environment
-// variable. This is useful for integration with external log rotation tools
-// like logrotate.
-//
-// It is a no-op if the handler is not configured to log to a file via path.
 func (h *Handler) ReopenLogFile() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.resolvedCfg.OpenedFilePath == "" || h.resolvedCfg.LogTarget != gcp.LogTargetFile {
+	if h.cfg == nil || h.cfg.FilePath == "" || h.switchableWriter == nil {
 		return nil
 	}
 
-	if h.ownedFileHandle != nil {
-		if err := h.ownedFileHandle.Close(); err != nil {
-			h.internalLogger.Warn("Error closing current log file during reopen", "error", err)
+	if h.ownedFile != nil {
+		if err := h.ownedFile.Close(); err != nil {
+			h.internalLogger.Warn("error closing log file before reopen", slog.Any("error", err))
 		}
 	}
 
-	newFile, err := os.OpenFile(h.resolvedCfg.OpenedFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(h.cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return fmt.Errorf("slogcp: failed to reopen log file %q: %w", h.resolvedCfg.OpenedFilePath, err)
-	}
-	h.ownedFileHandle = newFile
-
-	if sw, ok := h.resolvedCfg.RedirectWriter.(*gcp.SwitchableWriter); ok {
-		sw.SetWriter(newFile)
-	} else {
-		_ = newFile.Close()
-		h.ownedFileHandle = nil
-		return fmt.Errorf("slogcp: handler's writer is not switchable for reopen")
+		return fmt.Errorf("slogcp: reopen log file %q: %w", h.cfg.FilePath, err)
 	}
 
+	h.ownedFile = file
+	h.switchableWriter.SetWriter(file)
 	return nil
 }
 
-// IsInFallbackMode reports whether the handler failed to initialize its primary
-// target (GCP) and fell back to logging to a local writer.
-func (h *Handler) IsInFallbackMode() bool {
-	return h.inFallbackMode
-}
-
-// --- Package-Level Helper Functions ---
-
-// DefaultContext logs at [LevelDefault] using the provided standard [slog.Logger].
 func DefaultContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
+	if logger == nil {
+		return
+	}
 	logger.Log(ctx, LevelDefault.Level(), msg, args...)
 }
 
-// NoticeContext logs at [LevelNotice] using the provided standard [slog.Logger].
-//
-//	logger := slog.New(mySlogCpHandler)
-//	slogcp.NoticeContext(context.Background(), logger, "User signed up", "user_id", "u-123")
 func NoticeContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
+	if logger == nil {
+		return
+	}
 	logger.Log(ctx, LevelNotice.Level(), msg, args...)
 }
 
-// CriticalContext logs at [LevelCritical] using the provided standard [slog.Logger].
 func CriticalContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
+	if logger == nil {
+		return
+	}
 	logger.Log(ctx, LevelCritical.Level(), msg, args...)
 }
 
-// AlertContext logs at [LevelAlert] using the provided standard [slog.Logger].
 func AlertContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
+	if logger == nil {
+		return
+	}
 	logger.Log(ctx, LevelAlert.Level(), msg, args...)
 }
 
-// EmergencyContext logs at [LevelEmergency] using the provided standard [slog.Logger].
 func EmergencyContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
+	if logger == nil {
+		return
+	}
 	logger.Log(ctx, LevelEmergency.Level(), msg, args...)
 }
 
-// --- Option Types and Functions ---
-
-// Option configures a Handler during initialization via the NewHandler function.
-type Option func(*options)
-
-// Middleware transforms the handler chain.
-type Middleware func(slog.Handler) slog.Handler
-
-// LogTarget defines available destinations for log output. It mirrors the
-// internal gcp.LogTarget enum so callers do not need to import internal types.
-type LogTarget = gcp.LogTarget
-
-const (
-	LogTargetGCP    LogTarget = gcp.LogTargetGCP
-	LogTargetStdout LogTarget = gcp.LogTargetStdout
-	LogTargetStderr LogTarget = gcp.LogTargetStderr
-	LogTargetFile   LogTarget = gcp.LogTargetFile
-)
-
-// options holds the builder state for programmatic configuration.
-// It is not exported and is only used internally by NewHandler.
-type options struct {
-	level             *slog.Level
-	addSource         *bool
-	stackTraceEnabled *bool
-	stackTraceLevel   *slog.Level
-	logTarget         *LogTarget
-	redirectWriter    io.Writer
-	fallbackWriter    io.Writer
-	redirectFilePath  *string
-	replaceAttr       func([]string, slog.Attr) slog.Attr
-	middlewares       []Middleware
-	programmaticAttrs []slog.Attr
-	programmaticGroup *string
-	internalLogger    *slog.Logger
-
-	projectID                *string
-	parent                   *string
-	traceProjectID           *string
-	gcpLogID                 *string
-	clientScopes             []string
-	clientOnErrorFunc        func(error)
-	programmaticCommonLabels map[string]string
-	gcpMonitoredResource     *mrpb.MonitoredResource
-	gcpConcurrentWriteLimit  *int
-	gcpDelayThreshold        *time.Duration
-	gcpEntryCountThreshold   *int
-	gcpEntryByteThreshold    *int
-	gcpEntryByteLimit        *int
-	gcpBufferedByteLimit     *int
-	gcpContextFunc           func() (context.Context, func())
-	gcpDefaultContextTimeout *time.Duration
-	gcpPartialSuccess        *bool
-}
-
-// WithInternalLogger provides a logger for slogcp's own internal diagnostics,
-// such as warnings about configuration or fallback notifications. If not provided,
-// internal logging is disabled.
 func WithInternalLogger(logger *slog.Logger) Option {
-	return func(o *options) { o.internalLogger = logger }
+	return func(o *options) {
+		o.internalLogger = logger
+	}
 }
 
-// WithLevel returns an Option that sets the minimum logging level.
-func WithLevel(level slog.Level) Option { return func(o *options) { o.level = &level } }
+func WithLevel(level slog.Level) Option {
+	return func(o *options) {
+		o.level = &level
+	}
+}
 
-// WithSourceLocationEnabled returns an Option that enables or disables
-// including source code location (file, line, function) in log entries.
 func WithSourceLocationEnabled(enabled bool) Option {
-	return func(o *options) { o.addSource = &enabled }
+	return func(o *options) {
+		o.addSource = &enabled
+	}
 }
 
-// WithStackTraceEnabled returns an Option that enables or disables automatic
-// stack trace capture for logs at or above the configured stack trace level.
 func WithStackTraceEnabled(enabled bool) Option {
-	return func(o *options) { o.stackTraceEnabled = &enabled }
+	return func(o *options) {
+		o.stackTraceEnabled = &enabled
+	}
 }
 
-// WithStackTraceLevel returns an Option that sets the minimum level for stack traces.
 func WithStackTraceLevel(level slog.Level) Option {
-	return func(o *options) { o.stackTraceLevel = &level }
+	return func(o *options) {
+		o.stackTraceLevel = &level
+	}
 }
 
-// WithLogTarget returns an Option that explicitly sets the logging destination.
-func WithLogTarget(target LogTarget) Option { return func(o *options) { o.logTarget = &target } }
+func WithTraceProjectID(id string) Option {
+	trimmed := strings.TrimSpace(id)
+	return func(o *options) {
+		o.traceProjectID = &trimmed
+	}
+}
 
-// WithReplaceAttr returns an Option that sets a function to replace or modify
-// attributes before they are logged.
+func WithRedirectToStdout() Option {
+	return func(o *options) {
+		o.writer = os.Stdout
+		o.writerFilePath = nil
+	}
+}
+
+func WithRedirectToStderr() Option {
+	return func(o *options) {
+		o.writer = os.Stderr
+		o.writerFilePath = nil
+	}
+}
+
+func WithRedirectToFile(path string) Option {
+	trimmed := strings.TrimSpace(path)
+	return func(o *options) {
+		o.writer = nil
+		o.writerFilePath = &trimmed
+	}
+}
+
+func WithRedirectWriter(writer io.Writer) Option {
+	return func(o *options) {
+		o.writer = writer
+		o.writerFilePath = nil
+	}
+}
+
 func WithReplaceAttr(fn func([]string, slog.Attr) slog.Attr) Option {
-	return func(o *options) { o.replaceAttr = fn }
+	return func(o *options) {
+		o.replaceAttr = fn
+	}
 }
 
-// WithMiddleware registers a middleware that decorates the Handler.
 func WithMiddleware(mw Middleware) Option {
 	return func(o *options) {
 		if mw != nil {
@@ -466,379 +326,230 @@ func WithMiddleware(mw Middleware) Option {
 	}
 }
 
-// WithAttrs returns an Option that adds attributes to be included with every log record.
 func WithAttrs(attrs []slog.Attr) Option {
 	return func(o *options) {
 		if len(attrs) == 0 {
 			return
 		}
-		attrsCopy := make([]slog.Attr, len(attrs))
-		copy(attrsCopy, attrs)
-		o.programmaticAttrs = append(o.programmaticAttrs, attrsCopy...)
+		dup := make([]slog.Attr, len(attrs))
+		copy(dup, attrs)
+		o.attrs = append(o.attrs, dup)
 	}
 }
 
-// WithGroup returns an Option that sets an initial group namespace for the logger.
-func WithGroup(name string) Option { return func(o *options) { o.programmaticGroup = &name } }
-
-// WithRedirectToStdout configures logging to standard output.
-func WithRedirectToStdout() Option {
+func WithGroup(name string) Option {
+	trimmed := strings.TrimSpace(name)
 	return func(o *options) {
-		target := gcp.LogTargetStdout
-		o.logTarget = &target
-		o.redirectWriter = os.Stdout
-		o.redirectFilePath = nil
-	}
-}
-
-// WithRedirectToStderr configures logging to standard error.
-func WithRedirectToStderr() Option {
-	return func(o *options) {
-		target := gcp.LogTargetStderr
-		o.logTarget = &target
-		o.redirectWriter = os.Stderr
-		o.redirectFilePath = nil
-	}
-}
-
-// WithRedirectToFile configures logging to a specified file path. The file
-// will be created if it does not exist and logs will be appended.
-//
-// Example:
-//
-//	handler, err := slogcp.NewHandler(nil,
-//		slogcp.WithRedirectToFile("/var/log/myapp.log"),
-//	)
-func WithRedirectToFile(filePath string) Option {
-	return func(o *options) {
-		target := gcp.LogTargetFile
-		o.logTarget = &target
-		o.redirectFilePath = &filePath
-		o.redirectWriter = nil
-	}
-}
-
-// WithRedirectWriter configures logging to a custom [io.Writer]. The caller
-// is responsible for the lifecycle of the writer, but [Handler.Close] will
-// call the writer's Close method if it implements [io.Closer].
-// This is useful for integrating with self-rotating log writers.
-func WithRedirectWriter(writer io.Writer) Option {
-	return func(o *options) {
-		o.redirectWriter = writer
-		o.redirectFilePath = nil
-	}
-}
-
-// WithFallbackWriter specifies a writer to use if GCP initialization fails.
-// If this option is not used, the fallback defaults to os.Stdout.
-// This setting is ignored if the LogTarget is not GCP.
-func WithFallbackWriter(writer io.Writer) Option {
-	return func(o *options) {
-		o.fallbackWriter = writer
-	}
-}
-
-// WithProjectID returns an Option that explicitly sets the Google Cloud Project ID.
-func WithProjectID(id string) Option { return func(o *options) { o.projectID = &id } }
-
-// WithParent returns an Option that explicitly sets the GCP resource parent.
-func WithParent(parent string) Option { return func(o *options) { o.parent = &parent } }
-
-// WithTraceProjectID returns an Option that sets the project ID for trace resource names.
-func WithTraceProjectID(id string) Option { return func(o *options) { o.traceProjectID = &id } }
-
-// WithGCPLogID returns an Option that explicitly sets the Cloud Logging log ID.
-func WithGCPLogID(logID string) Option { return func(o *options) { o.gcpLogID = &logID } }
-
-// WithGCPClientScopes returns an Option that sets the OAuth2 scopes for the GCP client.
-func WithGCPClientScopes(scopes ...string) Option {
-	return func(o *options) {
-		if len(scopes) == 0 {
-			o.clientScopes = nil
+		if trimmed == "" {
+			o.group = nil
 			return
 		}
-		sCopy := make([]string, len(scopes))
-		copy(sCopy, scopes)
-		o.clientScopes = sCopy
+		o.group = &trimmed
 	}
 }
 
-// WithGCPClientOnError returns an Option that sets a custom error handler for
-// background errors from the GCP logging client.
-func WithGCPClientOnError(f func(error)) Option { return func(o *options) { o.clientOnErrorFunc = f } }
+func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
+	cfg := handlerConfig{
+		Level:           slog.LevelInfo,
+		StackTraceLevel: slog.LevelError,
+	}
 
-// WithGCPCommonLabel returns an Option that adds a single common label.
-func WithGCPCommonLabel(key, value string) Option {
-	return func(o *options) {
-		if o.programmaticCommonLabels == nil {
-			o.programmaticCommonLabels = make(map[string]string)
+	cfg.Level = parseLevelEnv(os.Getenv("LOG_LEVEL"), cfg.Level, logger)
+	cfg.AddSource = parseBoolEnv(os.Getenv("LOG_SOURCE_LOCATION"), cfg.AddSource, logger)
+	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv("LOG_STACK_TRACE_ENABLED"), cfg.StackTraceEnabled, logger)
+	cfg.StackTraceLevel = parseLevelEnv(os.Getenv("LOG_STACK_TRACE_LEVEL"), cfg.StackTraceLevel, logger)
+
+	traceProject := strings.TrimSpace(os.Getenv("SLOGCP_TRACE_PROJECT_ID"))
+	if traceProject == "" {
+		traceProject = strings.TrimSpace(os.Getenv("SLOGCP_PROJECT_ID"))
+	}
+	if traceProject == "" {
+		traceProject = strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT"))
+	}
+	cfg.TraceProjectID = traceProject
+
+	if err := applyRedirectFromEnv(&cfg, logger); err != nil {
+		return handlerConfig{}, err
+	}
+
+	return cfg, nil
+}
+
+func applyOptions(cfg *handlerConfig, o *options) {
+	if o.level != nil {
+		cfg.Level = *o.level
+	}
+	if o.addSource != nil {
+		cfg.AddSource = *o.addSource
+	}
+	if o.stackTraceEnabled != nil {
+		cfg.StackTraceEnabled = *o.stackTraceEnabled
+	}
+	if o.stackTraceLevel != nil {
+		cfg.StackTraceLevel = *o.stackTraceLevel
+	}
+	if o.traceProjectID != nil {
+		cfg.TraceProjectID = *o.traceProjectID
+	}
+	if o.writerFilePath != nil {
+		cfg.FilePath = strings.TrimSpace(*o.writerFilePath)
+		cfg.Writer = nil
+		cfg.ClosableWriter = nil
+	}
+	if o.writer != nil {
+		cfg.Writer = o.writer
+		cfg.FilePath = ""
+		if c, ok := o.writer.(io.Closer); ok && !isStdStream(o.writer) {
+			cfg.ClosableWriter = c
+		} else {
+			cfg.ClosableWriter = nil
 		}
-		o.programmaticCommonLabels[key] = value
 	}
-}
-
-// WithGCPCommonLabels returns an Option that sets the entire map of common labels.
-func WithGCPCommonLabels(labels map[string]string) Option {
-	return func(o *options) {
-		if len(labels) == 0 {
-			o.programmaticCommonLabels = nil
-			return
+	if o.replaceAttr != nil {
+		cfg.ReplaceAttr = o.replaceAttr
+	}
+	if len(o.middlewares) > 0 {
+		cfg.Middlewares = append([]Middleware(nil), o.middlewares...)
+	}
+	if len(o.attrs) > 0 {
+		for _, group := range o.attrs {
+			cfg.InitialAttrs = append(cfg.InitialAttrs, group...)
 		}
-		lCopy := make(map[string]string, len(labels))
-		maps.Copy(lCopy, labels)
-		o.programmaticCommonLabels = lCopy
+	}
+	if o.group != nil {
+		cfg.InitialGroup = *o.group
 	}
 }
 
-// WithGCPMonitoredResource returns an Option that explicitly sets the MonitoredResource.
-func WithGCPMonitoredResource(res *mrpb.MonitoredResource) Option {
-	return func(o *options) { o.gcpMonitoredResource = res }
+func applyRedirectFromEnv(cfg *handlerConfig, logger *slog.Logger) error {
+	redirect := strings.TrimSpace(os.Getenv("SLOGCP_REDIRECT_AS_JSON_TARGET"))
+	if redirect != "" {
+		lower := strings.ToLower(redirect)
+		switch {
+		case strings.HasPrefix(lower, "file:"):
+			path := strings.TrimSpace(redirect[len("file:"):])
+			if path == "" {
+				return ErrInvalidRedirectTarget
+			}
+			cfg.FilePath = path
+			cfg.Writer = nil
+			cfg.ClosableWriter = nil
+		case strings.EqualFold(redirect, "stdout"):
+			cfg.Writer = os.Stdout
+			cfg.FilePath = ""
+			cfg.ClosableWriter = nil
+		case strings.EqualFold(redirect, "stderr"):
+			cfg.Writer = os.Stderr
+			cfg.FilePath = ""
+			cfg.ClosableWriter = nil
+		default:
+			return ErrInvalidRedirectTarget
+		}
+	}
+
+	logTarget := strings.TrimSpace(os.Getenv("SLOGCP_LOG_TARGET"))
+	switch strings.ToLower(logTarget) {
+	case "", "stdout":
+		if cfg.Writer == nil && cfg.FilePath == "" && logTarget != "" {
+			cfg.Writer = os.Stdout
+		}
+	case "stderr":
+		if cfg.Writer == nil && cfg.FilePath == "" {
+			cfg.Writer = os.Stderr
+		}
+	case "file":
+		if cfg.FilePath == "" {
+			return ErrInvalidRedirectTarget
+		}
+	case "gcp":
+		return errUnsupportedTarget
+	default:
+		if logTarget != "" {
+			logDiagnostic(logger, slog.LevelWarn, "unknown SLOGCP_LOG_TARGET", slog.String("value", logTarget))
+		}
+	}
+
+	return nil
 }
 
-// WithGCPConcurrentWriteLimit returns an Option that sets the number of goroutines for sending logs.
-func WithGCPConcurrentWriteLimit(n int) Option {
-	return func(o *options) { o.gcpConcurrentWriteLimit = &n }
+func parseBoolEnv(value string, current bool, logger *slog.Logger) bool {
+	if strings.TrimSpace(value) == "" {
+		return current
+	}
+	b, err := strconv.ParseBool(value)
+	if err != nil {
+		logDiagnostic(logger, slog.LevelWarn, "invalid boolean environment variable", slog.String("value", value), slog.Any("error", err))
+		return current
+	}
+	return b
 }
 
-// WithGCPDelayThreshold returns an Option that sets the maximum time the client buffers entries.
-func WithGCPDelayThreshold(d time.Duration) Option {
-	return func(o *options) { o.gcpDelayThreshold = &d }
+func parseLevelEnv(value string, current slog.Level, logger *slog.Logger) slog.Level {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return current
+	}
+
+	switch trimmed {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	case "default":
+		return internalLevelDefault
+	case "notice":
+		return internalLevelNotice
+	case "critical":
+		return internalLevelCritical
+	case "alert":
+		return internalLevelAlert
+	case "emergency":
+		return internalLevelEmergency
+	default:
+		if lv, err := strconv.Atoi(trimmed); err == nil {
+			return slog.Level(lv)
+		}
+	}
+
+	logDiagnostic(logger, slog.LevelWarn, "invalid log level environment variable", slog.String("value", value))
+	return current
 }
 
-// WithGCPEntryCountThreshold returns an Option that sets the maximum number of entries buffered.
-func WithGCPEntryCountThreshold(n int) Option {
-	return func(o *options) { o.gcpEntryCountThreshold = &n }
+func isStdStream(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok || f == nil {
+		return false
+	}
+	return f.Fd() == os.Stdout.Fd() || f.Fd() == os.Stderr.Fd()
 }
 
-// WithGCPEntryByteThreshold returns an Option that sets the maximum size of entries buffered.
-func WithGCPEntryByteThreshold(n int) Option {
-	return func(o *options) { o.gcpEntryByteThreshold = &n }
+func logDiagnostic(logger *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
+	if logger == nil {
+		return
+	}
+	logger.LogAttrs(context.Background(), level, msg, attrs...)
 }
 
-// WithGCPEntryByteLimit returns an Option that sets the maximum size of a single log entry.
-func WithGCPEntryByteLimit(n int) Option { return func(o *options) { o.gcpEntryByteLimit = &n } }
-
-// WithGCPBufferedByteLimit returns an Option that sets the total memory limit for buffered entries.
-func WithGCPBufferedByteLimit(n int) Option { return func(o *options) { o.gcpBufferedByteLimit = &n } }
-
-// WithGCPContextFunc returns an Option that provides a function to generate contexts.
-func WithGCPContextFunc(f func() (context.Context, func())) Option {
-	return func(o *options) { o.gcpContextFunc = f }
-}
-
-// WithGCPDefaultContextTimeout returns an Option that sets a timeout for the default context function.
-func WithGCPDefaultContextTimeout(d time.Duration) Option {
-	return func(o *options) { o.gcpDefaultContextTimeout = &d }
-}
-
-// WithGCPPartialSuccess returns an Option that enables the partial success flag for batch writes.
-func WithGCPPartialSuccess(enable bool) Option {
-	return func(o *options) { o.gcpPartialSuccess = &enable }
-}
-
-// --- Internal Helpers ---
-
-// sourceAwareHandler is a transparent wrapper that advertises HasSource()==true.
 type sourceAwareHandler struct{ slog.Handler }
 
-// HasSource reports that sourceAwareHandler wants the slog runtime to capture caller info.
 func (h sourceAwareHandler) HasSource() bool { return true }
 
-// wasTargetExplicitlyConfigured determines if the user explicitly specified a logging target.
-func wasTargetExplicitlyConfigured(builderState *options, envLogTargetStr, envRedirectTargetStr string) bool {
-	if builderState.redirectFilePath != nil || builderState.redirectWriter != nil {
-		return true
+func (h sourceAwareHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	child := h.Handler.WithAttrs(attrs)
+	if child == nil {
+		return nil
 	}
-	if envRedirectTargetStr != "" {
-		return true
-	}
-	if builderState.logTarget != nil && *builderState.logTarget != gcp.LogTargetGCP {
-		return true
-	}
-	if envLogTargetStr != "" && envLogTargetStr != "gcp" {
-		return true
-	}
-	return false
+	return sourceAwareHandler{Handler: child}
 }
 
-// resolveParentAndProjectID determines the final GCP Parent and ProjectID values.
-func resolveParentAndProjectID(cfg *gcp.Config, builderState *options, internalLogger *slog.Logger) error {
-	if builderState.parent != nil {
-		cfg.Parent = *builderState.parent
-		if strings.HasPrefix(*builderState.parent, "projects/") {
-			cfg.ProjectID = strings.TrimPrefix(*builderState.parent, "projects/")
-		} else if builderState.projectID != nil {
-			cfg.ProjectID = *builderState.projectID
-		}
-	} else if builderState.projectID != nil {
-		cfg.ProjectID = *builderState.projectID
-		if cfg.Parent == "" || strings.HasPrefix(cfg.Parent, "projects/") {
-			cfg.Parent = "projects/" + *builderState.projectID
-		}
+func (h sourceAwareHandler) WithGroup(name string) slog.Handler {
+	child := h.Handler.WithGroup(name)
+	if child == nil {
+		return nil
 	}
-
-	if cfg.Parent != "" && strings.HasPrefix(cfg.Parent, "projects/") {
-		derivedProjectID := strings.TrimPrefix(cfg.Parent, "projects/")
-		if cfg.ProjectID == "" {
-			cfg.ProjectID = derivedProjectID
-		} else if cfg.ProjectID != derivedProjectID {
-			internalLogger.Warn("Mismatch between GCP Parent and ProjectID", "parent", cfg.Parent, "projectID", cfg.ProjectID)
-		}
-	}
-	return nil
-}
-
-// mergeMaps combines two string maps, with overlay values taking precedence.
-func mergeMaps(base, overlay map[string]string) map[string]string {
-	if len(overlay) == 0 {
-		return base
-	}
-	if len(base) == 0 {
-		return overlay
-	}
-	merged := make(map[string]string, len(base)+len(overlay))
-	maps.Copy(merged, base)
-	maps.Copy(merged, overlay)
-	return merged
-}
-
-// applyProgrammaticOptions merges programmatic configuration options into the provided config.
-func applyProgrammaticOptions(cfg *gcp.Config, builderState *options, internalLogger *slog.Logger) error {
-	if builderState.logTarget != nil {
-		cfg.LogTarget = *builderState.logTarget
-		if cfg.LogTarget != gcp.LogTargetStdout && cfg.LogTarget != gcp.LogTargetStderr {
-			cfg.RedirectWriter = nil
-		}
-	}
-
-	if builderState.redirectFilePath != nil {
-		if builderState.redirectWriter != nil {
-			internalLogger.Warn("Both WithRedirectToFile and WithRedirectWriter used; file path takes precedence", "path", *builderState.redirectFilePath)
-		}
-		cfg.LogTarget = gcp.LogTargetFile
-		cfg.OpenedFilePath = *builderState.redirectFilePath
-		cfg.RedirectWriter = nil
-		cfg.ClosableUserWriter = nil
-	} else if builderState.redirectWriter != nil {
-		cfg.RedirectWriter = builderState.redirectWriter
-		if c, ok := builderState.redirectWriter.(io.Closer); ok {
-			if builderState.redirectWriter != os.Stdout && builderState.redirectWriter != os.Stderr {
-				cfg.ClosableUserWriter = c
-			}
-		}
-		cfg.OpenedFilePath = ""
-		if builderState.logTarget == nil {
-			switch builderState.redirectWriter {
-			case os.Stdout:
-				cfg.LogTarget = gcp.LogTargetStdout
-			case os.Stderr:
-				cfg.LogTarget = gcp.LogTargetStderr
-			}
-		}
-	}
-
-	if cfg.OpenedFilePath == "" {
-		if cfg.LogTarget == gcp.LogTargetStdout && cfg.RedirectWriter == nil {
-			cfg.RedirectWriter = os.Stdout
-		}
-		if cfg.LogTarget == gcp.LogTargetStderr && cfg.RedirectWriter == nil {
-			cfg.RedirectWriter = os.Stderr
-		}
-	}
-
-	if err := resolveParentAndProjectID(cfg, builderState, internalLogger); err != nil {
-		return err
-	}
-
-	if builderState.traceProjectID != nil {
-		cfg.TraceProjectID = *builderState.traceProjectID
-	}
-	if builderState.gcpLogID != nil {
-		cfg.GCPLogID = *builderState.gcpLogID
-	}
-
-	normalizedLogID, err := gcp.NormalizeLogID(cfg.GCPLogID)
-	if err != nil {
-		return fmt.Errorf("invalid GCP LogID %q: %w", cfg.GCPLogID, err)
-	}
-	cfg.GCPLogID = normalizedLogID
-
-	if builderState.level != nil {
-		cfg.InitialLevel = *builderState.level
-	}
-	if builderState.addSource != nil {
-		cfg.AddSource = *builderState.addSource
-	}
-	if builderState.stackTraceEnabled != nil {
-		cfg.StackTraceEnabled = *builderState.stackTraceEnabled
-	}
-	if builderState.stackTraceLevel != nil {
-		cfg.StackTraceLevel = *builderState.stackTraceLevel
-	}
-	if builderState.replaceAttr != nil {
-		cfg.ReplaceAttrFunc = builderState.replaceAttr
-	}
-
-	if len(builderState.middlewares) > 0 {
-		cfg.Middlewares = make([]func(slog.Handler) slog.Handler, len(builderState.middlewares))
-		for i, mw := range builderState.middlewares {
-			cfg.Middlewares[i] = mw
-		}
-	}
-
-	if builderState.clientScopes != nil {
-		cfg.ClientScopes = builderState.clientScopes
-	}
-	if builderState.clientOnErrorFunc != nil {
-		cfg.ClientOnErrorFunc = builderState.clientOnErrorFunc
-	}
-
-	cfg.GCPCommonLabels = mergeMaps(cfg.GCPCommonLabels, builderState.programmaticCommonLabels)
-
-	if builderState.gcpMonitoredResource != nil {
-		cfg.GCPMonitoredResource = builderState.gcpMonitoredResource
-	}
-	if builderState.gcpConcurrentWriteLimit != nil {
-		cfg.GCPConcurrentWriteLimit = builderState.gcpConcurrentWriteLimit
-	}
-	if builderState.gcpDelayThreshold != nil {
-		cfg.GCPDelayThreshold = builderState.gcpDelayThreshold
-	}
-	if builderState.gcpEntryCountThreshold != nil {
-		cfg.GCPEntryCountThreshold = builderState.gcpEntryCountThreshold
-	}
-	if builderState.gcpEntryByteThreshold != nil {
-		cfg.GCPEntryByteThreshold = builderState.gcpEntryByteThreshold
-	}
-	if builderState.gcpEntryByteLimit != nil {
-		cfg.GCPEntryByteLimit = builderState.gcpEntryByteLimit
-	}
-	if builderState.gcpBufferedByteLimit != nil {
-		cfg.GCPBufferedByteLimit = builderState.gcpBufferedByteLimit
-	}
-	if builderState.gcpContextFunc != nil {
-		cfg.GCPContextFunc = builderState.gcpContextFunc
-	}
-	if builderState.gcpDefaultContextTimeout != nil {
-		cfg.GCPDefaultContextTimeout = *builderState.gcpDefaultContextTimeout
-	}
-	if builderState.gcpPartialSuccess != nil {
-		cfg.GCPPartialSuccess = builderState.gcpPartialSuccess
-	}
-
-	if len(builderState.programmaticAttrs) > 0 {
-		cfg.InitialAttrs = append([]slog.Attr(nil), builderState.programmaticAttrs...)
-	}
-	if builderState.programmaticGroup != nil {
-		cfg.InitialGroup = *builderState.programmaticGroup
-	}
-
-	if cfg.LogTarget == gcp.LogTargetGCP && builderState.redirectWriter != nil {
-		return errors.New("conflicting options: LogTarget is GCP but WithRedirectWriter was also used")
-	}
-	if cfg.LogTarget == gcp.LogTargetFile && cfg.RedirectWriter == nil && cfg.OpenedFilePath == "" {
-		return errors.New("log target LogTargetFile requires a file path or a writer")
-	}
-
-	return nil
+	return sourceAwareHandler{Handler: child}
 }

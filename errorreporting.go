@@ -18,8 +18,6 @@ import (
 	"context"
 	"log/slog"
 	"strings"
-
-	"github.com/pjscruggs/slogcp/internal/gcp"
 )
 
 // ErrorReportingOption configures ErrorReportingAttrs and ReportError.
@@ -64,7 +62,7 @@ func ErrorReportingAttrs(err error, opts ...ErrorReportingOption) []slog.Attr {
 	}
 
 	if cfg.service == "" {
-		if info := gcp.DetectRuntimeInfo(); len(info.ServiceContext) > 0 {
+		if info := DetectRuntimeInfo(); len(info.ServiceContext) > 0 {
 			if v, ok := info.ServiceContext["service"]; ok {
 				cfg.service = v
 			}
@@ -76,7 +74,7 @@ func ErrorReportingAttrs(err error, opts ...ErrorReportingOption) []slog.Attr {
 		}
 	}
 
-	stack, firstFrame := gcp.CaptureStack(nil)
+	stack, firstFrame := CaptureStack(nil)
 
 	attrs := make([]slog.Attr, 0, 5)
 	if cfg.service != "" {

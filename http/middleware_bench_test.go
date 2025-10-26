@@ -30,8 +30,6 @@ func BenchmarkMiddlewareBodyCapture(b *testing.B) {
 			newLogger: func(b *testing.B) *slog.Logger {
 				handler, err := slogcp.NewHandler(
 					io.Discard,
-					slogcp.WithLogTarget(slogcp.LogTargetStdout),
-					slogcp.WithRedirectWriter(io.Discard),
 					slogcp.WithLevel(slog.LevelDebug),
 				)
 				if err != nil {

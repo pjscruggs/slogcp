@@ -53,19 +53,13 @@ func buildChatterGroup(prefix string, attrs []slog.Attr) slog.Attr {
 	if lastKey == "" {
 		lastKey = prefix
 	}
-	group := slog.Attr{
-		Key:   lastKey,
-		Value: slog.GroupValue(attrs...),
-	}
+	group := slog.GroupAttrs(lastKey, attrs...)
 	for i := len(segments) - 2; i >= 0; i-- {
 		name := strings.TrimSpace(segments[i])
 		if name == "" {
 			continue
 		}
-		group = slog.Attr{
-			Key:   name,
-			Value: slog.GroupValue(group),
-		}
+		group = slog.GroupAttrs(name, group)
 	}
 	return group
 }
