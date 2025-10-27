@@ -29,6 +29,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
+// TestMiddlewareSuppressUnsampledBelowRespectsServerErrors ensures unsampled requests still log server failures.
 func TestMiddlewareSuppressUnsampledBelowRespectsServerErrors(t *testing.T) {
 	previous := otel.GetTextMapPropagator()
 	otel.SetTextMapPropagator(propagation.TraceContext{})
@@ -64,6 +65,7 @@ func TestMiddlewareSuppressUnsampledBelowRespectsServerErrors(t *testing.T) {
 	}
 }
 
+// TestMiddlewareChatterDrop validates chatter drop decisions suppress healthy request logs.
 func TestMiddlewareChatterDrop(t *testing.T) {
 	logger, records := newRecordingLogger()
 	cfg := chatter.DefaultConfig()
@@ -88,6 +90,7 @@ func TestMiddlewareChatterDrop(t *testing.T) {
 	}
 }
 
+// TestMiddlewareChatterSafetyRailOnError checks chatter raises safety rails for error responses.
 func TestMiddlewareChatterSafetyRailOnError(t *testing.T) {
 	logger, records := newRecordingLogger()
 	cfg := chatter.DefaultConfig()
@@ -114,6 +117,7 @@ func TestMiddlewareChatterSafetyRailOnError(t *testing.T) {
 	}
 }
 
+// TestMiddlewareChatterCronMarkAnnotations confirms cron requests attach chatter annotations.
 func TestMiddlewareChatterCronMarkAnnotations(t *testing.T) {
 	logger, records := newRecordingLogger()
 	cfg := chatter.DefaultConfig()
@@ -151,6 +155,7 @@ type recordingState struct {
 	records []slog.Record
 }
 
+// newRecordingLogger builds a logger that records emitted slog.Records for assertions.
 func newRecordingLogger() (*slog.Logger, *recordingState) {
 	state := &recordingState{}
 	logger := slog.New(&recordingHandler{state: state})
@@ -161,10 +166,12 @@ type recordingHandler struct {
 	state *recordingState
 }
 
+// Enabled reports that all log levels are collected for recording.
 func (h *recordingHandler) Enabled(context.Context, slog.Level) bool {
 	return true
 }
 
+// Handle clones the record into the shared recording state.
 func (h *recordingHandler) Handle(_ context.Context, record slog.Record) error {
 	clone := slog.NewRecord(record.Time, record.Level, record.Message, record.PC)
 	record.Attrs(func(attr slog.Attr) bool {
@@ -177,20 +184,24 @@ func (h *recordingHandler) Handle(_ context.Context, record slog.Record) error {
 	return nil
 }
 
+// WithAttrs returns a handler sharing the same recording state.
 func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler {
 	return &recordingHandler{state: h.state}
 }
 
+// WithGroup returns a handler sharing the same recording state.
 func (h *recordingHandler) WithGroup(string) slog.Handler {
 	return &recordingHandler{state: h.state}
 }
 
+// Count reports the number of captured records.
 func (s *recordingState) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.records)
 }
 
+// Snapshot returns a copy of the captured records slice.
 func (s *recordingState) Snapshot() []slog.Record {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -199,6 +210,7 @@ func (s *recordingState) Snapshot() []slog.Record {
 	return copied
 }
 
+// TestResolveRemoteIP confirms remote IP resolution honours proxy headers.
 func TestResolveRemoteIP(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
 	req.RemoteAddr = "192.0.2.1:443"
@@ -222,6 +234,7 @@ func TestResolveRemoteIP(t *testing.T) {
 	}
 }
 
+// TestHeadersGroupAttr verifies header grouping returns case-insensitive matches and stable copies.
 func TestHeadersGroupAttr(t *testing.T) {
 	header := http.Header{}
 	header.Add("X-Test", "one")
@@ -267,6 +280,7 @@ func TestHeadersGroupAttr(t *testing.T) {
 	}
 }
 
+// TestMiddlewareBodyPreviewClamp ensures body previews clamp to configured limits and mark truncation.
 func TestMiddlewareBodyPreviewClamp(t *testing.T) {
 	logger, records := newRecordingLogger()
 	body := strings.Repeat("x", bodyPreviewInlineLimit+64)
@@ -343,6 +357,7 @@ func TestMiddlewareBodyPreviewClamp(t *testing.T) {
 	}
 }
 
+// TestAppendBodyAttrsSmallPayload checks small bodies produce value and size attributes.
 func TestAppendBodyAttrsSmallPayload(t *testing.T) {
 	cb := newCappedBuffer(64)
 	if cb == nil {
@@ -364,6 +379,7 @@ func TestAppendBodyAttrsSmallPayload(t *testing.T) {
 	}
 }
 
+// TestCappedBuffer exercises capped buffer truncation tracking and nil handling.
 func TestCappedBuffer(t *testing.T) {
 	cb := newCappedBuffer(5)
 	if cb == nil {
@@ -430,6 +446,7 @@ func TestCappedBuffer(t *testing.T) {
 	}
 }
 
+// recordAttrsToMap flattens a record's attributes for easier inspection.
 func recordAttrsToMap(rec slog.Record) map[string]slog.Value {
 	result := make(map[string]slog.Value)
 	rec.Attrs(func(attr slog.Attr) bool {

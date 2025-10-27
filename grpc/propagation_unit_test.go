@@ -33,6 +33,7 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
+// TestWithTracePropagationUnaryClient asserts client interceptors inject or suppress trace headers.
 func TestWithTracePropagationUnaryClient(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	h, err := slogcp.NewHandler(io.Discard)
@@ -87,6 +88,7 @@ func TestWithTracePropagationUnaryClient(t *testing.T) {
 	}
 }
 
+// TestContextOnlyServerStream ensures stream interceptors propagate trace context without logging when disabled.
 func TestContextOnlyServerStream(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	var buf bytes.Buffer
@@ -127,15 +129,28 @@ func TestContextOnlyServerStream(t *testing.T) {
 	}
 }
 
+// testServerStream is a minimal grpc.ServerStream for exercising interceptors.
 type testServerStream struct{ ctx context.Context }
 
-func (tss *testServerStream) SetHeader(metadata.MD) error  { return nil }
-func (tss *testServerStream) SendHeader(metadata.MD) error { return nil }
-func (tss *testServerStream) SetTrailer(metadata.MD)       {}
-func (tss *testServerStream) Context() context.Context     { return tss.ctx }
-func (tss *testServerStream) SendMsg(interface{}) error    { return nil }
-func (tss *testServerStream) RecvMsg(interface{}) error    { return nil }
+// SetHeader satisfies grpc.ServerStream without recording state.
+func (tss *testServerStream) SetHeader(metadata.MD) error { return nil }
 
+// SendHeader satisfies grpc.ServerStream without recording state.
+func (tss *testServerStream) SendHeader(metadata.MD) error { return nil }
+
+// SetTrailer satisfies grpc.ServerStream without recording state.
+func (tss *testServerStream) SetTrailer(metadata.MD) {}
+
+// Context returns the seeded stream context.
+func (tss *testServerStream) Context() context.Context { return tss.ctx }
+
+// SendMsg is a no-op used to satisfy grpc.ServerStream.
+func (tss *testServerStream) SendMsg(interface{}) error { return nil }
+
+// RecvMsg is a no-op used to satisfy grpc.ServerStream.
+func (tss *testServerStream) RecvMsg(interface{}) error { return nil }
+
+// mustTraceID converts a hex string into a TraceID or fails the test.
 func mustTraceID(t *testing.T, hex string) trace.TraceID {
 	t.Helper()
 	id, err := trace.TraceIDFromHex(hex)
@@ -145,6 +160,7 @@ func mustTraceID(t *testing.T, hex string) trace.TraceID {
 	return id
 }
 
+// mustSpanID converts a hex string into a SpanID or fails the test.
 func mustSpanID(t *testing.T, hex string) trace.SpanID {
 	t.Helper()
 	id, err := trace.SpanIDFromHex(hex)

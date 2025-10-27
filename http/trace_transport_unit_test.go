@@ -29,6 +29,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// mustTraceID converts a hex string to a TraceID or panics during tests.
 func mustTraceID(hexStr string) trace.TraceID {
 	id, err := trace.TraceIDFromHex(hexStr)
 	if err != nil {
@@ -37,6 +38,7 @@ func mustTraceID(hexStr string) trace.TraceID {
 	return id
 }
 
+// mustSpanID converts a hex string to a SpanID or panics during tests.
 func mustSpanID(hexStr string) trace.SpanID {
 	id, err := trace.SpanIDFromHex(hexStr)
 	if err != nil {
@@ -45,6 +47,7 @@ func mustSpanID(hexStr string) trace.SpanID {
 	return id
 }
 
+// TestInjectTraceContextFromHeader ensures trace headers seed contexts with optional span IDs.
 func TestInjectTraceContextFromHeader(t *testing.T) {
 	traceHex := "70f5c2c7b3c0d8eead4837399ac5b327"
 
@@ -62,13 +65,16 @@ func TestInjectTraceContextFromHeader(t *testing.T) {
 	}
 }
 
+// captureRoundTripper captures request headers passed through a RoundTripper.
 type captureRoundTripper struct{ hdr stdhttp.Header }
 
+// RoundTrip records headers for assertions and returns a canned response.
 func (c *captureRoundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	c.hdr = req.Header.Clone()
 	return &stdhttp.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
 }
 
+// newRequestWithSpan builds an HTTP request seeded with a sampled span context.
 func newRequestWithSpan() *stdhttp.Request {
 	req, _ := stdhttp.NewRequest("GET", "http://example.com", nil)
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
@@ -80,6 +86,7 @@ func newRequestWithSpan() *stdhttp.Request {
 	return req
 }
 
+// TestTracePropagationTransport verifies TracePropagationTransport injects and skips headers as configured.
 func TestTracePropagationTransport(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	cap := &captureRoundTripper{}
@@ -101,6 +108,7 @@ func TestTracePropagationTransport(t *testing.T) {
 	}
 }
 
+// TestNewTraceRoundTripper checks the helper constructor injects trace headers by default and honours skips.
 func TestNewTraceRoundTripper(t *testing.T) {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	cap := &captureRoundTripper{}

@@ -33,6 +33,7 @@ import (
 	slogcphttp "github.com/pjscruggs/slogcp/http"
 )
 
+// newTestLogger constructs a slog.Logger backed by slogcp for smoke tests.
 func newTestLogger(t *testing.T) *slog.Logger {
 	t.Helper()
 

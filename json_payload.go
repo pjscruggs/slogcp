@@ -113,8 +113,6 @@ func resolveSlogValue(v slog.Value) any {
 	}
 }
 
-// flattenHTTPRequestToMap converts an *HTTPRequest into a JSON-friendly payload
-// suitable for embedding within the `httpRequest` field of a structured log entry.
 type httpRequestPayload struct {
 	RequestMethod                  string `json:"requestMethod"`
 	RequestURL                     string `json:"requestUrl"`
@@ -133,6 +131,7 @@ type httpRequestPayload struct {
 	CacheLookup                    bool   `json:"cacheLookup"`
 }
 
+// flattenHTTPRequestToMap converts an HTTPRequest into a JSON-friendly payload for httpRequest fields.
 func flattenHTTPRequestToMap(req *HTTPRequest) *httpRequestPayload {
 	if req == nil {
 		return nil
@@ -201,6 +200,7 @@ func labelValueToString(v slog.Value) (string, bool) {
 	}
 }
 
+// cloneStringMap clones a string map while preserving nil for empty inputs.
 func cloneStringMap(src map[string]string) map[string]string {
 	if len(src) == 0 {
 		return nil
@@ -212,6 +212,7 @@ func cloneStringMap(src map[string]string) map[string]string {
 	return dup
 }
 
+// mergeStringMaps combines base and overlay maps, preferring overlay values on conflicts.
 func mergeStringMaps(base, overlay map[string]string) map[string]string {
 	if len(base) == 0 && len(overlay) == 0 {
 		return nil
@@ -232,6 +233,7 @@ func mergeStringMaps(base, overlay map[string]string) map[string]string {
 	return merged
 }
 
+// stringMapToAny converts a string map into a map[string]any while preserving keys.
 func stringMapToAny(src map[string]string) map[string]any {
 	if len(src) == 0 {
 		return nil

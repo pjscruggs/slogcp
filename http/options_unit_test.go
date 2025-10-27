@@ -22,6 +22,7 @@ import (
 	"testing"
 )
 
+// TestLoadMiddlewareOptionsFromEnv ensures environment variables populate middleware options.
 func TestLoadMiddlewareOptionsFromEnv(t *testing.T) {
 	t.Setenv("SLOGCP_HTTP_SKIP_PATH_SUBSTRINGS", "healthz, metrics , ")
 	t.Setenv("SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW", "WARNING")
@@ -70,6 +71,7 @@ func TestLoadMiddlewareOptionsFromEnv(t *testing.T) {
 	}
 }
 
+// TestLoadMiddlewareOptionsFromEnvIgnoresInvalid verifies malformed env values are ignored.
 func TestLoadMiddlewareOptionsFromEnvIgnoresInvalid(t *testing.T) {
 	t.Setenv("SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW", "bogus")
 	t.Setenv("SLOGCP_HTTP_REQUEST_BODY_LIMIT", "-10")
@@ -93,6 +95,7 @@ func TestLoadMiddlewareOptionsFromEnvIgnoresInvalid(t *testing.T) {
 	}
 }
 
+// TestParseBoolFlag exercises truthy and falsy string parsing for configuration flags.
 func TestParseBoolFlag(t *testing.T) {
 	t.Parallel()
 
@@ -128,6 +131,7 @@ func TestParseBoolFlag(t *testing.T) {
 	}
 }
 
+// TestMiddlewareOptionHelpers confirms functional options mutate the configuration as expected.
 func TestMiddlewareOptionHelpers(t *testing.T) {
 	opts := defaultMiddlewareOptions()
 
@@ -203,6 +207,7 @@ func TestMiddlewareOptionHelpers(t *testing.T) {
 	}
 }
 
+// slicesEqual reports whether two comparable slices are equal element by element.
 func slicesEqual[T comparable](a, b []T) bool {
 	if len(a) != len(b) {
 		return false

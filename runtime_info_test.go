@@ -6,11 +6,13 @@ import (
 	"testing"
 )
 
+// resetRuntimeInfoCache clears cached runtime inspection state for isolated tests.
 func resetRuntimeInfoCache() {
 	runtimeInfoOnce = sync.Once{}
 	runtimeInfo = RuntimeInfo{}
 }
 
+// TestDetectRuntimeInfoCloudRunService verifies Cloud Run environment variables populate runtime metadata.
 func TestDetectRuntimeInfoCloudRunService(t *testing.T) {
 	resetRuntimeInfoCache()
 	t.Setenv("K_SERVICE", "svc")
@@ -33,6 +35,7 @@ func TestDetectRuntimeInfoCloudRunService(t *testing.T) {
 	}
 }
 
+// TestDetectRuntimeInfoMetadataFallback ensures metadata server fallback supplies project ID.
 func TestDetectRuntimeInfoMetadataFallback(t *testing.T) {
 	resetRuntimeInfoCache()
 	originalFetch := metadataFetch
@@ -54,6 +57,7 @@ func TestDetectRuntimeInfoMetadataFallback(t *testing.T) {
 	}
 }
 
+// TestNewHandlerUsesRuntimeProjectID confirms handler defaults trace project ID from runtime discovery.
 func TestNewHandlerUsesRuntimeProjectID(t *testing.T) {
 	resetRuntimeInfoCache()
 	originalFetch := metadataFetch

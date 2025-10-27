@@ -252,6 +252,8 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 			var stack string
 
 			if merged.RecoverPanics {
+				// runWithRecovery executes the handler while converting panics into
+				// synthetic 500 responses.
 				func() {
 					defer func() {
 						if rec := recover(); rec != nil {
@@ -374,6 +376,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 	}
 }
 
+// emitChatterConfig logs chatter configuration warnings surfaced by the engine.
 func emitChatterConfig(logger *slog.Logger, engine *chatter.Engine) {
 	if engine == nil {
 		return
@@ -415,6 +418,8 @@ func resolveRemoteIP(r *http.Request, trustProxyHeaders bool, trustProxyFunc fun
 	return extractIP(r.RemoteAddr)
 }
 
+// withAttrs returns a logger augmented with the provided attributes when any
+// are supplied.
 func withAttrs(logger *slog.Logger, attrs []slog.Attr) *slog.Logger {
 	if logger == nil || len(attrs) == 0 {
 		return logger
@@ -426,6 +431,8 @@ func withAttrs(logger *slog.Logger, attrs []slog.Attr) *slog.Logger {
 	return logger.With(args...)
 }
 
+// isGoogleProxyRequest reports whether the request contains proxy headers that
+// indicate Google infrastructure forwarded it.
 func isGoogleProxyRequest(r *http.Request) bool {
 	via := strings.ToLower(strings.TrimSpace(r.Header.Get("Via")))
 	if via == "1.1 google" || strings.Contains(via, "google") {
@@ -495,6 +502,8 @@ func appendBodyAttrs(attrs []slog.Attr, key string, buf *cappedBuffer) []slog.At
 	return attrs
 }
 
+// appendChatterAnnotations adds chatter reduction metadata to the attribute
+// list when a decision was made.
 func appendChatterAnnotations(attrs []slog.Attr, decision *chatter.Decision, keys chatter.AuditKeys) []slog.Attr {
 	if decision == nil || !decision.Matched {
 		return attrs
@@ -536,6 +545,8 @@ func appendChatterAnnotations(attrs []slog.Attr, decision *chatter.Decision, key
 	return append(attrs, group)
 }
 
+// buildChatterGroup nests attributes under a dotted prefix, producing a slog
+// group for structured chatter details.
 func buildChatterGroup(prefix string, attrs []slog.Attr) slog.Attr {
 	segments := strings.Split(prefix, ".")
 	lastIdx := len(segments) - 1
@@ -581,6 +592,7 @@ func newCappedBuffer(limit int64) *cappedBuffer {
 	return cb
 }
 
+// putCappedBuffer returns a captured buffer to the pool after clearing it.
 func putCappedBuffer(cb *cappedBuffer) {
 	if cb == nil {
 		return
@@ -595,6 +607,7 @@ func putCappedBuffer(cb *cappedBuffer) {
 	cappedBufferPool.Put(cb)
 }
 
+// reset prepares the buffer for reuse with the provided capture limit.
 func (cb *cappedBuffer) reset(limit int64) {
 	cb.remaining = limit
 	cb.truncated = false

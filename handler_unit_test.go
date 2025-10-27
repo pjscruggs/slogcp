@@ -17,16 +17,19 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
+// closingBuffer tracks whether Close is invoked on an io.Writer stand-in.
 type closingBuffer struct {
 	bytes.Buffer
 	closed bool
 }
 
+// Close marks the buffer closed for assertions in tests.
 func (c *closingBuffer) Close() error {
 	c.closed = true
 	return nil
 }
 
+// decodeLogBuffer splits JSON log lines and converts them into maps for easier assertions.
 func decodeLogBuffer(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	t.Helper()
 	content := strings.TrimSpace(buf.String())
@@ -50,6 +53,7 @@ func decodeLogBuffer(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	return entries
 }
 
+// TestNewHandlerWithRedirectWriter verifies that redirect writers receive log entries.
 func TestNewHandlerWithRedirectWriter(t *testing.T) {
 	t.Parallel()
 
@@ -76,6 +80,7 @@ func TestNewHandlerWithRedirectWriter(t *testing.T) {
 	}
 }
 
+// TestHandlerCloseClosesRedirectWriter ensures Close closes injected redirect writers.
 func TestHandlerCloseClosesRedirectWriter(t *testing.T) {
 	t.Parallel()
 
@@ -93,6 +98,7 @@ func TestHandlerCloseClosesRedirectWriter(t *testing.T) {
 	}
 }
 
+// TestHandlerReopenLogFile confirms log files rotate without losing entries.
 func TestHandlerReopenLogFile(t *testing.T) {
 	t.Parallel()
 
@@ -128,6 +134,7 @@ func TestHandlerReopenLogFile(t *testing.T) {
 	}
 }
 
+// TestLoggerWithAttrsDoesNotLeakToParent checks With(attrs) scope is limited to child loggers.
 func TestLoggerWithAttrsDoesNotLeakToParent(t *testing.T) {
 	t.Parallel()
 
@@ -169,6 +176,7 @@ func TestLoggerWithAttrsDoesNotLeakToParent(t *testing.T) {
 	}
 }
 
+// TestLoggerWithGroupDoesNotLeakToParent checks WithGroup isolates nested attributes.
 func TestLoggerWithGroupDoesNotLeakToParent(t *testing.T) {
 	t.Parallel()
 

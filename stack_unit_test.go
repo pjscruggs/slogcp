@@ -15,6 +15,7 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
+// TestCaptureStackProducesGoFormat ensures CaptureStack emits Go runtime-style stacks and frame metadata.
 func TestCaptureStackProducesGoFormat(t *testing.T) {
 	t.Parallel()
 
@@ -54,6 +55,7 @@ func TestCaptureStackProducesGoFormat(t *testing.T) {
 	}
 }
 
+// TestHandlerEmitsStackTraceForErrors verifies handlers include stack traces when enabled.
 func TestHandlerEmitsStackTraceForErrors(t *testing.T) {
 	t.Parallel()
 

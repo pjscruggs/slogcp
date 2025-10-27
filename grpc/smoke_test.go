@@ -33,6 +33,7 @@ import (
 	slogcpgrpc "github.com/pjscruggs/slogcp/grpc"
 )
 
+// newTestLogger builds a slogcp-backed slog.Logger for tests.
 func newTestLogger(t *testing.T) *slog.Logger {
 	t.Helper()
 

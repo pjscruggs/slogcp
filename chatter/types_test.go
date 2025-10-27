@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// TestDecisionHelpers validates helper predicates for drop, mark, and route actions.
 func TestDecisionHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -39,6 +40,7 @@ func TestDecisionHelpers(t *testing.T) {
 	}
 }
 
+// TestDecisionWithSafetyRail verifies safety rails force logging and downgrade actions.
 func TestDecisionWithSafetyRail(t *testing.T) {
 	t.Parallel()
 
@@ -62,6 +64,7 @@ func TestDecisionWithSafetyRail(t *testing.T) {
 	}
 }
 
+// TestDecisionContextRoundTrip ensures decisions round-trip through contexts.
 func TestDecisionContextRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -79,6 +82,7 @@ func TestDecisionContextRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSanitizeAction confirms sanitizeAction handles canonical and fallback values.
 func TestSanitizeAction(t *testing.T) {
 	t.Parallel()
 
@@ -100,6 +104,7 @@ func TestSanitizeAction(t *testing.T) {
 	}
 }
 
+// TestSummarySnapshotClone ensures Clone deep copies the snapshot fields.
 func TestSummarySnapshotClone(t *testing.T) {
 	t.Parallel()
 

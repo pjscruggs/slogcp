@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// TestParseTraceparent ensures W3C traceparent headers parse into valid SpanContexts.
 func TestParseTraceparent(t *testing.T) {
 	traceHex := "70f5c2c7b3c0d8eead4837399ac5b327"
 	spanHex := "5fa1c6de0d1e3e11"
@@ -45,6 +46,7 @@ func TestParseTraceparent(t *testing.T) {
 	}
 }
 
+// TestParseXCloudTraceContext verifies x-cloud-trace-context parsing for trace propagation interoperability.
 func TestParseXCloudTraceContext(t *testing.T) {
 	traceHex := "70f5c2c7b3c0d8eead4837399ac5b327"
 	spanHex := "5fa1c6de0d1e3e11"
@@ -70,6 +72,7 @@ func TestParseXCloudTraceContext(t *testing.T) {
 	}
 }
 
+// TestFormatXCloudTraceContextFromSpanContext checks formatting back to header form from SpanContexts.
 func TestFormatXCloudTraceContextFromSpanContext(t *testing.T) {
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    mustTraceID(t, "70f5c2c7b3c0d8eead4837399ac5b327"),

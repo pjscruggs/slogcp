@@ -19,10 +19,19 @@ var (
 	errUnsupportedTarget     = errors.New("slogcp: logging to the Cloud Logging API has been removed")
 )
 
+// Option mutates Handler construction behaviour when supplied to [NewHandler].
+//
+// Options follow the functional options pattern and are applied in the order
+// they are provided by the caller.
 type Option func(*options)
 
+// Middleware adapts a [slog.Handler] before it is exposed by [Handler].
+// Middleware functions run in the order they are supplied, wrapping the core
+// handler from last to first to mirror idiomatic HTTP middleware composition.
 type Middleware func(slog.Handler) slog.Handler
 
+// Handler routes slog records to Google Cloud Logging with optional
+// middlewares, stack traces and trace correlation.
 type Handler struct {
 	slog.Handler
 
@@ -69,6 +78,21 @@ type options struct {
 	internalLogger    *slog.Logger
 }
 
+// NewHandler builds a Google Cloud aware slog [Handler]. It inspects the
+// environment for configuration overrides and then applies any provided
+// [Option] values. The handler writes to defaultWriter unless a redirect
+// option or environment override is provided.
+//
+// Example:
+//
+//	h, err := slogcp.NewHandler(os.Stdout,
+//		slogcp.WithLevel(slog.LevelInfo),
+//	)
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	logger := slog.New(h)
+//	logger.Info("ready")
 func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	builder := &options{}
 	for _, opt := range opts {
@@ -155,6 +179,9 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	return h, nil
 }
 
+// Close releases any resources owned by the handler such as log files or
+// writer implementations created by options. It is safe to call multiple
+// times; only the first invocation performs work.
 func (h *Handler) Close() error {
 	var firstErr error
 	h.closeOnce.Do(func() {
@@ -190,6 +217,8 @@ func (h *Handler) Close() error {
 	return firstErr
 }
 
+// ReopenLogFile rotates the handler's file writer when logging to a file.
+// If the handler is not writing to a file the method is a no-op.
 func (h *Handler) ReopenLogFile() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -214,6 +243,9 @@ func (h *Handler) ReopenLogFile() error {
 	return nil
 }
 
+// DefaultContext logs a structured message at [slog.LevelInfo] while attaching
+// contextual attributes from ctx. It is suitable for routing application level
+// events through Cloud Logging.
 func DefaultContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
 	if logger == nil {
 		return
@@ -221,6 +253,8 @@ func DefaultContext(ctx context.Context, logger *slog.Logger, msg string, args .
 	logger.Log(ctx, LevelDefault.Level(), msg, args...)
 }
 
+// NoticeContext logs a message at notice severity for operational events that
+// should page responders but do not indicate an outage.
 func NoticeContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
 	if logger == nil {
 		return
@@ -228,6 +262,8 @@ func NoticeContext(ctx context.Context, logger *slog.Logger, msg string, args ..
 	logger.Log(ctx, LevelNotice.Level(), msg, args...)
 }
 
+// CriticalContext logs a message at critical severity indicating immediate
+// attention is required.
 func CriticalContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
 	if logger == nil {
 		return
@@ -235,6 +271,8 @@ func CriticalContext(ctx context.Context, logger *slog.Logger, msg string, args 
 	logger.Log(ctx, LevelCritical.Level(), msg, args...)
 }
 
+// AlertContext logs at alert severity to integrate with on-call workflows for
+// non-recoverable issues.
 func AlertContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
 	if logger == nil {
 		return
@@ -242,6 +280,8 @@ func AlertContext(ctx context.Context, logger *slog.Logger, msg string, args ...
 	logger.Log(ctx, LevelAlert.Level(), msg, args...)
 }
 
+// EmergencyContext logs at emergency severity highlighting application-wide
+// failures that demand instant response.
 func EmergencyContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
 	if logger == nil {
 		return
@@ -249,36 +289,47 @@ func EmergencyContext(ctx context.Context, logger *slog.Logger, msg string, args
 	logger.Log(ctx, LevelEmergency.Level(), msg, args...)
 }
 
+// WithInternalLogger injects an internal logger used for diagnostics during
+// handler setup and lifecycle operations.
 func WithInternalLogger(logger *slog.Logger) Option {
 	return func(o *options) {
 		o.internalLogger = logger
 	}
 }
 
+// WithLevel sets the minimum slog level accepted by the handler.
 func WithLevel(level slog.Level) Option {
 	return func(o *options) {
 		o.level = &level
 	}
 }
 
+// WithSourceLocationEnabled toggles source location enrichment on emitted
+// records when true.
 func WithSourceLocationEnabled(enabled bool) Option {
 	return func(o *options) {
 		o.addSource = &enabled
 	}
 }
 
+// WithStackTraceEnabled toggles automatic stack trace capture for error logs
+// when enabled.
 func WithStackTraceEnabled(enabled bool) Option {
 	return func(o *options) {
 		o.stackTraceEnabled = &enabled
 	}
 }
 
+// WithStackTraceLevel captures stack traces for records at or above level.
+// The handler defaults to [slog.LevelError] when this option is omitted.
 func WithStackTraceLevel(level slog.Level) Option {
 	return func(o *options) {
 		o.stackTraceLevel = &level
 	}
 }
 
+// WithTraceProjectID overrides the Cloud Trace project identifier used to
+// format [logging.googleapis.com/trace] URLs.
 func WithTraceProjectID(id string) Option {
 	trimmed := strings.TrimSpace(id)
 	return func(o *options) {
@@ -286,6 +337,7 @@ func WithTraceProjectID(id string) Option {
 	}
 }
 
+// WithRedirectToStdout forces the handler to emit logs to stdout.
 func WithRedirectToStdout() Option {
 	return func(o *options) {
 		o.writer = os.Stdout
@@ -293,6 +345,7 @@ func WithRedirectToStdout() Option {
 	}
 }
 
+// WithRedirectToStderr forces the handler to emit logs to stderr.
 func WithRedirectToStderr() Option {
 	return func(o *options) {
 		o.writer = os.Stderr
@@ -300,6 +353,8 @@ func WithRedirectToStderr() Option {
 	}
 }
 
+// WithRedirectToFile directs handler output to the file at path, creating it
+// if necessary.
 func WithRedirectToFile(path string) Option {
 	trimmed := strings.TrimSpace(path)
 	return func(o *options) {
@@ -308,6 +363,8 @@ func WithRedirectToFile(path string) Option {
 	}
 }
 
+// WithRedirectWriter uses writer for log output without taking ownership of
+// its lifecycle.
 func WithRedirectWriter(writer io.Writer) Option {
 	return func(o *options) {
 		o.writer = writer
@@ -315,12 +372,16 @@ func WithRedirectWriter(writer io.Writer) Option {
 	}
 }
 
+// WithReplaceAttr installs a slog attribute replacer mirroring
+// [slog.HandlerOptions.ReplaceAttr].
 func WithReplaceAttr(fn func([]string, slog.Attr) slog.Attr) Option {
 	return func(o *options) {
 		o.replaceAttr = fn
 	}
 }
 
+// WithMiddleware appends a middleware that can modify or short-circuit record
+// handling.
 func WithMiddleware(mw Middleware) Option {
 	return func(o *options) {
 		if mw != nil {
@@ -329,6 +390,8 @@ func WithMiddleware(mw Middleware) Option {
 	}
 }
 
+// WithAttrs preloads static attributes to be attached to every record emitted
+// by the handler.
 func WithAttrs(attrs []slog.Attr) Option {
 	return func(o *options) {
 		if len(attrs) == 0 {
@@ -340,6 +403,7 @@ func WithAttrs(attrs []slog.Attr) Option {
 	}
 }
 
+// WithGroup nests subsequent attributes under the supplied group name.
 func WithGroup(name string) Option {
 	trimmed := strings.TrimSpace(name)
 	return func(o *options) {
@@ -351,6 +415,8 @@ func WithGroup(name string) Option {
 	}
 }
 
+// loadConfigFromEnv reads handler configuration overrides from environment
+// variables, logging validation issues to logger.
 func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 	cfg := handlerConfig{
 		Level:           slog.LevelInfo,
@@ -378,6 +444,8 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 	return cfg, nil
 }
 
+// applyOptions merges user-supplied options into the derived handler
+// configuration.
 func applyOptions(cfg *handlerConfig, o *options) {
 	if o.level != nil {
 		cfg.Level = *o.level
@@ -424,6 +492,8 @@ func applyOptions(cfg *handlerConfig, o *options) {
 	}
 }
 
+// applyRedirectFromEnv adjusts output destinations based on environment
+// variables such as SLOGCP_REDIRECT.
 func applyRedirectFromEnv(cfg *handlerConfig, logger *slog.Logger) error {
 	redirect := strings.TrimSpace(os.Getenv("SLOGCP_REDIRECT_AS_JSON_TARGET"))
 	if redirect != "" {
@@ -475,6 +545,8 @@ func applyRedirectFromEnv(cfg *handlerConfig, logger *slog.Logger) error {
 	return nil
 }
 
+// parseBoolEnv interprets truthy environment variable values with validation
+// diagnostics.
 func parseBoolEnv(value string, current bool, logger *slog.Logger) bool {
 	if strings.TrimSpace(value) == "" {
 		return current
@@ -487,6 +559,8 @@ func parseBoolEnv(value string, current bool, logger *slog.Logger) bool {
 	return b
 }
 
+// parseLevelEnv parses slog levels from environment variables, retaining the
+// current level on failure.
 func parseLevelEnv(value string, current slog.Level, logger *slog.Logger) slog.Level {
 	trimmed := strings.ToLower(strings.TrimSpace(value))
 	if trimmed == "" {
@@ -522,6 +596,7 @@ func parseLevelEnv(value string, current slog.Level, logger *slog.Logger) slog.L
 	return current
 }
 
+// isStdStream reports whether w is stdout or stderr.
 func isStdStream(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok || f == nil {
@@ -530,6 +605,8 @@ func isStdStream(w io.Writer) bool {
 	return f.Fd() == os.Stdout.Fd() || f.Fd() == os.Stderr.Fd()
 }
 
+// logDiagnostic emits internal diagnostic messages, guarding against nil
+// loggers in tests.
 func logDiagnostic(logger *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
 	if logger == nil {
 		return
@@ -539,8 +616,11 @@ func logDiagnostic(logger *slog.Logger, level slog.Level, msg string, attrs ...s
 
 type sourceAwareHandler struct{ slog.Handler }
 
+// HasSource implements [slog.Handler] and signals that source metadata is
+// available on the wrapped handler.
 func (h sourceAwareHandler) HasSource() bool { return true }
 
+// WithAttrs forwards attribute state while preserving source awareness.
 func (h sourceAwareHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	child := h.Handler.WithAttrs(attrs)
 	if child == nil {
@@ -549,6 +629,8 @@ func (h sourceAwareHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return sourceAwareHandler{Handler: child}
 }
 
+// WithGroup groups attributes on the wrapped handler without dropping source
+// metadata hints.
 func (h sourceAwareHandler) WithGroup(name string) slog.Handler {
 	child := h.Handler.WithGroup(name)
 	if child == nil {

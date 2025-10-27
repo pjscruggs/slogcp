@@ -13,6 +13,7 @@ import (
 
 var middlewareBenchStatus int
 
+// BenchmarkMiddlewareBodyCapture measures middleware overhead when capturing bodies with different handlers.
 func BenchmarkMiddlewareBodyCapture(b *testing.B) {
 	body := bytes.Repeat([]byte("payload-data-"), 4096)
 	cases := []struct {

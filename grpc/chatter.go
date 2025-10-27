@@ -7,6 +7,8 @@ import (
 	"github.com/pjscruggs/slogcp/chatter"
 )
 
+// appendChatterAnnotations attaches chatter-related attributes to the provided
+// list when the decision matched a suppression rule.
 func appendChatterAnnotations(attrs []slog.Attr, decision *chatter.Decision, keys chatter.AuditKeys) []slog.Attr {
 	if decision == nil || !decision.Matched {
 		return attrs
@@ -46,6 +48,8 @@ func appendChatterAnnotations(attrs []slog.Attr, decision *chatter.Decision, key
 	return append(attrs, group)
 }
 
+// buildChatterGroup nests the chatter attributes under a dotted prefix,
+// returning the top-level slog group attribute.
 func buildChatterGroup(prefix string, attrs []slog.Attr) slog.Attr {
 	segments := strings.Split(prefix, ".")
 	lastIdx := len(segments) - 1
@@ -64,6 +68,8 @@ func buildChatterGroup(prefix string, attrs []slog.Attr) slog.Attr {
 	return group
 }
 
+// emitChatterConfig logs warnings emitted by the chatter engine about
+// unsupported or downgraded configuration.
 func emitChatterConfig(logger *slog.Logger, engine *chatter.Engine) {
 	if engine == nil || logger == nil {
 		return
