@@ -34,8 +34,7 @@ go get github.com/pjscruggs/slogcp
 package main
 
 import (
-	"context"
-	"log"
+    "log"
     "log/slog"
     "os"
 
@@ -94,6 +93,24 @@ Core environment variables for configuring slogcp:
 | `LOG_LEVEL`               | Minimum log level (`debug`, `info`, `warn`, `error`, etc.) | `info`  |
 | `LOG_SOURCE_LOCATION`     | Include source file/line (`true`, `false`)                 | `false` |
 | `LOG_STACK_TRACE_ENABLED` | Enable stack traces (`true`, `false`)                      | `false` |
+
+### Dynamic Level Control
+
+`slogcp.Handler` exposes runtime level tuning so you can raise or lower verbosity without redeploying:
+
+```go
+handler, _ := slogcp.NewHandler(os.Stdout)
+logger := slog.New(handler)
+
+handler.SetLevel(slog.LevelWarn) // drop info/debug noise globally
+// or share control with another component:
+levelVar := handler.LevelVar()
+levelVar.Set(slog.LevelDebug)
+
+logger.Debug("now enabled")
+```
+
+For multi-logger setups, pass a shared `*slog.LevelVar` via `slogcp.WithLevelVar` so every handler stays in sync.
 
 ## Common Usage Patterns
 
