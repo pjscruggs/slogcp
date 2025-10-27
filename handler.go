@@ -130,6 +130,9 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	cfg.runtimeLabels = cloneStringMap(runtimeInfo.Labels)
 	cfg.runtimeServiceContext = cloneStringMap(runtimeInfo.ServiceContext)
 	cfg.runtimeServiceContextAny = stringMapToAny(cfg.runtimeServiceContext)
+	if cfg.TraceProjectID == "" {
+		cfg.TraceProjectID = strings.TrimSpace(runtimeInfo.ProjectID)
+	}
 
 	cfgPtr := &cfg
 	core := newJSONHandler(cfgPtr, levelVar, internalLogger)
