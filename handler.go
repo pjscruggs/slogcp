@@ -243,9 +243,18 @@ func (h *Handler) ReopenLogFile() error {
 	return nil
 }
 
-// DefaultContext logs a structured message at [slog.LevelInfo] while attaching
-// contextual attributes from ctx. It is suitable for routing application level
-// events through Cloud Logging.
+// Default logs a structured message at [LevelDefault] severity without requiring
+// a context value.
+func Default(logger *slog.Logger, msg string, args ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Log(context.Background(), LevelDefault.Level(), msg, args...)
+}
+
+// DefaultContext logs a structured message at [LevelDefault] severity while
+// attaching contextual attributes from ctx. It is suitable for routing
+// application level events through Cloud Logging.
 func DefaultContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
 	if logger == nil {
 		return

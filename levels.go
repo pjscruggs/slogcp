@@ -75,7 +75,8 @@ const (
 	LevelEmergency Level = 20
 
 	// LevelDefault maps to GCP DEFAULT (0) severity. This is used for unspecified
-	// or unknown severity, and sorts below Debug in the severity hierarchy.
+	// or unknown severity and intentionally sorts above the other levels so that
+	// default-severity entries are never filtered out by minimum level settings.
 	LevelDefault Level = 30
 )
 
