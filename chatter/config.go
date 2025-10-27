@@ -557,6 +557,8 @@ func (c Config) Errors() []error {
 	return append([]error(nil), c.configErrors...)
 }
 
+// mergeList merges comma separated raw values into existing, replacing the
+// slice when replace is true.
 func mergeList(existing []string, raw string, replace bool) []string {
 	values := splitAndTrim(raw)
 	if replace {
@@ -565,6 +567,8 @@ func mergeList(existing []string, raw string, replace bool) []string {
 	return append(existing, values...)
 }
 
+// splitAndTrim splits raw on commas and returns a deduplicated slice of
+// trimmed values without empty entries.
 func splitAndTrim(raw string) []string {
 	if raw == "" {
 		return nil
@@ -581,6 +585,8 @@ func splitAndTrim(raw string) []string {
 	return out
 }
 
+// parseHeaderRules parses env-style header match rules of the form
+// "Key", "Key=Value", or "Key:Value".
 func parseHeaderRules(raw string) ([]HeaderRule, error) {
 	parts := splitAndTrim(raw)
 	rules := make([]HeaderRule, 0, len(parts))
@@ -608,6 +614,8 @@ func parseHeaderRules(raw string) ([]HeaderRule, error) {
 	return rules, nil
 }
 
+// validateCIDRs ensures each entry in cidrs is a syntactically valid CIDR
+// range.
 func validateCIDRs(cidrs []string) error {
 	for _, raw := range cidrs {
 		if raw == "" {

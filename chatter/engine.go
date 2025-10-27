@@ -79,6 +79,7 @@ type headerMatcher struct {
 	values map[string]struct{} // nil -> presence only
 }
 
+// String renders the header matcher in a human-readable form for diagnostics.
 func (h headerMatcher) String() string {
 	if len(h.values) == 0 {
 		return h.key
@@ -260,6 +261,7 @@ func NewEngine(cfg Config, opts ...EngineOption) (*Engine, error) {
 	return engine, nil
 }
 
+// startSummaryLoop begins periodic summary capture when the interval is positive.
 func (e *Engine) startSummaryLoop(interval time.Duration) {
 	if interval <= 0 {
 		return
@@ -290,6 +292,7 @@ func (e *Engine) startSummaryLoop(interval time.Duration) {
 	}()
 }
 
+// captureSummary snapshots current metrics into the engine summary cache.
 func (e *Engine) captureSummary(ts time.Time) {
 	if e.metrics == nil {
 		return
@@ -391,12 +394,14 @@ func (e *Engine) Shutdown() {
 	})
 }
 
+// recordWarning appends a warning message in a thread-safe manner.
 func (e *Engine) recordWarning(msg string) {
 	e.warningsMutex.Lock()
 	defer e.warningsMutex.Unlock()
 	e.warnings = append(e.warnings, msg)
 }
 
+// safeOnGCE invokes the detector and records panics as warnings instead of propagating them.
 func safeOnGCE(fn func() bool, e *Engine) bool {
 	defer func() {
 		if r := recover(); r != nil {
@@ -406,6 +411,7 @@ func safeOnGCE(fn func() bool, e *Engine) bool {
 	return fn()
 }
 
+// resolveProtocolEnabling determines whether HTTP and gRPC chatter suppression should be active.
 func resolveProtocolEnabling(cfg Config, onGCE bool) (httpEnabled, grpcEnabled bool) {
 	switch cfg.Mode {
 	case ModeOn:
@@ -430,6 +436,7 @@ func resolveProtocolEnabling(cfg Config, onGCE bool) (httpEnabled, grpcEnabled b
 	return
 }
 
+// buildHTTP compiles HTTP configuration into runtime matchers.
 func (e *Engine) buildHTTP(cfg HTTPSettings) error {
 	rt := httpRuntime{
 		paths:             make(map[string]struct{}, len(cfg.Paths)),
@@ -493,6 +500,7 @@ func (e *Engine) buildHTTP(cfg HTTPSettings) error {
 	return nil
 }
 
+// buildGRPC compiles gRPC configuration into runtime matchers.
 func (e *Engine) buildGRPC(cfg GRPCSettings) error {
 	rt := grpcRuntime{
 		methods:      make(map[string]struct{}, len(cfg.IgnoreMethods)),
@@ -509,6 +517,7 @@ func (e *Engine) buildGRPC(cfg GRPCSettings) error {
 	return nil
 }
 
+// buildProxy prepares proxy trust settings for client IP extraction.
 func (e *Engine) buildProxy(cfg ProxySettings) error {
 	rt := proxyRuntime{
 		trust:       cfg.TrustProxy,
@@ -628,6 +637,7 @@ func (e *Engine) EffectiveConfig() map[string]string {
 	return out
 }
 
+// floatToString renders sampling rates while preserving zero without decimals.
 func floatToString(f float64) string {
 	if f == 0 {
 		return "0"
@@ -635,6 +645,7 @@ func floatToString(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
+// computeConfigHash produces a stable hash summarizing the effective configuration.
 func computeConfigHash(cfg Config, httpEnabled, grpcEnabled, onGCE bool) string {
 	builder := strings.Builder{}
 	appendKV := func(k, v string) {
@@ -684,6 +695,7 @@ func computeConfigHash(cfg Config, httpEnabled, grpcEnabled, onGCE bool) string 
 	return hex.EncodeToString(sum[:8])
 }
 
+// collectEnvHints gathers environment-derived hints about platform detection.
 func collectEnvHints() []string {
 	hints := []string{}
 	add := func(key string) {
@@ -744,6 +756,8 @@ func (e *Engine) EvaluateHTTP(req *http.Request) *Decision {
 	return decision
 }
 
+// extractClientIP derives the caller IP from the remote address and any trusted
+// proxy headers, returning the resolved IP and whether the chain was trusted.
 func (e *Engine) extractClientIP(remoteAddr string, forwarded []string) (string, bool) {
 	host := parseIP(remoteAddr)
 	if !e.proxy.trust {
@@ -779,6 +793,8 @@ func (e *Engine) extractClientIP(remoteAddr string, forwarded []string) (string,
 	return client, true
 }
 
+// selectForwardedIP returns the client IP token selected from the forwarded
+// header list after discarding the configured number of trusted hops.
 func selectForwardedIP(values []string, trustedHops int) string {
 	if trustedHops < 0 {
 		trustedHops = 0
@@ -802,6 +818,8 @@ func selectForwardedIP(values []string, trustedHops int) string {
 	return tokens[index]
 }
 
+// matchCIDR reports whether the provided IP resides within any of the supplied
+// CIDR ranges.
 func matchCIDR(ip string, cidrs []*net.IPNet) bool {
 	if ip == "" || len(cidrs) == 0 {
 		return false
@@ -818,6 +836,8 @@ func matchCIDR(ip string, cidrs []*net.IPNet) bool {
 	return false
 }
 
+// matchAppEngineCron returns a decision when a request carries the
+// X-Appengine-Cron header and the value indicates a cron invocation.
 func matchAppEngineCron(req *http.Request, action Action) *Decision {
 	if req == nil {
 		return nil
@@ -841,6 +861,8 @@ func matchAppEngineCron(req *http.Request, action Action) *Decision {
 	return nil
 }
 
+// matchAppEnginePath returns a drop decision for internal App Engine paths
+// when suppression is enabled.
 func matchAppEnginePath(req *http.Request, suppress bool) *Decision {
 	if !suppress || req == nil {
 		return nil
@@ -858,6 +880,8 @@ func matchAppEnginePath(req *http.Request, suppress bool) *Decision {
 	return nil
 }
 
+// methodAllowed reports whether the HTTP method is allowed when method
+// restrictions are configured.
 func methodAllowed(method string, allowed map[string]struct{}, limited bool) bool {
 	if !limited {
 		return true
@@ -866,6 +890,8 @@ func methodAllowed(method string, allowed map[string]struct{}, limited bool) boo
 	return ok
 }
 
+// matchHTTPUserRules returns the first matching rule that applies to the
+// request path or headers, along with the rule reason and identifier.
 func matchHTTPUserRules(req *http.Request, rt httpRuntime) (Reason, string, bool) {
 	if req == nil {
 		return ReasonUnknown, "", false
@@ -893,6 +919,8 @@ func matchHTTPUserRules(req *http.Request, rt httpRuntime) (Reason, string, bool
 	return ReasonUnknown, "", false
 }
 
+// match reports whether the supplied headers satisfy the matcher
+// configuration.
 func (hm headerMatcher) match(header http.Header) bool {
 	if header == nil {
 		return false
@@ -912,6 +940,7 @@ func (hm headerMatcher) match(header http.Header) bool {
 	return false
 }
 
+// headerKey returns the canonical header key used for lookups.
 func (hm headerMatcher) headerKey() string {
 	if hm.key == "" {
 		return hm.key
@@ -919,6 +948,8 @@ func (hm headerMatcher) headerKey() string {
 	return http.CanonicalHeaderKey(hm.key)
 }
 
+// applySampling converts matching decisions into mark-only actions when the
+// configured sampling rules retain the event.
 func (e *Engine) applySampling(decision *Decision, protocol Protocol) *Decision {
 	if decision == nil || !decision.Matched {
 		return decision
@@ -1000,6 +1031,8 @@ func (e *Engine) EvaluateGRPC(method string, metadata map[string][]string, peerA
 	return e.applySampling(decision, ProtocolGRPC)
 }
 
+// ensureSupportedAction normalizes unsupported actions and records warnings for
+// fallbacks.
 func (e *Engine) ensureSupportedAction(decision *Decision) {
 	if decision == nil || !decision.Matched {
 		return
@@ -1019,6 +1052,7 @@ func (e *Engine) ensureSupportedAction(decision *Decision) {
 	}
 }
 
+// headerLower returns the lower-case proxy header name used for metadata lookups.
 func (p proxyRuntime) headerLower() string {
 	if p.header == "" {
 		return "x-forwarded-for"
@@ -1114,6 +1148,8 @@ func (e *Engine) RecordGRPCWatchStatus(peer, service, status string, ts time.Tim
 	return event
 }
 
+// watchStatusLevel maps a gRPC health status to the log level used for watch
+// events.
 func watchStatusLevel(status string) string {
 	switch status {
 	case "NOT_SERVING", "SERVICE_UNKNOWN", "UNKNOWN":
@@ -1123,6 +1159,8 @@ func watchStatusLevel(status string) string {
 	}
 }
 
+// shouldKeepHTTP reports whether the current HTTP event should be kept based
+// on keep-every and rate sampling settings.
 func (s *sampler) shouldKeepHTTP(now time.Time) bool {
 	if s.httpKeepEvery > 0 {
 		n := s.httpCount.Add(1)
@@ -1139,6 +1177,8 @@ func (s *sampler) shouldKeepHTTP(now time.Time) bool {
 	return false
 }
 
+// shouldKeepGRPC reports whether the current gRPC event should be kept based
+// on keep-every and rate sampling settings.
 func (s *sampler) shouldKeepGRPC(now time.Time) bool {
 	if s.grpcKeepEvery > 0 {
 		n := s.grpcCount.Add(1)
@@ -1155,12 +1195,15 @@ func (s *sampler) shouldKeepGRPC(now time.Time) bool {
 	return false
 }
 
+// randomFloat returns a pseudo-random float64 guarded by the sampler mutex.
 func (s *sampler) randomFloat() float64 {
 	s.randomMu.Lock()
 	defer s.randomMu.Unlock()
 	return s.random.Float64()
 }
 
+// reserveHTTP consumes quota for HTTP events and reports whether the event can
+// be sampled within the current window.
 func (s *sampler) reserveHTTP(now time.Time) bool {
 	if s.httpMaxPerMinute <= 0 {
 		return true
@@ -1178,6 +1221,8 @@ func (s *sampler) reserveHTTP(now time.Time) bool {
 	return true
 }
 
+// reserveGRPC consumes quota for gRPC events and reports whether the event can
+// be sampled within the current window.
 func (s *sampler) reserveGRPC(now time.Time) bool {
 	if s.grpcMaxPerMinute <= 0 {
 		return true
@@ -1195,6 +1240,8 @@ func (s *sampler) reserveGRPC(now time.Time) bool {
 	return true
 }
 
+// parseIP extracts an IP literal from the supplied host:port or bracketed
+// address representation.
 func parseIP(input string) string {
 	if input == "" {
 		return ""

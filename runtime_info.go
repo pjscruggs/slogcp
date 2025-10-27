@@ -45,6 +45,7 @@ func DetectRuntimeInfo() RuntimeInfo {
 	return runtimeInfo
 }
 
+// detectRuntimeInfo inspects environment variables and metadata endpoints to infer runtime context.
 func detectRuntimeInfo() RuntimeInfo {
 	envProject := firstNonEmpty(
 		strings.TrimSpace(os.Getenv("SLOGCP_TRACE_PROJECT_ID")),
@@ -89,6 +90,7 @@ func detectRuntimeInfo() RuntimeInfo {
 	return info
 }
 
+// ensureProjectID populates the project ID using metadata if it has not been set.
 func ensureProjectID(info *RuntimeInfo, md *metadataLookup) {
 	if info.ProjectID != "" {
 		return
@@ -98,6 +100,7 @@ func ensureProjectID(info *RuntimeInfo, md *metadataLookup) {
 	}
 }
 
+// detectCloudFunction populates metadata when running within Cloud Functions.
 func detectCloudFunction(info *RuntimeInfo) bool {
 	service := trimmedEnv("K_SERVICE")
 	target := trimmedEnv("FUNCTION_TARGET")
@@ -128,6 +131,7 @@ func detectCloudFunction(info *RuntimeInfo) bool {
 	return true
 }
 
+// detectCloudRunService populates metadata when running within Cloud Run services.
 func detectCloudRunService(info *RuntimeInfo) bool {
 	service := trimmedEnv("K_SERVICE")
 	revision := trimmedEnv("K_REVISION")
@@ -159,6 +163,7 @@ func detectCloudRunService(info *RuntimeInfo) bool {
 	return true
 }
 
+// detectCloudRunJob populates metadata when running within Cloud Run jobs.
 func detectCloudRunJob(info *RuntimeInfo) bool {
 	job := trimmedEnv("CLOUD_RUN_JOB")
 	execution := trimmedEnv("CLOUD_RUN_EXECUTION")
@@ -192,6 +197,7 @@ func detectCloudRunJob(info *RuntimeInfo) bool {
 	return true
 }
 
+// detectAppEngine populates metadata when running within App Engine.
 func detectAppEngine(info *RuntimeInfo) bool {
 	service := trimmedEnv("GAE_SERVICE")
 	version := trimmedEnv("GAE_VERSION")
@@ -221,6 +227,7 @@ func detectAppEngine(info *RuntimeInfo) bool {
 	return true
 }
 
+// detectKubernetes populates metadata when running inside a Kubernetes cluster.
 func detectKubernetes(info *RuntimeInfo, md *metadataLookup) bool {
 	if trimmedEnv("KUBERNETES_SERVICE_HOST") == "" {
 		return false
@@ -263,6 +270,7 @@ func detectKubernetes(info *RuntimeInfo, md *metadataLookup) bool {
 	return true
 }
 
+// detectComputeEngine populates metadata when running on Google Compute Engine.
 func detectComputeEngine(info *RuntimeInfo, md *metadataLookup) bool {
 	instanceID, ok := md.get("instance/id")
 	if !ok || instanceID == "" {
@@ -285,10 +293,12 @@ func detectComputeEngine(info *RuntimeInfo, md *metadataLookup) bool {
 	return true
 }
 
+// trimmedEnv reads an environment variable and trims surrounding whitespace.
 func trimmedEnv(key string) string {
 	return strings.TrimSpace(os.Getenv(key))
 }
 
+// firstNonEmpty returns the first non-empty string after trimming whitespace.
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {
@@ -298,6 +308,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// normalizeProjectID strips common prefixes and leading underscores from project IDs.
 func normalizeProjectID(id string) string {
 	id = strings.TrimSpace(id)
 	id = strings.TrimPrefix(id, "projects/")
@@ -306,6 +317,7 @@ func normalizeProjectID(id string) string {
 	return id
 }
 
+// readNamespace reads the Kubernetes namespace from the serviceaccount secret.
 func readNamespace() string {
 	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 	if err != nil {
@@ -324,10 +336,12 @@ type metadataLookup struct {
 	cache map[string]metadataCacheEntry
 }
 
+// newMetadataLookup constructs a metadata lookup with local caching.
 func newMetadataLookup() *metadataLookup {
 	return &metadataLookup{cache: make(map[string]metadataCacheEntry)}
 }
 
+// get retrieves and caches metadata values for the given path.
 func (l *metadataLookup) get(path string) (string, bool) {
 	if entry, ok := l.cache[path]; ok && entry.populated {
 		return entry.value, entry.ok
@@ -339,6 +353,7 @@ func (l *metadataLookup) get(path string) (string, bool) {
 
 var metadataFetch = defaultMetadataFetch
 
+// defaultMetadataFetch performs an HTTP request to the GCE metadata service.
 func defaultMetadataFetch(path string) (string, bool) {
 	host := trimmedEnv("GCE_METADATA_HOST")
 	if host == "" {

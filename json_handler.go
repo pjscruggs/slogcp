@@ -41,6 +41,8 @@ type payloadState struct {
 	groupStack []string
 }
 
+// prepare resets and returns the root payload map sized according to the
+// provided capacity hint.
 func (ps *payloadState) prepare(capacity int) map[string]any {
 	if capacity < 4 {
 		capacity = 4
@@ -54,6 +56,8 @@ func (ps *payloadState) prepare(capacity int) map[string]any {
 	return ps.root
 }
 
+// borrowMap retrieves a scratch map from the pool sized with the supplied
+// hint, allocating a fresh map when necessary.
 func (ps *payloadState) borrowMap(hint int) map[string]any {
 	if hint < 4 {
 		hint = 4
@@ -70,6 +74,8 @@ func (ps *payloadState) borrowMap(hint int) map[string]any {
 	return m
 }
 
+// obtainLabels returns a map suitable for labels, clearing any previous
+// contents.
 func (ps *payloadState) obtainLabels() map[string]string {
 	if ps.labels == nil {
 		ps.labels = make(map[string]string, 4)
@@ -79,6 +85,7 @@ func (ps *payloadState) obtainLabels() map[string]string {
 	return ps.labels
 }
 
+// recycle returns pooled maps and slices to their zero state for reuse.
 func (ps *payloadState) recycle() {
 	for _, m := range ps.usedMaps {
 		clearMapAny(m)
@@ -100,12 +107,14 @@ var payloadStatePool = sync.Pool{
 	},
 }
 
+// clearMapAny deletes every key from m.
 func clearMapAny(m map[string]any) {
 	for k := range m {
 		delete(m, k)
 	}
 }
 
+// clearStringMap deletes every key from m.
 func clearStringMap(m map[string]string) {
 	for k := range m {
 		delete(m, k)
@@ -130,6 +139,8 @@ type jsonHandler struct {
 	groups       []string
 }
 
+// newJSONHandler constructs a handler that renders slog records as Google
+// Cloud Logging compatible JSON.
 func newJSONHandler(cfg *handlerConfig, leveler slog.Leveler, internalLogger *slog.Logger) *jsonHandler {
 	if leveler == nil {
 		leveler = slog.LevelInfo
@@ -155,6 +166,7 @@ func newJSONHandler(cfg *handlerConfig, leveler slog.Leveler, internalLogger *sl
 	return h
 }
 
+// Enabled reports whether level is enabled for emission.
 func (h *jsonHandler) Enabled(_ context.Context, level slog.Level) bool {
 	min := slog.LevelInfo
 	if h.leveler != nil {
@@ -163,6 +175,14 @@ func (h *jsonHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= min
 }
 
+// Handle serializes r into the Cloud Logging wire format, applying chatter
+// decisions, trace context, and runtime metadata before writing to the
+// configured writer.
+//
+// Example:
+//
+//	logger := slog.New(h)
+//	logger.Info("index", slog.Int("docs", 42))
 func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 	if decision, ok := chatter.DecisionFromContext(ctx); ok && decision != nil {
 		if decision.ShouldDrop() {
@@ -205,6 +225,8 @@ func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.emitJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr)
 }
 
+// WithAttrs returns a new handler that includes the provided attributes on
+// every emitted record.
 func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	if len(attrs) == 0 {
 		return h
@@ -237,6 +259,7 @@ func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
+// WithGroup nests subsequent attributes under name.
 func (h *jsonHandler) WithGroup(name string) slog.Handler {
 	if name == "" {
 		return h
@@ -263,6 +286,8 @@ func (h *jsonHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
+// resolveSourceLocation determines the best-effort source location for r when
+// source logging is enabled.
 func (h *jsonHandler) resolveSourceLocation(r slog.Record) *sourceLocation {
 	if !h.cfg.AddSource {
 		return nil
@@ -296,6 +321,8 @@ func (h *jsonHandler) resolveSourceLocation(r slog.Record) *sourceLocation {
 	}
 }
 
+// buildPayload flattens r into a JSON-ready map alongside optional HTTP
+// request metadata, error context, stack traces, and dynamic labels.
 func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	map[string]any,
 	*HTTPRequest,
@@ -471,6 +498,8 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	return payload, httpReq, errType, errMsg, stackStr, dynamicLabels
 }
 
+// emitJSON writes the fully constructed Cloud Logging payload to the handler
+// writer.
 func (h *jsonHandler) emitJSON(
 	r slog.Record,
 	jsonPayload map[string]any,
@@ -534,6 +563,8 @@ func (h *jsonHandler) emitJSON(
 	return nil
 }
 
+// captureAndFormatFallbackStack captures the current goroutine stack as a
+// formatted string.
 func captureAndFormatFallbackStack() string {
 	stack, _ := CaptureStack(nil)
 	return stack

@@ -14,6 +14,7 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
+// TestWithLevelControlsLogging ensures log level options filter lower-severity records.
 func TestWithLevelControlsLogging(t *testing.T) {
 	t.Parallel()
 
@@ -44,6 +45,7 @@ func TestWithLevelControlsLogging(t *testing.T) {
 	}
 }
 
+// TestWithAttrsAddsStaticAttributes verifies WithAttrs attaches static values to every record.
 func TestWithAttrsAddsStaticAttributes(t *testing.T) {
 	t.Parallel()
 
@@ -72,6 +74,7 @@ func TestWithAttrsAddsStaticAttributes(t *testing.T) {
 	}
 }
 
+// TestWithGroupNestsAttributes confirms WithGroup nests attributes under the chosen key.
 func TestWithGroupNestsAttributes(t *testing.T) {
 	t.Parallel()
 

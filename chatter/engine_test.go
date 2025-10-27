@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// TestSelectForwardedIP exercises edge cases when selecting client IPs from forwarded headers.
 func TestSelectForwardedIP(t *testing.T) {
 	t.Parallel()
 
@@ -67,6 +68,7 @@ func TestSelectForwardedIP(t *testing.T) {
 	}
 }
 
+// TestEngineExtractClientIP validates Engine.extractClientIP selection and trust flags.
 func TestEngineExtractClientIP(t *testing.T) {
 	t.Parallel()
 
@@ -150,6 +152,7 @@ func TestEngineExtractClientIP(t *testing.T) {
 	}
 }
 
+// TestMatchAppEngineCron ensures cron header detection produces the expected decisions.
 func TestMatchAppEngineCron(t *testing.T) {
 	t.Parallel()
 
@@ -169,6 +172,7 @@ func TestMatchAppEngineCron(t *testing.T) {
 	}
 }
 
+// TestMatchAppEnginePath verifies App Engine path suppression behaves according to configuration.
 func TestMatchAppEnginePath(t *testing.T) {
 	t.Parallel()
 
@@ -182,6 +186,7 @@ func TestMatchAppEnginePath(t *testing.T) {
 	}
 }
 
+// TestMatchHTTPUserRules covers path, prefix, regex, and header matching for user rules.
 func TestMatchHTTPUserRules(t *testing.T) {
 	t.Parallel()
 
@@ -229,6 +234,7 @@ func TestMatchHTTPUserRules(t *testing.T) {
 	}
 }
 
+// TestHeaderMatcher checks case-insensitive matching for configured header values.
 func TestHeaderMatcher(t *testing.T) {
 	t.Parallel()
 
@@ -252,6 +258,7 @@ func TestHeaderMatcher(t *testing.T) {
 	}
 }
 
+// TestMatchCIDR confirms CIDR matching accepts valid IPs and rejects invalid ones.
 func TestMatchCIDR(t *testing.T) {
 	t.Parallel()
 
@@ -270,6 +277,7 @@ func TestMatchCIDR(t *testing.T) {
 	}
 }
 
+// TestMethodAllowed validates method gating logic based on configured allowlists.
 func TestMethodAllowed(t *testing.T) {
 	t.Parallel()
 
@@ -285,6 +293,7 @@ func TestMethodAllowed(t *testing.T) {
 	}
 }
 
+// TestEngineFinalizeGRPCIgnoreOKOnlyForcedMetrics verifies forced logging metrics for GRPC health checks.
 func TestEngineFinalizeGRPCIgnoreOKOnlyForcedMetrics(t *testing.T) {
 	t.Parallel()
 
@@ -343,6 +352,7 @@ func TestEngineFinalizeGRPCIgnoreOKOnlyForcedMetrics(t *testing.T) {
 	}
 }
 
+// TestEngineApplySamplingHTTP exercises sampling decisions for HTTP traffic under various settings.
 func TestEngineApplySamplingHTTP(t *testing.T) {
 	t.Parallel()
 
@@ -380,6 +390,7 @@ func TestEngineApplySamplingHTTP(t *testing.T) {
 	}
 }
 
+// TestParseIP ensures parseIP extracts host components from IPv4 and IPv6 addresses.
 func TestParseIP(t *testing.T) {
 	t.Parallel()
 

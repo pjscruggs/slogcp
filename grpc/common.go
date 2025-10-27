@@ -178,6 +178,8 @@ const (
 // metadataCarrier adapts gRPC metadata.MD to OTel's TextMapCarrier.
 type metadataCarrier struct{ md metadata.MD }
 
+// Get fetches the first metadata value for the provided key, returning an empty
+// string when no value is present.
 func (c metadataCarrier) Get(key string) string {
 	// gRPC metadata is case-insensitive but normalized to lowercase keys.
 	vals := c.md.Get(strings.ToLower(key))
@@ -187,6 +189,8 @@ func (c metadataCarrier) Get(key string) string {
 	return ""
 }
 
+// Set replaces any existing values for key with a single entry containing
+// value.
 func (c metadataCarrier) Set(key string, value string) {
 	lk := strings.ToLower(key)
 	if c.md == nil {
@@ -196,6 +200,7 @@ func (c metadataCarrier) Set(key string, value string) {
 	c.md[lk] = []string{value}
 }
 
+// Keys returns the set of metadata keys currently stored in the carrier.
 func (c metadataCarrier) Keys() []string {
 	keys := make([]string, 0, len(c.md))
 	for k := range c.md {
@@ -275,6 +280,8 @@ func formatXCloudTraceContextFromSpanContext(sc trace.SpanContext) string {
 	return sc.TraceID().String() + "/" + strconv.FormatUint(u, 10) + ";o=" + o
 }
 
+// loggerWithAttrs returns a logger preconfigured with the supplied attributes
+// when any are present.
 func loggerWithAttrs(logger *slog.Logger, attrs []slog.Attr) *slog.Logger {
 	if logger == nil || len(attrs) == 0 {
 		return logger

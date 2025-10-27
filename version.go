@@ -26,6 +26,7 @@ var Version = "v0.1.6-alpha"
 // build time.
 var UserAgent string
 
+// init seeds UserAgent with the current Version value.
 func init() {
 	// Initialize UserAgent using the (possibly injected) Version
 	UserAgent = fmt.Sprintf("slogcp/%s", Version)

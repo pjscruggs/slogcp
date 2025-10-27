@@ -2,6 +2,7 @@ package chatter
 
 import "testing"
 
+// TestMetricsCounters confirms metrics increment and snapshot operations report expected counts.
 func TestMetricsCounters(t *testing.T) {
 	t.Parallel()
 

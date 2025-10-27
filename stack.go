@@ -136,6 +136,7 @@ func formatPCsToStackString(pcs []uintptr) string {
 	return sb.String()
 }
 
+// trimStackPCs removes leading frames that match skipFn while preserving the remainder.
 func trimStackPCs(pcs []uintptr, skipFn func(string) bool) []uintptr {
 	if len(pcs) == 0 {
 		return pcs
@@ -213,6 +214,7 @@ func CaptureStack(skipFn func(string) bool) (string, runtime.Frame) {
 	return stack, top
 }
 
+// currentGoroutineHeader returns the goroutine header emitted by runtime.Stack.
 func currentGoroutineHeader() string {
 	const fallbackHeader = "goroutine 0 [running]:"
 

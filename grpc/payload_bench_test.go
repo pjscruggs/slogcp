@@ -16,6 +16,7 @@ var (
 	benchLogger   = slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
 )
 
+// buildStructMessage constructs a nested protobuf Struct for benchmark payloads.
 func buildStructMessage() *structpb.Struct {
 	return &structpb.Struct{
 		Fields: map[string]*structpb.Value{
@@ -53,6 +54,7 @@ func buildStructMessage() *structpb.Struct {
 	}
 }
 
+// BenchmarkLogPayload measures logPayload performance for full and truncated payloads.
 func BenchmarkLogPayload(b *testing.B) {
 	message := buildStructMessage()
 	ctx := context.Background()
@@ -80,6 +82,7 @@ func BenchmarkLogPayload(b *testing.B) {
 	})
 }
 
+// BenchmarkFilterMetadata evaluates metadata filtering overhead with representative headers.
 func BenchmarkFilterMetadata(b *testing.B) {
 	md := metadata.MD{
 		"authorization":       {"Bearer very-long-token-value-that-should-be-filtered"},
