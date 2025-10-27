@@ -37,14 +37,14 @@ func TestSeverityMappingMatchesNativeAndGCPLevels(t *testing.T) {
 		wantMsg      string
 		wantSeverity string
 	}{
-		{log: func() { logger.Debug("native-debug") }, wantMsg: "native-debug", wantSeverity: "DEBUG"},
-		{log: func() { logger.Info("native-info") }, wantMsg: "native-info", wantSeverity: "INFO"},
-		{log: func() { logger.Warn("native-warn") }, wantMsg: "native-warn", wantSeverity: "WARNING"},
-		{log: func() { logger.Error("native-error") }, wantMsg: "native-error", wantSeverity: "ERROR"},
-		{log: func() { logger.Log(ctx, slogcp.LevelNotice.Level(), "gcp-notice") }, wantMsg: "gcp-notice", wantSeverity: "NOTICE"},
-		{log: func() { logger.Log(ctx, slogcp.LevelCritical.Level(), "gcp-critical") }, wantMsg: "gcp-critical", wantSeverity: "CRITICAL"},
-		{log: func() { logger.Log(ctx, slogcp.LevelAlert.Level(), "gcp-alert") }, wantMsg: "gcp-alert", wantSeverity: "ALERT"},
-		{log: func() { logger.Log(ctx, slogcp.LevelEmergency.Level(), "gcp-emergency") }, wantMsg: "gcp-emergency", wantSeverity: "EMERGENCY"},
+		{log: func() { logger.Debug("native-debug") }, wantMsg: "native-debug", wantSeverity: "D"},
+		{log: func() { logger.Info("native-info") }, wantMsg: "native-info", wantSeverity: "I"},
+		{log: func() { logger.Warn("native-warn") }, wantMsg: "native-warn", wantSeverity: "W"},
+		{log: func() { logger.Error("native-error") }, wantMsg: "native-error", wantSeverity: "E"},
+		{log: func() { logger.Log(ctx, slogcp.LevelNotice.Level(), "gcp-notice") }, wantMsg: "gcp-notice", wantSeverity: "N"},
+		{log: func() { logger.Log(ctx, slogcp.LevelCritical.Level(), "gcp-critical") }, wantMsg: "gcp-critical", wantSeverity: "C"},
+		{log: func() { logger.Log(ctx, slogcp.LevelAlert.Level(), "gcp-alert") }, wantMsg: "gcp-alert", wantSeverity: "A"},
+		{log: func() { logger.Log(ctx, slogcp.LevelEmergency.Level(), "gcp-emergency") }, wantMsg: "gcp-emergency", wantSeverity: "EMERG"},
 		{log: func() { logger.Log(ctx, slogcp.LevelDefault.Level(), "gcp-default") }, wantMsg: "gcp-default", wantSeverity: "DEFAULT"},
 	}
 

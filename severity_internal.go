@@ -38,21 +38,21 @@ func levelToString(level slog.Level) string {
 
 	switch {
 	case level < slog.LevelInfo:
-		return formatWithOffset("DEBUG", level-slog.LevelDebug)
+		return formatWithOffset("D", level-slog.LevelDebug)
 	case level < internalLevelNotice:
-		return formatWithOffset("INFO", level-slog.LevelInfo)
+		return formatWithOffset("I", level-slog.LevelInfo)
 	case level < slog.LevelWarn:
-		return formatWithOffset("NOTICE", level-internalLevelNotice)
+		return formatWithOffset("N", level-internalLevelNotice)
 	case level < slog.LevelError:
-		return formatWithOffset("WARNING", level-slog.LevelWarn)
+		return formatWithOffset("W", level-slog.LevelWarn)
 	case level < internalLevelCritical:
-		return formatWithOffset("ERROR", level-slog.LevelError)
+		return formatWithOffset("E", level-slog.LevelError)
 	case level < internalLevelAlert:
-		return formatWithOffset("CRITICAL", level-internalLevelCritical)
+		return formatWithOffset("C", level-internalLevelCritical)
 	case level < internalLevelEmergency:
-		return formatWithOffset("ALERT", level-internalLevelAlert)
+		return formatWithOffset("A", level-internalLevelAlert)
 	case level < internalLevelDefault:
-		return formatWithOffset("EMERGENCY", level-internalLevelEmergency)
+		return formatWithOffset("EMERG", level-internalLevelEmergency)
 	default:
 		return formatWithOffset("DEFAULT", level-internalLevelDefault)
 	}

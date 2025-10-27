@@ -36,6 +36,7 @@ logger := slog.New(handler)
 | `WithLevel(slog.Level)` | `LOG_LEVEL` | `info` | Minimum severity captured by the handler. Accepts textual (`debug`, `notice`, etc.) or integer `slog.Level` values. |
 | `WithLevelVar(*slog.LevelVar)` | (none) | `nil` | Shares an existing `slog.LevelVar` with the handler so multiple loggers can adjust level in lockstep. The handler still applies `WithLevel`/`LOG_LEVEL` to seed the shared variable. |
 | `WithSourceLocationEnabled(bool)` | `LOG_SOURCE_LOCATION` | `false` | When enabled, populates `logging.googleapis.com/sourceLocation`. |
+| `WithTime(bool)` | `LOG_TIME` *(alias `LOG_TIME_FIELD_ENABLED`)* | `false` | Emits the top-level RFC3339Nano `time` field instead of relying on Cloud Logging to supply a timestamp. |
 | `WithStackTraceEnabled(bool)` | `LOG_STACK_TRACE_ENABLED` | `false` | Turns on automatic stack capture at or above `StackTraceLevel`. |
 | `WithStackTraceLevel(slog.Level)` | `LOG_STACK_TRACE_LEVEL` | `error` | Severity threshold for automatic stack traces. |
 | `WithTraceProjectID(string)` | `SLOGCP_TRACE_PROJECT_ID` → `SLOGCP_PROJECT_ID` → `GOOGLE_CLOUD_PROJECT` | detected via runtime info | Chooses the project used when formatting `logging.googleapis.com/trace`. Fallback resolution matches the listed order. |
@@ -89,9 +90,9 @@ When an attribute value implements `error`, the handler emits the error message,
 
 Every record is encoded as a single JSON object. Key fields include:
 
-- `severity` – stringified level (DEBUG, NOTICE, ERROR, etc.).
+- `severity` – Google Cloud severity code using single-letter aliases (`D`, `I`, `N`, `W`, `E`, `C`, `A`), the abbreviated `EMERG` for emergency, and `DEFAULT` for unspecified logs.
 - `message` – record message (augmented with the error message when `error_type` is present).
-- `time` – RFC3339Nano timestamp in UTC.
+- `time` – RFC3339Nano timestamp in UTC when `WithTime`/`LOG_TIME` is true. Legacy `LOG_TIME_FIELD_ENABLED` is still accepted.
 - `logging.googleapis.com/sourceLocation` – present when source logging is enabled.
 - `logging.googleapis.com/trace`, `logging.googleapis.com/spanId`, `logging.googleapis.com/trace_sampled` – written when the context carries a valid OpenTelemetry span and a project can be determined.
 - `otel.trace_id`, `otel.span_id`, `otel.trace_sampled` – fallback keys when no trace project is known.
@@ -112,7 +113,9 @@ Extended severity support is exposed through `slogcp.Level` constants. They map 
 | `slogcp.LevelError` | 8 | `ERROR` |
 | `slogcp.LevelCritical` | 12 | `CRITICAL` |
 | `slogcp.LevelAlert` | 16 | `ALERT` |
-| `slogcp.LevelEmergency` | 20 | `EMERGENCY` |
+| `slogcp.LevelEmergency` | 20 | `EMERG` |
+
+> **Note:** When encoding JSON, `slogcp` emits Cloud Logging-approved abbreviations `D`, `I`, `N`, `W`, `E`, `C`, `A`, and `EMERG`; `DEFAULT` remains unchanged because no shorter alias exists.
 
 ## HTTP Middleware (`github.com/pjscruggs/slogcp/http`)
 
