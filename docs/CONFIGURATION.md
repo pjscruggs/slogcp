@@ -34,6 +34,7 @@ logger := slog.New(handler)
 | Option | Environment variable(s) | Default | Description |
 | --- | --- | --- | --- |
 | `WithLevel(slog.Level)` | `LOG_LEVEL` | `info` | Minimum severity captured by the handler. Accepts textual (`debug`, `notice`, etc.) or integer `slog.Level` values. |
+| `WithLevelVar(*slog.LevelVar)` | (none) | `nil` | Shares an existing `slog.LevelVar` with the handler so multiple loggers can adjust level in lockstep. The handler still applies `WithLevel`/`LOG_LEVEL` to seed the shared variable. |
 | `WithSourceLocationEnabled(bool)` | `LOG_SOURCE_LOCATION` | `false` | When enabled, populates `logging.googleapis.com/sourceLocation`. |
 | `WithStackTraceEnabled(bool)` | `LOG_STACK_TRACE_ENABLED` | `false` | Turns on automatic stack capture at or above `StackTraceLevel`. |
 | `WithStackTraceLevel(slog.Level)` | `LOG_STACK_TRACE_LEVEL` | `error` | Severity threshold for automatic stack traces. |
@@ -73,6 +74,7 @@ logger.WithGroup(slogcp.LabelsGroup).Info("ready", slog.String("team", "observab
 - `handler.Close()` flushes buffered output, closes owned files, and closes custom writers implementing `io.Closer`. It is idempotent.
 - `handler.ReopenLogFile()` reopens the managed file writer after log rotation.
 - All closing errors are emitted through the internal diagnostic logger when provided.
+- `handler.SetLevel(slog.Level)` and `handler.LevelVar()` expose runtime level control without reinstalling the handler. Use these hooks to adjust verbosity in response to configuration changes or admin endpoints.
 
 ### Trace Helpers and Context Integration
 
