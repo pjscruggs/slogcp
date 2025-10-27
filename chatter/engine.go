@@ -1,4 +1,4 @@
-package healthcheck
+package chatter
 
 import (
 	"crypto/sha256"

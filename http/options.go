@@ -23,7 +23,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pjscruggs/slogcp/healthcheck"
+	"github.com/pjscruggs/slogcp/chatter"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -46,7 +46,7 @@ type MiddlewareOptions struct {
 	AttachLogger           bool
 	StartSpanIfAbsent      bool
 	Tracer                 trace.Tracer
-	ChatterConfig          healthcheck.Config
+	ChatterConfig          chatter.Config
 	TrustProxyDecisionFunc func(*http.Request) bool
 	TraceProjectID         string
 }
@@ -60,7 +60,7 @@ func defaultMiddlewareOptions() MiddlewareOptions {
 	return MiddlewareOptions{
 		AttachLogger:           true,
 		StartSpanIfAbsent:      true,
-		ChatterConfig:          healthcheck.DefaultConfig(),
+		ChatterConfig:          chatter.DefaultConfig(),
 		TrustProxyDecisionFunc: isGoogleProxyRequest,
 	}
 }
@@ -115,7 +115,7 @@ func loadMiddlewareOptionsFromEnv() MiddlewareOptions {
 			opts.StartSpanIfAbsent = v
 		}
 	}
-	if cfg, _ := healthcheck.LoadConfigFromEnv(os.LookupEnv); true {
+	if cfg, _ := chatter.LoadConfigFromEnv(os.LookupEnv); true {
 		opts.ChatterConfig = cfg.Clone()
 	}
 	if raw, ok := os.LookupEnv("SLOGCP_HTTP_TRACE_PROJECT_ID"); ok {
@@ -238,14 +238,14 @@ func WithTracer(tr trace.Tracer) Option {
 }
 
 // WithChatterConfig installs the provided chatter reduction configuration.
-func WithChatterConfig(cfg healthcheck.Config) Option {
+func WithChatterConfig(cfg chatter.Config) Option {
 	return func(o *MiddlewareOptions) {
 		o.ChatterConfig = cfg.Clone()
 	}
 }
 
 // WithHealthCheckFilter is deprecated; use WithChatterConfig instead.
-func WithHealthCheckFilter(cfg healthcheck.Config) Option {
+func WithHealthCheckFilter(cfg chatter.Config) Option {
 	return func(o *MiddlewareOptions) {
 		o.ChatterConfig = cfg.Clone()
 	}

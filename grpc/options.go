@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pjscruggs/slogcp/healthcheck"
+	"github.com/pjscruggs/slogcp/chatter"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 )
@@ -75,12 +75,12 @@ type options struct {
 	propagateTraceHeaders bool               // Whether to propagate trace context headers/metadata when supported.
 	attachLogger          bool               // Whether to attach request-scoped logger into context.
 	startSpanIfAbsent     bool               // Whether to start a span if none exists.
-	tracer         trace.Tracer              // Tracer used when starting spans.
-	traceProjectID string                    // Project used for trace attributes.
-	chatterConfig  healthcheck.Config        // Shared chatter reduction configuration.
-	chatterEngine  *healthcheck.Engine
-	auditKeys      healthcheck.AuditKeys
-	configLogOnce  sync.Once
+	tracer                trace.Tracer       // Tracer used when starting spans.
+	traceProjectID        string             // Project used for trace attributes.
+	chatterConfig         chatter.Config     // Shared chatter reduction configuration.
+	chatterEngine         *chatter.Engine
+	auditKeys             chatter.AuditKeys
+	configLogOnce         sync.Once
 }
 
 const (
@@ -303,27 +303,27 @@ func WithTraceProjectID(projectID string) Option {
 // Default behaviour is to skip logging for the standard gRPC health service.
 func WithSkipHealthChecks(enabled bool) Option {
 	return func(o *options) {
-		cfg := healthcheck.DefaultConfig()
+		cfg := chatter.DefaultConfig()
 		if enabled {
-			cfg.Mode = healthcheck.ModeOn
-			cfg.Action = healthcheck.ActionDrop
+			cfg.Mode = chatter.ModeOn
+			cfg.Action = chatter.ActionDrop
 			cfg.GRPC.IgnoreMethods = append([]string(nil), cfg.GRPC.IgnoreMethods...)
 		} else {
-			cfg.Mode = healthcheck.ModeOff
+			cfg.Mode = chatter.ModeOff
 		}
 		o.chatterConfig = cfg
 	}
 }
 
 // WithChatterConfig installs the shared chatter reduction configuration.
-func WithChatterConfig(cfg healthcheck.Config) Option {
+func WithChatterConfig(cfg chatter.Config) Option {
 	return func(o *options) {
 		o.chatterConfig = cfg.Clone()
 	}
 }
 
 // WithHealthCheckFilter is retained for backwards compatibility and forwards to WithChatterConfig.
-func WithHealthCheckFilter(cfg healthcheck.Config) Option {
+func WithHealthCheckFilter(cfg chatter.Config) Option {
 	return WithChatterConfig(cfg)
 }
 
@@ -363,7 +363,7 @@ func processOptions(opts ...Option) *options {
 		propagateTraceHeaders: true, // Default: enable propagation where supported
 		attachLogger:          true,
 		startSpanIfAbsent:     true,
-		chatterConfig:         healthcheck.DefaultConfig(),
+		chatterConfig:         chatter.DefaultConfig(),
 	}
 
 	// Apply each provided Option function to modify the defaults.
@@ -374,7 +374,7 @@ func processOptions(opts ...Option) *options {
 	}
 
 	opt.auditKeys = opt.chatterConfig.Audit.Keys()
-	engine, _ := healthcheck.NewEngine(opt.chatterConfig)
+	engine, _ := chatter.NewEngine(opt.chatterConfig)
 	opt.chatterEngine = engine
 
 	// Store the original user-provided shouldLogFunc for composition.

@@ -4,10 +4,10 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/pjscruggs/slogcp/healthcheck"
+	"github.com/pjscruggs/slogcp/chatter"
 )
 
-func appendChatterAnnotations(attrs []slog.Attr, decision *healthcheck.Decision, keys healthcheck.AuditKeys) []slog.Attr {
+func appendChatterAnnotations(attrs []slog.Attr, decision *chatter.Decision, keys chatter.AuditKeys) []slog.Attr {
 	if decision == nil || !decision.Matched {
 		return attrs
 	}
@@ -26,13 +26,13 @@ func appendChatterAnnotations(attrs []slog.Attr, decision *healthcheck.Decision,
 	if keys.Decision != "" && decisionValue != "" {
 		fieldAttrs = append(fieldAttrs, slog.String(keys.Decision, decisionValue))
 	}
-	if keys.Reason != "" && decision.Reason != healthcheck.ReasonUnknown {
+	if keys.Reason != "" && decision.Reason != chatter.ReasonUnknown {
 		fieldAttrs = append(fieldAttrs, slog.String(keys.Reason, string(decision.Reason)))
 	}
 	if keys.Rule != "" && decision.Rule != "" {
 		fieldAttrs = append(fieldAttrs, slog.String(keys.Rule, decision.Rule))
 	}
-	if keys.SafetyRail != "" && decision.SafetyRail != healthcheck.SafetyRailNone {
+	if keys.SafetyRail != "" && decision.SafetyRail != chatter.SafetyRailNone {
 		fieldAttrs = append(fieldAttrs, slog.String(keys.SafetyRail, string(decision.SafetyRail)))
 	}
 
@@ -64,7 +64,7 @@ func buildChatterGroup(prefix string, attrs []slog.Attr) slog.Attr {
 	return group
 }
 
-func emitChatterConfig(logger *slog.Logger, engine *healthcheck.Engine) {
+func emitChatterConfig(logger *slog.Logger, engine *chatter.Engine) {
 	if engine == nil || logger == nil {
 		return
 	}

@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/healthcheck"
+	"github.com/pjscruggs/slogcp/chatter"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -175,7 +175,7 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			peerAddr = p.Addr.String()
 		}
 
-		var chatterDecision *healthcheck.Decision
+		var chatterDecision *chatter.Decision
 		if engine := cfg.chatterEngine; engine != nil {
 			var metadataMap map[string][]string
 			if len(incomingMD) > 0 {
@@ -183,7 +183,7 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			}
 			chatterDecision = engine.EvaluateGRPC(info.FullMethod, metadataMap, peerAddr)
 			if chatterDecision != nil && chatterDecision.Matched {
-				ctx = healthcheck.ContextWithDecision(ctx, chatterDecision)
+				ctx = chatter.ContextWithDecision(ctx, chatterDecision)
 			}
 		}
 
