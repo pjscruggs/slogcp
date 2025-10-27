@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/healthcheck"
+	"github.com/pjscruggs/slogcp/chatter"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -157,7 +157,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 	traceProjectID := merged.TraceProjectID
 	chatterConfig := merged.ChatterConfig.Clone()
 	auditKeys := chatterConfig.Audit.Keys()
-	chatterEngine, _ := healthcheck.NewEngine(chatterConfig)
+	chatterEngine, _ := chatter.NewEngine(chatterConfig)
 	if chatterEngine != nil {
 		emitChatterConfig(logger, chatterEngine)
 	}
@@ -189,11 +189,11 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				}
 			}
 
-			var chatterDecision *healthcheck.Decision
+			var chatterDecision *chatter.Decision
 			if chatterEngine != nil {
 				chatterDecision = chatterEngine.EvaluateHTTP(r)
 				if chatterDecision != nil && chatterDecision.Matched {
-					ctx = healthcheck.ContextWithDecision(ctx, chatterDecision)
+					ctx = chatter.ContextWithDecision(ctx, chatterDecision)
 					r = r.WithContext(ctx)
 				}
 			}
@@ -374,7 +374,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 	}
 }
 
-func emitChatterConfig(logger *slog.Logger, engine *healthcheck.Engine) {
+func emitChatterConfig(logger *slog.Logger, engine *chatter.Engine) {
 	if engine == nil {
 		return
 	}
@@ -495,7 +495,7 @@ func appendBodyAttrs(attrs []slog.Attr, key string, buf *cappedBuffer) []slog.At
 	return attrs
 }
 
-func appendChatterAnnotations(attrs []slog.Attr, decision *healthcheck.Decision, keys healthcheck.AuditKeys) []slog.Attr {
+func appendChatterAnnotations(attrs []slog.Attr, decision *chatter.Decision, keys chatter.AuditKeys) []slog.Attr {
 	if decision == nil || !decision.Matched {
 		return attrs
 	}
@@ -514,13 +514,13 @@ func appendChatterAnnotations(attrs []slog.Attr, decision *healthcheck.Decision,
 	if keys.Decision != "" && decisionValue != "" {
 		fieldAttrs = append(fieldAttrs, slog.String(keys.Decision, decisionValue))
 	}
-	if keys.Reason != "" && decision.Reason != healthcheck.ReasonUnknown {
+	if keys.Reason != "" && decision.Reason != chatter.ReasonUnknown {
 		fieldAttrs = append(fieldAttrs, slog.String(keys.Reason, string(decision.Reason)))
 	}
 	if keys.Rule != "" && decision.Rule != "" {
 		fieldAttrs = append(fieldAttrs, slog.String(keys.Rule, decision.Rule))
 	}
-	if keys.SafetyRail != "" && decision.SafetyRail != healthcheck.SafetyRailNone {
+	if keys.SafetyRail != "" && decision.SafetyRail != chatter.SafetyRailNone {
 		fieldAttrs = append(fieldAttrs, slog.String(keys.SafetyRail, string(decision.SafetyRail)))
 	}
 

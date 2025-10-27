@@ -24,7 +24,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/pjscruggs/slogcp/healthcheck"
+	"github.com/pjscruggs/slogcp/chatter"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 )
@@ -66,10 +66,10 @@ func TestMiddlewareSuppressUnsampledBelowRespectsServerErrors(t *testing.T) {
 
 func TestMiddlewareChatterDrop(t *testing.T) {
 	logger, records := newRecordingLogger()
-	cfg := healthcheck.DefaultConfig()
-	cfg.Mode = healthcheck.ModeOn
+	cfg := chatter.DefaultConfig()
+	cfg.Mode = chatter.ModeOn
 	cfg.HTTP.Paths = []string{"/healthz"}
-	cfg.Action = healthcheck.ActionDrop
+	cfg.Action = chatter.ActionDrop
 
 	mw := Middleware(logger, WithChatterConfig(cfg))
 
@@ -90,8 +90,8 @@ func TestMiddlewareChatterDrop(t *testing.T) {
 
 func TestMiddlewareChatterSafetyRailOnError(t *testing.T) {
 	logger, records := newRecordingLogger()
-	cfg := healthcheck.DefaultConfig()
-	cfg.Mode = healthcheck.ModeOn
+	cfg := chatter.DefaultConfig()
+	cfg.Mode = chatter.ModeOn
 	cfg.HTTP.Paths = []string{"/healthz"}
 
 	mw := Middleware(logger, WithChatterConfig(cfg))
@@ -116,8 +116,8 @@ func TestMiddlewareChatterSafetyRailOnError(t *testing.T) {
 
 func TestMiddlewareChatterCronMarkAnnotations(t *testing.T) {
 	logger, records := newRecordingLogger()
-	cfg := healthcheck.DefaultConfig()
-	cfg.Mode = healthcheck.ModeOn
+	cfg := chatter.DefaultConfig()
+	cfg.Mode = chatter.ModeOn
 
 	mw := Middleware(logger, WithChatterConfig(cfg))
 

@@ -122,7 +122,7 @@ Extended severity support is exposed through `slogcp.Level` constants. They map 
 - Starts a server span when none exists (`StartSpanIfAbsent=true`).
 - Emits a request-scoped logger in the context (`AttachLogger=true`) with trace attributes.
 - Logs start and finish events, HTTP method/URL, status, latency, byte counts, and remote IP.
-- Demotes or drops health-check chatter when enabled via the shared `healthcheck` engine.
+- Demotes or drops health-check chatter when enabled via the shared `chatter` engine.
 
 Use `slogcphttp.InjectTraceContextMiddleware()` ahead of the main middleware to prioritise `X-Cloud-Trace-Context` parsing when no OpenTelemetry propagator is configured for it.
 
@@ -141,7 +141,7 @@ Use `slogcphttp.InjectTraceContextMiddleware()` ahead of the main middleware to 
 | `WithContextLogger(bool)` | Enables/disables storing a request-scoped logger in the context. |
 | `WithStartSpanIfAbsent(bool)` | Controls whether a server span should be started when none is present. |
 | `WithTracer(trace.Tracer)` | Supplies a custom tracer used when `StartSpanIfAbsent` is true. |
-| `WithChatterConfig(healthcheck.Config)` *(or `WithHealthCheckFilter`)* | Installs a chatter-reduction configuration shared with gRPC interceptors. |
+| `WithChatterConfig(chatter.Config)` *(or `WithHealthCheckFilter`)* | Installs a chatter-reduction configuration shared with gRPC interceptors. |
 | `WithTraceProjectID(string)` | Overrides the project ID used when formatting per-request trace attributes. |
 
 ### Environment Variables
@@ -167,9 +167,9 @@ Health-check and chatter controls are configured via the shared `SLOGCP_CHATTER_
 ### Example
 
 ```go
-hc := healthcheck.DefaultConfig()
-hc.Mode = healthcheck.ModeOn
-hc.Action = healthcheck.ActionDemote
+hc := chatter.DefaultConfig()
+hc.Mode = chatter.ModeOn
+hc.Action = chatter.ActionMark
 
 middleware := slogcphttp.Middleware(logger,
 	slogcphttp.WithSkipPathSubstrings("/metrics"),
@@ -228,16 +228,16 @@ All interceptors share the same option set processed by `processOptions`.
 | `WithTracer(trace.Tracer)` | Supplies a custom tracer for span creation. |
 | `WithTraceProjectID(string)` | Overrides the project used for trace-aware context loggers. |
 | `WithSkipHealthChecks(bool)` | Enables a built-in config that drops standard gRPC health-check calls. |
-| `WithChatterConfig(healthcheck.Config)` *(or `WithHealthCheckFilter`)* | Installs a custom chatter reduction configuration shared with HTTP middleware. |
+| `WithChatterConfig(chatter.Config)` *(or `WithHealthCheckFilter`)* | Installs a custom chatter reduction configuration shared with HTTP middleware. |
 | `WithTracePropagation(bool)` | Enables/disables client-side propagation of trace headers (default `true`). |
 
 Client interceptors automatically log outgoing metadata (when enabled), response headers, trailers, payloads, and final status codes. Server interceptors add peer address, panic diagnostics, and chatter annotations.
 
-## Chatter Reduction and Sampling (`github.com/pjscruggs/slogcp/healthcheck`)
+## Chatter Reduction and Sampling (`github.com/pjscruggs/slogcp/chatter`)
 
-Both HTTP and gRPC components consume a shared `healthcheck.Config`. You can pass a configuration directly via `WithChatterConfig`, or rely on environment overrides prefixed with `SLOGCP_CHATTER_` (for example `SLOGCP_CHATTER_MODE`, `SLOGCP_CHATTER_HTTP_IGNORE_PATHS`, `SLOGCP_CHATTER_GRPC_IGNORE_METHODS`, `SLOGCP_CHATTER_SAMPLE_RATE`). Invalid values are logged through the handler's internal logger but otherwise ignored so code-based configuration can take precedence.
+Both HTTP and gRPC components consume a shared `chatter.Config`. You can pass a configuration directly via `WithChatterConfig`, or rely on environment overrides prefixed with `SLOGCP_CHATTER_` (for example `SLOGCP_CHATTER_MODE`, `SLOGCP_CHATTER_HTTP_IGNORE_PATHS`, `SLOGCP_CHATTER_GRPC_IGNORE_METHODS`, `SLOGCP_CHATTER_SAMPLE_RATE`). Invalid values are logged through the handler's internal logger but otherwise ignored so code-based configuration can take precedence.
 
-Refer to the `healthcheck` package for the full list of knobs, including latency thresholds, sampling caps, proxy trust configuration, App Engine specific behaviour, and audit field names.
+Refer to the `chatter` package for the full list of knobs, including latency thresholds, sampling caps, proxy trust configuration, App Engine specific behaviour, and audit field names.
 
 ## Convenience Helpers
 

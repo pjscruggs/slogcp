@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pjscruggs/slogcp/healthcheck"
+	"github.com/pjscruggs/slogcp/chatter"
 )
 
 type groupedAttr struct {
@@ -164,7 +164,7 @@ func (h *jsonHandler) Enabled(_ context.Context, level slog.Level) bool {
 }
 
 func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
-	if decision, ok := healthcheck.DecisionFromContext(ctx); ok && decision != nil {
+	if decision, ok := chatter.DecisionFromContext(ctx); ok && decision != nil {
 		if decision.ShouldDrop() {
 			return nil
 		}
