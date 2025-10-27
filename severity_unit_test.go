@@ -13,6 +13,8 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
+// TestSeverityMappingMatchesNativeAndGCPLevels ensures all native slog levels and
+// slogcp's extended GCP levels serialize with the expected severity string.
 func TestSeverityMappingMatchesNativeAndGCPLevels(t *testing.T) {
 	t.Parallel()
 
@@ -70,6 +72,8 @@ func TestSeverityMappingMatchesNativeAndGCPLevels(t *testing.T) {
 	}
 }
 
+// TestDefaultSeverityHelpersEmitDefault checks the helper convenience methods
+// always emit logs with the DEFAULT severity label.
 func TestDefaultSeverityHelpersEmitDefault(t *testing.T) {
 	t.Parallel()
 
@@ -124,6 +128,8 @@ func TestDefaultSeverityHelpersEmitDefault(t *testing.T) {
 	}
 }
 
+// TestDefaultSeverityNotFilteredByHigherMinimum verifies DEFAULT logs bypass
+// handler minimum level filtering so operational events are preserved.
 func TestDefaultSeverityNotFilteredByHigherMinimum(t *testing.T) {
 	t.Parallel()
 
