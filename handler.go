@@ -39,6 +39,7 @@ type Handler struct {
 	internalLogger   *slog.Logger
 	switchableWriter *SwitchableWriter
 	ownedFile        *os.File
+	levelVar         *slog.LevelVar
 
 	mu        sync.Mutex
 	closeOnce sync.Once
@@ -65,6 +66,7 @@ type handlerConfig struct {
 
 type options struct {
 	level             *slog.Level
+	levelVar          *slog.LevelVar
 	addSource         *bool
 	stackTraceEnabled *bool
 	stackTraceLevel   *slog.Level
@@ -147,7 +149,10 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 		}
 	}
 
-	levelVar := new(slog.LevelVar)
+	levelVar := builder.levelVar
+	if levelVar == nil {
+		levelVar = new(slog.LevelVar)
+	}
 	levelVar.Set(cfg.Level)
 
 	runtimeInfo := DetectRuntimeInfo()
@@ -174,6 +179,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 		internalLogger:   internalLogger,
 		switchableWriter: switchWriter,
 		ownedFile:        ownedFile,
+		levelVar:         levelVar,
 	}
 
 	return h, nil
@@ -243,6 +249,32 @@ func (h *Handler) ReopenLogFile() error {
 	return nil
 }
 
+// SetLevel updates the minimum slog level accepted by the handler at runtime.
+// Calls are safe for concurrent use.
+func (h *Handler) SetLevel(level slog.Level) {
+	if h == nil || h.levelVar == nil {
+		return
+	}
+	h.levelVar.Set(level)
+}
+
+// Level reports the handler's current minimum slog level.
+func (h *Handler) Level() slog.Level {
+	if h == nil || h.levelVar == nil {
+		return slog.LevelInfo
+	}
+	return h.levelVar.Level()
+}
+
+// LevelVar returns the underlying slog.LevelVar used to gate records. It can
+// be integrated with external configuration systems for dynamic level control.
+func (h *Handler) LevelVar() *slog.LevelVar {
+	if h == nil {
+		return nil
+	}
+	return h.levelVar
+}
+
 // Default logs a structured message at [LevelDefault] severity without requiring
 // a context value.
 func Default(logger *slog.Logger, msg string, args ...any) {
@@ -310,6 +342,18 @@ func WithInternalLogger(logger *slog.Logger) Option {
 func WithLevel(level slog.Level) Option {
 	return func(o *options) {
 		o.level = &level
+	}
+}
+
+// WithLevelVar shares the provided slog.LevelVar with the handler, allowing
+// external code to adjust log levels at runtime while keeping slogcp’s internal
+// state in sync. When supplied, the handler inherits the LevelVar's current
+// value after other options and environment overrides have been applied.
+func WithLevelVar(levelVar *slog.LevelVar) Option {
+	return func(o *options) {
+		if levelVar != nil {
+			o.levelVar = levelVar
+		}
 	}
 }
 
@@ -467,6 +511,9 @@ func applyOptions(cfg *handlerConfig, o *options) {
 	}
 	if o.stackTraceLevel != nil {
 		cfg.StackTraceLevel = *o.stackTraceLevel
+	}
+	if o.levelVar != nil {
+		cfg.Level = o.levelVar.Level()
 	}
 	if o.traceProjectID != nil {
 		cfg.TraceProjectID = *o.traceProjectID

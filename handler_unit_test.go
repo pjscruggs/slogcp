@@ -224,3 +224,79 @@ func TestLoggerWithGroupDoesNotLeakToParent(t *testing.T) {
 		t.Fatalf("parent log id = %v, want final", got)
 	}
 }
+
+// TestHandlerSetLevel verifies that SetLevel adjusts runtime filtering.
+func TestHandlerSetLevel(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h, err := slogcp.NewHandler(io.Discard, slogcp.WithRedirectWriter(&buf), slogcp.WithLevel(slog.LevelInfo))
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	logger := slog.New(h)
+	logger.DebugContext(context.Background(), "debug skipped")
+	if buf.Len() != 0 {
+		t.Fatalf("expected no log entries before lowering level, got %q", buf.String())
+	}
+
+	h.SetLevel(slog.LevelDebug)
+	logger.DebugContext(context.Background(), "debug enabled", slog.String("k", "v"))
+
+	entries := decodeLogBuffer(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log entry after lowering level, got %d (%v)", len(entries), entries)
+	}
+	if got := entries[0]["message"]; got != "debug enabled" {
+		t.Fatalf("message = %v, want debug enabled", got)
+	}
+	if got := entries[0]["k"]; got != "v" {
+		t.Fatalf("attribute k = %v, want v", got)
+	}
+}
+
+// TestHandlerWithLevelVar ensures WithLevelVar shares a LevelVar instance.
+func TestHandlerWithLevelVar(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(slog.LevelWarn)
+
+	h, err := slogcp.NewHandler(io.Discard, slogcp.WithRedirectWriter(&buf), slogcp.WithLevelVar(levelVar))
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	if h.LevelVar() != levelVar {
+		t.Fatalf("handler LevelVar pointer mismatch")
+	}
+
+	logger := slog.New(h)
+	logger.InfoContext(context.Background(), "info suppressed")
+	if buf.Len() != 0 {
+		t.Fatalf("expected info log suppressed at warn level, got %q", buf.String())
+	}
+
+	levelVar.Set(slog.LevelInfo)
+	logger.InfoContext(context.Background(), "info emitted")
+
+	entries := decodeLogBuffer(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log entry after lowering shared level, got %d (%v)", len(entries), entries)
+	}
+	if got := entries[0]["message"]; got != "info emitted" {
+		t.Fatalf("message = %v, want info emitted", got)
+	}
+}
