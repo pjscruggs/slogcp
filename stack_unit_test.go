@@ -86,8 +86,8 @@ func TestHandlerEmitsStackTraceForErrors(t *testing.T) {
 	}
 
 	sev, ok := entry["severity"].(string)
-	if !ok || sev != "ERROR" {
-		t.Fatalf("expected severity ERROR, got %v", entry["severity"])
+	if !ok || sev != "E" {
+		t.Fatalf("expected severity E, got %v", entry["severity"])
 	}
 
 	stackVal, ok := entry["stack_trace"].(string)

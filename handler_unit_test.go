@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pjscruggs/slogcp"
 )
@@ -299,4 +300,69 @@ func TestHandlerWithLevelVar(t *testing.T) {
 	if got := entries[0]["message"]; got != "info emitted" {
 		t.Fatalf("message = %v, want info emitted", got)
 	}
+}
+
+// TestHandlerTimeFieldEmission verifies the handler omits the "time" field by
+// default but can emit it when explicitly enabled.
+func TestHandlerTimeFieldEmission(t *testing.T) {
+	t.Parallel()
+
+	t.Run("disabled_by_default", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		h, err := slogcp.NewHandler(io.Discard, slogcp.WithRedirectWriter(&buf))
+		if err != nil {
+			t.Fatalf("NewHandler() returned %v, want nil", err)
+		}
+		t.Cleanup(func() {
+			if cerr := h.Close(); cerr != nil {
+				t.Errorf("Handler.Close() returned %v, want nil", cerr)
+			}
+		})
+
+		logger := slog.New(h)
+		logger.InfoContext(context.Background(), "no-time")
+
+		entries := decodeLogBuffer(t, &buf)
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 log entry, got %d (%v)", len(entries), entries)
+		}
+		if _, ok := entries[0]["time"]; ok {
+			t.Fatalf("time field present despite default disablement: %v", entries[0])
+		}
+	})
+
+	t.Run("enabled_via_option", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		h, err := slogcp.NewHandler(io.Discard,
+			slogcp.WithRedirectWriter(&buf),
+			slogcp.WithTime(true),
+		)
+		if err != nil {
+			t.Fatalf("NewHandler() returned %v, want nil", err)
+		}
+		t.Cleanup(func() {
+			if cerr := h.Close(); cerr != nil {
+				t.Errorf("Handler.Close() returned %v, want nil", cerr)
+			}
+		})
+
+		logger := slog.New(h)
+		logger.InfoContext(context.Background(), "time-enabled")
+
+		entries := decodeLogBuffer(t, &buf)
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 log entry, got %d (%v)", len(entries), entries)
+		}
+		rawTime, ok := entries[0]["time"].(string)
+		if !ok || rawTime == "" {
+			t.Fatalf("expected time string, got %v", entries[0]["time"])
+		}
+		if _, err := time.Parse(time.RFC3339Nano, rawTime); err != nil {
+			t.Fatalf("time field %q is not RFC3339Nano: %v", rawTime, err)
+		}
+	})
 }

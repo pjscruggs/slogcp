@@ -48,6 +48,7 @@ type Handler struct {
 type handlerConfig struct {
 	Level             slog.Level
 	AddSource         bool
+	EmitTimeField     bool
 	StackTraceEnabled bool
 	StackTraceLevel   slog.Level
 	TraceProjectID    string
@@ -68,6 +69,7 @@ type options struct {
 	level             *slog.Level
 	levelVar          *slog.LevelVar
 	addSource         *bool
+	emitTimeField     *bool
 	stackTraceEnabled *bool
 	stackTraceLevel   *slog.Level
 	traceProjectID    *string
@@ -365,6 +367,14 @@ func WithSourceLocationEnabled(enabled bool) Option {
 	}
 }
 
+// WithTime toggles emission of the top-level RFC3339Nano "time" field. When
+// disabled, Cloud Logging assigns timestamps during ingestion.
+func WithTime(enabled bool) Option {
+	return func(o *options) {
+		o.emitTimeField = &enabled
+	}
+}
+
 // WithStackTraceEnabled toggles automatic stack trace capture for error logs
 // when enabled.
 func WithStackTraceEnabled(enabled bool) Option {
@@ -478,6 +488,11 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 
 	cfg.Level = parseLevelEnv(os.Getenv("LOG_LEVEL"), cfg.Level, logger)
 	cfg.AddSource = parseBoolEnv(os.Getenv("LOG_SOURCE_LOCATION"), cfg.AddSource, logger)
+	if raw := os.Getenv("LOG_TIME"); raw != "" {
+		cfg.EmitTimeField = parseBoolEnv(raw, cfg.EmitTimeField, logger)
+	} else {
+		cfg.EmitTimeField = parseBoolEnv(os.Getenv("LOG_TIME_FIELD_ENABLED"), cfg.EmitTimeField, logger)
+	}
 	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv("LOG_STACK_TRACE_ENABLED"), cfg.StackTraceEnabled, logger)
 	cfg.StackTraceLevel = parseLevelEnv(os.Getenv("LOG_STACK_TRACE_LEVEL"), cfg.StackTraceLevel, logger)
 
@@ -505,6 +520,9 @@ func applyOptions(cfg *handlerConfig, o *options) {
 	}
 	if o.addSource != nil {
 		cfg.AddSource = *o.addSource
+	}
+	if o.emitTimeField != nil {
+		cfg.EmitTimeField = *o.emitTimeField
 	}
 	if o.stackTraceEnabled != nil {
 		cfg.StackTraceEnabled = *o.stackTraceEnabled

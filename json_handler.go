@@ -515,7 +515,9 @@ func (h *jsonHandler) emitJSON(
 
 	jsonPayload["severity"] = levelToString(r.Level)
 	jsonPayload[messageKey] = r.Message
-	jsonPayload["time"] = r.Time.UTC().Format(time.RFC3339Nano)
+	if h.cfg.EmitTimeField {
+		jsonPayload["time"] = r.Time.UTC().Format(time.RFC3339Nano)
+	}
 
 	if sourceLoc != nil {
 		jsonPayload["logging.googleapis.com/sourceLocation"] = sourceLoc
