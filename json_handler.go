@@ -473,11 +473,14 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 		walkAttr(depth, curr, attr, inLabels)
 	}
 
-	baseDepth, baseMap, baseInLabels := loadBaseGroups()
-	r.Attrs(func(attr slog.Attr) bool {
-		walkAttr(baseDepth, baseMap, attr, baseInLabels)
-		return true
-	})
+       baseDepth, baseMap, baseInLabels := loadBaseGroups()
+       r.Attrs(func(attr slog.Attr) bool {
+	       if h.cfg.ReplaceAttr != nil {
+		       attr = h.cfg.ReplaceAttr(baseGroups, attr)
+	       }
+	       walkAttr(baseDepth, baseMap, attr, baseInLabels)
+	       return true
+       })
 
 	errType, errMsg := "", ""
 	if firstErr != nil {
