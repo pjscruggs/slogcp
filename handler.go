@@ -500,11 +500,7 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 
 	cfg.Level = parseLevelEnv(os.Getenv("LOG_LEVEL"), cfg.Level, logger)
 	cfg.AddSource = parseBoolEnv(os.Getenv("LOG_SOURCE_LOCATION"), cfg.AddSource, logger)
-	if raw := os.Getenv("LOG_TIME"); raw != "" {
-		cfg.EmitTimeField = parseBoolEnv(raw, cfg.EmitTimeField, logger)
-	} else {
-		cfg.EmitTimeField = parseBoolEnv(os.Getenv("LOG_TIME_FIELD_ENABLED"), cfg.EmitTimeField, logger)
-	}
+	cfg.EmitTimeField = parseBoolEnv(os.Getenv("LOG_TIME"), cfg.EmitTimeField, logger)
 	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv("LOG_STACK_TRACE_ENABLED"), cfg.StackTraceEnabled, logger)
 	cfg.StackTraceLevel = parseLevelEnv(os.Getenv("LOG_STACK_TRACE_LEVEL"), cfg.StackTraceLevel, logger)
 
