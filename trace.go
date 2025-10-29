@@ -17,7 +17,10 @@ package slogcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -114,4 +117,42 @@ func BuildXCloudTraceContext(rawTraceID, spanIDHex string, sampled bool) string 
 		val = fmt.Sprintf("%s;o=0", val)
 	}
 	return val
+}
+
+// TraceAttributes extracts Cloud Trace aware attributes from ctx. The returned
+// slice can be supplied to logger.With to correlate logs with traces when
+// emitting per-request loggers.
+//
+// When projectID is empty, the helper falls back to environment variables in
+// the following order: SLOGCP_TRACE_PROJECT_ID, SLOGCP_PROJECT_ID, and
+// GOOGLE_CLOUD_PROJECT.
+func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+
+	if projectID == "" {
+		projectID = strings.TrimSpace(os.Getenv("SLOGCP_TRACE_PROJECT_ID"))
+	}
+	if projectID == "" {
+		projectID = strings.TrimSpace(os.Getenv("SLOGCP_PROJECT_ID"))
+	}
+	if projectID == "" {
+		projectID = strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT"))
+	}
+
+	fmtTrace, rawTrace, rawSpan, sampled, sc := ExtractTraceSpan(ctx, projectID)
+	if !sc.IsValid() {
+		return nil, false
+	}
+
+	attrs := []slog.Attr{
+		slog.String("trace_id", rawTrace),
+		slog.String(SpanKey, rawSpan),
+		slog.Bool(SampledKey, sampled),
+	}
+	if fmtTrace != "" {
+		attrs = append(attrs, slog.String(TraceKey, fmtTrace))
+	}
+	return attrs, true
 }
