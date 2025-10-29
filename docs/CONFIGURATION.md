@@ -240,9 +240,82 @@ Client interceptors automatically log outgoing metadata (when enabled), response
 
 ## Chatter Reduction and Sampling (`github.com/pjscruggs/slogcp/chatter`)
 
-Both HTTP and gRPC components consume a shared `chatter.Config`. You can pass a configuration directly via `WithChatterConfig`, or rely on environment overrides prefixed with `SLOGCP_CHATTER_` (for example `SLOGCP_CHATTER_MODE`, `SLOGCP_CHATTER_HTTP_IGNORE_PATHS`, `SLOGCP_CHATTER_GRPC_IGNORE_METHODS`, `SLOGCP_CHATTER_SAMPLE_RATE`). Invalid values are logged through the handler's internal logger but otherwise ignored so code-based configuration can take precedence.
+The chatter engine suppresses known-noisy traffic (load-balancer probes, App Engine internals, gRPC health checks) and applies deterministic sampling before the handler emits a record. Both the HTTP middleware and gRPC interceptors share the same `chatter.Config`. Configuration is applied in this order: package defaults → `SLOGCP_CHATTER_*` environment variables → an explicit `WithChatterConfig` option. Invalid environment values are logged through the handler’s internal logger and ignored so that code-based settings always win.
 
-Refer to the `chatter` package for the full list of knobs, including latency thresholds, sampling caps, proxy trust configuration, App Engine specific behaviour, and audit field names.
+### Defaults vs overrides
+- Lists such as ignore paths or gRPC methods are additive by default. Setting `SLOGCP_CHATTER_HTTP_OVERRIDE_DEFAULTS=true` or `SLOGCP_CHATTER_GRPC_OVERRIDE_DEFAULTS=true` clears the built-in entries before applying your values.
+- All list-style variables accept comma-separated values; surrounding whitespace is trimmed.
+- Boolean flags accept `true/false`, `1/0`, `yes/no`, or `on/off` (case-insensitive). Durations use Go’s `time.ParseDuration` syntax (e.g. `250ms`, `2s`, `1m`).
+
+### General behaviour
+| Config field | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `Mode` | `SLOGCP_CHATTER_MODE` | `auto` | `auto` enables suppression only when the process is detected on Google Cloud (via `metadata.OnGCE`), `on` forces chatter reduction everywhere, and `off` disables it. |
+| `Action` | `SLOGCP_CHATTER_ACTION` | `drop` | Base action applied when a rule matches. `drop` removes the log entry, `mark` keeps it with chatter annotations, `route` is accepted but currently downgrades to `mark` with a warning. |
+| `AlwaysLogErrors` | `SLOGCP_CHATTER_ALWAYS_LOG_ERRORS` | `true` | Forces matching requests with HTTP status ≥400 or non-OK gRPC codes to be emitted (safety rail: `error`). |
+| `LatencyThreshold` | `SLOGCP_CHATTER_LATENCY_THRESHOLD` | `500ms` | Matching requests whose latency exceeds the threshold are logged and annotated with safety rail `latency` and a WARN severity hint. Use `0` to disable the latency rail. |
+| `HTTPEnabledOverride` | `SLOGCP_CHATTER_HTTP_ENABLED` | `nil` (no override) | Forces HTTP chatter suppression on/off regardless of `Mode`. |
+| `GRPCEnabledOverride` | `SLOGCP_CHATTER_GRPC_ENABLED` | `nil` (no override) | Forces gRPC chatter suppression on/off regardless of `Mode`. |
+
+### HTTP match configuration
+| Config field | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `HTTP.IgnoreCIDRs` | `SLOGCP_CHATTER_HTTP_IGNORE_IPS` | *(none)* | Comma-separated CIDR ranges treated as load-balancer sources. Matching remote IPs trigger chatter suppression with reason `lb_ip`. |
+| `HTTP.Paths` | `SLOGCP_CHATTER_HTTP_IGNORE_PATHS` | *(none)* | Exact path matches flagged as chatter (reason `path`). |
+| `HTTP.Prefixes` | `SLOGCP_CHATTER_HTTP_IGNORE_PREFIXES` | *(none)* | Path prefixes to suppress (reason `prefix`). |
+| `HTTP.Regexes` | `SLOGCP_CHATTER_HTTP_IGNORE_REGEX` | *(none)* | Regular expressions matched against the request path (reason `regex`). Invalid patterns disable chatter with a warning. |
+| `HTTP.Headers` | `SLOGCP_CHATTER_HTTP_IGNORE_HEADERS` | *(none)* | Header presence/value rules (e.g. `User-Agent`, `X-Task-Queue-Name=default`). Matching requests use reason `header`. |
+| `HTTP.Methods` | `SLOGCP_CHATTER_HTTP_METHODS` | *(none → all methods)* | Optional allowlist limiting matcher evaluation to specific HTTP verbs. Values are uppercased automatically. |
+| `HTTP.AppEngineSuppressAH` | `SLOGCP_CHATTER_APPENGINE_SUPPRESS_AH` | `true` | Drops internal App Engine `_ah/*` requests (reason `appengine_ah`). Disable to keep warmup requests. |
+| `HTTP.AppEngineCronAction` | `SLOGCP_CHATTER_APPENGINE_CRON_ACTION` | `mark` | Action applied to App Engine cron requests identified via headers. |
+
+**Header rule syntax:** each comma-separated token may be `Header-Name` (presence only), `Header-Name=value`, or `Header-Name:value`. Matching is case-insensitive; value comparisons use exact, trimmed, lower-cased matches.
+
+### gRPC match configuration
+| Config field | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `GRPC.IgnoreMethods` | `SLOGCP_CHATTER_GRPC_IGNORE_METHODS` | `/grpc.health.v1.Health/Check`,`/grpc.health.v1.Health/Watch` | Fully-qualified method names treated as chatter (reason `grpc_health`). |
+| `GRPC.IgnoreOKOnly` | `SLOGCP_CHATTER_GRPC_IGNORE_OK_ONLY` | `true` | When set, ignored methods still log non-OK results via the error safety rail. |
+| `GRPC.WatchDedupInterval` | `SLOGCP_CHATTER_GRPC_WATCH_DEDUP_INTERVAL` | `10s` | Minimum time between identical gRPC health watch status transitions before another summary event is logged. |
+
+### Proxy trust configuration
+| Config field | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `Proxy.TrustProxy` | `SLOGCP_CHATTER_TRUST_PROXY` | `false` | Enables client IP extraction from trusted proxy headers. When disabled the engine only trusts `RemoteAddr`. |
+| `Proxy.TrustedHops` | `SLOGCP_CHATTER_TRUSTED_HOPS` | `1` | Which element of the comma-delimited `X-Forwarded-For` chain is treated as the client when proxies are trusted. |
+| `Proxy.TrustedProxyCIDRs` | `SLOGCP_CHATTER_TRUSTED_PROXY_CIDRS` | *(none)* | Restricts which proxy IP ranges are trusted when `TrustProxy` is true. Invalid CIDRs disable proxy trust with a warning. |
+| `Proxy.ClientIPHeader` | `SLOGCP_CHATTER_CLIENT_IP_HEADER` | `X-Forwarded-For` | Header used when extracting the original client address. Lower-cased for gRPC metadata lookups. |
+
+### Sampling controls
+| Config field | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `Sampling.HTTPSampleKeepEvery` | `SLOGCP_CHATTER_HTTP_SAMPLE_KEEP_EVERY` | `0` | Deterministically keeps every Nth matching HTTP entry. `0` disables keep-every sampling. |
+| `Sampling.GRPCSampleKeepEvery` | `SLOGCP_CHATTER_GRPC_SAMPLE_KEEP_EVERY` | `0` | Deterministically keeps every Nth matching gRPC entry. |
+| `Sampling.HTTPSampleRate` | `SLOGCP_CHATTER_HTTP_SAMPLE_RATE` | `0` | Probabilistic sampling rate (0.0–1.0) for matching HTTP chatter. Values outside the range are clamped. |
+| `Sampling.GRPCSampleRate` | `SLOGCP_CHATTER_GRPC_SAMPLE_RATE` | `0` | Probabilistic sampling rate for gRPC chatter. |
+| `Sampling.HTTPSampleMaxPerMinute` | `SLOGCP_CHATTER_HTTP_SAMPLE_MAX_PER_MINUTE` | `0` | Caps the number of HTTP chatter events kept per 60-second window. `0` means unlimited unless `SampleMaxPerMinute` is set. |
+| `Sampling.GRPCSampleMaxPerMinute` | `SLOGCP_CHATTER_GRPC_SAMPLE_MAX_PER_MINUTE` | `0` | Caps kept gRPC chatter events per minute. |
+| `Sampling.SampleMaxPerMinute` | `SLOGCP_CHATTER_SAMPLE_MAX_PER_MINUTE` | `0` | Legacy shared cap applied when a protocol-specific cap is unset. |
+
+Deterministic (`KeepEvery`), probabilistic (`SampleRate`), and per-minute caps (`MaxPerMinute`) are evaluated together; whichever allows fewer records wins for each protocol.
+
+### Summary and audit metadata
+| Config field | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `Summary.Interval` | `SLOGCP_CHATTER_SUMMARY_INTERVAL` | `0` (disabled) | Period for emitting aggregated chatter metrics via `Engine.SummaryInterval`/`LastSummary`. |
+| `Audit.DecisionField` | `SLOGCP_CHATTER_DECISION_FIELD` | `observability.chatter.decision` | Attribute key storing the final chatter decision. |
+| `Audit.ReasonField` | `SLOGCP_CHATTER_REASON_FIELD` | `observability.chatter.reason` | Attribute key for the chatter reason (e.g. `lb_ip`, `path`). |
+| `Audit.RuleField` | `SLOGCP_CHATTER_RULE_FIELD` | `observability.chatter.rule` | Attribute key containing the matched rule identifier. |
+| `Audit.SafetyRailField` | `SLOGCP_CHATTER_SAFETY_RAIL_FIELD` | `observability.chatter.safety_rail` | Attribute key recording which safety rail forced logging (`error`, `latency`). |
+| `Audit.AuditPrefix` | `SLOGCP_CHATTER_AUDIT_PREFIX` | *(none)* | Optional prefix prepended to all chatter audit keys when emitting annotations. |
+
+### Built-in defaults to note
+- gRPC health probes (`/grpc.health.v1.Health/Check` and `/grpc.health.v1.Health/Watch`) are ignored out of the box unless `SLOGCP_CHATTER_GRPC_OVERRIDE_DEFAULTS=true`.
+- App Engine cron requests default to `mark` so they remain visible for auditing, while `_ah/*` internal paths are dropped unless explicitly disabled.
+- When proxy trust is disabled, chatter evaluation uses the immediate peer IP (`RemoteAddr`) and does not consult forwarded headers.
+- `Config.Errors()` exposes any parsing problems when you capture the environment configuration yourself.
+
+After customizing the config you can reuse it across HTTP and gRPC layers by passing the same `chatter.Config` to `WithChatterConfig`.
 
 ## Convenience Helpers
 
