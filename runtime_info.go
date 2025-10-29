@@ -375,7 +375,9 @@ func defaultMetadataFetch(path string) (string, bool) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			return "", false
+		}
 		return "", false
 	}
 

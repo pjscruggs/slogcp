@@ -1,6 +1,7 @@
 package chatter
 
 import (
+	"maps"
 	"context"
 	"strings"
 	"time"
@@ -98,8 +99,6 @@ type Decision struct {
 	// forcedSeverityHint holds the recommended severity override when the
 	// latency safety rail fires (defaults to slog.LevelWarn, applied elsewhere).
 	forcedSeverityHint string
-
-	source string // populated for summaries/metrics: e.g. "default", "env:SLOGCP_CHATTER_..."
 
 	ignoreStatusOKOnly bool
 }
@@ -202,9 +201,7 @@ func (s SummarySnapshot) Clone() SummarySnapshot {
 	}
 	if len(s.WatchTransitions) > 0 {
 		out.WatchTransitions = make(map[string]uint64, len(s.WatchTransitions))
-		for k, v := range s.WatchTransitions {
-			out.WatchTransitions[k] = v
-		}
+		maps.Copy(out.WatchTransitions, s.WatchTransitions)
 	}
 	return out
 }
