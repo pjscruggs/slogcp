@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// BenchmarkLevelToString exercises levelToString conversions across various slog levels.
 func BenchmarkLevelToString(b *testing.B) {
 	levels := []slog.Level{
 		slog.LevelDebug,
@@ -32,6 +33,7 @@ func BenchmarkLevelToString(b *testing.B) {
 	}
 }
 
+// BenchmarkJSONHandlerHandle measures Handle performance for the JSON handler with typical attributes.
 func BenchmarkJSONHandlerHandle(b *testing.B) {
 	cfg := &handlerConfig{
 		Writer:        io.Discard,
