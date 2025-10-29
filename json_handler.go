@@ -151,10 +151,10 @@ func newJSONHandler(cfg *handlerConfig, leveler slog.Leveler, internalLogger *sl
 		writer:         cfg.Writer,
 		internalLogger: internalLogger,
 		groupedAttrs:   make([]groupedAttr, 0, len(cfg.InitialAttrs)),
-		groups:         make([]string, 0, 1),
+		groups:         make([]string, 0, len(cfg.InitialGroups)+1),
 	}
-	if cfg.InitialGroup != "" {
-		h.groups = append(h.groups, cfg.InitialGroup)
+	if len(cfg.InitialGroups) > 0 {
+		h.groups = append(h.groups, cfg.InitialGroups...)
 	}
 	copyGroups := append([]string(nil), h.groups...)
 	for _, a := range cfg.InitialAttrs {
@@ -369,46 +369,56 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	groupStack := state.groupStack[:0]
 	const labelsGroupName = LabelsGroup
 
-	var walkAttr func(depth int, currMap map[string]any, attr slog.Attr, inLabels bool)
-	walkAttr = func(depth int, currMap map[string]any, attr slog.Attr, inLabels bool) {
-		attr.Value = attr.Value.Resolve()
+	var walkAttr func(groupsLen int, currMap map[string]any, attr slog.Attr, inLabels bool)
+	walkAttr = func(groupsLen int, currMap map[string]any, attr slog.Attr, inLabels bool) {
+		if len(groupStack) > groupsLen {
+			groupStack = groupStack[:groupsLen]
+		}
 
-		if attr.Value.Kind() == slog.KindGroup {
+		attr.Value = attr.Value.Resolve()
+		kind := attr.Value.Kind()
+		if kind != slog.KindGroup && h.cfg.ReplaceAttr != nil {
+			var groupsArg []string
+			if groupsLen > 0 {
+				groupsArg = groupStack[:groupsLen]
+			}
+			attr = h.cfg.ReplaceAttr(groupsArg, attr)
+			attr.Value = attr.Value.Resolve()
+			kind = attr.Value.Kind()
+		}
+
+		if kind == slog.KindGroup {
 			children := attr.Value.Group()
-			nextDepth := depth
+			nextGroupsLen := groupsLen
 			nextMap := currMap
 			appended := false
 			if attr.Key != "" {
-				if len(groupStack) == nextDepth {
+				if len(groupStack) == nextGroupsLen {
 					groupStack = append(groupStack, attr.Key)
 				} else {
-					if nextDepth < len(groupStack) {
-						groupStack[nextDepth] = attr.Key
-						groupStack = groupStack[:nextDepth+1]
-					} else {
-						groupStack = append(groupStack, attr.Key)
-					}
+					groupStack[nextGroupsLen] = attr.Key
 				}
+				appended = true
+				nextGroupsLen++
 				if attr.Key != labelsGroupName {
 					nextMap = ensureGroupMap(currMap, attr.Key, len(children))
 				}
-				nextDepth++
-				appended = true
 			}
 			nextInLabels := inLabels || attr.Key == labelsGroupName
 			for i := range children {
-				walkAttr(nextDepth, nextMap, children[i], nextInLabels)
+				walkAttr(nextGroupsLen, nextMap, children[i], nextInLabels)
 			}
 			if appended {
-				groupStack = groupStack[:depth]
+				groupStack = groupStack[:groupsLen]
 			}
 			return
 		}
 
+		if attr.Key == "" {
+			return
+		}
+
 		if inLabels {
-			if attr.Key == "" {
-				return
-			}
 			if s, ok := labelValueToString(attr.Value); ok {
 				ensureLabels()[attr.Key] = s
 			}
@@ -424,7 +434,7 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 		}
 
 		val := resolveSlogValue(attr.Value)
-		if val == nil || attr.Key == "" {
+		if val == nil {
 			return
 		}
 		if errVal, ok := val.(error); ok && firstErr == nil {
@@ -433,54 +443,39 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 		currMap[attr.Key] = val
 	}
 
-	loadBaseGroups := func() (int, map[string]any, bool) {
-		depth := 0
-		curr := payload
-		inLabels := false
-		for _, g := range baseGroups {
-			if g == labelsGroupName {
-				inLabels = true
-				continue
-			}
-			curr = ensureGroupMap(curr, g, 4)
-			if len(groupStack) == depth {
-				groupStack = append(groupStack, g)
-			} else {
-				groupStack[depth] = g
-			}
-			depth++
-		}
-		return depth, curr, inLabels
-	}
-
 	for i := range baseAttrs {
 		ga := baseAttrs[i]
-		attr := ga.attr
-		if h.cfg.ReplaceAttr != nil {
-			attr = h.cfg.ReplaceAttr(ga.groups, attr)
-		}
-		depth := 0
 		curr := payload
 		inLabels := false
+		groupStack = groupStack[:0]
 		for _, g := range ga.groups {
+			groupStack = append(groupStack, g)
 			if g == labelsGroupName {
 				inLabels = true
 				continue
 			}
 			curr = ensureGroupMap(curr, g, 4)
-			depth++
 		}
-		walkAttr(depth, curr, attr, inLabels)
+		walkAttr(len(groupStack), curr, ga.attr, inLabels)
 	}
 
-       baseDepth, baseMap, baseInLabels := loadBaseGroups()
-       r.Attrs(func(attr slog.Attr) bool {
-	       if h.cfg.ReplaceAttr != nil {
-		       attr = h.cfg.ReplaceAttr(baseGroups, attr)
-	       }
-	       walkAttr(baseDepth, baseMap, attr, baseInLabels)
-	       return true
-       })
+	groupStack = groupStack[:0]
+	baseMap := payload
+	baseInLabels := false
+	for _, g := range baseGroups {
+		groupStack = append(groupStack, g)
+		if g == labelsGroupName {
+			baseInLabels = true
+			continue
+		}
+		baseMap = ensureGroupMap(baseMap, g, 4)
+	}
+	baseGroupsLen := len(groupStack)
+
+	r.Attrs(func(attr slog.Attr) bool {
+		walkAttr(baseGroupsLen, baseMap, attr, baseInLabels)
+		return true
+	})
 
 	errType, errMsg := "", ""
 	if firstErr != nil {

@@ -46,19 +46,20 @@ type Handler struct {
 }
 
 type handlerConfig struct {
-	Level             slog.Level
-	AddSource         bool
-	EmitTimeField     bool
-	StackTraceEnabled bool
-	StackTraceLevel   slog.Level
-	TraceProjectID    string
-	Writer            io.Writer
-	ClosableWriter    io.Closer
-	FilePath          string
-	ReplaceAttr       func([]string, slog.Attr) slog.Attr
-	Middlewares       []Middleware
-	InitialAttrs      []slog.Attr
-	InitialGroup      string
+	Level                 slog.Level
+	AddSource             bool
+	EmitTimeField         bool
+	StackTraceEnabled     bool
+	StackTraceLevel       slog.Level
+	TraceProjectID        string
+	Writer                io.Writer
+	ClosableWriter        io.Closer
+	writerExternallyOwned bool
+	FilePath              string
+	ReplaceAttr           func([]string, slog.Attr) slog.Attr
+	Middlewares           []Middleware
+	InitialAttrs          []slog.Attr
+	InitialGroups         []string
 
 	runtimeLabels            map[string]string
 	runtimeServiceContext    map[string]string
@@ -66,20 +67,22 @@ type handlerConfig struct {
 }
 
 type options struct {
-	level             *slog.Level
-	levelVar          *slog.LevelVar
-	addSource         *bool
-	emitTimeField     *bool
-	stackTraceEnabled *bool
-	stackTraceLevel   *slog.Level
-	traceProjectID    *string
-	writer            io.Writer
-	writerFilePath    *string
-	replaceAttr       func([]string, slog.Attr) slog.Attr
-	middlewares       []Middleware
-	attrs             [][]slog.Attr
-	group             *string
-	internalLogger    *slog.Logger
+	level                 *slog.Level
+	levelVar              *slog.LevelVar
+	addSource             *bool
+	emitTimeField         *bool
+	stackTraceEnabled     *bool
+	stackTraceLevel       *slog.Level
+	traceProjectID        *string
+	writer                io.Writer
+	writerFilePath        *string
+	writerExternallyOwned bool
+	replaceAttr           func([]string, slog.Attr) slog.Attr
+	middlewares           []Middleware
+	attrs                 [][]slog.Attr
+	groups                []string
+	groupsSet             bool
+	internalLogger        *slog.Logger
 }
 
 // NewHandler builds a Google Cloud aware slog [Handler]. It inspects the
@@ -120,8 +123,10 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	if cfg.Writer == nil && cfg.FilePath == "" {
 		if defaultWriter != nil {
 			cfg.Writer = defaultWriter
+			cfg.writerExternallyOwned = true
 		} else {
 			cfg.Writer = os.Stdout
+			cfg.writerExternallyOwned = true
 		}
 	}
 
@@ -139,13 +144,15 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 		switchWriter = NewSwitchableWriter(file)
 		cfg.Writer = switchWriter
 		cfg.ClosableWriter = nil
+		cfg.writerExternallyOwned = false
 	}
 
 	if cfg.Writer == nil {
 		cfg.Writer = os.Stdout
+		cfg.writerExternallyOwned = true
 	}
 
-	if cfg.ClosableWriter == nil {
+	if cfg.ClosableWriter == nil && !cfg.writerExternallyOwned {
 		if c, ok := cfg.Writer.(io.Closer); ok && !isStdStream(cfg.Writer) {
 			cfg.ClosableWriter = c
 		}
@@ -405,6 +412,7 @@ func WithRedirectToStdout() Option {
 	return func(o *options) {
 		o.writer = os.Stdout
 		o.writerFilePath = nil
+		o.writerExternallyOwned = true
 	}
 }
 
@@ -413,6 +421,7 @@ func WithRedirectToStderr() Option {
 	return func(o *options) {
 		o.writer = os.Stderr
 		o.writerFilePath = nil
+		o.writerExternallyOwned = true
 	}
 }
 
@@ -423,6 +432,7 @@ func WithRedirectToFile(path string) Option {
 	return func(o *options) {
 		o.writer = nil
 		o.writerFilePath = &trimmed
+		o.writerExternallyOwned = false
 	}
 }
 
@@ -432,6 +442,7 @@ func WithRedirectWriter(writer io.Writer) Option {
 	return func(o *options) {
 		o.writer = writer
 		o.writerFilePath = nil
+		o.writerExternallyOwned = true
 	}
 }
 
@@ -470,11 +481,12 @@ func WithAttrs(attrs []slog.Attr) Option {
 func WithGroup(name string) Option {
 	trimmed := strings.TrimSpace(name)
 	return func(o *options) {
+		o.groupsSet = true
 		if trimmed == "" {
-			o.group = nil
+			o.groups = nil
 			return
 		}
-		o.group = &trimmed
+		o.groups = append(o.groups, trimmed)
 	}
 }
 
@@ -540,15 +552,13 @@ func applyOptions(cfg *handlerConfig, o *options) {
 		cfg.FilePath = strings.TrimSpace(*o.writerFilePath)
 		cfg.Writer = nil
 		cfg.ClosableWriter = nil
+		cfg.writerExternallyOwned = false
 	}
 	if o.writer != nil {
 		cfg.Writer = o.writer
 		cfg.FilePath = ""
-		if c, ok := o.writer.(io.Closer); ok && !isStdStream(o.writer) {
-			cfg.ClosableWriter = c
-		} else {
-			cfg.ClosableWriter = nil
-		}
+		cfg.ClosableWriter = nil
+		cfg.writerExternallyOwned = o.writerExternallyOwned
 	}
 	if o.replaceAttr != nil {
 		cfg.ReplaceAttr = o.replaceAttr
@@ -561,8 +571,8 @@ func applyOptions(cfg *handlerConfig, o *options) {
 			cfg.InitialAttrs = append(cfg.InitialAttrs, group...)
 		}
 	}
-	if o.group != nil {
-		cfg.InitialGroup = *o.group
+	if o.groupsSet {
+		cfg.InitialGroups = append([]string(nil), o.groups...)
 	}
 }
 
@@ -581,14 +591,17 @@ func applyRedirectFromEnv(cfg *handlerConfig, logger *slog.Logger) error {
 			cfg.FilePath = path
 			cfg.Writer = nil
 			cfg.ClosableWriter = nil
+			cfg.writerExternallyOwned = false
 		case strings.EqualFold(redirect, "stdout"):
 			cfg.Writer = os.Stdout
 			cfg.FilePath = ""
 			cfg.ClosableWriter = nil
+			cfg.writerExternallyOwned = true
 		case strings.EqualFold(redirect, "stderr"):
 			cfg.Writer = os.Stderr
 			cfg.FilePath = ""
 			cfg.ClosableWriter = nil
+			cfg.writerExternallyOwned = true
 		default:
 			return ErrInvalidRedirectTarget
 		}
@@ -599,10 +612,12 @@ func applyRedirectFromEnv(cfg *handlerConfig, logger *slog.Logger) error {
 	case "", "stdout":
 		if cfg.Writer == nil && cfg.FilePath == "" && logTarget != "" {
 			cfg.Writer = os.Stdout
+			cfg.writerExternallyOwned = true
 		}
 	case "stderr":
 		if cfg.Writer == nil && cfg.FilePath == "" {
 			cfg.Writer = os.Stderr
+			cfg.writerExternallyOwned = true
 		}
 	case "file":
 		if cfg.FilePath == "" {

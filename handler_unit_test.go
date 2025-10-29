@@ -81,8 +81,8 @@ func TestNewHandlerWithRedirectWriter(t *testing.T) {
 	}
 }
 
-// TestHandlerCloseClosesRedirectWriter ensures Close closes injected redirect writers.
-func TestHandlerCloseClosesRedirectWriter(t *testing.T) {
+// TestHandlerCloseDoesNotCloseRedirectWriter ensures Close leaves caller-supplied writers open.
+func TestHandlerCloseDoesNotCloseRedirectWriter(t *testing.T) {
 	t.Parallel()
 
 	cw := &closingBuffer{}
@@ -94,8 +94,74 @@ func TestHandlerCloseClosesRedirectWriter(t *testing.T) {
 	if err := h.Close(); err != nil {
 		t.Fatalf("Handler.Close() returned %v, want nil", err)
 	}
-	if !cw.closed {
-		t.Fatalf("redirect writer was not closed")
+	if cw.closed {
+		t.Fatalf("redirect writer was unexpectedly closed")
+	}
+}
+
+// TestReplaceAttrRunsOnRecordAttributes ensures replacers see record-scoped attributes and nested groups.
+func TestReplaceAttrRunsOnRecordAttributes(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	var seenDynamic, seenNested bool
+	h, err := slogcp.NewHandler(io.Discard,
+		slogcp.WithRedirectWriter(&buf),
+		slogcp.WithReplaceAttr(func(groups []string, attr slog.Attr) slog.Attr {
+			switch attr.Key {
+			case "dynamic":
+				if len(groups) != 0 {
+					t.Fatalf("dynamic attr groups = %v, want none", groups)
+				}
+				seenDynamic = true
+				return slog.String(attr.Key, "rewritten")
+			case "child":
+				if len(groups) != 1 || groups[0] != "group" {
+					t.Fatalf("child attr groups = %v, want [group]", groups)
+				}
+				seenNested = true
+				return slog.String(attr.Key, "nested-rewritten")
+			default:
+				return attr
+			}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	logger := slog.New(h)
+	logger.InfoContext(context.Background(), "replace", slog.String("dynamic", "value"),
+		slog.Group("group", slog.String("child", "value")))
+
+	if !seenDynamic || !seenNested {
+		t.Fatalf("ReplaceAttr did not observe expected attrs: dynamic=%v nested=%v", seenDynamic, seenNested)
+	}
+
+	entries := decodeLogBuffer(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d (%v)", len(entries), entries)
+	}
+
+	if got := entries[0]["dynamic"]; got != "rewritten" {
+		t.Fatalf("dynamic attr = %v, want rewritten", got)
+	}
+
+	groupAny, ok := entries[0]["group"]
+	if !ok {
+		t.Fatalf("group not present in entry: %v", entries[0])
+	}
+	groupMap, ok := groupAny.(map[string]any)
+	if !ok {
+		t.Fatalf("group attr type = %T, want map[string]any", groupAny)
+	}
+	if got := groupMap["child"]; got != "nested-rewritten" {
+		t.Fatalf("group child attr = %v, want nested-rewritten", got)
 	}
 }
 
