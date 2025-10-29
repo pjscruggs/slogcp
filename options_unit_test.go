@@ -110,3 +110,49 @@ func TestWithGroupNestsAttributes(t *testing.T) {
 		t.Fatalf("group attribute name = %v, want %q", got, "api")
 	}
 }
+
+// TestWithGroupAccumulatesOptions ensures multiple WithGroup options compose instead of overwriting.
+func TestWithGroupAccumulatesOptions(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h, err := slogcp.NewHandler(io.Discard,
+		slogcp.WithRedirectWriter(&buf),
+		slogcp.WithGroup("service"),
+		slogcp.WithGroup("auth"),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	slog.New(h).Info("nested", slog.String("tenant", "acme"))
+
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned %v", err)
+	}
+	serviceAny, ok := payload["service"]
+	if !ok {
+		t.Fatalf("service group missing from payload: %v", payload)
+	}
+	serviceMap, ok := serviceAny.(map[string]any)
+	if !ok {
+		t.Fatalf("service group type = %T, want map[string]any", serviceAny)
+	}
+	authAny, ok := serviceMap["auth"]
+	if !ok {
+		t.Fatalf("auth subgroup missing from payload: %v", serviceMap)
+	}
+	authMap, ok := authAny.(map[string]any)
+	if !ok {
+		t.Fatalf("auth subgroup type = %T, want map[string]any", authAny)
+	}
+	if got := authMap["tenant"]; got != "acme" {
+		t.Fatalf("nested group tenant = %v, want %q", got, "acme")
+	}
+}
