@@ -16,6 +16,7 @@ package slogcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -50,7 +51,7 @@ func (ps *payloadState) prepare(capacity int) map[string]any {
 	if ps.root == nil {
 		ps.root = make(map[string]any, capacity)
 	} else {
-		clearMapAny(ps.root)
+		clear(ps.root)
 	}
 	ps.usedMaps = ps.usedMaps[:0]
 	return ps.root
@@ -66,7 +67,7 @@ func (ps *payloadState) borrowMap(hint int) map[string]any {
 	if n := len(ps.freeMaps); n > 0 {
 		m = ps.freeMaps[n-1]
 		ps.freeMaps = ps.freeMaps[:n-1]
-		clearMapAny(m)
+		clear(m)
 	} else {
 		m = make(map[string]any, hint)
 	}
@@ -80,7 +81,7 @@ func (ps *payloadState) obtainLabels() map[string]string {
 	if ps.labels == nil {
 		ps.labels = make(map[string]string, 4)
 	} else {
-		clearStringMap(ps.labels)
+		clear(ps.labels)
 	}
 	return ps.labels
 }
@@ -88,15 +89,15 @@ func (ps *payloadState) obtainLabels() map[string]string {
 // recycle returns pooled maps and slices to their zero state for reuse.
 func (ps *payloadState) recycle() {
 	for _, m := range ps.usedMaps {
-		clearMapAny(m)
+		clear(m)
 		ps.freeMaps = append(ps.freeMaps, m)
 	}
 	ps.usedMaps = ps.usedMaps[:0]
 	if ps.root != nil {
-		clearMapAny(ps.root)
+		clear(ps.root)
 	}
 	if ps.labels != nil {
-		clearStringMap(ps.labels)
+		clear(ps.labels)
 	}
 	ps.groupStack = ps.groupStack[:0]
 }
@@ -105,20 +106,6 @@ var payloadStatePool = sync.Pool{
 	New: func() any {
 		return &payloadState{}
 	},
-}
-
-// clearMapAny deletes every key from m.
-func clearMapAny(m map[string]any) {
-	for k := range m {
-		delete(m, k)
-	}
-}
-
-// clearStringMap deletes every key from m.
-func clearStringMap(m map[string]string) {
-	for k := range m {
-		delete(m, k)
-	}
 }
 
 type sourceLocation struct {
@@ -556,7 +543,9 @@ func (h *jsonHandler) emitJSON(
 		}
 	}
 
-	if err := encodeJSON(h.writer, jsonPayload); err != nil {
+	enc := json.NewEncoder(h.writer)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(jsonPayload); err != nil {
 		h.internalLogger.Error("failed to write JSON log entry", slog.Any("error", err))
 		return err
 	}
