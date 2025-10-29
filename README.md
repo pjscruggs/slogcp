@@ -92,7 +92,7 @@ Core environment variables for configuring slogcp:
 | `SLOGCP_REDIRECT_AS_JSON_TARGET` | Preferred redirect target (`stdout`, `stderr`, `file:/path`) | (none) |
 | `LOG_LEVEL`               | Minimum log level (`debug`, `info`, `warn`, `error`, etc.) | `info`  |
 | `LOG_SOURCE_LOCATION`     | Include source file/line (`true`, `false`)                 | `false` |
-| `LOG_TIME` *(alias `LOG_TIME_FIELD_ENABLED`)* | Emit RFC3339Nano `time` field (`slogcp.WithTime(true)` programmatic equivalent) | `false` |
+| `LOG_TIME`                | Emit RFC3339Nano `time` field (`slogcp.WithTime(true)` programmatic equivalent) | `false` |
 | `LOG_STACK_TRACE_ENABLED` | Enable stack traces (`true`, `false`)                      | `false` |
 
 ### Dynamic Level Control
