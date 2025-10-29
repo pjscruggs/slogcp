@@ -160,23 +160,33 @@ func trimStackPCs(pcs []uintptr, skipFn func(string) bool) []uintptr {
 	return pcs[skip:]
 }
 
-// SkipInternalStackFrame reports whether a stack frame belongs to slogcp or
-// runtime internals and should be skipped when presenting stack traces to users.
+var (
+	internalStackFrameNames = map[string]struct{}{
+		"runtime.Callers": {},
+		"runtime.goexit":  {},
+	}
+	internalStackFramePrefixes = []string{
+		"runtime.",
+		"github.com/pjscruggs/slogcp/",
+		"github.com/pjscruggs/slogcp.",
+		"log/slog.",
+	}
+)
+
+// SkipInternalStackFrame reports whether funcName refers to a frame that
+// belongs to slogcp or runtime internals and should be hidden from user-facing
+// stack traces.
 func SkipInternalStackFrame(funcName string) bool {
 	if funcName == "" {
 		return false
 	}
-	switch funcName {
-	case "runtime.Callers", "runtime.goexit":
+	if _, found := internalStackFrameNames[funcName]; found {
 		return true
 	}
-	if strings.HasPrefix(funcName, "runtime.") {
-		return true
-	}
-	if strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp/") ||
-		strings.HasPrefix(funcName, "github.com/pjscruggs/slogcp.") ||
-		strings.HasPrefix(funcName, "log/slog.") {
-		return true
+	for _, prefix := range internalStackFramePrefixes {
+		if strings.HasPrefix(funcName, prefix) {
+			return true
+		}
 	}
 	return false
 }
