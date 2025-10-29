@@ -129,7 +129,7 @@ Extended severity support is exposed through `slogcp.Level` constants. They map 
 - Logs start and finish events, HTTP method/URL, status, latency, byte counts, and remote IP.
 - Demotes or drops health-check chatter when enabled via the shared `chatter` engine.
 
-Use `slogcphttp.InjectTraceContextMiddleware()` ahead of the main middleware to prioritise `X-Cloud-Trace-Context` parsing when no OpenTelemetry propagator is configured for it.
+Use `slogcphttp.InjectTraceContextMiddleware()` ahead of the main middleware to prioritize `X-Cloud-Trace-Context` parsing when no OpenTelemetry propagator is configured for it.
 
 ### Functional Options
 
