@@ -666,15 +666,15 @@ func parseLevelEnv(value string, current slog.Level, logger *slog.Logger) slog.L
 	case "error":
 		return slog.LevelError
 	case "default":
-		return internalLevelDefault
+		return slog.Level(LevelDefault)
 	case "notice":
-		return internalLevelNotice
+		return slog.Level(LevelNotice)
 	case "critical":
-		return internalLevelCritical
+		return slog.Level(LevelCritical)
 	case "alert":
-		return internalLevelAlert
+		return slog.Level(LevelAlert)
 	case "emergency":
-		return internalLevelEmergency
+		return slog.Level(LevelEmergency)
 	default:
 		if lv, err := strconv.Atoi(trimmed); err == nil {
 			return slog.Level(lv)
