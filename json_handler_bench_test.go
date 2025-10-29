@@ -22,8 +22,8 @@ func BenchmarkLevelToString(b *testing.B) {
 		slog.Level(LevelDefault),
 		slog.Level(LevelDefault) + 5,
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		for _, lvl := range levels {
 			if levelToString(lvl) == "" {
 				b.Fatalf("empty level string for %v", lvl)
@@ -41,8 +41,8 @@ func BenchmarkJSONHandlerHandle(b *testing.B) {
 
 	ctx := context.Background()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for i := 0; b.Loop(); i++ {
 		rec := slog.NewRecord(time.Now(), slog.LevelInfo, "benchmark message", 0)
 		rec.AddAttrs(
 			slog.String("request_id", "abc123"),
