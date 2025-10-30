@@ -94,8 +94,11 @@ func TestTracePropagationTransport(t *testing.T) {
 	if _, err := tp.RoundTrip(newRequestWithSpan()); err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
 	}
-	if cap.hdr.Get("traceparent") == "" || cap.hdr.Get(XCloudTraceContextHeader) == "" {
-		t.Errorf("headers not injected: %v", cap.hdr)
+	if cap.hdr.Get("traceparent") == "" {
+		t.Errorf("traceparent header not injected: %v", cap.hdr)
+	}
+	if cap.hdr.Get(XCloudTraceContextHeader) != "" {
+		t.Errorf("unexpected X-Cloud-Trace-Context injection: %v", cap.hdr)
 	}
 
 	cap2 := &captureRoundTripper{}
@@ -105,6 +108,15 @@ func TestTracePropagationTransport(t *testing.T) {
 	}
 	if cap2.hdr.Get("traceparent") != "" || cap2.hdr.Get(XCloudTraceContextHeader) != "" {
 		t.Errorf("headers injected despite skip: %v", cap2.hdr)
+	}
+
+	cap3 := &captureRoundTripper{}
+	tp3 := TracePropagationTransport{Base: cap3, InjectXCloud: true}
+	if _, err := tp3.RoundTrip(newRequestWithSpan()); err != nil {
+		t.Fatalf("RoundTrip returned %v", err)
+	}
+	if cap3.hdr.Get("traceparent") == "" || cap3.hdr.Get(XCloudTraceContextHeader) == "" {
+		t.Errorf("expected dual injection, got: %v", cap3.hdr)
 	}
 }
 
@@ -116,8 +128,11 @@ func TestNewTraceRoundTripper(t *testing.T) {
 	if _, err := rt.RoundTrip(newRequestWithSpan()); err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
 	}
-	if cap.hdr.Get("traceparent") == "" || cap.hdr.Get(XCloudTraceContextHeader) == "" {
-		t.Errorf("headers not injected: %v", cap.hdr)
+	if cap.hdr.Get("traceparent") == "" {
+		t.Errorf("traceparent header not injected: %v", cap.hdr)
+	}
+	if cap.hdr.Get(XCloudTraceContextHeader) != "" {
+		t.Errorf("unexpected X-Cloud-Trace-Context injection: %v", cap.hdr)
 	}
 
 	cap2 := &captureRoundTripper{}
@@ -127,5 +142,14 @@ func TestNewTraceRoundTripper(t *testing.T) {
 	}
 	if cap2.hdr.Get("traceparent") != "" || cap2.hdr.Get(XCloudTraceContextHeader) != "" {
 		t.Errorf("headers injected despite skip: %v", cap2.hdr)
+	}
+
+	cap3 := &captureRoundTripper{}
+	rt3 := NewTraceRoundTripper(cap3, WithInjectXCloud(true))
+	if _, err := rt3.RoundTrip(newRequestWithSpan()); err != nil {
+		t.Fatalf("RoundTrip returned %v", err)
+	}
+	if cap3.hdr.Get("traceparent") == "" || cap3.hdr.Get(XCloudTraceContextHeader) == "" {
+		t.Errorf("expected dual injection, got: %v", cap3.hdr)
 	}
 }

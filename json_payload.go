@@ -24,10 +24,10 @@ import (
 
 // Constants for standard keys used within the structured log payload.
 const (
-	messageKey        = "message"
-	stackTraceKey     = "stack_trace"
-	httpRequestKey    = "httpRequest"
-	labelsGroupKey    = "logging.googleapis.com/labels"
+	messageKey     = "message"
+	stackTraceKey  = "stack_trace"
+	httpRequestKey = "httpRequest"
+	labelsGroupKey = "logging.googleapis.com/labels"
 )
 
 // formattedError holds the processed error details for structured logging.

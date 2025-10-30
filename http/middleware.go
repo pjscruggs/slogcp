@@ -165,11 +165,6 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-			if sc := trace.SpanContextFromContext(ctx); !sc.IsValid() {
-				if header := r.Header.Get(XCloudTraceContextHeader); header != "" {
-					ctx = injectTraceContextFromHeader(ctx, header)
-				}
-			}
 			if merged.StartSpanIfAbsent && !trace.SpanContextFromContext(ctx).IsValid() {
 				spanName := fmt.Sprintf("%s %s", r.Method, r.URL.Path)
 				var span trace.Span

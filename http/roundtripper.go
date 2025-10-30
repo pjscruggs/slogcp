@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Package http provides an outbound RoundTripper that propagates trace context
-// (W3C traceparent and Google X-Cloud-Trace-Context) for better log/trace
-// correlation on GCP.
+// (W3C traceparent with optional Google X-Cloud-Trace-Context) for better
+// log/trace correlation on GCP.
 package http
 
 import (
@@ -42,7 +42,7 @@ func WithInjectTraceparent(on bool) TraceRoundTripperOption {
 	return func(c *traceRTConfig) { c.injectTraceparent = on }
 }
 
-// WithInjectXCloud enables/disables X-Cloud-Trace-Context injection (default: true).
+// WithInjectXCloud enables/disables X-Cloud-Trace-Context injection (default: false).
 func WithInjectXCloud(on bool) TraceRoundTripperOption {
 	return func(c *traceRTConfig) { c.injectXCloud = on }
 }
@@ -59,9 +59,8 @@ func WithSkip(f func(*stdhttp.Request) bool) TraceRoundTripperOption {
 //
 // Behavior:
 //   - W3C traceparent is injected via the global OTel propagator.
-//   - X-Cloud-Trace-Context is synthesized from the same span context
-//     (span id converted to decimal; o=1 if sampled, else o=0).
-//   - Both injections are opt-in by options but enabled by default.
+//   - X-Cloud-Trace-Context can be synthesized from the same span context
+//     (span id converted to decimal; o=1 if sampled, else o=0) when enabled.
 //
 // This transport does not create spans; it only propagates context so that
 // downstream services can correlate logs/traces. To record spans, use OTel
@@ -69,7 +68,7 @@ func WithSkip(f func(*stdhttp.Request) bool) TraceRoundTripperOption {
 func NewTraceRoundTripper(base stdhttp.RoundTripper, opts ...TraceRoundTripperOption) stdhttp.RoundTripper {
 	cfg := traceRTConfig{
 		injectTraceparent: true,
-		injectXCloud:      true,
+		injectXCloud:      false,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -86,8 +85,9 @@ type traceRoundTripper struct {
 }
 
 // RoundTrip implements http.RoundTripper. It conditionally injects trace context
-// headers ("traceparent" and "X-Cloud-Trace-Context") into req based on the
-// current span context and configured options, then delegates to the wrapped transport.
+// headers ("traceparent" and, optionally, "X-Cloud-Trace-Context") into req based
+// on the current span context and configured options, then delegates to the wrapped
+// transport.
 func (t *traceRoundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	if t.cfg.skip != nil && t.cfg.skip(req) {
 		return t.base.RoundTrip(req)

@@ -62,7 +62,7 @@ func (s *contextOnlyServerStream) Context() context.Context { return s.ctx }
 // RecvMsg calls the underlying ServerStream's RecvMsg method. If the call is
 // successful and payload logging is enabled in the options, it logs the
 // received message payload using the stored context and logger.
-func (w *wrappedServerStream) RecvMsg(m interface{}) error {
+func (w *wrappedServerStream) RecvMsg(m any) error {
 	err := w.ServerStream.RecvMsg(m)
 	if err != nil {
 		// Do not log payload on receive error (e.g., EOF, connection error).
@@ -150,13 +150,7 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 		var incomingMD metadata.MD
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
 			incomingMD = md
-			ctxExtracted := otel.GetTextMapPropagator().Extract(ctx, metadataCarrier{md: md})
-			if !trace.SpanContextFromContext(ctxExtracted).IsValid() {
-				if vals := md.Get(xCloudTraceContextHeaderMD); len(vals) > 0 {
-					ctxExtracted = injectTraceContextFromXCloudHeader(ctxExtracted, vals[0])
-				}
-			}
-			ctx = ctxExtracted
+			ctx = otel.GetTextMapPropagator().Extract(ctx, metadataCarrier{md: md})
 		}
 
 		tracer := cfg.tracer
