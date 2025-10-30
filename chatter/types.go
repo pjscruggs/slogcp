@@ -1,8 +1,8 @@
 package chatter
 
 import (
-	"maps"
 	"context"
+	"maps"
 	"strings"
 	"time"
 )

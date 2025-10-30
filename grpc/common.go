@@ -16,7 +16,6 @@ package grpc
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/binary"
 	"log/slog"
 	"path"
@@ -207,60 +206,6 @@ func (c metadataCarrier) Keys() []string {
 		keys = append(keys, k)
 	}
 	return keys
-}
-
-// injectTraceContextFromXCloudHeader parses an X-Cloud-Trace-Context header value
-// and returns a new context carrying a remote SpanContext. Invalid inputs return
-// the original context unchanged.
-//
-// Header format: TRACE_ID/SPAN_ID;o=OPTIONS
-//   - TRACE_ID: 32-char lowercase hex
-//   - SPAN_ID: decimal uint64 (converted to hex bytes for OTel)
-//   - OPTIONS: contains "o=1" if sampled (otherwise unsampled)
-func injectTraceContextFromXCloudHeader(ctx context.Context, header string) context.Context {
-	parts := strings.Split(header, "/")
-	if len(parts) != 2 {
-		return ctx
-	}
-	traceIDStr := parts[0]
-	spanPart := parts[1]
-	options := ""
-	if i := strings.Index(spanPart, ";"); i >= 0 {
-		options = spanPart[i+1:]
-		spanPart = spanPart[:i]
-	}
-
-	tid, err := trace.TraceIDFromHex(traceIDStr)
-	if err != nil || !tid.IsValid() {
-		return ctx
-	}
-
-	// Parse decimal span id to bytes
-	var sid trace.SpanID
-	if spanPart != "" {
-		if u, err := strconv.ParseUint(spanPart, 10, 64); err == nil {
-			binary.BigEndian.PutUint64(sid[:], u)
-		}
-	}
-	if !sid.IsValid() {
-		// Generate a span id if input invalid
-		if _, err := rand.Read(sid[:]); err != nil {
-			return ctx
-		}
-	}
-
-	var flags trace.TraceFlags
-	if strings.Contains(options, "o=1") {
-		flags = trace.FlagsSampled
-	}
-
-	sc := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    tid,
-		SpanID:     sid,
-		TraceFlags: flags,
-		Remote:     true,
-	})
-	return trace.ContextWithRemoteSpanContext(ctx, sc)
 }
 
 // formatXCloudTraceContextFromSpanContext builds the X-Cloud-Trace-Context value

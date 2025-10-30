@@ -60,8 +60,8 @@ func NewUnaryClientInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryCl
 			if len(outgoingMDWithTrace.Get(traceparentHeader)) == 0 {
 				otel.GetTextMapPropagator().Inject(ctx, metadataCarrier{md: outgoingMDWithTrace})
 			}
-			// Also synthesize X-Cloud-Trace-Context if not present and we have a valid span.
-			if len(outgoingMDWithTrace.Get(xCloudTraceContextHeaderMD)) == 0 {
+			// Optionally synthesize X-Cloud-Trace-Context if requested.
+			if cfg.injectLegacyXCloud && len(outgoingMDWithTrace.Get(xCloudTraceContextHeaderMD)) == 0 {
 				if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 					if v := formatXCloudTraceContextFromSpanContext(sc); v != "" {
 						outgoingMDWithTrace[xCloudTraceContextHeaderMD] = []string{v}

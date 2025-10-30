@@ -66,23 +66,17 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 	// Return the actual interceptor function, closing over logger and config.
 	return func(
 		ctx context.Context, // Incoming context from the application.
-		req interface{}, // Request message.
+		req any, // Request message.
 		info *grpc.UnaryServerInfo, // Info about the RPC.
 		handler grpc.UnaryHandler, // The next interceptor or the final RPC handler.
-	) (resp interface{}, err error) { // Named return value for easier access in final logging.
+	) (resp any, err error) { // Named return value for easier access in final logging.
 
 		// Extract inbound trace context from gRPC metadata using the global OTel propagator.
 		// Fallback to X-Cloud-Trace-Context if no valid span was found.
 		var incomingMD metadata.MD
 		if md, ok := metadata.FromIncomingContext(ctx); ok {
 			incomingMD = md
-			ctxExtracted := otel.GetTextMapPropagator().Extract(ctx, metadataCarrier{md: md})
-			if !trace.SpanContextFromContext(ctxExtracted).IsValid() {
-				if vals := md.Get(xCloudTraceContextHeaderMD); len(vals) > 0 {
-					ctxExtracted = injectTraceContextFromXCloudHeader(ctxExtracted, vals[0])
-				}
-			}
-			ctx = ctxExtracted
+			ctx = otel.GetTextMapPropagator().Extract(ctx, metadataCarrier{md: md})
 		}
 
 		tracer := cfg.tracer

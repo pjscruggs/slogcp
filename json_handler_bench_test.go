@@ -23,7 +23,7 @@ func BenchmarkLevelToString(b *testing.B) {
 		slog.Level(LevelDefault),
 		slog.Level(LevelDefault) + 5,
 	}
-	
+
 	for b.Loop() {
 		for _, lvl := range levels {
 			if levelToString(lvl) == "" {
@@ -43,7 +43,6 @@ func BenchmarkJSONHandlerHandle(b *testing.B) {
 
 	ctx := context.Background()
 
-	
 	for i := 0; b.Loop(); i++ {
 		rec := slog.NewRecord(time.Now(), slog.LevelInfo, "benchmark message", 0)
 		rec.AddAttrs(

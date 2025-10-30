@@ -73,6 +73,7 @@ type options struct {
 	samplingRate          float64            // 0.0-1.0, percentage of requests to log.
 	logCategory           string             // Optional category name to distinguish logs.
 	propagateTraceHeaders bool               // Whether to propagate trace context headers/metadata when supported.
+	injectLegacyXCloud    bool               // Whether to synthesize X-Cloud-Trace-Context on egress.
 	attachLogger          bool               // Whether to attach request-scoped logger into context.
 	startSpanIfAbsent     bool               // Whether to start a span if none exists.
 	tracer                trace.Tracer       // Tracer used when starting spans.
@@ -329,8 +330,7 @@ func WithHealthCheckFilter(cfg chatter.Config) Option {
 
 // WithTracePropagation controls whether interceptors managed by this package
 // propagate trace context when they support doing so. When enabled, client-side
-// interceptors inject W3C Trace Context (traceparent/tracestate) and the
-// X-Cloud-Trace-Context header equivalent into outgoing metadata; server-side
+// interceptors inject W3C Trace Context (traceparent/tracestate). Server-side
 // interceptors always accept and parse incoming context regardless of this setting.
 // Default is true.
 //
@@ -339,6 +339,16 @@ func WithHealthCheckFilter(cfg chatter.Config) Option {
 func WithTracePropagation(enabled bool) Option {
 	return func(o *options) {
 		o.propagateTraceHeaders = enabled
+	}
+}
+
+// WithLegacyXCloudInjection toggles synthesis of the legacy X-Cloud-Trace-Context
+// header on client-side interceptor egress when trace propagation is enabled.
+// The default is false so that downstream services see only the W3C traceparent
+// header unless explicitly requested.
+func WithLegacyXCloudInjection(enabled bool) Option {
+	return func(o *options) {
+		o.injectLegacyXCloud = enabled
 	}
 }
 

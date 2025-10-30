@@ -123,13 +123,15 @@ Extended severity support is exposed through `slogcp.Level` constants. They map 
 
 `slogcphttp.Middleware(logger)` wraps `http.Handler`s to log request/response pairs in a Cloud Logging-friendly schema. By default it:
 
-- Extracts trace context using the global OpenTelemetry propagator, falling back to `X-Cloud-Trace-Context`.
+- Extracts trace context using the global OpenTelemetry propagator (configured by `slogcp` to understand both W3C Trace Context and `X-Cloud-Trace-Context` headers).
 - Starts a server span when none exists (`StartSpanIfAbsent=true`).
 - Emits a request-scoped logger in the context (`AttachLogger=true`) with trace attributes.
 - Logs start and finish events, HTTP method/URL, status, latency, byte counts, and remote IP.
 - Demotes or drops health-check chatter when enabled via the shared `chatter` engine.
 
-Use `slogcphttp.InjectTraceContextMiddleware()` ahead of the main middleware to prioritize `X-Cloud-Trace-Context` parsing when no OpenTelemetry propagator is configured for it.
+Use `slogcphttp.InjectTraceContextMiddleware()` only when you intentionally disable `slogcp`'s composite propagator and need a manual fallback for `X-Cloud-Trace-Context`.
+
+> Set `SLOGCP_DISABLE_PROPAGATOR_AUTOSET=true` before importing `slogcp` if you prefer to manage the global OpenTelemetry propagator yourself.
 
 ### Functional Options
 
@@ -190,7 +192,7 @@ handler := slogcphttp.InjectTraceContextMiddleware()(middleware(myMux))
 `slogcphttp.NewTraceRoundTripper(base http.RoundTripper, opts...)` wraps a transport to inject outbound trace headers from `req.Context()`:
 
 - `WithInjectTraceparent(bool)` – enables/disables W3C Trace Context (defaults to `true`).
-- `WithInjectXCloud(bool)` – enables/disables `X-Cloud-Trace-Context` (defaults to `true`).
+- `WithInjectXCloud(bool)` – enables/disables `X-Cloud-Trace-Context` (defaults to `false`).
 - `WithSkip(func(*http.Request) bool)` – predicate to skip propagation for select requests (e.g., external hosts).
 
 Pass `nil` for `base` to wrap `http.DefaultTransport`.
@@ -208,8 +210,8 @@ All interceptors share the same option set processed by `processOptions`.
 
 ### Core Behaviour
 
-- Server interceptors extract trace context from incoming metadata using the global propagator, falling back to `x-cloud-trace-context`, and optionally start a span when none exists.
-- Client interceptors propagate trace headers (`traceparent`, `tracestate`, and `x-cloud-trace-context`) unless disabled via `WithTracePropagation(false)`.
+- Server interceptors extract trace context from incoming metadata using the global propagator (which understands both W3C Trace Context and `x-cloud-trace-context`) and optionally start a span when none exists.
+- Client interceptors propagate trace headers (`traceparent` and `tracestate`) unless disabled via `WithTracePropagation(false)`. The legacy `x-cloud-trace-context` header is added only when `WithLegacyXCloudInjection(true)` is also supplied.
 - Both sides honour the shared chatter engine for health checks and sampling when configured.
 - Panic recovery, metadata logging, payload logging, and deterministic sampling are opt-in via options.
 
@@ -234,7 +236,8 @@ All interceptors share the same option set processed by `processOptions`.
 | `WithTraceProjectID(string)` | Overrides the project used for trace-aware context loggers. |
 | `WithSkipHealthChecks(bool)` | Enables a built-in config that drops standard gRPC health-check calls. |
 | `WithChatterConfig(chatter.Config)` *(or `WithHealthCheckFilter`)* | Installs a custom chatter reduction configuration shared with HTTP middleware. |
-| `WithTracePropagation(bool)` | Enables/disables client-side propagation of trace headers (default `true`). |
+| `WithTracePropagation(bool)` | Enables/disables client-side propagation of W3C trace headers (default `true`). |
+| `WithLegacyXCloudInjection(bool)` | Enables injection of the legacy `x-cloud-trace-context` header on client egress (default `false`). |
 
 Client interceptors automatically log outgoing metadata (when enabled), response headers, trailers, payloads, and final status codes. Server interceptors add peer address, panic diagnostics, and chatter annotations.
 

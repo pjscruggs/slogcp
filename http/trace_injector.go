@@ -133,8 +133,8 @@ func injectTraceContextFromHeader(ctx context.Context, header string) context.Co
 
 // TracePropagationTransport is an http.RoundTripper that propagates the current
 // trace context on outbound HTTP requests. It injects a W3C traceparent header
-// (via the global OpenTelemetry propagator) and, by default, also injects the
-// Google legacy X-Cloud-Trace-Context header for compatibility.
+// (via the global OpenTelemetry propagator) and can optionally add the Google
+// legacy X-Cloud-Trace-Context header for compatibility.
 //
 // The transport is safe to stack with other transports. It does not overwrite
 // headers already present on the request.
@@ -144,12 +144,17 @@ type TracePropagationTransport struct {
 	Base stdhttp.RoundTripper
 
 	// InjectW3C controls injection of the W3C trace headers (traceparent/tracestate).
-	// When both InjectW3C and InjectXCloud are false, both are treated as true.
+	// When both InjectW3C and InjectXCloud are false and DisableDefaults is false,
+	// W3C headers are injected by default.
 	InjectW3C bool
 
 	// InjectXCloud controls injection of the Google X-Cloud-Trace-Context header.
-	// When both InjectW3C and InjectXCloud are false, both are treated as true.
+	// This header is disabled by default to avoid propagating legacy formats.
 	InjectXCloud bool
+
+	// DisableDefaults suppresses the zero-value defaults that would otherwise
+	// enable W3C injection when both InjectW3C and InjectXCloud are false.
+	DisableDefaults bool
 
 	// Skip, if set, suppresses propagation for matching requests.
 	// When Skip returns true, the request is forwarded without adding headers.
@@ -169,9 +174,9 @@ func (t TracePropagationTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Res
 
 	injectW3C := t.InjectW3C
 	injectX := t.InjectXCloud
-	if !t.InjectW3C && !t.InjectXCloud {
-		// Zero-value convenience: enable both unless explicitly disabled.
-		injectW3C, injectX = true, true
+	if !t.DisableDefaults && !t.InjectW3C && !t.InjectXCloud {
+		// Zero-value convenience: enable W3C headers unless explicitly disabled.
+		injectW3C = true
 	}
 
 	ctx := req.Context()
