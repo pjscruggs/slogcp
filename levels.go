@@ -139,7 +139,8 @@ func (l Level) Level() slog.Level {
 
 // levelToString converts a slog.Level to the shortest GCP-accepted severity
 // string. Using shorter aliases reduces time spent on JSON marshaling by about
-// 1ns per log entry in benchmarks.
+// 1ns per log entry in benchmarks. Logs will still appear in GCP with their full
+// severity names.
 func levelToString(level slog.Level) string {
 	formatWithOffset := func(baseName string, offset slog.Level) string {
 		if offset == 0 {
