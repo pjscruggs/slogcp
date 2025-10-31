@@ -665,7 +665,6 @@ func marshalNoHTMLEscape(v any) (string, error) {
 	return strings.TrimSpace(buf.String()), nil
 }
 
-// ------------------------ tests ------------------------
 
 // mustUnmarshalMap parses a JSON object string and fails the test on error.
 func mustUnmarshalMap(t *testing.T, s string) map[string]any {
