@@ -19,6 +19,8 @@ package slogcp_test
 
 import (
 	"context"
+	"log/slog"
+	"reflect"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
@@ -164,5 +166,101 @@ func TestExtractTraceSpan(t *testing.T) {
 				t.Errorf("SpanContext mismatch: got %+v", gotSC)
 			}
 		})
+	}
+}
+
+// attrsToMap converts a slice of slog.Attr into a simple key/value map for assertions.
+func attrsToMap(attrs []slog.Attr) map[string]any {
+	out := make(map[string]any, len(attrs))
+	for _, attr := range attrs {
+		out[attr.Key] = attr.Value.Any()
+	}
+	return out
+}
+
+// TestTraceAttributesWithProject verifies that when a Cloud project is known the
+// trace helper emits only the documented Cloud Logging keys without falling back
+// to the OTEL attribute set.
+func TestTraceAttributesWithProject(t *testing.T) {
+	const (
+		projectID   = "test-project"
+		rawTraceHex = "0123456789abcdef0123456789abcdef"
+		rawSpanHex  = "89abcdef01234567"
+	)
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    mustTraceID(t, rawTraceHex),
+		SpanID:     mustSpanID(t, rawSpanHex),
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	attrs, ok := slogcp.TraceAttributes(ctx, projectID)
+	if !ok {
+		t.Fatalf("TraceAttributes(_, %q) = (_, false), want true", projectID)
+	}
+
+	got := attrsToMap(attrs)
+	want := map[string]any{
+		slogcp.TraceKey:   slogcp.FormatTraceResource(projectID, rawTraceHex),
+		slogcp.SpanKey:    rawSpanHex,
+		slogcp.SampledKey: true,
+	}
+
+	if gotLen := len(attrs); gotLen != len(want) {
+		t.Fatalf("TraceAttributes() returned %d attrs, want %d", gotLen, len(want))
+	}
+
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("TraceAttributes() = %#v, want %#v", got, want)
+	}
+	if _, exists := got["otel.trace_id"]; exists {
+		t.Fatalf("unexpected otel.trace_id fallback present when project is known: %#v", got)
+	}
+}
+
+// TestTraceAttributesWithoutProject ensures the helper emits the OTEL fallback
+// keys (and nothing else) when it cannot determine a project ID.
+func TestTraceAttributesWithoutProject(t *testing.T) {
+	const (
+		rawTraceHex = "ffffffffffffffffffffffffffffffff"
+		rawSpanHex  = "0000000000000001"
+	)
+
+	// Ensure environment-derived project detection is disabled for this test.
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "")
+	t.Setenv("SLOGCP_PROJECT_ID", "")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: mustTraceID(t, rawTraceHex),
+		SpanID:  mustSpanID(t, rawSpanHex),
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	attrs, ok := slogcp.TraceAttributes(ctx, "")
+	if !ok {
+		t.Fatalf("TraceAttributes(_, \"\") = (_, false), want true")
+	}
+
+	got := attrsToMap(attrs)
+	want := map[string]any{
+		"otel.trace_id":      rawTraceHex,
+		"otel.span_id":       rawSpanHex,
+		"otel.trace_sampled": false,
+	}
+
+	if gotLen := len(attrs); gotLen != len(want) {
+		t.Fatalf("TraceAttributes() returned %d attrs, want %d", gotLen, len(want))
+	}
+
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("TraceAttributes() = %#v, want %#v", got, want)
+	}
+	if _, exists := got[slogcp.TraceKey]; exists {
+		t.Fatalf("unexpected Cloud Logging trace key present without project: %#v", got)
+	}
+	if _, exists := got[slogcp.SpanKey]; exists {
+		t.Fatalf("unexpected Cloud Logging span key present without project: %#v", got)
 	}
 }

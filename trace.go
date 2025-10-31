@@ -121,7 +121,11 @@ func BuildXCloudTraceContext(rawTraceID, spanIDHex string, sampled bool) string 
 
 // TraceAttributes extracts Cloud Trace aware attributes from ctx. The returned
 // slice can be supplied to logger.With to correlate logs with traces when
-// emitting per-request loggers.
+// emitting per-request loggers. When a project ID is known this helper emits the
+// Cloud Logging correlation fields (`logging.googleapis.com/trace`,
+// `logging.googleapis.com/spanId`, and `logging.googleapis.com/trace_sampled`).
+// When no project ID can be determined it falls back to OpenTelemetry-style
+// keys (`otel.trace_id`, `otel.span_id`, and `otel.trace_sampled`).
 //
 // When projectID is empty, the helper falls back to environment variables in
 // the following order: SLOGCP_TRACE_PROJECT_ID, SLOGCP_PROJECT_ID, and
@@ -131,6 +135,7 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 		return nil, false
 	}
 
+	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
 		projectID = strings.TrimSpace(os.Getenv("SLOGCP_TRACE_PROJECT_ID"))
 	}
@@ -146,13 +151,43 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 		return nil, false
 	}
 
-	attrs := []slog.Attr{
-		slog.String("trace_id", rawTrace),
-		slog.String(SpanKey, rawSpan),
-		slog.Bool(SampledKey, sampled),
-	}
+	var (
+		attrs  []slog.Attr
+		seen   = make(map[string]struct{}, 3)
+		append = func(attr slog.Attr) {
+			if attr.Key == "" {
+				return
+			}
+			if _, exists := seen[attr.Key]; exists {
+				return
+			}
+			seen[attr.Key] = struct{}{}
+			attrs = append(attrs, attr)
+		}
+	)
+
 	if fmtTrace != "" {
-		attrs = append(attrs, slog.String(TraceKey, fmtTrace))
+		append(slog.String(TraceKey, fmtTrace))
+		if rawSpan != "" {
+			append(slog.String(SpanKey, rawSpan))
+		}
+		append(slog.Bool(SampledKey, sampled))
+		if len(attrs) == 0 {
+			return nil, false
+		}
+		return attrs, true
+	}
+
+	if rawTrace != "" {
+		append(slog.String("otel.trace_id", rawTrace))
+	}
+	if rawSpan != "" {
+		append(slog.String("otel.span_id", rawSpan))
+	}
+	append(slog.Bool("otel.trace_sampled", sampled))
+
+	if len(attrs) == 0 {
+		return nil, false
 	}
 	return attrs, true
 }
