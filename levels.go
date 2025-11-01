@@ -137,11 +137,16 @@ func (l Level) Level() slog.Level {
 	return slog.Level(l)
 }
 
-// levelToString converts a slog.Level to the shortest GCP-accepted severity
-// string. Using shorter aliases reduces time spent on JSON marshaling by about
-// 1ns per log entry in benchmarks. Logs will still appear in GCP with their full
-// severity names.
-func levelToString(level slog.Level) string {
+// severityString returns either the short Cloud Logging severity alias or the
+// full severity name depending on useAliases.
+func severityString(level slog.Level, useAliases bool) string {
+	if useAliases {
+		return severityAliasString(level)
+	}
+	return severityFullString(level)
+}
+
+func severityAliasString(level slog.Level) string {
 	formatWithOffset := func(baseName string, offset slog.Level) string {
 		if offset == 0 {
 			return baseName
@@ -166,6 +171,36 @@ func levelToString(level slog.Level) string {
 		return formatWithOffset("A", level-slog.Level(LevelAlert))
 	case level < slog.Level(LevelDefault):
 		return formatWithOffset("EMERG", level-slog.Level(LevelEmergency))
+	default:
+		return formatWithOffset("DEFAULT", level-slog.Level(LevelDefault))
+	}
+}
+
+func severityFullString(level slog.Level) string {
+	formatWithOffset := func(baseName string, offset slog.Level) string {
+		if offset == 0 {
+			return baseName
+		}
+		return fmt.Sprintf("%s%+d", baseName, offset)
+	}
+
+	switch {
+	case level < slog.LevelInfo:
+		return formatWithOffset("DEBUG", level-slog.LevelDebug)
+	case level < slog.Level(LevelNotice):
+		return formatWithOffset("INFO", level-slog.LevelInfo)
+	case level < slog.LevelWarn:
+		return formatWithOffset("NOTICE", level-slog.Level(LevelNotice))
+	case level < slog.LevelError:
+		return formatWithOffset("WARNING", level-slog.LevelWarn)
+	case level < slog.Level(LevelCritical):
+		return formatWithOffset("ERROR", level-slog.LevelError)
+	case level < slog.Level(LevelAlert):
+		return formatWithOffset("CRITICAL", level-slog.Level(LevelCritical))
+	case level < slog.Level(LevelEmergency):
+		return formatWithOffset("ALERT", level-slog.Level(LevelAlert))
+	case level < slog.Level(LevelDefault):
+		return formatWithOffset("EMERGENCY", level-slog.Level(LevelEmergency))
 	default:
 		return formatWithOffset("DEFAULT", level-slog.Level(LevelDefault))
 	}

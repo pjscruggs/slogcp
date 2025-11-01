@@ -52,6 +52,7 @@ type handlerConfig struct {
 	StackTraceEnabled     bool
 	StackTraceLevel       slog.Level
 	TraceProjectID        string
+	UseShortSeverityNames bool
 	Writer                io.Writer
 	ClosableWriter        io.Closer
 	writerExternallyOwned bool
@@ -74,6 +75,7 @@ type options struct {
 	stackTraceEnabled     *bool
 	stackTraceLevel       *slog.Level
 	traceProjectID        *string
+	useShortSeverity      *bool
 	writer                io.Writer
 	writerFilePath        *string
 	writerExternallyOwned bool
@@ -407,6 +409,17 @@ func WithTraceProjectID(id string) Option {
 	}
 }
 
+// WithSeverityAliases configures whether the handler emits Cloud Logging severity
+// aliases (for example, "I" for INFO) instead of the full severity names. Using
+// the aliases trims roughly a nanosecond from JSON marshaling, and Cloud
+// Logging still displays the canonical severity names after ingestion. The
+// default is to emit the aliases.
+func WithSeverityAliases(enabled bool) Option {
+	return func(o *options) {
+		o.useShortSeverity = &enabled
+	}
+}
+
 // WithRedirectToStdout forces the handler to emit logs to stdout.
 func WithRedirectToStdout() Option {
 	return func(o *options) {
@@ -494,8 +507,9 @@ func WithGroup(name string) Option {
 // variables, logging validation issues to logger.
 func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 	cfg := handlerConfig{
-		Level:           slog.LevelInfo,
-		StackTraceLevel: slog.LevelError,
+		Level:                 slog.LevelInfo,
+		StackTraceLevel:       slog.LevelError,
+		UseShortSeverityNames: true,
 	}
 
 	cfg.Level = parseLevelEnv(os.Getenv("LOG_LEVEL"), cfg.Level, logger)
@@ -503,6 +517,7 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 	cfg.EmitTimeField = parseBoolEnv(os.Getenv("LOG_TIME"), cfg.EmitTimeField, logger)
 	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv("LOG_STACK_TRACE_ENABLED"), cfg.StackTraceEnabled, logger)
 	cfg.StackTraceLevel = parseLevelEnv(os.Getenv("LOG_STACK_TRACE_LEVEL"), cfg.StackTraceLevel, logger)
+	cfg.UseShortSeverityNames = parseBoolEnv(os.Getenv("SLOGCP_SEVERITY_ALIASES"), cfg.UseShortSeverityNames, logger)
 
 	traceProject := strings.TrimSpace(os.Getenv("SLOGCP_TRACE_PROJECT_ID"))
 	if traceProject == "" {
@@ -543,6 +558,9 @@ func applyOptions(cfg *handlerConfig, o *options) {
 	}
 	if o.traceProjectID != nil {
 		cfg.TraceProjectID = *o.traceProjectID
+	}
+	if o.useShortSeverity != nil {
+		cfg.UseShortSeverityNames = *o.useShortSeverity
 	}
 	if o.writerFilePath != nil {
 		cfg.FilePath = strings.TrimSpace(*o.writerFilePath)
