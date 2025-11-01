@@ -34,6 +34,7 @@ type ShouldLogFunc func(context.Context, *http.Request) bool
 // MiddlewareOptions controls the behaviour of [Middleware].
 type MiddlewareOptions struct {
 	ShouldLog              ShouldLogFunc
+	LogRequests            bool
 	SkipPathSubstrings     []string
 	SuppressUnsampledBelow *slog.Level
 	LogRequestHeaderKeys   []string
@@ -49,6 +50,7 @@ type MiddlewareOptions struct {
 	ChatterConfig          chatter.Config
 	TrustProxyDecisionFunc func(*http.Request) bool
 	TraceProjectID         string
+	RouteGetter            func(*http.Request) string
 }
 
 // Option mutates MiddlewareOptions.
@@ -73,6 +75,11 @@ func loadMiddlewareOptionsFromEnv() MiddlewareOptions {
 
 	if raw, ok := os.LookupEnv("SLOGCP_HTTP_SKIP_PATH_SUBSTRINGS"); ok {
 		opts.SkipPathSubstrings = splitAndClean(raw)
+	}
+	if raw, ok := os.LookupEnv("SLOGCP_HTTP_LOG_REQUESTS"); ok {
+		if v, ok := parseBoolFlag(raw); ok {
+			opts.LogRequests = v
+		}
 	}
 	if raw, ok := os.LookupEnv("SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW"); ok {
 		if lvl, err := parseLevel(raw); err == nil {
@@ -121,6 +128,24 @@ func loadMiddlewareOptionsFromEnv() MiddlewareOptions {
 	if raw, ok := os.LookupEnv("SLOGCP_HTTP_TRACE_PROJECT_ID"); ok {
 		opts.TraceProjectID = strings.TrimSpace(raw)
 	}
+	if raw, ok := os.LookupEnv("SLOGCP_HTTP_ROUTE_HEADER"); ok {
+		header := textproto.CanonicalMIMEHeaderKey(strings.TrimSpace(raw))
+		if header != "" {
+			opts.RouteGetter = func(r *http.Request) string {
+				return r.Header.Get(header)
+			}
+		}
+	}
+	if raw, ok := os.LookupEnv("SLOGCP_HTTP_ROUTE_FROM_PATH"); ok {
+		if v, ok := parseBoolFlag(raw); ok && v {
+			opts.RouteGetter = func(r *http.Request) string {
+				if r.URL == nil {
+					return ""
+				}
+				return r.URL.Path
+			}
+		}
+	}
 
 	return opts
 }
@@ -166,6 +191,13 @@ func WithLogRequestHeaderKeys(keys ...string) Option {
 	cleaned := cleanHeaderKeys(keys)
 	return func(o *MiddlewareOptions) {
 		o.LogRequestHeaderKeys = cleaned
+	}
+}
+
+// WithRequestLogging toggles request logging regardless of environment defaults.
+func WithRequestLogging(enabled bool) Option {
+	return func(o *MiddlewareOptions) {
+		o.LogRequests = enabled
 	}
 }
 
@@ -265,6 +297,45 @@ func WithTrustProxyEvaluator(fn func(*http.Request) bool) Option {
 func WithTraceProjectID(projectID string) Option {
 	return func(o *MiddlewareOptions) {
 		o.TraceProjectID = strings.TrimSpace(projectID)
+	}
+}
+
+// WithRouteGetter installs a function that returns the route template to log
+// for the request-scoped logger when context logging is enabled.
+func WithRouteGetter(getter func(*http.Request) string) Option {
+	return func(o *MiddlewareOptions) {
+		o.RouteGetter = getter
+	}
+}
+
+// WithRouteFromHeader uses the specified header to supply the route template
+// when attaching request-scoped loggers.
+func WithRouteFromHeader(header string) Option {
+	header = textproto.CanonicalMIMEHeaderKey(strings.TrimSpace(header))
+	if header == "" {
+		header = ""
+	}
+	return func(o *MiddlewareOptions) {
+		if header == "" {
+			o.RouteGetter = nil
+			return
+		}
+		o.RouteGetter = func(r *http.Request) string {
+			return r.Header.Get(header)
+		}
+	}
+}
+
+// WithRouteFromPath configures the middleware to use the request URL path as
+// the route value when attaching request-scoped loggers.
+func WithRouteFromPath() Option {
+	return func(o *MiddlewareOptions) {
+		o.RouteGetter = func(r *http.Request) string {
+			if r.URL == nil {
+				return ""
+			}
+			return r.URL.Path
+		}
 	}
 }
 

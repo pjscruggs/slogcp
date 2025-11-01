@@ -26,7 +26,7 @@ func BenchmarkLevelToString(b *testing.B) {
 
 	for b.Loop() {
 		for _, lvl := range levels {
-			if levelToString(lvl) == "" {
+			if severityAliasString(lvl) == "" {
 				b.Fatalf("empty level string for %v", lvl)
 			}
 		}

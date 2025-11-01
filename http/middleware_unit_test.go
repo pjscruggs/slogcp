@@ -287,6 +287,7 @@ func TestMiddlewareBodyPreviewClamp(t *testing.T) {
 
 	mw := Middleware(
 		logger,
+		WithRequestLogging(true),
 		WithRequestBodyLimit(int64(len(body))),
 		WithResponseBodyLimit(int64(len(body))),
 	)

@@ -133,6 +133,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Handler {
 	envOptions := loadMiddlewareOptionsFromEnv()
 	merged := defaultMiddlewareOptions()
+	merged.LogRequests = envOptions.LogRequests
 	merged.SkipPathSubstrings = append([]string(nil), envOptions.SkipPathSubstrings...)
 	merged.SuppressUnsampledBelow = envOptions.SuppressUnsampledBelow
 	merged.LogRequestHeaderKeys = append([]string(nil), envOptions.LogRequestHeaderKeys...)
@@ -142,6 +143,7 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 	merged.RecoverPanics = envOptions.RecoverPanics
 	merged.TrustProxyHeaders = envOptions.TrustProxyHeaders
 	merged.ChatterConfig = envOptions.ChatterConfig.Clone()
+	merged.RouteGetter = envOptions.RouteGetter
 
 	for _, opt := range opts {
 		if opt != nil {
@@ -173,7 +175,10 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 			}
 			r = r.WithContext(ctx)
 
-			shouldLog := merged.ShouldLog == nil || merged.ShouldLog(ctx, r)
+			shouldLog := merged.LogRequests
+			if merged.ShouldLog != nil {
+				shouldLog = merged.ShouldLog(ctx, r)
+			}
 			if shouldLog && len(merged.SkipPathSubstrings) > 0 {
 				path := r.URL.Path
 				for _, substr := range merged.SkipPathSubstrings {
@@ -191,11 +196,6 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 					ctx = chatter.ContextWithDecision(ctx, chatterDecision)
 					r = r.WithContext(ctx)
 				}
-			}
-
-			if !shouldLog && !merged.RecoverPanics {
-				next.ServeHTTP(w, r)
-				return
 			}
 
 			startTime := time.Now()
@@ -229,16 +229,21 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				body:           responseBodyBuf,
 			}
 
+			routeValue := ""
+			if merged.RouteGetter != nil {
+				routeValue = strings.TrimSpace(merged.RouteGetter(r))
+			}
+
 			if merged.AttachLogger {
 				traceAttrs, hasTrace := slogcp.TraceAttributes(ctx, traceProjectID)
 				requestLogger := logger
 				if hasTrace {
 					requestLogger = withAttrs(requestLogger, traceAttrs)
 				}
-				requestLogger = requestLogger.With(
-					slog.String("http.request.method", r.Method),
-					slog.String("http.route", r.URL.Path),
-				)
+				requestLogger = requestLogger.With(slog.String("http.request.method", r.Method))
+				if routeValue != "" {
+					requestLogger = requestLogger.With(slog.String("http.route", routeValue))
+				}
 				ctx = slogcp.ContextWithLogger(ctx, requestLogger)
 				r = r.WithContext(ctx)
 			}
@@ -298,11 +303,11 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 
 			forcedLog := chatterDecision != nil && chatterDecision.ForceLog
 
-			emitLog := shouldLog || recovered != nil
+			emitLog := shouldLog || recovered != nil || serverError
 			if chatterDecision != nil {
 				if chatterDecision.ShouldLog() {
 					emitLog = true
-				} else if recovered == nil {
+				} else if recovered == nil && !serverError {
 					emitLog = false
 				}
 			}
@@ -341,6 +346,9 @@ func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Han
 				slog.Any(httpRequestKey, reqStruct),
 				slog.Duration("duration", duration),
 			)
+			if routeValue != "" {
+				attrs = append(attrs, slog.String("http.route", routeValue))
+			}
 
 			attrs = appendChatterAnnotations(attrs, chatterDecision, auditKeys)
 

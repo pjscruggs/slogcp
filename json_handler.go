@@ -15,6 +15,7 @@
 package slogcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,6 +33,19 @@ import (
 type groupedAttr struct {
 	groups []string
 	attr   slog.Attr
+}
+
+func extractErrorFromValue(v slog.Value) error {
+	v = v.Resolve()
+	if v.Kind() != slog.KindAny {
+		return nil
+	}
+	if anyVal := v.Any(); anyVal != nil {
+		if err, ok := anyVal.(error); ok {
+			return err
+		}
+	}
+	return nil
 }
 
 type payloadState struct {
@@ -115,7 +129,7 @@ type sourceLocation struct {
 }
 
 type jsonHandler struct {
-	mu sync.Mutex
+	mu *sync.Mutex
 
 	cfg            *handlerConfig
 	leveler        slog.Leveler
@@ -133,6 +147,7 @@ func newJSONHandler(cfg *handlerConfig, leveler slog.Leveler, internalLogger *sl
 		leveler = slog.LevelInfo
 	}
 	h := &jsonHandler{
+		mu:             &sync.Mutex{},
 		cfg:            cfg,
 		leveler:        leveler,
 		writer:         cfg.Writer,
@@ -237,6 +252,7 @@ func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 
 	return &jsonHandler{
+		mu:             h.mu,
 		cfg:            cfg,
 		leveler:        leveler,
 		writer:         writer,
@@ -264,6 +280,7 @@ func (h *jsonHandler) WithGroup(name string) slog.Handler {
 	baseGroups = append(baseGroups, name)
 
 	return &jsonHandler{
+		mu:             h.mu,
 		cfg:            cfg,
 		leveler:        leveler,
 		writer:         writer,
@@ -373,6 +390,11 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 			attr.Value = attr.Value.Resolve()
 			kind = attr.Value.Kind()
 		}
+		if kind != slog.KindGroup && firstErr == nil {
+			if errVal := extractErrorFromValue(attr.Value); errVal != nil {
+				firstErr = errVal
+			}
+		}
 
 		if kind == slog.KindGroup {
 			children := attr.Value.Group()
@@ -480,6 +502,7 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	}
 
 	state.groupStack = groupStack[:0]
+	pruneEmptyMaps(payload)
 	return payload, httpReq, errType, errMsg, stackStr, dynamicLabels
 }
 
@@ -498,7 +521,7 @@ func (h *jsonHandler) emitJSON(
 		return errors.New("slogcp: no writer configured")
 	}
 
-	jsonPayload["severity"] = levelToString(r.Level)
+	jsonPayload["severity"] = severityString(r.Level, h.cfg.UseShortSeverityNames)
 	jsonPayload[messageKey] = r.Message
 	if h.cfg.EmitTimeField {
 		jsonPayload["time"] = r.Time.UTC().Format(time.RFC3339Nano)
@@ -543,9 +566,17 @@ func (h *jsonHandler) emitJSON(
 		}
 	}
 
-	enc := json.NewEncoder(h.writer)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(jsonPayload); err != nil {
+		h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", err))
+		return err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, err := h.writer.Write(buf.Bytes()); err != nil {
 		h.internalLogger.Error("failed to write JSON log entry", slog.Any("error", err))
 		return err
 	}
@@ -557,4 +588,23 @@ func (h *jsonHandler) emitJSON(
 func captureAndFormatFallbackStack() string {
 	stack, _ := CaptureStack(nil)
 	return stack
+}
+
+// pruneEmptyMaps recursively removes map entries that are empty, ensuring that
+// WithGroup-derived handlers do not emit empty objects when no attributes are
+// present for a group.
+func pruneEmptyMaps(m map[string]any) bool {
+	for k, v := range m {
+		switch typed := v.(type) {
+		case map[string]any:
+			if pruneEmptyMaps(typed) {
+				delete(m, k)
+			}
+		case map[string]string:
+			if len(typed) == 0 {
+				delete(m, k)
+			}
+		}
+	}
+	return len(m) == 0
 }
