@@ -116,9 +116,6 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 		if forcedLog {
 			shouldLog = true
 		}
-		if !shouldLog {
-			return handler(ctx, req)
-		}
 
 		// Record start time and split method name.
 		startTime := time.Now()
@@ -145,22 +142,24 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 			}
 		}
 
-		// Log the "start" event.
-		// Pass the original context (ctx) so the handler can extract trace info.
-		startLevel := slog.LevelInfo
-		startAttrs := []slog.Attr{
-			slog.String(grpcServiceKey, serviceName),
-			slog.String(grpcMethodKey, methodName),
-			slog.String(peerAddressKey, peerAddr),
-		}
-		if cfg.logCategory != "" {
-			startAttrs = append(startAttrs, slog.String(categoryKey, cfg.logCategory))
-		}
-		activeLogger.LogAttrs(ctx, startLevel, "Starting gRPC call", startAttrs...)
+		if shouldLog {
+			// Log the "start" event.
+			// Pass the original context (ctx) so the handler can extract trace info.
+			startLevel := slog.LevelInfo
+			startAttrs := []slog.Attr{
+				slog.String(grpcServiceKey, serviceName),
+				slog.String(grpcMethodKey, methodName),
+				slog.String(peerAddressKey, peerAddr),
+			}
+			if cfg.logCategory != "" {
+				startAttrs = append(startAttrs, slog.String(categoryKey, cfg.logCategory))
+			}
+			activeLogger.LogAttrs(ctx, startLevel, "Starting gRPC call", startAttrs...)
 
-		// Log request payload if enabled.
-		if cfg.logPayloads {
-			logPayload(ctx, activeLogger, cfg, "received", req)
+			// Log request payload if enabled.
+			if cfg.logPayloads {
+				logPayload(ctx, activeLogger, cfg, "received", req)
+			}
 		}
 
 		// Setup panic recovery and final logging. This defer runs after the handler returns or panics.
@@ -178,6 +177,17 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 			code := status.Code(err)
 			if cfg.chatterEngine != nil && chatterDecision != nil {
 				cfg.chatterEngine.FinalizeGRPC(chatterDecision, code.String(), duration, code == codes.OK)
+			}
+
+			emitFinish := shouldLog
+			if isPanic {
+				emitFinish = true
+			}
+			if chatterDecision != nil && chatterDecision.ForceLog {
+				emitFinish = true
+			}
+			if !emitFinish {
+				return
 			}
 
 			level := cfg.levelFunc(code)
@@ -231,7 +241,7 @@ func UnaryServerInterceptor(logger *slog.Logger, opts ...Option) grpc.UnaryServe
 		// Log response payload only on success and if enabled.
 		// This check happens *before* the defer logs the final status,
 		// using the 'err' returned directly from the handler.
-		if err == nil && cfg.logPayloads {
+		if shouldLog && err == nil && cfg.logPayloads {
 			logPayload(ctx, activeLogger, cfg, "sent", resp)
 		}
 

@@ -40,9 +40,10 @@ const streamServerInstrumentation = "github.com/pjscruggs/slogcp/grpc/serverstre
 // consistently returned by the Context() method.
 type wrappedServerStream struct {
 	grpc.ServerStream
-	ctx    context.Context // The context associated with this stream, potentially modified by interceptors.
-	logger *slog.Logger    // The logger instance used for payload logging.
-	opts   *options        // Configuration options determining logging behavior (e.g., payload logging enabled).
+	ctx         context.Context // The context associated with this stream, potentially modified by interceptors.
+	logger      *slog.Logger    // The logger instance used for payload logging.
+	opts        *options        // Configuration options determining logging behavior (e.g., payload logging enabled).
+	logPayloads bool            // Whether payload logging should be emitted for this stream instance.
 }
 
 // contextOnlyServerStream wraps an existing grpc.ServerStream but overrides only
@@ -70,7 +71,7 @@ func (w *wrappedServerStream) RecvMsg(m any) error {
 		return err
 	}
 	// Log payload only if enabled and the receive was successful.
-	if !w.opts.logPayloads {
+	if !w.logPayloads {
 		return nil
 	}
 	// Log using the context stored in the wrapper to ensure trace correlation.
@@ -82,7 +83,7 @@ func (w *wrappedServerStream) RecvMsg(m any) error {
 // then calls the underlying ServerStream's SendMsg method.
 func (w *wrappedServerStream) SendMsg(m interface{}) error {
 	// Log payload before attempting to send, as SendMsg might fail.
-	if w.opts.logPayloads {
+	if w.logPayloads {
 		// Log using the context stored in the wrapper.
 		logPayload(w.ctx, w.logger, w.opts, "sent", m)
 	}
@@ -200,15 +201,6 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 		if forcedLog {
 			shouldLog = true
 		}
-		if !shouldLog {
-			// Ensure the handler sees the enriched context, but do not attach
-			// any logging hooks.
-			streamToUse := &contextOnlyServerStream{
-				ServerStream: ss,
-				ctx:          ctx,
-			}
-			return handler(srv, streamToUse)
-		}
 
 		serviceName, methodName := splitMethodName(info.FullMethod)
 
@@ -222,18 +214,20 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			}
 		}
 
-		// Log the "start" event.
-		// Pass the original context (ctx) so the handler can extract trace info.
-		startLevel := slog.LevelInfo
-		startAttrs := []slog.Attr{
-			slog.String(grpcServiceKey, serviceName),
-			slog.String(grpcMethodKey, methodName),
-			slog.String(peerAddressKey, peerAddr),
+		if shouldLog {
+			// Log the "start" event.
+			// Pass the original context (ctx) so the handler can extract trace info.
+			startLevel := slog.LevelInfo
+			startAttrs := []slog.Attr{
+				slog.String(grpcServiceKey, serviceName),
+				slog.String(grpcMethodKey, methodName),
+				slog.String(peerAddressKey, peerAddr),
+			}
+			if cfg.logCategory != "" {
+				startAttrs = append(startAttrs, slog.String(categoryKey, cfg.logCategory))
+			}
+			activeLogger.LogAttrs(ctx, startLevel, "Starting gRPC stream", startAttrs...)
 		}
-		if cfg.logCategory != "" {
-			startAttrs = append(startAttrs, slog.String(categoryKey, cfg.logCategory))
-		}
-		activeLogger.LogAttrs(ctx, startLevel, "Starting gRPC stream", startAttrs...)
 
 		// Setup panic recovery and final logging. This defer runs after the handler returns or panics.
 		defer func() {
@@ -251,6 +245,18 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 			if cfg.chatterEngine != nil && chatterDecision != nil {
 				cfg.chatterEngine.FinalizeGRPC(chatterDecision, code.String(), duration, code == codes.OK)
 			}
+
+			emitFinish := shouldLog
+			if isPanic {
+				emitFinish = true
+			}
+			if chatterDecision != nil && chatterDecision.ForceLog {
+				emitFinish = true
+			}
+			if !emitFinish {
+				return
+			}
+
 			level := cfg.levelFunc(code) // Determine level based on final error.
 			if isPanic {
 				level = internalLevelCritical // Override level for panics.
@@ -297,12 +303,21 @@ func StreamServerInterceptor(logger *slog.Logger, opts ...Option) grpc.StreamSer
 
 		}() // End of defer function for panic recovery and logging.
 
-		// Always wrap the stream so the handler sees the enriched context via Context().
-		streamToUse := &wrappedServerStream{
-			ServerStream: ss,
-			ctx:          ctx,
-			logger:       activeLogger,
-			opts:         cfg,
+		// Always ensure the handler observes the enriched context.
+		var streamToUse grpc.ServerStream
+		if shouldLog {
+			streamToUse = &wrappedServerStream{
+				ServerStream: ss,
+				ctx:          ctx,
+				logger:       activeLogger,
+				opts:         cfg,
+				logPayloads:  cfg.logPayloads,
+			}
+		} else {
+			streamToUse = &contextOnlyServerStream{
+				ServerStream: ss,
+				ctx:          ctx,
+			}
 		}
 
 		// Call the actual gRPC stream handler with the wrapped stream.
