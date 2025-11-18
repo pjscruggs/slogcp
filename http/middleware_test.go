@@ -15,17 +15,20 @@
 package http
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/pjscruggs/slogcp"
 	"io"
 	"log/slog"
+	"net"
 	stdhttp "net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -246,6 +249,99 @@ func TestMiddlewareAttrEnricherAndTransformer(t *testing.T) {
 	}
 }
 
+// TestWrapResponseWriterPreservesOptionalInterfaces ensures wrapResponseWriter retains
+// optional HTTP interfaces such as Flusher, Hijacker, Pusher, CloseNotifier, and ReaderFrom.
+func TestWrapResponseWriterPreservesOptionalInterfaces(t *testing.T) {
+	t.Parallel()
+
+	base := newOptionalResponseWriter()
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/stream", stdhttp.NoBody)
+	cfg := defaultConfig()
+	scope := newRequestScope(req, time.Now(), cfg)
+
+	wrapped, recorder := wrapResponseWriter(base, scope)
+
+	flusher, ok := wrapped.(stdhttp.Flusher)
+	if !ok {
+		t.Fatalf("wrapped writer missing stdhttp.Flusher")
+	}
+	flusher.Flush()
+	if base.flushCount != 1 {
+		t.Fatalf("Flush not forwarded, got %d calls", base.flushCount)
+	}
+
+	hijacker, ok := wrapped.(stdhttp.Hijacker)
+	if !ok {
+		t.Fatalf("wrapped writer missing stdhttp.Hijacker")
+	}
+	hConn, hBuf, err := hijacker.Hijack()
+	if err != nil {
+		t.Fatalf("Hijack error: %v", err)
+	}
+	if hConn != base.hijackConn {
+		t.Fatalf("Hijack returned unexpected connection")
+	}
+	if hBuf != base.hijackRW {
+		t.Fatalf("Hijack returned unexpected bufio.ReadWriter")
+	}
+
+	pusher, ok := wrapped.(stdhttp.Pusher)
+	if !ok {
+		t.Fatalf("wrapped writer missing stdhttp.Pusher")
+	}
+	if err := pusher.Push("/events", &stdhttp.PushOptions{Method: stdhttp.MethodGet}); err != nil {
+		t.Fatalf("Push error: %v", err)
+	}
+	if len(base.pushedTargets) != 1 || base.pushedTargets[0] != "/events" {
+		t.Fatalf("Push target not recorded, got %v", base.pushedTargets)
+	}
+
+	closeNotifier, ok := wrapped.(interface{ CloseNotify() <-chan bool })
+	if !ok {
+		t.Fatalf("wrapped writer missing CloseNotify support")
+	}
+	if ch := closeNotifier.CloseNotify(); ch != base.closeCh {
+		t.Fatalf("CloseNotify returned unexpected channel")
+	}
+
+	// Ensure recorder reference is returned for completeness.
+	if recorder == nil {
+		t.Fatalf("recorder not returned")
+	}
+}
+
+// TestWrapResponseWriterReadFromAccounting ensures ReadFrom instrumentation tracks bytes.
+func TestWrapResponseWriterReadFromAccounting(t *testing.T) {
+	t.Parallel()
+
+	base := &readerFromResponseWriter{header: make(stdhttp.Header)}
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/download", stdhttp.NoBody)
+	scope := newRequestScope(req, time.Now(), defaultConfig())
+
+	wrapped, recorder := wrapResponseWriter(base, scope)
+
+	readerFrom, ok := wrapped.(io.ReaderFrom)
+	if !ok {
+		t.Fatalf("wrapped writer missing io.ReaderFrom")
+	}
+	n, err := readerFrom.ReadFrom(strings.NewReader("payload"))
+	if err != nil {
+		t.Fatalf("ReadFrom error: %v", err)
+	}
+	if n != int64(len("payload")) {
+		t.Fatalf("ReadFrom bytes = %d, want %d", n, len("payload"))
+	}
+	if base.readFromBytes != n {
+		t.Fatalf("underlying writer did not observe ReadFrom bytes")
+	}
+	if recorder.BytesWritten() != n {
+		t.Fatalf("recorder.BytesWritten = %d, want %d", recorder.BytesWritten(), n)
+	}
+	if scope.ResponseSize() != n {
+		t.Fatalf("scope.ResponseSize = %d, want %d", scope.ResponseSize(), n)
+	}
+}
+
 type capturingRoundTripper struct {
 	req *stdhttp.Request
 	ctx context.Context
@@ -263,4 +359,115 @@ func (c *capturingRoundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Respon
 		ContentLength: 2,
 		Request:       req,
 	}, nil
+}
+
+// optionalResponseWriter implements every optional http.ResponseWriter interface for testing.
+type optionalResponseWriter struct {
+	header        stdhttp.Header
+	status        int
+	flushCount    int
+	pushedTargets []string
+	closeCh       chan bool
+	hijackConn    net.Conn
+	hijackRW      *bufio.ReadWriter
+}
+
+// newOptionalResponseWriter constructs a ResponseWriter implementing every optional interface.
+func newOptionalResponseWriter() *optionalResponseWriter {
+	return &optionalResponseWriter{
+		header:     make(stdhttp.Header),
+		closeCh:    make(chan bool, 1),
+		hijackConn: nopConn{},
+		hijackRW:   bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
+	}
+}
+
+// Header implements http.ResponseWriter.
+func (o *optionalResponseWriter) Header() stdhttp.Header { return o.header }
+
+// Write reports that len(p) bytes were written.
+func (o *optionalResponseWriter) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+// WriteHeader records the outgoing status code.
+func (o *optionalResponseWriter) WriteHeader(status int) {
+	o.status = status
+}
+
+// Flush updates the counter for verification.
+func (o *optionalResponseWriter) Flush() {
+	o.flushCount++
+}
+
+// Hijack exposes the canned connection/buffer pair.
+func (o *optionalResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return o.hijackConn, o.hijackRW, nil
+}
+
+// Push records the HTTP/2 push target for assertions.
+func (o *optionalResponseWriter) Push(target string, _ *stdhttp.PushOptions) error {
+	o.pushedTargets = append(o.pushedTargets, target)
+	return nil
+}
+
+// CloseNotify returns the pre-wired notification channel.
+func (o *optionalResponseWriter) CloseNotify() <-chan bool {
+	return o.closeCh
+}
+
+// nopConn is a minimal net.Conn implementation for hijack testing.
+type nopConn struct{}
+
+// Read implements net.Conn by returning EOF.
+func (nopConn) Read([]byte) (int, error) { return 0, io.EOF }
+
+// Write implements net.Conn by discarding bytes.
+func (nopConn) Write([]byte) (int, error) { return 0, io.EOF }
+
+// Close implements net.Conn with a no-op.
+func (nopConn) Close() error { return nil }
+
+// LocalAddr returns a fake local endpoint.
+func (nopConn) LocalAddr() net.Addr { return nopAddr("local") }
+
+// RemoteAddr returns a fake remote endpoint.
+func (nopConn) RemoteAddr() net.Addr { return nopAddr("remote") }
+
+// SetDeadline satisfies net.Conn without enforcing deadlines.
+func (nopConn) SetDeadline(time.Time) error { return nil }
+
+// SetReadDeadline satisfies net.Conn without enforcing deadlines.
+func (nopConn) SetReadDeadline(time.Time) error { return nil }
+
+// SetWriteDeadline satisfies net.Conn without enforcing deadlines.
+func (nopConn) SetWriteDeadline(time.Time) error { return nil }
+
+type nopAddr string
+
+// Network reports the placeholder transport name.
+func (a nopAddr) Network() string { return "nop" }
+
+// String returns the printable address.
+func (a nopAddr) String() string { return string(a) }
+
+type readerFromResponseWriter struct {
+	header        stdhttp.Header
+	readFromBytes int64
+}
+
+// Header implements http.ResponseWriter.
+func (r *readerFromResponseWriter) Header() stdhttp.Header { return r.header }
+
+// Write reports the number of bytes provided.
+func (r *readerFromResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// WriteHeader is a stub for interface compliance.
+func (r *readerFromResponseWriter) WriteHeader(int) {}
+
+// ReadFrom copies from the reader into io.Discard and records the byte count.
+func (r *readerFromResponseWriter) ReadFrom(src io.Reader) (int64, error) {
+	n, err := io.Copy(io.Discard, src)
+	r.readFromBytes += n
+	return n, err
 }

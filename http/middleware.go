@@ -405,91 +405,38 @@ func wrapResponseWriter(w stdhttp.ResponseWriter, scope *RequestScope) (stdhttp.
 		status:         stdhttp.StatusOK,
 	}
 	scope.setStatus(stdhttp.StatusOK)
+	return rec, rec
+}
 
-	var rw stdhttp.ResponseWriter = rec
-
-	if flusher, ok := w.(stdhttp.Flusher); ok {
-		rw = &flushingRecorder{
-			ResponseWriter: rw,
-			flusher:        flusher,
-		}
+// Flush forwards the flush request to the underlying ResponseWriter when supported.
+func (rr *responseRecorder) Flush() {
+	if flusher, ok := rr.ResponseWriter.(stdhttp.Flusher); ok {
+		flusher.Flush()
 	}
-	if hijacker, ok := w.(stdhttp.Hijacker); ok {
-		rw = &hijackingRecorder{
-			ResponseWriter: rw,
-			hijacker:       hijacker,
-		}
+}
+
+// Hijack delegates to the wrapped Hijacker when supported, otherwise returns http.ErrNotSupported.
+func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hijacker, ok := rr.ResponseWriter.(stdhttp.Hijacker); ok {
+		return hijacker.Hijack()
 	}
-	if pusher, ok := w.(stdhttp.Pusher); ok {
-		rw = &pushingRecorder{
-			ResponseWriter: rw,
-			pusher:         pusher,
-		}
+	return nil, nil, stdhttp.ErrNotSupported
+}
+
+// Push forwards HTTP/2 push requests when the underlying writer supports http.Pusher.
+func (rr *responseRecorder) Push(target string, opts *stdhttp.PushOptions) error {
+	if pusher, ok := rr.ResponseWriter.(stdhttp.Pusher); ok {
+		return pusher.Push(target, opts)
 	}
-	if closeNotifier, ok := w.(interface{ CloseNotify() <-chan bool }); ok {
-		rw = &closeNotifyRecorder{
-			ResponseWriter: rw,
-			closeNotifier:  closeNotifier,
-		}
+	return stdhttp.ErrNotSupported
+}
+
+// CloseNotify exposes the wrapped CloseNotifier channel when available.
+func (rr *responseRecorder) CloseNotify() <-chan bool {
+	if cn, ok := rr.ResponseWriter.(interface{ CloseNotify() <-chan bool }); ok {
+		return cn.CloseNotify()
 	}
-	if _, ok := w.(io.ReaderFrom); ok {
-		rw = &readFromRecorder{
-			ResponseWriter: rw,
-			recorder:       rec,
-		}
-	}
-
-	return rw, rec
-}
-
-type flushingRecorder struct {
-	stdhttp.ResponseWriter
-	flusher stdhttp.Flusher
-}
-
-// Flush forwards the flush request to the underlying ResponseWriter.
-func (f *flushingRecorder) Flush() {
-	f.flusher.Flush()
-}
-
-type hijackingRecorder struct {
-	stdhttp.ResponseWriter
-	hijacker stdhttp.Hijacker
-}
-
-// Hijack delegates to the wrapped Hijacker implementation.
-func (h *hijackingRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return h.hijacker.Hijack()
-}
-
-type pushingRecorder struct {
-	stdhttp.ResponseWriter
-	pusher stdhttp.Pusher
-}
-
-// Push forwards HTTP/2 push requests to the wrapped ResponseWriter.
-func (p *pushingRecorder) Push(target string, opts *stdhttp.PushOptions) error {
-	return p.pusher.Push(target, opts)
-}
-
-type closeNotifyRecorder struct {
-	stdhttp.ResponseWriter
-	closeNotifier interface{ CloseNotify() <-chan bool }
-}
-
-// CloseNotify exposes the wrapped CloseNotifier channel.
-func (c *closeNotifyRecorder) CloseNotify() <-chan bool {
-	return c.closeNotifier.CloseNotify()
-}
-
-type readFromRecorder struct {
-	stdhttp.ResponseWriter
-	recorder *responseRecorder
-}
-
-// ReadFrom delegates to the parent recorder while preserving byte accounting.
-func (r *readFromRecorder) ReadFrom(src io.Reader) (int64, error) {
-	return r.recorder.ReadFrom(src)
+	return nil
 }
 
 // ensureSpanContext extracts existing span context or synthesizes one from incoming headers.

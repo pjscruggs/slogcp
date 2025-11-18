@@ -52,6 +52,7 @@ func TestExamplesExercisesEveryExampleModule(t *testing.T) {
 	}
 }
 
+// repoRoot returns the module root directory for integration-style tests.
 func repoRoot(t *testing.T) string {
 	t.Helper()
 
@@ -62,6 +63,7 @@ func repoRoot(t *testing.T) string {
 	return wd
 }
 
+// discoverExampleModules walks .examples and returns directories containing go.mod files.
 func discoverExampleModules(t *testing.T, examplesRoot string) []string {
 	t.Helper()
 

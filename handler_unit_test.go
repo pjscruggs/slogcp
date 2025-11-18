@@ -575,3 +575,64 @@ type failingWriter struct {
 func (f *failingWriter) Write([]byte) (int, error) {
 	return 0, f.err
 }
+
+// TestSeverityHelpersEmitExpectedLevels exercises the severity-specific helpers to
+// ensure they log at the intended slogcp levels and tolerate nil loggers.
+func TestSeverityHelpersEmitExpectedLevels(t *testing.T) {
+	t.Parallel()
+
+	recorder := &severityRecordingHandler{}
+	logger := slog.New(recorder)
+	ctx := context.Background()
+
+	slogcp.DefaultContext(ctx, logger, "default")
+	slogcp.NoticeContext(ctx, logger, "notice")
+	slogcp.CriticalContext(ctx, logger, "critical")
+	slogcp.AlertContext(ctx, logger, "alert")
+	slogcp.EmergencyContext(ctx, logger, "emergency")
+
+	// Ensure helpers do nothing when the logger is nil.
+	slogcp.AlertContext(ctx, nil, "ignored")
+
+	want := []struct {
+		msg   string
+		level slog.Level
+	}{
+		{"default", slog.Level(slogcp.LevelDefault)},
+		{"notice", slog.Level(slogcp.LevelNotice)},
+		{"critical", slog.Level(slogcp.LevelCritical)},
+		{"alert", slog.Level(slogcp.LevelAlert)},
+		{"emergency", slog.Level(slogcp.LevelEmergency)},
+	}
+	if len(recorder.records) != len(want) {
+		t.Fatalf("got %d records, want %d", len(recorder.records), len(want))
+	}
+	for i, rec := range recorder.records {
+		if rec.Message != want[i].msg {
+			t.Fatalf("record %d message = %q, want %q", i, rec.Message, want[i].msg)
+		}
+		if rec.Level != want[i].level {
+			t.Fatalf("record %d level = %v, want %v", i, rec.Level, want[i].level)
+		}
+	}
+}
+
+// severityRecordingHandler captures slog records for inspection in tests.
+type severityRecordingHandler struct {
+	records []slog.Record
+}
+
+// Enabled allows all records through during testing.
+func (h *severityRecordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle records log entries for later assertions.
+func (h *severityRecordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+// WithAttrs satisfies slog.Handler while keeping the recorder as-is.
+func (h *severityRecordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+// WithGroup satisfies slog.Handler while keeping the recorder as-is.
+func (h *severityRecordingHandler) WithGroup(string) slog.Handler { return h }
