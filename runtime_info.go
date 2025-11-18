@@ -374,9 +374,14 @@ func normalizeProjectID(id string) string {
 	return id
 }
 
+// kubernetesNamespacePath points at the mounted namespace file in Kubernetes.
+// Tests may override this path to exercise readNamespace behaviour without needing
+// to access the real serviceaccount mount.
+var kubernetesNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
 // readNamespace reads the Kubernetes namespace from the serviceaccount secret.
 func readNamespace() string {
-	data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	data, err := os.ReadFile(kubernetesNamespacePath)
 	if err != nil {
 		return ""
 	}

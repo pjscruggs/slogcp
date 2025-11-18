@@ -2,6 +2,7 @@ package slogcp
 
 import (
 	"bytes"
+	"io"
 	"testing"
 )
 
@@ -31,6 +32,37 @@ func TestSwitchableWriterSetWriter(t *testing.T) {
 	}
 	if got := second.String(); got != "second" {
 		t.Fatalf("second buffer = %q, want %q", got, "second")
+	}
+}
+
+// TestSwitchableWriterNilInitialWriter ensures nil initial writers default to io.Discard.
+func TestSwitchableWriterNilInitialWriter(t *testing.T) {
+	t.Parallel()
+
+	sw := NewSwitchableWriter(nil)
+	if got := sw.GetCurrentWriter(); got != io.Discard {
+		t.Fatalf("GetCurrentWriter = %T, want io.Discard", got)
+	}
+	if _, err := sw.Write([]byte("discard")); err != nil {
+		t.Fatalf("Write returned %v", err)
+	}
+}
+
+// TestSwitchableWriterGetCurrentWriter tracks writer swaps through GetCurrentWriter.
+func TestSwitchableWriterGetCurrentWriter(t *testing.T) {
+	t.Parallel()
+
+	var first bytes.Buffer
+	var second bytes.Buffer
+
+	sw := NewSwitchableWriter(&first)
+	if got := sw.GetCurrentWriter(); got != &first {
+		t.Fatalf("GetCurrentWriter = %v, want %v", got, &first)
+	}
+
+	sw.SetWriter(&second)
+	if got := sw.GetCurrentWriter(); got != &second {
+		t.Fatalf("GetCurrentWriter = %v, want %v", got, &second)
 	}
 }
 
