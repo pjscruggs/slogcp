@@ -1,6 +1,3 @@
-//go:build unit
-// +build unit
-
 // Copyright 2025 Patrick J. Scruggs
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -66,7 +63,7 @@ func mustSpanID(t *testing.T, hexStr string) trace.SpanID {
 //  4. A context with no span.
 //
 // No external services, mocks, or protobuf builds are required, keeping this
-// a fast “tier‑2” unit test.
+// test fast and self-contained.
 func TestExtractTraceSpan(t *testing.T) {
 	const (
 		projectID      = "my-proj"
@@ -169,8 +166,8 @@ func TestExtractTraceSpan(t *testing.T) {
 	}
 }
 
-// attrsToMap converts a slice of slog.Attr into a simple key/value map for assertions.
-func attrsToMap(attrs []slog.Attr) map[string]any {
+// traceAttrsToMap converts a slice of slog.Attr into a simple key/value map for assertions.
+func traceAttrsToMap(attrs []slog.Attr) map[string]any {
 	out := make(map[string]any, len(attrs))
 	for _, attr := range attrs {
 		out[attr.Key] = attr.Value.Any()
@@ -200,7 +197,7 @@ func TestTraceAttributesWithProject(t *testing.T) {
 		t.Fatalf("TraceAttributes(_, %q) = (_, false), want true", projectID)
 	}
 
-	got := attrsToMap(attrs)
+	got := traceAttrsToMap(attrs)
 	want := map[string]any{
 		slogcp.TraceKey:   slogcp.FormatTraceResource(projectID, rawTraceHex),
 		slogcp.SpanKey:    rawSpanHex,
@@ -246,7 +243,7 @@ func TestTraceAttributesWithoutProject(t *testing.T) {
 		t.Fatalf("TraceAttributes(_, \"\") = (_, false), want true")
 	}
 
-	got := attrsToMap(attrs)
+	got := traceAttrsToMap(attrs)
 	want := map[string]any{
 		"otel.trace_id":      rawTraceHex,
 		"otel.span_id":       rawSpanHex,
@@ -290,7 +287,7 @@ func TestTraceAttributesRemoteSpanWithProject(t *testing.T) {
 		t.Fatalf("TraceAttributes(_, %q) = (_, false), want true", projectID)
 	}
 
-	got := attrsToMap(attrs)
+	got := traceAttrsToMap(attrs)
 	if _, exists := got[slogcp.SpanKey]; exists {
 		t.Fatalf("span key should be omitted for remote contexts: %#v", got)
 	}
@@ -324,7 +321,7 @@ func TestTraceAttributesRemoteSpanWithoutProject(t *testing.T) {
 		t.Fatalf("TraceAttributes(_, \"\") = (_, false), want true")
 	}
 
-	got := attrsToMap(attrs)
+	got := traceAttrsToMap(attrs)
 	if _, exists := got["otel.span_id"]; exists {
 		t.Fatalf("otel.span_id should be omitted for remote contexts: %#v", got)
 	}

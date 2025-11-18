@@ -104,7 +104,6 @@ func TransformLogEntryJSON(in string, now time.Time) (string, error) {
 				delete(payload, "severity")
 				if canonical != "DEFAULT" && !severitySet {
 					root["severity"] = canonical
-					severitySet = true
 				}
 			}
 		}
@@ -418,27 +417,27 @@ var (
 		"ERROR": {}, "CRITICAL": {}, "ALERT": {}, "EMERGENCY": {},
 	}
 	severityTranslations = map[string]string{
-		"WARN": "WARNING",
-		"FATAL": "CRITICAL",
-		"TRACE": "DEBUG",
-		"TRACE_INT": "DEBUG",
-		"FINE": "DEBUG", 
-		"FINER": "DEBUG", 
-		"FINEST": "DEBUG",
-		"SEVERE": "ERROR",
-		"CONFIG": "DEBUG",
-		"CRIT": "CRITICAL",
-		"EMERG": "EMERGENCY",
-		"D": "DEBUG", 
-		"I": "INFO",
-		"N": "NOTICE",
-		"W": "WARNING",
-		"E": "ERROR",
-		"C": "CRITICAL",
-		"A": "ALERT",
+		"WARN":        "WARNING",
+		"FATAL":       "CRITICAL",
+		"TRACE":       "DEBUG",
+		"TRACE_INT":   "DEBUG",
+		"FINE":        "DEBUG",
+		"FINER":       "DEBUG",
+		"FINEST":      "DEBUG",
+		"SEVERE":      "ERROR",
+		"CONFIG":      "DEBUG",
+		"CRIT":        "CRITICAL",
+		"EMERG":       "EMERGENCY",
+		"D":           "DEBUG",
+		"I":           "INFO",
+		"N":           "NOTICE",
+		"W":           "WARNING",
+		"E":           "ERROR",
+		"C":           "CRITICAL",
+		"A":           "ALERT",
 		"INFORMATION": "INFO",
-		"ERR": "ERROR",
-		"F": "CRITICAL",
+		"ERR":         "ERROR",
+		"F":           "CRITICAL",
 	}
 )
 

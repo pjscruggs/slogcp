@@ -365,6 +365,135 @@ func TestStreamClientInterceptorTracksSizes(t *testing.T) {
 	}
 }
 
+// TestUnaryServerInterceptorAttrHooks ensures attr enrichers and transformers apply to derived loggers.
+func TestUnaryServerInterceptorAttrHooks(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	interceptor := UnaryServerInterceptor(
+		WithLogger(logger),
+		WithProjectID("proj-123"),
+		WithAttrEnricher(func(ctx context.Context, info *RequestInfo) []slog.Attr {
+			return []slog.Attr{
+				slog.String("request.full_method", info.FullMethod()),
+				slog.Int64("request.count", info.RequestCount()),
+			}
+		}),
+		WithAttrTransformer(func(ctx context.Context, attrs []slog.Attr, info *RequestInfo) []slog.Attr {
+			filtered := make([]slog.Attr, 0, len(attrs)+1)
+			for _, attr := range attrs {
+				if attr.Key == "request.count" {
+					continue
+				}
+				filtered = append(filtered, attr)
+			}
+			filtered = append(filtered, slog.String("transformed", "applied"))
+			return filtered
+		}),
+		WithOTel(false),
+	)
+
+	handler := func(ctx context.Context, req any) (any, error) {
+		slogcp.Logger(ctx).Info("attr hooks")
+		return &struct{}{}, nil
+	}
+
+	_, err := interceptor(context.Background(), &struct{}{}, &grpc.UnaryServerInfo{
+		FullMethod: "/example.Service/Method",
+	}, handler)
+	if err != nil {
+		t.Fatalf("interceptor returned %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected single log line, got %d", len(lines))
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+	if got := entry["request.full_method"]; got != "/example.Service/Method" {
+		t.Fatalf("request.full_method = %v, want /example.Service/Method", got)
+	}
+	if _, ok := entry["request.count"]; ok {
+		t.Fatalf("request.count should have been removed by transformer")
+	}
+	if got := entry["transformed"]; got != "applied" {
+		t.Fatalf("transformed attr = %v, want applied", got)
+	}
+}
+
+// TestUnaryServerInterceptorPeerControl verifies peer metadata can be disabled.
+func TestUnaryServerInterceptorPeerControl(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	interceptor := UnaryServerInterceptor(
+		WithLogger(logger),
+		WithProjectID("proj-123"),
+		WithPeerInfo(false),
+		WithOTel(false),
+	)
+
+	handler := func(ctx context.Context, req any) (any, error) {
+		slogcp.Logger(ctx).Info("no peer attr")
+		return &struct{}{}, nil
+	}
+
+	ctx := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("198.51.100.10"), Port: 443},
+	})
+	_, err := interceptor(ctx, &struct{}{}, &grpc.UnaryServerInfo{
+		FullMethod: "/example.Service/Peerless",
+	}, handler)
+	if err != nil {
+		t.Fatalf("interceptor returned %v", err)
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+	if _, exists := entry["net.peer.ip"]; exists {
+		t.Fatalf("net.peer.ip should be omitted when WithPeerInfo(false)")
+	}
+}
+
+// TestUnaryClientInterceptorPayloadSizesToggle ensures size tracking can be disabled.
+func TestUnaryClientInterceptorPayloadSizesToggle(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	interceptor := UnaryClientInterceptor(
+		WithLogger(logger),
+		WithProjectID("proj-123"),
+		WithPayloadSizes(false),
+	)
+
+	ctx := context.Background()
+	invoker := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, opts ...grpc.CallOption) error {
+		slogcp.Logger(ctx).Info("payload disabled")
+		return nil
+	}
+
+	if err := interceptor(ctx, "/example.Service/NoSizes", &testSizedMessage{n: 10}, &testSizedMessage{n: 5}, nil, invoker); err != nil {
+		t.Fatalf("interceptor returned %v", err)
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+	if _, exists := entry["rpc.request_size"]; exists {
+		t.Fatalf("rpc.request_size should be omitted when payload sizes disabled")
+	}
+	if _, exists := entry["rpc.response_size"]; exists {
+		t.Fatalf("rpc.response_size should be omitted when payload sizes disabled")
+	}
+}
+
 // decodeStreamEntries converts newline-delimited JSON into a slice of maps.
 func decodeStreamEntries(t *testing.T, raw string) []map[string]any {
 	t.Helper()
@@ -392,6 +521,7 @@ type testSizedMessage struct {
 	n int
 }
 
+// Size reports the encoded size used for payload accounting in tests.
 func (m *testSizedMessage) Size() int { return m.n }
 
 type fakeServerStream struct {
@@ -399,12 +529,22 @@ type fakeServerStream struct {
 	recvQueue []any
 }
 
-func (f *fakeServerStream) SetHeader(metadata.MD) error  { return nil }
-func (f *fakeServerStream) SendHeader(metadata.MD) error { return nil }
-func (f *fakeServerStream) SetTrailer(metadata.MD)       {}
-func (f *fakeServerStream) Context() context.Context     { return f.ctx }
-func (f *fakeServerStream) SendMsg(m any) error          { return nil }
+// SetHeader records response headers; no-op for tests.
+func (f *fakeServerStream) SetHeader(metadata.MD) error { return nil }
 
+// SendHeader sends headers; no-op for tests.
+func (f *fakeServerStream) SendHeader(metadata.MD) error { return nil }
+
+// SetTrailer stores response trailers; no-op for tests.
+func (f *fakeServerStream) SetTrailer(metadata.MD) {}
+
+// Context returns the stream context.
+func (f *fakeServerStream) Context() context.Context { return f.ctx }
+
+// SendMsg writes outbound messages; no-op in tests.
+func (f *fakeServerStream) SendMsg(m any) error { return nil }
+
+// RecvMsg reads queued messages, mimicking client deliveries.
 func (f *fakeServerStream) RecvMsg(m any) error {
 	if len(f.recvQueue) == 0 {
 		return io.EOF
@@ -420,12 +560,22 @@ type fakeClientStream struct {
 	recvErr   error
 }
 
+// Header returns captured headers for the client stream.
 func (f *fakeClientStream) Header() (metadata.MD, error) { return metadata.New(nil), nil }
-func (f *fakeClientStream) Trailer() metadata.MD         { return metadata.New(nil) }
-func (f *fakeClientStream) CloseSend() error             { return nil }
-func (f *fakeClientStream) Context() context.Context     { return f.ctx }
-func (f *fakeClientStream) SendMsg(m any) error          { return nil }
 
+// Trailer returns trailers for the client stream.
+func (f *fakeClientStream) Trailer() metadata.MD { return metadata.New(nil) }
+
+// CloseSend closes the send side; no-op here.
+func (f *fakeClientStream) CloseSend() error { return nil }
+
+// Context returns the stream context.
+func (f *fakeClientStream) Context() context.Context { return f.ctx }
+
+// SendMsg queues outbound messages; no-op.
+func (f *fakeClientStream) SendMsg(m any) error { return nil }
+
+// RecvMsg pops queued responses or returns the configured error.
 func (f *fakeClientStream) RecvMsg(m any) error {
 	if len(f.responses) == 0 {
 		if f.recvErr != nil {
@@ -438,6 +588,7 @@ func (f *fakeClientStream) RecvMsg(m any) error {
 	return copyMessage(m, next)
 }
 
+// copyMessage copies test payloads into the provided destination.
 func copyMessage(dst any, src any) error {
 	switch d := dst.(type) {
 	case *testSizedMessage:

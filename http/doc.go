@@ -65,4 +65,3 @@
 //	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
 //	httpClient.Do(req)
 package http
-

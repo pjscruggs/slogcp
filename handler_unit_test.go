@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build unit
-// +build unit
-
 package slogcp_test
 
 import (
@@ -24,7 +21,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -455,6 +451,40 @@ func TestHandlerTimeFieldEmission(t *testing.T) {
 	})
 }
 
+// TestHandlerLevelAccessors ensures SetLevel/Level/LevelVar operate correctly.
+func TestHandlerLevelAccessors(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(slog.LevelInfo)
+
+	h, err := slogcp.NewHandler(
+		io.Discard,
+		slogcp.WithRedirectWriter(&buf),
+		slogcp.WithLevelVar(levelVar),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	if got := h.Level(); got != slog.LevelInfo {
+		t.Fatalf("initial Level() = %v, want info", got)
+	}
+	h.SetLevel(slog.LevelDebug)
+	if got := h.Level(); got != slog.LevelDebug {
+		t.Fatalf("Level() after SetLevel = %v, want debug", got)
+	}
+	if lv := h.LevelVar(); lv == nil || lv.Level() != slog.LevelDebug {
+		t.Fatalf("LevelVar not synced, got %#v", lv)
+	}
+}
+
 // TestHandlerHandleJSONEncodingFailure verifies encoding errors propagate and emit diagnostics.
 func TestHandlerHandleJSONEncodingFailure(t *testing.T) {
 	t.Parallel()
@@ -481,7 +511,7 @@ func TestHandlerHandleJSONEncodingFailure(t *testing.T) {
 	record.Time = time.Now()
 	record.Level = slog.LevelInfo
 	record.Message = "encode failure"
-	record.AddAttrs(slog.Float64("nan", math.NaN()))
+	record.AddAttrs(slog.Any("broken", failingJSONMarshaler{}))
 
 	if err := h.Handle(context.Background(), record); err == nil {
 		t.Fatalf("Handle() returned nil error, want encoding failure")
@@ -492,6 +522,13 @@ func TestHandlerHandleJSONEncodingFailure(t *testing.T) {
 	if !strings.Contains(diagBuf.String(), "failed to render JSON log entry") {
 		t.Fatalf("diagnostic log missing encode failure, got %q", diagBuf.String())
 	}
+}
+
+type failingJSONMarshaler struct{}
+
+// MarshalJSON always fails to trigger handler encoding error paths.
+func (failingJSONMarshaler) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("marshal failure")
 }
 
 // TestHandlerHandleWriterFailure verifies writer errors bubble up and trigger diagnostics.
@@ -534,6 +571,7 @@ type failingWriter struct {
 	err error
 }
 
+// Write always returns an error to simulate a broken sink.
 func (f *failingWriter) Write([]byte) (int, error) {
 	return 0, f.err
 }

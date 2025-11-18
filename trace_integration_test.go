@@ -125,6 +125,7 @@ func TestHandlerFallsBackToOTELTraceKeys(t *testing.T) {
 	}
 }
 
+// decodeSingleLogLine parses the last emitted JSON record for assertions.
 func decodeSingleLogLine(t *testing.T, raw string) map[string]any {
 	t.Helper()
 	raw = strings.TrimSpace(raw)
