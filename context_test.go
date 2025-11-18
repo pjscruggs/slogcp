@@ -31,3 +31,23 @@ func TestContextWithLoggerStoresAndRetrievesLogger(t *testing.T) {
 		t.Fatalf("Logger(ctx after override) = %v, want %v", got, overridden)
 	}
 }
+
+// TestContextWithLoggerHandlesNilInputs ensures helper behavior remains stable when
+// callers supply nil contexts or loggers.
+func TestContextWithLoggerHandlesNilInputs(t *testing.T) {
+	t.Parallel()
+
+	custom := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if got := slogcp.ContextWithLogger(nil, custom); got != nil {
+		t.Fatalf("ContextWithLogger(nil, custom) = %v, want nil", got)
+	}
+
+	ctx := context.Background()
+	if got := slogcp.ContextWithLogger(ctx, nil); got != ctx {
+		t.Fatalf("ContextWithLogger(ctx, nil) = %v, want original context", got)
+	}
+
+	if got := slogcp.Logger(nil); got != slog.Default() {
+		t.Fatalf("Logger(nil) = %v, want default logger %v", got, slog.Default())
+	}
+}
