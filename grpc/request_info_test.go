@@ -64,3 +64,50 @@ type fakeSizer int
 
 // Size reports the fake encoded size for messageSize tests.
 func (f fakeSizer) Size() int { return int(f) }
+
+// TestRequestInfoRecordMetrics ensures request/response accounting handles nils and valid payloads.
+func TestRequestInfoRecordMetrics(t *testing.T) {
+	t.Parallel()
+
+	info := newRequestInfo("/pkg.Service/Unary", "unary", false, time.Now())
+	info.recordRequest(nil)
+	info.recordResponse(nil)
+	if info.RequestCount() != 0 || info.ResponseCount() != 0 {
+		t.Fatalf("record* should ignore nil payloads, got req=%d resp=%d", info.RequestCount(), info.ResponseCount())
+	}
+
+	info.recordRequest(fakeSizer(11))
+	info.recordResponse(fakeSizer(7))
+	if info.RequestBytes() != 11 || info.ResponseBytes() != 7 {
+		t.Fatalf("bytes tracked incorrectly, req=%d resp=%d", info.RequestBytes(), info.ResponseBytes())
+	}
+	if info.RequestCount() != 1 || info.ResponseCount() != 1 {
+		t.Fatalf("counts tracked incorrectly, req=%d resp=%d", info.RequestCount(), info.ResponseCount())
+	}
+}
+
+// TestRequestInfoLatencyFallback reports elapsed time before explicit finalization.
+func TestRequestInfoLatencyFallback(t *testing.T) {
+	t.Parallel()
+
+	start := time.Now().Add(-10 * time.Millisecond)
+	info := newRequestInfo("/pkg.Service/Unary", "unary", false, start)
+	if got := info.Latency(); got <= 0 {
+		t.Fatalf("Latency before finalize = %v, want >0", got)
+	}
+
+	info.finalize(codes.OK, 5*time.Millisecond)
+	if got := info.Latency(); got != 5*time.Millisecond {
+		t.Fatalf("Latency after finalize = %v, want 5ms", got)
+	}
+}
+
+// TestSplitFullMethodHandlesServiceOnly ensures service-only identifiers parse correctly.
+func TestSplitFullMethodHandlesServiceOnly(t *testing.T) {
+	t.Parallel()
+
+	service, method := splitFullMethod("/pkg.Service")
+	if service != "pkg.Service" || method != "" {
+		t.Fatalf("splitFullMethod service-only parsed %q/%q", service, method)
+	}
+}
