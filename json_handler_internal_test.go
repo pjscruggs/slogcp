@@ -85,3 +85,77 @@ func TestPruneEmptyMapsRemovesEntries(t *testing.T) {
 		t.Fatalf("non-empty nested map removed unexpectedly: %v", request)
 	}
 }
+
+// TestPayloadStatePrepareResetsUsedMaps ensures prepare clears root maps and usage tracking.
+func TestPayloadStatePrepareResetsUsedMaps(t *testing.T) {
+	t.Parallel()
+
+	var ps payloadState
+	root := ps.prepare(1)
+	root["foo"] = "bar"
+
+	aux := ps.borrowMap(2)
+	aux["scratch"] = 1
+	if len(ps.usedMaps) != 1 {
+		t.Fatalf("usedMaps = %d, want 1", len(ps.usedMaps))
+	}
+
+	root = ps.prepare(8)
+	if len(root) != 0 {
+		t.Fatalf("prepare did not clear root map: %v", root)
+	}
+	if len(ps.usedMaps) != 0 {
+		t.Fatalf("usedMaps = %d after prepare, want 0", len(ps.usedMaps))
+	}
+}
+
+// TestPayloadStateObtainLabelsClears verifies the labels map is reused and cleared.
+func TestPayloadStateObtainLabelsClears(t *testing.T) {
+	t.Parallel()
+
+	var ps payloadState
+	labels := ps.obtainLabels()
+	labels["env"] = "prod"
+
+	reused := ps.obtainLabels()
+	if len(reused) != 0 {
+		t.Fatalf("labels not cleared, len=%d", len(reused))
+	}
+	if _, exists := reused["env"]; exists {
+		t.Fatalf("stale label entries persisted: %v", reused)
+	}
+}
+
+// TestPayloadStateBorrowMapRecycle exercises both allocation paths and recycling.
+func TestPayloadStateBorrowMapRecycle(t *testing.T) {
+	t.Parallel()
+
+	var ps payloadState
+	first := ps.borrowMap(1)
+	first["alpha"] = "a"
+	second := ps.borrowMap(3)
+	second["beta"] = "b"
+
+	if len(ps.usedMaps) != 2 {
+		t.Fatalf("usedMaps = %d, want 2", len(ps.usedMaps))
+	}
+	if len(ps.freeMaps) != 0 {
+		t.Fatalf("freeMaps = %d before recycle, want 0", len(ps.freeMaps))
+	}
+
+	ps.recycle()
+	if len(ps.usedMaps) != 0 {
+		t.Fatalf("usedMaps = %d after recycle, want 0", len(ps.usedMaps))
+	}
+	if len(ps.freeMaps) != 2 {
+		t.Fatalf("freeMaps = %d after recycle, want 2", len(ps.freeMaps))
+	}
+
+	reused := ps.borrowMap(1)
+	if len(reused) != 0 {
+		t.Fatalf("reused map was not cleared: %v", reused)
+	}
+	if len(ps.freeMaps) != 1 {
+		t.Fatalf("freeMaps = %d after borrowing recycled map, want 1", len(ps.freeMaps))
+	}
+}

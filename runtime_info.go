@@ -409,14 +409,23 @@ type metadataClient interface {
 
 type defaultMetadataClient struct{}
 
+var (
+	metadataOnGCEFunc = func() bool {
+		return metadata.OnGCE()
+	}
+	metadataGetFunc = func(ctx context.Context, path string) (string, error) {
+		return metadata.GetWithContext(ctx, path)
+	}
+)
+
 // OnGCE reports whether the GCE metadata server is reachable.
 func (defaultMetadataClient) OnGCE() bool {
-	return metadata.OnGCE()
+	return metadataOnGCEFunc()
 }
 
 // Get retrieves a metadata value for the provided path.
 func (defaultMetadataClient) Get(path string) (string, error) {
-	return metadata.GetWithContext(context.Background(), path)
+	return metadataGetFunc(context.Background(), path)
 }
 
 var metadataClientFactory = func() metadataClient {

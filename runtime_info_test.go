@@ -15,6 +15,7 @@
 package slogcp
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -622,5 +623,59 @@ func TestMetadataLookupAvailabilityGuard(t *testing.T) {
 	}
 	if counter.calls != 1 {
 		t.Fatalf("OnGCE() call count = %d, want 1", counter.calls)
+	}
+}
+
+// TestDefaultMetadataClientHooks verifies that the override points are exercised.
+func TestDefaultMetadataClientHooks(t *testing.T) {
+	t.Parallel()
+
+	origOnGCE := metadataOnGCEFunc
+	origGet := metadataGetFunc
+	t.Cleanup(func() {
+		metadataOnGCEFunc = origOnGCE
+		metadataGetFunc = origGet
+	})
+
+	var (
+		onGCECalled  bool
+		getCalled    bool
+		capturedCtx  context.Context
+		capturedPath string
+	)
+
+	metadataOnGCEFunc = func() bool {
+		onGCECalled = true
+		return true
+	}
+	metadataGetFunc = func(ctx context.Context, path string) (string, error) {
+		getCalled = true
+		capturedCtx = ctx
+		capturedPath = path
+		return "stub-value", nil
+	}
+
+	client := defaultMetadataClient{}
+	if !client.OnGCE() {
+		t.Fatalf("OnGCE() = false, want true")
+	}
+	if !onGCECalled {
+		t.Fatalf("override hook for OnGCE was not invoked")
+	}
+	val, err := client.Get("project/project-id")
+	if err != nil {
+		t.Fatalf("Get() returned unexpected error: %v", err)
+	}
+	if !getCalled {
+		t.Fatalf("override hook for Get was not invoked")
+	}
+	if capturedCtx == nil {
+		t.Fatalf("Get() did not provide a context")
+	}
+	if capturedPath != "project/project-id" {
+		t.Fatalf("Get() path = %q, want %q", capturedPath, "project/project-id")
+	}
+	if val != "stub-value" {
+		t.Fatalf("Get() = %q, want %q", val, "stub-value")
 	}
 }
