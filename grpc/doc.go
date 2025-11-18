@@ -21,7 +21,7 @@
 // latency, status codes, peer information, and (optionally) payload sizes.
 // When [WithOTel] is enabled (the default) otelgrpc StatsHandlers are installed
 // automatically so spans and metrics are emitted without extra wiring. Legacy
-// X-Cloud-Trace-Context propagation can be synthesised on outgoing RPCs when
+// X-Cloud-Trace-Context propagation can be synthesized on outgoing RPCs when
 // [WithLegacyXCloudInjection] is selected.
 //
 // Convenience helpers are available:
