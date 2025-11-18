@@ -156,4 +156,6 @@ tags
 
 ### Workflow Generated Files ###
 /coverage.txt
+/coverage
+/coverage-func.txt
 **/*debug_log.txt
