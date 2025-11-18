@@ -197,7 +197,8 @@ func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 	sourceLoc := h.resolveSourceLocation(r)
 
 	projectForTrace := h.cfg.TraceProjectID
-	fmtTrace, rawTraceID, rawSpanID, sampled, _ := ExtractTraceSpan(ctx, projectForTrace)
+	fmtTrace, rawTraceID, rawSpanID, sampled, spanCtx := ExtractTraceSpan(ctx, projectForTrace)
+	ownsSpan := spanCtx.IsValid() && !spanCtx.IsRemote()
 
 	state := payloadStatePool.Get().(*payloadState)
 	defer func() {
@@ -222,7 +223,7 @@ func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 		payload[labelsGroupKey] = h.cfg.runtimeLabels
 	}
 
-	return h.emitJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr)
+	return h.emitJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, ownsSpan, sampled, errType, errMsg, stackStr)
 }
 
 // WithAttrs returns a new handler that includes the provided attributes on
@@ -514,6 +515,7 @@ func (h *jsonHandler) emitJSON(
 	httpReq *HTTPRequest,
 	sourceLoc *sourceLocation,
 	fmtTrace, rawTrace, spanID string,
+	ownsSpan bool,
 	sampled bool,
 	errType, errMsg, stackStr string,
 ) error {
@@ -533,7 +535,9 @@ func (h *jsonHandler) emitJSON(
 
 	if fmtTrace != "" {
 		jsonPayload[TraceKey] = fmtTrace
-		jsonPayload[SpanKey] = spanID
+		if ownsSpan && spanID != "" {
+			jsonPayload[SpanKey] = spanID
+		}
 		jsonPayload[SampledKey] = sampled
 	} else if rawTrace != "" {
 		jsonPayload["otel.trace_id"] = rawTrace
