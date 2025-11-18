@@ -1,6 +1,3 @@
-//go:build smoke
-// +build smoke
-
 // Copyright 2025 Patrick J. Scruggs
 //
 // Licensed under the Apache License, Version 2.0 (the "License");

@@ -184,6 +184,68 @@ func TestTransportInjectsTraceAndLogger(t *testing.T) {
 	}
 }
 
+// TestMiddlewareAttrEnricherAndTransformer ensures custom enrichers/transformers affect derived loggers.
+func TestMiddlewareAttrEnricherAndTransformer(t *testing.T) {
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	mw := Middleware(
+		WithLogger(baseLogger),
+		WithProjectID("proj-123"),
+		WithOTel(false),
+		WithAttrEnricher(func(r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+			return []slog.Attr{
+				slog.String("tenant.id", "acme"),
+				slog.String("raw.query", scope.Query()),
+			}
+		}),
+		WithAttrTransformer(func(attrs []slog.Attr, r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+			filtered := make([]slog.Attr, 0, len(attrs)+1)
+			for _, attr := range attrs {
+				if attr.Key == "raw.query" {
+					continue
+				}
+				filtered = append(filtered, attr)
+			}
+			filtered = append(filtered, slog.String("transformed", scope.Route()))
+			return filtered
+		}),
+		WithRouteGetter(func(r *stdhttp.Request) string {
+			return "/widgets/:id"
+		}),
+	)
+
+	handler := mw(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		logger := slogcp.Logger(r.Context())
+		logger.Info("custom attrs")
+		w.WriteHeader(stdhttp.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/widgets/42?color=blue", stdhttp.NoBody)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected single log line, got %d", len(lines))
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	if got := entry["tenant.id"]; got != "acme" {
+		t.Fatalf("tenant.id = %v, want acme", got)
+	}
+	if _, exists := entry["raw.query"]; exists {
+		t.Fatalf("raw.query should have been removed by transformer")
+	}
+	if got := entry["transformed"]; got != "/widgets/:id" {
+		t.Fatalf("transformed attr = %v, want /widgets/:id", got)
+	}
+}
+
 type capturingRoundTripper struct {
 	req *stdhttp.Request
 	ctx context.Context

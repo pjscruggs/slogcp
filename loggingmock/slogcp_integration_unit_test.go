@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build unit
-// +build unit
-
 package loggingmock
 
 import (
@@ -278,7 +275,7 @@ func TestHTTPRequestAttrCoexistsWithHTTPAttributes(t *testing.T) {
 
 	payload, ok := transformed["jsonPayload"].(map[string]any)
 	if !ok {
-		t.Fatalf("jsonPayload missing or wrong type")
+		t.Fatalf("jsonPayload missing or wrong type: %T (%v)", transformed["jsonPayload"], transformed)
 	}
 	if got := payload["http.method"]; got != "GET" {
 		t.Fatalf("http.method = %v, want GET", got)
@@ -291,9 +288,11 @@ func TestHTTPRequestAttrCoexistsWithHTTPAttributes(t *testing.T) {
 	}
 }
 
+// transformLine feeds a raw log line through the logging mock transformer and parses the result.
 func transformLine(t *testing.T, line string, now time.Time) map[string]any {
 	t.Helper()
-	out, err := TransformLogEntryJSON(line, now)
+	wrapped := `{"jsonPayload":` + line + `}`
+	out, err := TransformLogEntryJSON(wrapped, now)
 	if err != nil {
 		t.Fatalf("TransformLogEntryJSON returned %v", err)
 	}

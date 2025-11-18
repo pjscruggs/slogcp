@@ -1,6 +1,3 @@
-//go:build smoke
-// +build smoke
-
 // Copyright 2025 Patrick J. Scruggs
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package slogcp_test contains black‑box tests for the slogcp library, including
-// both minimal smoke tests that verify basic API functionality and more comprehensive
-// unit tests that validate core logging behaviors. All tests are designed to run
-// without contacting Google Cloud services, ensuring they can be executed quickly
-// during development and CI pipelines without external dependencies.
+// Package slogcp_test contains black-box tests for the slogcp library. The suite
+// avoids contacting Google Cloud services so it remains quick and deterministic
+// in local development and continuous integration pipelines.
 package slogcp_test
