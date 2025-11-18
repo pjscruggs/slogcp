@@ -1,10 +1,12 @@
 package slogcp
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -253,4 +255,76 @@ func TestLoadConfigFromEnvTargets(t *testing.T) {
 			t.Fatalf("loadConfigFromEnv() error = nil, want ErrInvalidRedirectTarget")
 		}
 	})
+}
+
+// TestParseBoolEnvCoversValidation exercises valid, invalid, and blank values.
+func TestParseBoolEnvCoversValidation(t *testing.T) {
+	t.Parallel()
+
+	logger := newDiscardLogger()
+	if !parseBoolEnv("true", false, logger) {
+		t.Fatalf("parseBoolEnv(true) = false, want true")
+	}
+	if parseBoolEnv("invalid", true, logger) != true {
+		t.Fatalf("parseBoolEnv(invalid) should keep current value")
+	}
+	if parseBoolEnv("", true, logger) != true {
+		t.Fatalf("parseBoolEnv blank should keep current value")
+	}
+}
+
+// TestParseLevelEnvCoversAliases exercises numeric and named inputs.
+func TestParseLevelEnvCoversAliases(t *testing.T) {
+	t.Parallel()
+
+	logger := newDiscardLogger()
+	tests := []struct {
+		input string
+		want  slog.Level
+	}{
+		{input: "debug", want: slog.LevelDebug},
+		{input: "NOTICE", want: slog.Level(LevelNotice)},
+		{input: "critical", want: slog.Level(LevelCritical)},
+		{input: "alert", want: slog.Level(LevelAlert)},
+		{input: "emergency", want: slog.Level(LevelEmergency)},
+		{input: "17", want: slog.Level(17)},
+	}
+	for _, tt := range tests {
+		if got := parseLevelEnv(tt.input, slog.LevelInfo, logger); got != tt.want {
+			t.Fatalf("parseLevelEnv(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+
+	if got := parseLevelEnv("invalid", slog.LevelWarn, logger); got != slog.LevelWarn {
+		t.Fatalf("parseLevelEnv invalid should retain current level")
+	}
+}
+
+// TestIsStdStream ensures stdout/stderr detection works and rejects other writers.
+func TestIsStdStream(t *testing.T) {
+	t.Parallel()
+
+	if !isStdStream(os.Stdout) {
+		t.Fatalf("expected stdout to be detected")
+	}
+	if !isStdStream(os.Stderr) {
+		t.Fatalf("expected stderr to be detected")
+	}
+	if isStdStream(io.Discard) {
+		t.Fatalf("io.Discard should not be treated as std stream")
+	}
+}
+
+// TestLogDiagnosticHandlesNilLogger ensures nil loggers are ignored.
+func TestLogDiagnosticHandlesNilLogger(t *testing.T) {
+	t.Parallel()
+
+	logDiagnostic(nil, slog.LevelInfo, "message")
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+	logDiagnostic(logger, slog.LevelInfo, "hello", slog.String("k", "v"))
+	if !strings.Contains(buf.String(), `"message":"hello"`) {
+		t.Fatalf("log output missing message, got %q", buf.String())
+	}
 }

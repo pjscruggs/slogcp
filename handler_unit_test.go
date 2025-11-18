@@ -338,6 +338,9 @@ func TestHandlerSetLevel(t *testing.T) {
 	if got := entries[0]["k"]; got != "v" {
 		t.Fatalf("attribute k = %v, want v", got)
 	}
+	if got := h.Level(); got != slog.LevelDebug {
+		t.Fatalf("Level() = %v, want %v", got, slog.LevelDebug)
+	}
 }
 
 // TestHandlerWithLevelVar ensures WithLevelVar shares a LevelVar instance.
@@ -377,6 +380,9 @@ func TestHandlerWithLevelVar(t *testing.T) {
 	}
 	if got := entries[0]["message"]; got != "info emitted" {
 		t.Fatalf("message = %v, want info emitted", got)
+	}
+	if got := h.Level(); got != slog.LevelInfo {
+		t.Fatalf("Level() = %v, want %v", got, slog.LevelInfo)
 	}
 }
 
@@ -837,4 +843,88 @@ func captureStdStream(t *testing.T, target string) (*os.File, func()) {
 		t.Fatalf("captureStdStream: unknown target %q", target)
 		return nil, func() {}
 	}
+}
+
+// TestHandlerNilReceiversSafe ensures nil handler methods are no-ops.
+func TestHandlerNilReceiversSafe(t *testing.T) {
+	t.Parallel()
+
+	var h *slogcp.Handler
+	h.SetLevel(slog.LevelDebug)
+	if got := h.Level(); got != slog.LevelInfo {
+		t.Fatalf("Level() on nil handler = %v, want %v", got, slog.LevelInfo)
+	}
+	if h.LevelVar() != nil {
+		t.Fatalf("LevelVar() on nil handler should be nil")
+	}
+}
+
+// TestSeverityHelperFunctions validates severity helper methods emit expected levels.
+func TestSeverityHelperFunctions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		call func(*slog.Logger)
+		want slog.Level
+	}{
+		{
+			name: "default",
+			call: func(l *slog.Logger) { slogcp.Default(l, "default event") },
+			want: slog.Level(slogcp.LevelDefault),
+		},
+		{
+			name: "default_context",
+			call: func(l *slog.Logger) { slogcp.DefaultContext(context.Background(), l, "ctx default") },
+			want: slog.Level(slogcp.LevelDefault),
+		},
+		{
+			name: "notice",
+			call: func(l *slog.Logger) { slogcp.NoticeContext(context.Background(), l, "notice") },
+			want: slog.Level(slogcp.LevelNotice),
+		},
+		{
+			name: "critical",
+			call: func(l *slog.Logger) { slogcp.CriticalContext(context.Background(), l, "crit") },
+			want: slog.Level(slogcp.LevelCritical),
+		},
+		{
+			name: "alert",
+			call: func(l *slog.Logger) { slogcp.AlertContext(context.Background(), l, "alert") },
+			want: slog.Level(slogcp.LevelAlert),
+		},
+		{
+			name: "emergency",
+			call: func(l *slog.Logger) { slogcp.EmergencyContext(context.Background(), l, "emerg") },
+			want: slog.Level(slogcp.LevelEmergency),
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := &recordingHandler{}
+			logger := slog.New(recorder)
+			tt.call(logger)
+			if recorder.lastRecord == nil {
+				t.Fatalf("no log entry captured")
+			}
+			if recorder.lastRecord.Level != tt.want {
+				t.Fatalf("level = %v, want %v", recorder.lastRecord.Level, tt.want)
+			}
+		})
+	}
+}
+
+// TestSeverityHelpersHandleNilLogger confirms helpers guard nil loggers.
+func TestSeverityHelpersHandleNilLogger(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	slogcp.Default(nil, "noop")
+	slogcp.DefaultContext(ctx, nil, "noop")
+	slogcp.NoticeContext(ctx, nil, "noop")
+	slogcp.CriticalContext(ctx, nil, "noop")
+	slogcp.AlertContext(ctx, nil, "noop")
+	slogcp.EmergencyContext(ctx, nil, "noop")
 }

@@ -381,7 +381,15 @@ func (rr *responseRecorder) ReadFrom(src io.Reader) (int64, error) {
 		}
 		return n, err
 	}
-	return io.Copy(rr.ResponseWriter, src)
+	if !rr.wroteHeader {
+		rr.WriteHeader(stdhttp.StatusOK)
+	}
+	n, err := io.Copy(rr.ResponseWriter, src)
+	if n > 0 {
+		rr.bytesWritten += n
+		rr.scope.addResponseBytes(n)
+	}
+	return n, err
 }
 
 // Status returns the HTTP status code that was written to the client.
