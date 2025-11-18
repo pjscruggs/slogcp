@@ -19,15 +19,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/pjscruggs/slogcp/chatter"
 )
 
 type groupedAttr struct {
@@ -35,6 +31,7 @@ type groupedAttr struct {
 	attr   slog.Attr
 }
 
+// extractErrorFromValue unwraps an error from a slog.Value when possible.
 func extractErrorFromValue(v slog.Value) error {
 	v = v.Resolve()
 	if v.Kind() != slog.KindAny {
@@ -122,6 +119,12 @@ var payloadStatePool = sync.Pool{
 	},
 }
 
+var jsonBufferPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
+
 type sourceLocation struct {
 	File     string `json:"file"`
 	Line     int64  `json:"line"`
@@ -135,6 +138,7 @@ type jsonHandler struct {
 	leveler        slog.Leveler
 	writer         io.Writer
 	internalLogger *slog.Logger
+	bufferPool     *sync.Pool
 
 	groupedAttrs []groupedAttr
 	groups       []string
@@ -152,6 +156,7 @@ func newJSONHandler(cfg *handlerConfig, leveler slog.Leveler, internalLogger *sl
 		leveler:        leveler,
 		writer:         cfg.Writer,
 		internalLogger: internalLogger,
+		bufferPool:     &jsonBufferPool,
 		groupedAttrs:   make([]groupedAttr, 0, len(cfg.InitialAttrs)),
 		groups:         make([]string, 0, len(cfg.InitialGroups)+1),
 	}
@@ -177,31 +182,14 @@ func (h *jsonHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= min
 }
 
-// Handle serializes r into the Cloud Logging wire format, applying chatter
-// decisions, trace context, and runtime metadata before writing to the
-// configured writer.
+// Handle serializes r into the Cloud Logging wire format, enriching it with
+// trace context and runtime metadata before writing to the configured writer.
 //
 // Example:
 //
 //	logger := slog.New(h)
 //	logger.Info("index", slog.Int("docs", 42))
 func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
-	if decision, ok := chatter.DecisionFromContext(ctx); ok && decision != nil {
-		if decision.ShouldDrop() {
-			return nil
-		}
-		switch strings.ToUpper(decision.SeverityHint()) {
-		case "WARN":
-			if r.Level < slog.LevelWarn {
-				r.Level = slog.LevelWarn
-			}
-		case "ERROR":
-			if r.Level < slog.LevelError {
-				r.Level = slog.LevelError
-			}
-		}
-	}
-
 	if !h.Enabled(ctx, r.Level) {
 		return nil
 	}
@@ -219,9 +207,19 @@ func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	payload, httpReq, errType, errMsg, stackStr, dynamicLabels := h.buildPayload(r, state)
 
-	finalLabels := mergeStringMaps(h.cfg.runtimeLabels, dynamicLabels)
-	if len(finalLabels) > 0 {
-		payload[labelsGroupKey] = finalLabels
+	if len(dynamicLabels) > 0 {
+		if len(h.cfg.runtimeLabels) > 0 {
+			for k, v := range h.cfg.runtimeLabels {
+				if _, exists := dynamicLabels[k]; !exists {
+					dynamicLabels[k] = v
+				}
+			}
+		}
+		if len(dynamicLabels) > 0 {
+			payload[labelsGroupKey] = dynamicLabels
+		}
+	} else if len(h.cfg.runtimeLabels) > 0 {
+		payload[labelsGroupKey] = h.cfg.runtimeLabels
 	}
 
 	return h.emitJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, sampled, errType, errMsg, stackStr)
@@ -257,6 +255,7 @@ func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		leveler:        leveler,
 		writer:         writer,
 		internalLogger: internalLogger,
+		bufferPool:     h.bufferPool,
 		groupedAttrs:   grouped,
 		groups:         baseGroups,
 	}
@@ -285,6 +284,7 @@ func (h *jsonHandler) WithGroup(name string) slog.Handler {
 		leveler:        leveler,
 		writer:         writer,
 		internalLogger: internalLogger,
+		bufferPool:     h.bufferPool,
 		groupedAttrs:   baseGrouped,
 		groups:         baseGroups,
 	}
@@ -334,8 +334,8 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	map[string]string,
 ) {
 	h.mu.Lock()
-	baseAttrs := append([]groupedAttr(nil), h.groupedAttrs...)
-	baseGroups := append([]string(nil), h.groups...)
+	baseAttrs := h.groupedAttrs
+	baseGroups := h.groups
 	h.mu.Unlock()
 
 	estimatedFields := len(baseAttrs) + int(r.NumAttrs())
@@ -543,7 +543,7 @@ func (h *jsonHandler) emitJSON(
 
 	if errType != "" {
 		jsonPayload["error_type"] = errType
-		jsonPayload[messageKey] = fmt.Sprintf("%s: %s", r.Message, errMsg)
+		jsonPayload[messageKey] = r.Message + ": " + errMsg
 	}
 
 	if stackStr != "" {
@@ -566,8 +566,25 @@ func (h *jsonHandler) emitJSON(
 		}
 	}
 
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
+	var (
+		buf    *bytes.Buffer
+		pooled bool
+	)
+	if h.bufferPool != nil {
+		pooled = true
+		buf = h.bufferPool.Get().(*bytes.Buffer)
+	} else {
+		buf = &bytes.Buffer{}
+	}
+	buf.Reset()
+	defer func() {
+		if pooled {
+			buf.Reset()
+			h.bufferPool.Put(buf)
+		}
+	}()
+
+	enc := json.NewEncoder(buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(jsonPayload); err != nil {
 		h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", err))
@@ -575,8 +592,9 @@ func (h *jsonHandler) emitJSON(
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if _, err := h.writer.Write(buf.Bytes()); err != nil {
+	_, err := buf.WriteTo(h.writer)
+	h.mu.Unlock()
+	if err != nil {
 		h.internalLogger.Error("failed to write JSON log entry", slog.Any("error", err))
 		return err
 	}

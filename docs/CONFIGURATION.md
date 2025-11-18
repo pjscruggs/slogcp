@@ -1,20 +1,22 @@
 # slogcp Configuration
 
-This guide explains how to configure `github.com/pjscruggs/slogcp` and its HTTP and gRPC integrations. The handler emits Cloud Logging-compatible JSON to an `io.Writer`; Google Cloud's collectors (Cloud Logging Agent, Cloud Run, GKE, etc.) can ingest this output from stdout/stderr or any other transport you configure.
+`slogcp` provides a Google Cloud friendly `slog.Handler` together with HTTP and gRPC integrations that derive request-scoped loggers, correlate records with Cloud Trace, and play well with OpenTelemetry instrumentation.
 
-## Layered Configuration Model
+## Configuration Layers
 
-`slogcp` applies settings in three layers:
+`slogcp` resolves configuration in the following order:
 
-1. **Defaults** – internal sensible defaults.
-2. **Environment variables** – read during `slogcp.NewHandler(defaultWriter)` and the middleware/interceptor constructors.
-3. **Programmatic options** – `With…` functions override both defaults and environment variables.
+1. **Defaults** - internal sensible defaults baked into each constructor.
+2. **Environment variables** - evaluated when you call `slogcp.NewHandler`, `slogcphttp.Middleware`, or the gRPC helpers.
+3. **Programmatic options** - `With...` overrides take precedence over everything else.
 
-> **Boolean environment values** – each boolean flag accepts `true`, `1`, `yes`, or `on` to enable and `false`, `0`, `no`, or `off` to disable (case-insensitive). Invalid values are ignored.
+## Boolean ENV VARS
 
-## Handler Setup (`slogcp.NewHandler`)
+Boolean environment variables always accept any of `true`, `1`, `yes`, or `on` to enable and `false`, `0`, `no`, or `off` to disable (case-insensitive). Invalid values are ignored.
 
-Create a handler with your preferred writer and options, then pass it to `slog.New`:
+## Handler Setup
+
+Construct the handler with `slogcp.NewHandler` and then wrap it with `slog.New`:
 
 ```go
 handler, err := slogcp.NewHandler(os.Stdout,
@@ -22,308 +24,138 @@ handler, err := slogcp.NewHandler(os.Stdout,
 	slogcp.WithSourceLocationEnabled(true),
 )
 if err != nil {
-	log.Fatalf("set up slogcp handler: %v", err)
+	log.Fatalf("configure slogcp: %v", err)
 }
 defer handler.Close()
 
 logger := slog.New(handler)
 ```
 
-### Core Options and Environment Variables
+Key options:
 
 | Option | Environment variable(s) | Default | Description |
 | --- | --- | --- | --- |
-| `WithLevel(slog.Level)` | `LOG_LEVEL` | `info` | Minimum severity captured by the handler. Accepts textual (`debug`, `notice`, etc.) or integer `slog.Level` values. |
-| `WithLevelVar(*slog.LevelVar)` | (none) | `nil` | Shares an existing `slog.LevelVar` with the handler so multiple loggers can adjust level in lockstep. The handler still applies `WithLevel`/`LOG_LEVEL` to seed the shared variable. |
-| `WithSourceLocationEnabled(bool)` | `LOG_SOURCE_LOCATION` | `false` | When enabled, populates `logging.googleapis.com/sourceLocation`. |
-| `WithTime(bool)` | `LOG_TIME` | `false` | Emits the top-level RFC3339Nano `time` field instead of relying on Cloud Logging to supply a timestamp. |
-| `WithStackTraceEnabled(bool)` | `LOG_STACK_TRACE_ENABLED` | `false` | Turns on automatic stack capture at or above `StackTraceLevel`. |
-| `WithStackTraceLevel(slog.Level)` | `LOG_STACK_TRACE_LEVEL` | `error` | Severity threshold for automatic stack traces. |
-| `WithTraceProjectID(string)` | `SLOGCP_TRACE_PROJECT_ID` → `SLOGCP_PROJECT_ID` → `GOOGLE_CLOUD_PROJECT` | detected via runtime info | Chooses the project used when formatting `logging.googleapis.com/trace`. Fallback resolution matches the listed order. |
-| `WithRedirectToStdout()` / `WithRedirectToStderr()` | `SLOGCP_REDIRECT_AS_JSON_TARGET=stdout|stderr`<br>`SLOGCP_LOG_TARGET=stdout|stderr` | `stdout` | Redirects JSON output to the desired stream. |
-| `WithRedirectToFile(path)` | `SLOGCP_REDIRECT_AS_JSON_TARGET=file:/path/to/log.json`<br>`SLOGCP_LOG_TARGET=file` | none | Opens (append mode) and writes to the specified path. `SLOGCP_LOG_TARGET=file` requires the `file:` env to supply the path. |
-| `WithRedirectWriter(io.Writer)` | (none) | inherited from constructor | Uses any writer you supply (for example lumberjack, sockets, or buffers). |
-| `WithReplaceAttr(func)` | (none) | `nil` | Mutates or removes attributes just before encoding. Returning the zero `slog.Attr{}` drops the attribute. |
-| `WithMiddleware(slogcp.Middleware)` | (none) | none | Wraps the core handler with additional `slog.Handler` middleware. Added middleware runs outside-in (last option wraps first). |
-| `WithAttrs([]slog.Attr)` / `WithGroup(string)` | (none) | none | Adds initial attributes or a starting group to every record. |
-| `WithInternalLogger(*slog.Logger)` | (none) | silent text logger | Receives configuration warnings (for example invalid env values, file reopen errors). Useful for surfacing misconfiguration. |
+| `WithLevel(slog.Level)` | `SLOGCP_LEVEL` | `info` | Minimum severity captured by the handler. |
+| `WithLevelVar(*slog.LevelVar)` | (none) | current value of the supplied var | Shares a caller-managed `slog.LevelVar` so external config can adjust levels. |
+| `WithSourceLocationEnabled(bool)` | `SLOGCP_SOURCE_LOCATION` | `false` | Populates `logging.googleapis.com/sourceLocation`. |
+| `WithTime(bool)` | `SLOGCP_TIME` | Enabled outside Cloud Run, Cloud Run Jobs, Cloud Functions, and App Engine; disabled on those runtimes | Emits a top-level `time` field so logs carry RFC3339 timestamps. |
+| `WithStackTraceEnabled(bool)` | `SLOGCP_STACK_TRACE_ENABLED` | `false` | Enables automatic stack capture at or above `StackTraceLevel`. |
+| `WithStackTraceLevel(slog.Level)` | `SLOGCP_STACK_TRACE_LEVEL` | `error` | Threshold for automatic stacks. |
+| `WithTraceProjectID(string)` | `SLOGCP_TRACE_PROJECT_ID`, `SLOGCP_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT` | detected at runtime | Supplies the project ID used when formatting trace fields. |
+| `WithSeverityAliases(bool)` | `SLOGCP_SEVERITY_ALIASES` | `true` on Cloud Run (services), Cloud Run Jobs, Cloud Functions, and App Engine; otherwise `false` | Emits single-letter Cloud Logging severity aliases ("I", "E", etc.). Using these aliases saves about 1ns of JSON marshaling time per log entry, and has no effect the final Cloud Logging LogEntry. |
+| `WithRedirectToStdout()` / `WithRedirectToStderr()` | `SLOGCP_TARGET` | `stdout` | Chooses the output destination. |
+| `WithRedirectToFile(path)` | `SLOGCP_TARGET` (`file:/absolute/path`) | (disabled) | Writes structured logs to a file (append mode). |
+| `WithRedirectWriter(io.Writer)` | (none) | constructor writer | Uses any writer you supply without taking ownership. |
+| `WithReplaceAttr(func)` | (none) | (none) | Mutates or removes attributes before encoding. |
+| `WithMiddleware(slogcp.Middleware)` | (none) | (none) | Wraps the handler with custom middleware. |
+| `WithAttrs([]slog.Attr)` / `WithGroup(string)` | (none) | (none) | Adds fixed attributes or an initial group. |
+| `WithInternalLogger(*slog.Logger)` | (none) | discarding text logger | Receives configuration warnings. |
 
-`SLOGCP_LOG_TARGET=gcp` returns an error because the handler does not use the Cloud Logging API client. Pick a JSON destination instead (stdout/stderr/file/custom writer).
+Additional notes:
+- `SLOGCP_TARGET` accepts `stdout`, `stderr`, or `file:/absolute/path`. Invalid values trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
+- When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor after external tools move the file. Always call `Close` during shutdown to flush buffers and release writers.
+- `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust levels at runtime via `SetLevel` or share the var with other handlers.
+- `WithSeverityAliases` controls whether JSON carries the terse severity names; Cloud Logging still renders the full names in the console. slogcp enables the aliases by default only on Cloud Run (services/jobs), Cloud Functions, and App Engine deployments.
+- `WithTime` defaults mirror Cloud Logging expectations: timestamps are omitted on the same managed GCP runtimes (Cloud Run, Cloud Functions, App Engine) and included elsewhere. When slogcp emits a timestamp it preserves the nanosecond precision provided by `slog`.
+- `slogcp.ContextWithLogger` and `slogcp.Logger` stash and recover request-scoped loggers. The HTTP and gRPC integrations call these helpers automatically.
 
-If neither an option nor an environment variable supplies a writer, the handler uses the `defaultWriter` argument from `NewHandler`; if that is `nil`, it falls back to `os.Stdout`.
+### Severity Levels
 
-### File Destinations and Rotation
+`slogcp` extends `log/slog` levels so they line up with [Google Cloud Logging's severities](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#LogSeverity) (`DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, `CRITICAL`, `ALERT`, `EMERGENCY`, and `DEFAULT`). The exported constants in [`levels.go`](../levels.go) (for example `slogcp.LevelNotice`, `slogcp.LevelAlert`) and helper functions such as `slogcp.DefaultContext`, `slogcp.NoticeContext`, and `slogcp.AlertContext` make it easy to emit those severities directly.
 
-`WithRedirectToFile` and `SLOGCP_REDIRECT_AS_JSON_TARGET=file:…` open the path in append mode (`0644`). When the handler owns the file, `handler.ReopenLogFile()` can be called (for example during a SIGHUP handler) to cooperate with external rotation tools. Any writer that implements `io.Closer` is closed when you call `handler.Close()`.
+`DEFAULT` is treated specially. Records written with `slogcp.LevelDefault` (including the `slogcp.Default`/`DefaultContext` helpers) will **ALWAYS** be logged. Even if you configure `WithLevel(slog.LevelWarn)` or set `SLOGCP_LEVEL=error`, default-severity records will still be delivered to Cloud Logging. This is done to respect GCP's intent that `DEFAULT` represents "no assigned severity level" and to provide a convenient way to debug issues relating to severity filtering.
 
-### Runtime Metadata and Labels
+All other severities retain their natural order relative to the standard slog levels: `DEBUG` < `INFO` < `NOTICE` < `WARNING` < `ERROR` < `CRITICAL` < `ALERT` < `EMERGENCY` < `DEFAULT`.
 
-`slogcp.DetectRuntimeInfo()` runs during handler construction and adds environment-derived metadata automatically:
 
-- `logging.googleapis.com/labels` receives platform-specific identifiers (Cloud Run revisions, Cloud Functions names, GCE zones, Kubernetes metadata, etc.).
-- `serviceContext` is populated when appropriate (service/version pairs for Cloud Run, Cloud Functions, App Engine, and others).
-- If no explicit trace project is configured, the detected project populates `TraceProjectID` so trace correlation still works out of the box.
+## HTTP Integration (`github.com/pjscruggs/slogcp/http`)
 
-You can supplement or override labels by logging into the reserved group explicitly:
-
-```go
-logger.WithGroup(slogcp.LabelsGroup).Info("ready", slog.String("team", "observability"))
-```
-
-### Handler Lifecycle
-
-- `handler.Close()` flushes buffered output, closes owned files, and closes custom writers implementing `io.Closer`. It is idempotent.
-- `handler.ReopenLogFile()` reopens the managed file writer after log rotation.
-- All closing errors are emitted through the internal diagnostic logger when provided.
-- `handler.SetLevel(slog.Level)` and `handler.LevelVar()` expose runtime level control without reinstalling the handler. Use these hooks to adjust verbosity in response to configuration changes or admin endpoints.
-
-### Trace Helpers and Context Integration
-
-- `slogcp.TraceAttributes(ctx, projectID)` returns trace-aware attributes (`logging.googleapis.com/trace`, `logging.googleapis.com/spanId`, etc.) for composing request loggers.
-- `slogcp.ContextWithLogger(ctx, logger)` embeds a request-scoped logger in the context; `slogcp.Logger(ctx)` retrieves it (falling back to `slog.Default()`). Both HTTP and gRPC integrations use these helpers when `AttachLogger` is enabled.
-
-### Stack Traces and Error Fields
-
-When an attribute value implements `error`, the handler emits the error message, captures the Go type in `error_type`, and, if stack tracing is enabled for the level, adds the stack to `stack_trace`. Stack traces gathered from wrapped errors (via `ExtractStack`) are preferred; otherwise the handler captures a best-effort runtime stack.
-
-## JSON Payload Layout
-
-Every record is encoded as a single JSON object. Key fields include:
-
-- `severity` – Google Cloud severity code using single-letter aliases (`D`, `I`, `N`, `W`, `E`, `C`, `A`), the abbreviated `EMERG` for emergency, and `DEFAULT` for unspecified logs.
-- `message` – record message (augmented with the error message when `error_type` is present).
-- `time` – RFC3339Nano timestamp in UTC when `WithTime`/`LOG_TIME` is true.
-- `logging.googleapis.com/sourceLocation` – present when source logging is enabled.
-- `logging.googleapis.com/trace`, `logging.googleapis.com/spanId`, `logging.googleapis.com/trace_sampled` – written when the context carries a valid OpenTelemetry span and a project can be determined.
-- `otel.trace_id`, `otel.span_id`, `otel.trace_sampled` – fallback keys when no trace project is known.
-- `logging.googleapis.com/labels` – merged runtime labels plus any emitted under that group.
-- `serviceContext` – auto-populated service metadata when detected or explicitly provided.
-- `httpRequest` – populated when an attached attribute is a `*slogcp.HTTPRequest` (HTTP middleware does this automatically).
-- `error_type` / `stack_trace` – present when errors or stack tracing are enabled.
-
-Extended severity support is exposed through `slogcp.Level` constants. They map cleanly onto Google Cloud severities while remaining `slog.Level` compatible:
-
-| Constant | Numeric value | Cloud Logging severity |
-| --- | --- | --- |
-| `slogcp.LevelDefault` | 30 | `DEFAULT` |
-| `slogcp.LevelDebug` | -4 | `DEBUG` |
-| `slogcp.LevelInfo` | 0 | `INFO` |
-| `slogcp.LevelNotice` | 2 | `NOTICE` |
-| `slogcp.LevelWarn` | 4 | `WARNING` |
-| `slogcp.LevelError` | 8 | `ERROR` |
-| `slogcp.LevelCritical` | 12 | `CRITICAL` |
-| `slogcp.LevelAlert` | 16 | `ALERT` |
-| `slogcp.LevelEmergency` | 20 | `EMERG` |
-
-> **Note:** When encoding JSON, `slogcp` emits Cloud Logging-approved abbreviations `D`, `I`, `N`, `W`, `E`, `C`, `A`, and `EMERG`; `DEFAULT` remains unchanged because no shorter alias exists.
-
-## HTTP Middleware (`github.com/pjscruggs/slogcp/http`)
-
-### Default Behaviour
-
-`slogcphttp.Middleware(logger)` wraps `http.Handler`s to log request/response pairs in a Cloud Logging-friendly schema. By default it:
-
-- Extracts trace context using the global OpenTelemetry propagator (configured by `slogcp` to understand both W3C Trace Context and `X-Cloud-Trace-Context` headers).
-- Starts a server span when none exists (`StartSpanIfAbsent=true`).
-- Emits a request-scoped logger in the context (`AttachLogger=true`) with trace attributes.
-- Logs start and finish events, HTTP method/URL, status, latency, byte counts, and remote IP.
-- Demotes or drops health-check chatter when enabled via the shared `chatter` engine.
-
-Use `slogcphttp.InjectTraceContextMiddleware()` only when you intentionally disable `slogcp`'s composite propagator and need a manual fallback for `X-Cloud-Trace-Context`.
-
-> Set `SLOGCP_DISABLE_PROPAGATOR_AUTOSET=true` before importing `slogcp` if you prefer to manage the global OpenTelemetry propagator yourself.
-
-### Functional Options
-
-| Option | Purpose |
-| --- | --- |
-| `WithShouldLog(func(context.Context, *http.Request) bool)` | Predicate executed after trace extraction to decide if the request should be logged. |
-| `WithSkipPathSubstrings([]string)` | Drops requests whose `URL.Path` contains any listed substring. |
-| `WithSuppressUnsampledBelow(slog.Leveler)` | Suppresses unsampled requests below the chosen severity (5xx responses always log). |
-| `WithLogRequestHeaderKeys(keys...)` / `WithLogResponseHeaderKeys(keys...)` | Emits selected headers into structured attributes. Keys are canonicalised like `net/http`. |
-| `WithRequestBodyLimit(int64)` / `WithResponseBodyLimit(int64)` | Captures up to `limit` bytes of body content for debugging. Zero disables capture. |
-| `WithRecoverPanics(bool)` | Converts panics into 500 responses and logs the panic with a stack trace. |
-| `WithTrustProxyHeaders(bool)` | Trusts `X-Forwarded-For` / `X-Real-IP` when extracting the client address. |
-| `WithTrustProxyEvaluator(func(*http.Request) bool)` | Fine-grained proxy trust decision evaluated per request. |
-| `WithContextLogger(bool)` | Enables/disables storing a request-scoped logger in the context. |
-| `WithStartSpanIfAbsent(bool)` | Controls whether a server span should be started when none is present. |
-| `WithTracer(trace.Tracer)` | Supplies a custom tracer used when `StartSpanIfAbsent` is true. |
-| `WithChatterConfig(chatter.Config)` *(or `WithHealthCheckFilter`)* | Installs a chatter-reduction configuration shared with gRPC interceptors. |
-| `WithTraceProjectID(string)` | Overrides the project ID used when formatting per-request trace attributes. |
-
-### Environment Variables
-
-`loadMiddlewareOptionsFromEnv` honours these variables before functional options run:
-
-| Variable | Meaning | Default |
-| --- | --- | --- |
-| `SLOGCP_HTTP_SKIP_PATH_SUBSTRINGS` | Comma-separated substrings handed to `WithSkipPathSubstrings`. | none |
-| `SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW` | Severity threshold string/integer for unsampled suppression. | none |
-| `SLOGCP_HTTP_LOG_REQUEST_HEADER_KEYS` | Comma-separated request header keys to log. | none |
-| `SLOGCP_HTTP_LOG_RESPONSE_HEADER_KEYS` | Comma-separated response header keys to log. | none |
-| `SLOGCP_HTTP_REQUEST_BODY_LIMIT` | Byte limit for captured request bodies. | `0` (disabled) |
-| `SLOGCP_HTTP_RESPONSE_BODY_LIMIT` | Byte limit for captured response bodies. | `0` (disabled) |
-| `SLOGCP_HTTP_RECOVER_PANICS` | Enables panic recovery. | `false` |
-| `SLOGCP_HTTP_TRUST_PROXY_HEADERS` | Trusts proxy headers when true. | `false` |
-| `SLOGCP_HTTP_ATTACH_LOGGER` | Overrides whether a logger is attached to the context. | `true` |
-| `SLOGCP_HTTP_START_SPAN_IF_ABSENT` | Overrides span auto-start behaviour. | `true` |
-| `SLOGCP_HTTP_TRACE_PROJECT_ID` | Overrides the project used for per-request trace decoration. | empty |
-
-Health-check and chatter controls are configured via the shared `SLOGCP_CHATTER_*` variables described later.
-
-### Example
+Use `http.Middleware` to wrap servers and `http.Transport` to instrument clients:
 
 ```go
-hc := chatter.DefaultConfig()
-hc.Mode = chatter.ModeOn
-hc.Action = chatter.ActionMark
-
-middleware := slogcphttp.Middleware(logger,
-	slogcphttp.WithSkipPathSubstrings("/metrics"),
-	slogcphttp.WithLogRequestHeaderKeys("X-Request-Id"),
-	slogcphttp.WithChatterConfig(hc),
+mw := slogcphttp.Middleware(
+	slogcphttp.WithLogger(logger),
 )
 
-handler := slogcphttp.InjectTraceContextMiddleware()(middleware(myMux))
+transport := slogcphttp.Transport(
+	http.DefaultTransport,
+	slogcphttp.WithLegacyXCloudInjection(true),
+)
 ```
 
-### HTTP Client Trace Propagation
+### Server Middleware
 
-`slogcphttp.NewTraceRoundTripper(base http.RoundTripper, opts...)` wraps a transport to inject outbound trace headers from `req.Context()`:
+`Middleware` derives a logger per request, attaches it to the context (retrievable with `slogcp.Logger`), and records a `RequestScope` with method, route, latency, status, and peer metadata. When `WithOTel(true)` (the default) is in effect it composes `otelhttp.NewHandler` so OpenTelemetry spans are created automatically. No request logs are emitted; the middleware simply enriches application logs produced by your handlers.
 
-- `WithInjectTraceparent(bool)` – enables/disables W3C Trace Context (defaults to `true`).
-- `WithInjectXCloud(bool)` – enables/disables `X-Cloud-Trace-Context` (defaults to `false`).
-- `WithSkip(func(*http.Request) bool)` – predicate to skip propagation for select requests (e.g., external hosts).
+Important options:
 
-Pass `nil` for `base` to wrap `http.DefaultTransport`.
-
-## gRPC Instrumentation (`github.com/pjscruggs/slogcp/grpc`)
-
-### Provided Interceptors
-
-- `UnaryServerInterceptor(logger, opts...)`
-- `StreamServerInterceptor(logger, opts...)`
-- `NewUnaryClientInterceptor(logger, opts...)`
-- `NewStreamClientInterceptor(logger, opts...)`
-
-All interceptors share the same option set processed by `processOptions`.
-
-### Core Behaviour
-
-- Server interceptors extract trace context from incoming metadata using the global propagator (which understands both W3C Trace Context and `x-cloud-trace-context`) and optionally start a span when none exists.
-- Client interceptors propagate trace headers (`traceparent` and `tracestate`) unless disabled via `WithTracePropagation(false)`. The legacy `x-cloud-trace-context` header is added only when `WithLegacyXCloudInjection(true)` is also supplied.
-- Both sides honour the shared chatter engine for health checks and sampling when configured.
-- Panic recovery, metadata logging, payload logging, and deterministic sampling are opt-in via options.
-
-### Functional Options
-
-| Option | Purpose |
+| Option | Description |
 | --- | --- |
-| `WithLevels(CodeToLevel)` | Controls how gRPC status codes map to log severities (defaults to sensible info/warn/error mapping). |
-| `WithShouldLog(func(context.Context, string) bool)` | Decides if a call should be logged. |
-| `WithSkipPaths([]string)` | Drops calls whose method contains any provided substring. |
-| `WithSamplingRate(float64)` | Deterministically samples a percentage of calls (0.0–1.0). |
-| `WithLogCategory(string)` | Adds a constant `log.category` attribute to emitted records. |
-| `WithPayloadLogging(bool)` | Emits request/response payloads at `DEBUG`. |
-| `WithMaxPayloadSize(int)` | Truncates payload logging to the specified byte size (0 = no limit). |
-| `WithMetadataLogging(bool)` | Captures request headers and response headers/trailers. |
-| `WithMetadataFilter(MetadataFilterFunc)` | Filters metadata keys when metadata logging is enabled. |
-| `WithPanicRecovery(bool)` | Enables/disables panic-to-error conversion (default `true`). |
-| `WithAutoStackTrace(bool)` | Automatically attaches stack traces to error-level logs and recovered panics. |
-| `WithContextLogger(bool)` | Controls whether a request-scoped logger is stored in the context. |
-| `WithStartSpanIfAbsent(bool)` | Controls whether a server span is started when none exists. |
-| `WithTracer(trace.Tracer)` | Supplies a custom tracer for span creation. |
-| `WithTraceProjectID(string)` | Overrides the project used for trace-aware context loggers. |
-| `WithSkipHealthChecks(bool)` | Enables a built-in config that drops standard gRPC health-check calls. |
-| `WithChatterConfig(chatter.Config)` *(or `WithHealthCheckFilter`)* | Installs a custom chatter reduction configuration shared with HTTP middleware. |
-| `WithTracePropagation(bool)` | Enables/disables client-side propagation of W3C trace headers (default `true`). |
-| `WithLegacyXCloudInjection(bool)` | Enables injection of the legacy `x-cloud-trace-context` header on client egress (default `false`). |
+| `WithLogger(*slog.Logger)` | Sets the base logger used to derive request loggers. Defaults to `slog.Default()`. |
+| `WithProjectID(string)` | Overrides the project ID used for Cloud Trace correlation. |
+| `WithPropagators(propagation.TextMapPropagator)` | Customizes the propagator used to extract trace context when no span exists. |
+| `WithTracerProvider(trace.TracerProvider)` | Supplies the tracer provider passed to `otelhttp`. |
+| `WithPublicEndpoint(bool)` | Forwards the public-endpoint hint to `otelhttp`. |
+| `WithOTel(bool)` | Enables or disables wrapping with `otelhttp`. |
+| `WithSpanNameFormatter(otelhttp.SpanNameFormatter)` / `WithFilter(otelhttp.Filter)` | Mirrors the underlying `otelhttp` hooks. |
+| `WithAttrEnricher(func(*http.Request, *RequestScope) []slog.Attr)` | Adds custom attributes to the request logger. |
+| `WithAttrTransformer(func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr)` | Mutates attributes before they are applied. |
+| `WithRouteGetter(func(*http.Request) string)` | Supplies a route template extractor (for example, from your mux). |
+| `WithClientIP(bool)` | Toggles inclusion of `network.peer.ip` (enabled by default). |
+| `WithIncludeQuery(bool)` | Opts into logging raw query strings (disabled by default). |
+| `WithUserAgent(bool)` | Opts into logging the `User-Agent` string (disabled by default). |
 
-Client interceptors automatically log outgoing metadata (when enabled), response headers, trailers, payloads, and final status codes. Server interceptors add peer address, panic diagnostics, and chatter annotations.
+`RequestScope` captures derived metadata and can be retrieved with `slogcphttp.ScopeFromContext(ctx)`. The same helper works for outbound requests instrumented by `Transport`. To emit [the Cloud Logging `httpRequest` payload](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#HttpRequest) explicitly:
 
-## Chatter Reduction and Sampling (`github.com/pjscruggs/slogcp/chatter`)
+```go
+scope, _ := slogcphttp.ScopeFromContext(ctx)
+logger.InfoContext(ctx, "served", slogcphttp.HTTPRequestAttr(r, scope))
+```
 
-The chatter engine suppresses known-noisy traffic (load-balancer probes, App Engine internals, gRPC health checks) and applies deterministic sampling before the handler emits a record. Both the HTTP middleware and gRPC interceptors share the same `chatter.Config`. Configuration is applied in this order: package defaults → `SLOGCP_CHATTER_*` environment variables → an explicit `WithChatterConfig` option. Invalid environment values are logged through the handler’s internal logger and ignored so that code-based settings always win.
+### HTTP Client Transport
 
-### Defaults vs overrides
-- Lists such as ignore paths or gRPC methods are additive by default. Setting `SLOGCP_CHATTER_HTTP_OVERRIDE_DEFAULTS=true` or `SLOGCP_CHATTER_GRPC_OVERRIDE_DEFAULTS=true` clears the built-in entries before applying your values.
-- All list-style variables accept comma-separated values; surrounding whitespace is trimmed.
-- Boolean flags accept `true/false`, `1/0`, `yes/no`, or `on/off` (case-insensitive). Durations use Go’s `time.ParseDuration` syntax (e.g. `250ms`, `2s`, `1m`).
+`Transport(base, opts...)` injects W3C trace headers (and, optionally, `X-Cloud-Trace-Context`) and derives a child logger for outbound requests. It reuses the same `Option` type as the middleware so you can share configuration slices across server and client instrumentation. Highlights include:
 
-### General behaviour
-| Config field | Environment variable | Default | Description |
-| --- | --- | --- | --- |
-| `Mode` | `SLOGCP_CHATTER_MODE` | `auto` | `auto` enables suppression only when the process is detected on Google Cloud (via `metadata.OnGCE`), `on` forces chatter reduction everywhere, and `off` disables it. |
-| `Action` | `SLOGCP_CHATTER_ACTION` | `drop` | Base action applied when a rule matches. `drop` removes the log entry, `mark` keeps it with chatter annotations, `route` is accepted but currently downgrades to `mark` with a warning. |
-| `AlwaysLogErrors` | `SLOGCP_CHATTER_ALWAYS_LOG_ERRORS` | `true` | Forces matching requests with HTTP status ≥400 or non-OK gRPC codes to be emitted (safety rail: `error`). |
-| `LatencyThreshold` | `SLOGCP_CHATTER_LATENCY_THRESHOLD` | `500ms` | Matching requests whose latency exceeds the threshold are logged and annotated with safety rail `latency` and a WARN severity hint. Use `0` to disable the latency rail. |
-| `HTTPEnabledOverride` | `SLOGCP_CHATTER_HTTP_ENABLED` | `nil` (no override) | Forces HTTP chatter suppression on/off regardless of `Mode`. |
-| `GRPCEnabledOverride` | `SLOGCP_CHATTER_GRPC_ENABLED` | `nil` (no override) | Forces gRPC chatter suppression on/off regardless of `Mode`. |
+| Option | Description |
+| --- | --- |
+| `WithLogger(*slog.Logger)` | Sets the base logger for outbound requests. When omitted, the transport falls back to `slogcp.Logger(ctx)` or `slog.Default()`. |
+| `WithProjectID(string)` | Controls the project ID used when computing Cloud Trace correlation fields. |
+| `WithPropagators(propagation.TextMapPropagator)` | Overrides the propagator used for trace header injection. |
+| `WithAttrEnricher` / `WithAttrTransformer` | Allow custom attribute enrichment or redaction for outbound requests. |
+| `WithClientIP(bool)` | Toggles inclusion of the resolved host address as `network.peer.ip`. Enabled by default. |
+| `WithIncludeQuery(bool)` / `WithUserAgent(bool)` | Control whether the query string and user agent are recorded on derived loggers. |
+| `WithLegacyXCloudInjection(bool)` | Synthesises the legacy `X-Cloud-Trace-Context` header in addition to W3C trace headers. |
 
-### HTTP match configuration
-| Config field | Environment variable | Default | Description |
-| --- | --- | --- | --- |
-| `HTTP.IgnoreCIDRs` | `SLOGCP_CHATTER_HTTP_IGNORE_IPS` | *(none)* | Comma-separated CIDR ranges treated as load-balancer sources. Matching remote IPs trigger chatter suppression with reason `lb_ip`. |
-| `HTTP.Paths` | `SLOGCP_CHATTER_HTTP_IGNORE_PATHS` | *(none)* | Exact path matches flagged as chatter (reason `path`). |
-| `HTTP.Prefixes` | `SLOGCP_CHATTER_HTTP_IGNORE_PREFIXES` | *(none)* | Path prefixes to suppress (reason `prefix`). |
-| `HTTP.Regexes` | `SLOGCP_CHATTER_HTTP_IGNORE_REGEX` | *(none)* | Regular expressions matched against the request path (reason `regex`). Invalid patterns disable chatter with a warning. |
-| `HTTP.Headers` | `SLOGCP_CHATTER_HTTP_IGNORE_HEADERS` | *(none)* | Header presence/value rules (e.g. `User-Agent`, `X-Task-Queue-Name=default`). Matching requests use reason `header`. |
-| `HTTP.Methods` | `SLOGCP_CHATTER_HTTP_METHODS` | *(none → all methods)* | Optional allowlist limiting matcher evaluation to specific HTTP verbs. Values are uppercased automatically. |
-| `HTTP.AppEngineSuppressAH` | `SLOGCP_CHATTER_APPENGINE_SUPPRESS_AH` | `true` | Drops internal App Engine `_ah/*` requests (reason `appengine_ah`). Disable to keep warmup requests. |
-| `HTTP.AppEngineCronAction` | `SLOGCP_CHATTER_APPENGINE_CRON_ACTION` | `mark` | Action applied to App Engine cron requests identified via headers. |
+Client requests also populate a `RequestScope`, making latency, status, and payload sizes available via `ScopeFromContext`. `InjectTraceContextMiddleware` remains available for the rare case where you disable `otelhttp` and still need to recognise `X-Cloud-Trace-Context` manually.
 
-**Header rule syntax:** each comma-separated token may be `Header-Name` (presence only), `Header-Name=value`, or `Header-Name:value`. Matching is case-insensitive; value comparisons use exact, trimmed, lower-cased matches.
+## gRPC Integration (`github.com/pjscruggs/slogcp/grpc`)
 
-### gRPC match configuration
-| Config field | Environment variable | Default | Description |
-| --- | --- | --- | --- |
-| `GRPC.IgnoreMethods` | `SLOGCP_CHATTER_GRPC_IGNORE_METHODS` | `/grpc.health.v1.Health/Check`,`/grpc.health.v1.Health/Watch` | Fully-qualified method names treated as chatter (reason `grpc_health`). |
-| `GRPC.IgnoreOKOnly` | `SLOGCP_CHATTER_GRPC_IGNORE_OK_ONLY` | `true` | When set, ignored methods still log non-OK results via the error safety rail. |
-| `GRPC.WatchDedupInterval` | `SLOGCP_CHATTER_GRPC_WATCH_DEDUP_INTERVAL` | `10s` | Minimum time between identical gRPC health watch status transitions before another summary event is logged. |
+`grpc.UnaryServerInterceptor`, `grpc.StreamServerInterceptor`, `grpc.UnaryClientInterceptor`, and `grpc.StreamClientInterceptor` derive per-RPC loggers, propagate trace context, and capture method/service/latency/status metadata. Each interceptor stores the logger in the context (so `slogcp.Logger(ctx)` works inside handlers) and records a `RequestInfo` structure that you can retrieve later with `slogcpgrpc.InfoFromContext`.
 
-### Proxy trust configuration
-| Config field | Environment variable | Default | Description |
-| --- | --- | --- | --- |
-| `Proxy.TrustProxy` | `SLOGCP_CHATTER_TRUST_PROXY` | `false` | Enables client IP extraction from trusted proxy headers. When disabled the engine only trusts `RemoteAddr`. |
-| `Proxy.TrustedHops` | `SLOGCP_CHATTER_TRUSTED_HOPS` | `1` | Which element of the comma-delimited `X-Forwarded-For` chain is treated as the client when proxies are trusted. |
-| `Proxy.TrustedProxyCIDRs` | `SLOGCP_CHATTER_TRUSTED_PROXY_CIDRS` | *(none)* | Restricts which proxy IP ranges are trusted when `TrustProxy` is true. Invalid CIDRs disable proxy trust with a warning. |
-| `Proxy.ClientIPHeader` | `SLOGCP_CHATTER_CLIENT_IP_HEADER` | `X-Forwarded-For` | Header used when extracting the original client address. Lower-cased for gRPC metadata lookups. |
+Important options:
 
-### Sampling controls
-| Config field | Environment variable | Default | Description |
-| --- | --- | --- | --- |
-| `Sampling.HTTPSampleKeepEvery` | `SLOGCP_CHATTER_HTTP_SAMPLE_KEEP_EVERY` | `0` | Deterministically keeps every Nth matching HTTP entry. `0` disables keep-every sampling. |
-| `Sampling.GRPCSampleKeepEvery` | `SLOGCP_CHATTER_GRPC_SAMPLE_KEEP_EVERY` | `0` | Deterministically keeps every Nth matching gRPC entry. |
-| `Sampling.HTTPSampleRate` | `SLOGCP_CHATTER_HTTP_SAMPLE_RATE` | `0` | Probabilistic sampling rate (0.0–1.0) for matching HTTP chatter. Values outside the range are clamped. |
-| `Sampling.GRPCSampleRate` | `SLOGCP_CHATTER_GRPC_SAMPLE_RATE` | `0` | Probabilistic sampling rate for gRPC chatter. |
-| `Sampling.HTTPSampleMaxPerMinute` | `SLOGCP_CHATTER_HTTP_SAMPLE_MAX_PER_MINUTE` | `0` | Caps the number of HTTP chatter events kept per 60-second window. `0` means unlimited unless `SampleMaxPerMinute` is set. |
-| `Sampling.GRPCSampleMaxPerMinute` | `SLOGCP_CHATTER_GRPC_SAMPLE_MAX_PER_MINUTE` | `0` | Caps kept gRPC chatter events per minute. |
-| `Sampling.SampleMaxPerMinute` | `SLOGCP_CHATTER_SAMPLE_MAX_PER_MINUTE` | `0` | Legacy shared cap applied when a protocol-specific cap is unset. |
+| Option | Description |
+| --- | --- |
+| `WithLogger(*slog.Logger)` | Sets the base logger for derived RPC loggers. Defaults to `slog.Default()`. |
+| `WithProjectID(string)` | Overrides the project used for trace correlation. |
+| `WithPropagators(propagation.TextMapPropagator)` | Custom propagator for metadata extraction (server) or injection (client). |
+| `WithTracerProvider(trace.TracerProvider)` | Passed to the otelgrpc StatsHandler when OpenTelemetry instrumentation is enabled. |
+| `WithPublicEndpoint(bool)` | Marks the service as public for telemetry. |
+| `WithOTel(bool)` | Enables or disables otelgrpc StatsHandlers (enabled by default). |
+| `WithSpanAttributes(attribute.KeyValue...)` / `WithFilter(otelgrpc.Filter)` | Mirrors otelgrpc configuration knobs. |
+| `WithAttrEnricher(func(context.Context, *RequestInfo) []slog.Attr)` / `WithAttrTransformer(func(context.Context, []slog.Attr, *RequestInfo) []slog.Attr)` | Customises logger attributes before they are applied. |
+| `WithPeerInfo(bool)` | Toggles `net.peer.ip` enrichment for inbound RPCs (enabled by default). |
+| `WithPayloadSizes(bool)` | Controls request/response byte counting (enabled by default). |
+| `WithLegacyXCloudInjection(bool)` | Synthesises `x-cloud-trace-context` on outgoing RPCs in addition to standard OpenTelemetry headers. |
 
-Deterministic (`KeepEvery`), probabilistic (`SampleRate`), and per-minute caps (`MaxPerMinute`) are evaluated together; whichever allows fewer records wins for each protocol.
+`RequestInfo` tracks service/method names, stream kinds, latencies, status codes, peer addresses, and (when enabled) message sizes. Use it to enrich application logs or emit custom metrics without recomputing the values.
 
-### Summary and audit metadata
-| Config field | Environment variable | Default | Description |
-| --- | --- | --- | --- |
-| `Summary.Interval` | `SLOGCP_CHATTER_SUMMARY_INTERVAL` | `0` (disabled) | Period for emitting aggregated chatter metrics via `Engine.SummaryInterval`/`LastSummary`. |
-| `Audit.DecisionField` | `SLOGCP_CHATTER_DECISION_FIELD` | `observability.chatter.decision` | Attribute key storing the final chatter decision. |
-| `Audit.ReasonField` | `SLOGCP_CHATTER_REASON_FIELD` | `observability.chatter.reason` | Attribute key for the chatter reason (e.g. `lb_ip`, `path`). |
-| `Audit.RuleField` | `SLOGCP_CHATTER_RULE_FIELD` | `observability.chatter.rule` | Attribute key containing the matched rule identifier. |
-| `Audit.SafetyRailField` | `SLOGCP_CHATTER_SAFETY_RAIL_FIELD` | `observability.chatter.safety_rail` | Attribute key recording which safety rail forced logging (`error`, `latency`). |
-| `Audit.AuditPrefix` | `SLOGCP_CHATTER_AUDIT_PREFIX` | *(none)* | Optional prefix prepended to all chatter audit keys when emitting annotations. |
+Helpers:
 
-### Built-in defaults to note
-- gRPC health probes (`/grpc.health.v1.Health/Check` and `/grpc.health.v1.Health/Watch`) are ignored out of the box unless `SLOGCP_CHATTER_GRPC_OVERRIDE_DEFAULTS=true`.
-- App Engine cron requests default to `mark` so they remain visible for auditing, while `_ah/*` internal paths are dropped unless explicitly disabled.
-- When proxy trust is disabled, chatter evaluation uses the immediate peer IP (`RemoteAddr`) and does not consult forwarded headers.
-- `Config.Errors()` exposes any parsing problems when you capture the environment configuration yourself.
+- `ServerOptions(opts ...Option)` returns a `[]grpc.ServerOption` containing an otelgrpc StatsHandler (when `WithOTel(true)`) plus both server interceptors.
+- `DialOptions(opts ...Option)` returns matching client interceptors and StatsHandler.
+- `InfoFromContext(ctx)` retrieves the `RequestInfo` captured by the interceptors so handlers can inspect RPC metadata at any point.
 
-After customizing the config you can reuse it across HTTP and gRPC layers by passing the same `chatter.Config` to `WithChatterConfig`.
+## Trace Propagation Defaults
 
-## Convenience Helpers
-
-- `slogcp.Logger(ctx)` retrieves the request logger stored by middleware/interceptors.
-- `slogcp.TraceAttributes(ctx, projectID)` builds Cloud Trace aware attributes for manual logger construction.
-- Context logging helpers such as `slogcp.DefaultContext`, `slogcp.NoticeContext`, `slogcp.CriticalContext`, etc., provide shortcuts for emitting records at extended severities from an arbitrary context when you already have a `*slog.Logger`.
-
-These helpers round out the configuration primitives above and align structured logs with Google Cloud's observability tools without requiring the Cloud Logging API client.
+Importing `slogcp` installs a composite OpenTelemetry propagator that understands both W3C Trace Context and Google's legacy `X-Cloud-Trace-Context` header (read-only). Set `SLOGCP_DISABLE_PROPAGATOR_AUTOSET=true` before importing the package if you prefer to manage `otel.SetTextMapPropagator` yourself; call `slogcp.EnsurePropagation()` if you need to reapply the library's defaults later in process startup.

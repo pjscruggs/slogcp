@@ -1,3 +1,4 @@
+---
 version: v1
 # Module name following the convention buf.build/<owner>/<repo>
 name: buf.build/pjscruggs/slogcp

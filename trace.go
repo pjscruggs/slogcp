@@ -21,6 +21,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -36,6 +37,11 @@ const (
 	SpanKey = "logging.googleapis.com/spanId"
 	// SampledKey is the field name for the boolean sampling decision.
 	SampledKey = "logging.googleapis.com/trace_sampled"
+)
+
+var (
+	traceProjectEnvOnce sync.Once
+	traceProjectEnvID   string
 )
 
 // ExtractTraceSpan extracts OpenTelemetry trace details from ctx and, if a
@@ -137,13 +143,7 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
-		projectID = strings.TrimSpace(os.Getenv("SLOGCP_TRACE_PROJECT_ID"))
-	}
-	if projectID == "" {
-		projectID = strings.TrimSpace(os.Getenv("SLOGCP_PROJECT_ID"))
-	}
-	if projectID == "" {
-		projectID = strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT"))
+		projectID = cachedTraceProjectID()
 	}
 
 	fmtTrace, rawTrace, rawSpan, sampled, sc := ExtractTraceSpan(ctx, projectID)
@@ -151,43 +151,56 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 		return nil, false
 	}
 
-	var (
-		attrs  []slog.Attr
-		seen   = make(map[string]struct{}, 3)
-		append = func(attr slog.Attr) {
-			if attr.Key == "" {
-				return
-			}
-			if _, exists := seen[attr.Key]; exists {
-				return
-			}
-			seen[attr.Key] = struct{}{}
-			attrs = append(attrs, attr)
-		}
-	)
+	attrs := make([]slog.Attr, 0, 3)
+	ownsSpan := sc.IsValid() && !sc.IsRemote()
 
 	if fmtTrace != "" {
-		append(slog.String(TraceKey, fmtTrace))
-		if rawSpan != "" {
-			append(slog.String(SpanKey, rawSpan))
+		attrs = append(attrs, slog.String(TraceKey, fmtTrace))
+		if ownsSpan && rawSpan != "" {
+			attrs = append(attrs, slog.String(SpanKey, rawSpan))
 		}
-		append(slog.Bool(SampledKey, sampled))
-		if len(attrs) == 0 {
-			return nil, false
-		}
+		attrs = append(attrs, slog.Bool(SampledKey, sampled))
 		return attrs, true
 	}
 
 	if rawTrace != "" {
-		append(slog.String("otel.trace_id", rawTrace))
+		attrs = append(attrs, slog.String("otel.trace_id", rawTrace))
 	}
-	if rawSpan != "" {
-		append(slog.String("otel.span_id", rawSpan))
+	if ownsSpan && rawSpan != "" {
+		attrs = append(attrs, slog.String("otel.span_id", rawSpan))
 	}
-	append(slog.Bool("otel.trace_sampled", sampled))
+	attrs = append(attrs, slog.Bool("otel.trace_sampled", sampled))
 
 	if len(attrs) == 0 {
 		return nil, false
 	}
 	return attrs, true
+}
+
+// cachedTraceProjectID returns the Cloud project ID inferred from environment
+// variables, computing the value at most once per process.
+func cachedTraceProjectID() string {
+	traceProjectEnvOnce.Do(func() {
+		traceProjectEnvID = detectTraceProjectIDFromEnv()
+	})
+	return traceProjectEnvID
+}
+
+// detectTraceProjectIDFromEnv inspects known environment variables in
+// priority order and returns the first non-empty project identifier.
+func detectTraceProjectIDFromEnv() string {
+	candidates := []string{
+		"SLOGCP_TRACE_PROJECT_ID",
+		"SLOGCP_PROJECT_ID",
+		"SLOGCP_GCP_PROJECT",
+		"GOOGLE_CLOUD_PROJECT",
+		"GCLOUD_PROJECT",
+		"GCP_PROJECT",
+	}
+	for _, name := range candidates {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
 }

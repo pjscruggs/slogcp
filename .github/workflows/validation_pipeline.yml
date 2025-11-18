@@ -1,4 +1,4 @@
-name: Validation Pipeline
+﻿name: Validation Pipeline
 on:
   pull_request:
     branches: [ main ]
@@ -31,7 +31,7 @@ jobs:
     env:
       GOTOOLCHAIN: auto
     steps:
-      - name: 🛒 Checkout Code
+      - name: ðŸ›’ Checkout Code
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
           fetch-depth: 0
@@ -39,7 +39,7 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           token: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: 🔍 Determine branch name
+      - name: ðŸ” Determine branch name
         id: get-branch
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
@@ -48,7 +48,7 @@ jobs:
             echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
           fi
 
-      - name: 🔢 Determine Go version
+      - name: ðŸ”¢ Determine Go version
         id: go-version
         run: |
           GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')
@@ -59,44 +59,44 @@ jobs:
 
           GO_VERSION="$GO_VERSION" python3 .github/scripts/resolve_go_version.py
 
-      - name: 🏗️ Set up Go
+      - name: ðŸ—ï¸ Set up Go
         uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
       
-      - name: 🛠️ Install golangci-lint
+      - name: ðŸ› ï¸ Install golangci-lint
         uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
         with:
           version: v2.1.5
           install-mode: goinstall
           
-      - name: ✨ Apply Go Formatting
+      - name: âœ¨ Apply Go Formatting
         run: |
           go install golang.org/x/tools/cmd/goimports@latest
           gofmt -w .
           goimports -local github.com/pjscruggs/slogcp -w .
 
-      - name: 🧹 Ensure module metadata is tidy
+      - name: ðŸ§¹ Ensure module metadata is tidy
         run: |
           go mod tidy
 
-      - name: 📅🕰️ Get current year in US Central Time
+      - name: ðŸ“…ðŸ•°ï¸ Get current year in US Central Time
         id: year
         run: |
           YEAR=$(TZ='America/Chicago' date +%Y)
           echo "YEAR=$YEAR" >> $GITHUB_OUTPUT
       
-      - name: 📄⚙️📅 Update license year in config
+      - name: ðŸ“„âš™ï¸ðŸ“… Update license year in config
         run: |
           if [ "${{ steps.year.outputs.YEAR }}" -gt "2025" ]; then
             sed -i 's/copyright-year: .*/copyright-year: "2025-${{ steps.year.outputs.YEAR }}"/g' .licenserc.yaml
-            echo "📅⬆️ Updated year to 2025-${{ steps.year.outputs.YEAR }}"
+            echo "ðŸ“…â¬†ï¸ Updated year to 2025-${{ steps.year.outputs.YEAR }}"
           else
-            echo "📅✅ Keeping year as 2025"
+            echo "ðŸ“…âœ… Keeping year as 2025"
           fi
       
-      - name: 📄🩹 Fix License Headers
+      - name: ðŸ“„ðŸ©¹ Fix License Headers
         id: fix-license
         uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
         with:
@@ -104,17 +104,17 @@ jobs:
           config: .licenserc.yaml
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: ♻️ Restore Go toolchain (post-license-fix)
+      - name: â™»ï¸ Restore Go toolchain (post-license-fix)
         uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
       
-      - name: 🧐 Apply Lint Fixes
+      - name: ðŸ§ Apply Lint Fixes
         run: golangci-lint run --fix ./...
         continue-on-error: true
       
-      - name: 💾 Commit All Fixes
+      - name: ðŸ’¾ Commit All Fixes
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: |
           git config user.name "github-actions[bot]"
@@ -125,7 +125,7 @@ jobs:
             git push origin ${{ steps.get-branch.outputs.BRANCH_NAME }}
           }
           
-      - name: 🔄 Re-checkout after fixes if needed
+      - name: ðŸ”„ Re-checkout after fixes if needed
         run: |
           if git diff --quiet origin/${{ steps.get-branch.outputs.BRANCH_NAME }} HEAD; then
             echo "No changes were committed, skipping re-checkout"
@@ -135,7 +135,7 @@ jobs:
             git checkout origin/${{ steps.get-branch.outputs.BRANCH_NAME }}
           fi
 
-      - name: ✅ Ensure working tree is clean
+      - name: âœ… Ensure working tree is clean
         run: |
           if ! git diff --quiet; then
             echo "Working tree has uncommitted changes after maintenance steps."
@@ -143,38 +143,60 @@ jobs:
             exit 1
           fi
 
-      - name: 🧐 Verify Linting
+      - name: ðŸ§ Verify Linting
         run: golangci-lint run ./...
       
-      - name: 📄✅ Verify License Headers
+      - name: ðŸ“„âœ… Verify License Headers
         uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
         with:
           mode: check
           config: .licenserc.yaml
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: ♻️ Restore Go toolchain (pre-tests)
+      - name: â™»ï¸ Restore Go toolchain (pre-tests)
         uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
 
-      - name: 🛠️ Install Go Test Tools
+      - name: Install Go Test Tools
         run: |
           go install github.com/mfridman/tparse@ba2512e7be150bfcbd6f6220d517d3741f8f2f75
-      
-      - name: 💨 Run Local Smoke Tests (Tier 1)
+
+      - name: Run Local Smoke Tests (Tier 1)
         id: go-smoke-tests
         run: |
           go test -json -race -tags=smoke -coverprofile=coverage-smoke.out ./... | tparse -all -notests
 
-      - name: 🧪 Run Unit Tests (Tier 2)
+      - name: Run Unit Tests (Tier 2)
         if: success()
         id: go-unit-tests
         run: |
           go test -json -race -tags=unit -coverprofile=coverage-unit.out ./... | tparse -all -notests
 
-      - name: 📄 Print Coverage Report
+      - name: Verify Example Modules
+        if: success()
+        run: |
+          set -euo pipefail
+          if [ ! -d ".examples" ]; then
+            echo "No .examples directory found; skipping example verification."
+            exit 0
+          fi
+
+          examples_found=0
+          while IFS= read -r -d '' mod; do
+            examples_found=1
+            dir=$(dirname "$mod")
+            echo "::group::go test $dir"
+            (cd "$dir" && go test ./...)
+            echo "::endgroup::"
+          done < <(find .examples -name go.mod -print0)
+
+          if [ "$examples_found" -eq 0 ]; then
+            echo "No example go.mod files found under .examples; skipping."
+          fi
+
+      - name: Print Coverage Report
         if: always()
         run: |
           echo "--- Test Coverage ---"
@@ -189,7 +211,7 @@ jobs:
           fi
           echo "---------------------"
       
-      - name: 🛡️🔍 Run Vulnerability Check
+      - name: ðŸ›¡ï¸ðŸ” Run Vulnerability Check
         run: |
           echo "Installing govulncheck..."
           go install golang.org/x/vuln/cmd/govulncheck@b9d319d7ce41a3991288754d7ec709166dce2619
@@ -249,10 +271,10 @@ jobs:
               completed_at: new Date().toISOString(),
               output: {
                 title: 'E2E Tests (GCP) - Manual Trigger Required',
-                summary: `⚠️ E2E tests require manual trigger by a maintainer after code review.
+                summary: `âš ï¸ E2E tests require manual trigger by a maintainer after code review.
 
                 A repository maintainer can trigger E2E tests by:
-                1. Going to Actions → "Manual E2E Test Trigger" workflow
+                1. Going to Actions â†’ "Manual E2E Test Trigger" workflow
                 2. Click "Run workflow" and enter PR number: ${{ github.event.pull_request.number }}
 
                 This check must pass before the PR can be merged.`
@@ -284,7 +306,7 @@ jobs:
           github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
-            const name = `E2E Tests (GCP) — ${runId}`;
+            const name = `E2E Tests (GCP) â€” ${runId}`;
             const sha = context.payload.pull_request.head.sha;
             const { data: checkRun } = await github.rest.checks.create({
               owner: context.repo.owner,
@@ -392,3 +414,5 @@ jobs:
                 summary: `Secrets not available or validation not successful. A maintainer can run the "Manual E2E Test Trigger" workflow with PR #${{ github.event.pull_request.number }}.`
               }
             });
+
+

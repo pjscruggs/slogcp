@@ -1,3 +1,17 @@
+// Copyright 2025 Patrick J. Scruggs
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //go:build unit
 // +build unit
 
@@ -33,19 +47,20 @@ func TestSeverityMappingMatchesNativeAndGCPLevels(t *testing.T) {
 	ctx := context.Background()
 
 	testCases := []struct {
-		log          func()
-		wantMsg      string
-		wantSeverity string
+		log       func()
+		wantMsg   string
+		wantAlias string
+		wantFull  string
 	}{
-		{log: func() { logger.Debug("native-debug") }, wantMsg: "native-debug", wantSeverity: "D"},
-		{log: func() { logger.Info("native-info") }, wantMsg: "native-info", wantSeverity: "I"},
-		{log: func() { logger.Warn("native-warn") }, wantMsg: "native-warn", wantSeverity: "W"},
-		{log: func() { logger.Error("native-error") }, wantMsg: "native-error", wantSeverity: "E"},
-		{log: func() { logger.Log(ctx, slogcp.LevelNotice.Level(), "gcp-notice") }, wantMsg: "gcp-notice", wantSeverity: "N"},
-		{log: func() { logger.Log(ctx, slogcp.LevelCritical.Level(), "gcp-critical") }, wantMsg: "gcp-critical", wantSeverity: "C"},
-		{log: func() { logger.Log(ctx, slogcp.LevelAlert.Level(), "gcp-alert") }, wantMsg: "gcp-alert", wantSeverity: "A"},
-		{log: func() { logger.Log(ctx, slogcp.LevelEmergency.Level(), "gcp-emergency") }, wantMsg: "gcp-emergency", wantSeverity: "EMERG"},
-		{log: func() { logger.Log(ctx, slogcp.LevelDefault.Level(), "gcp-default") }, wantMsg: "gcp-default", wantSeverity: "DEFAULT"},
+		{log: func() { logger.Debug("native-debug") }, wantMsg: "native-debug", wantAlias: "D", wantFull: "DEBUG"},
+		{log: func() { logger.Info("native-info") }, wantMsg: "native-info", wantAlias: "I", wantFull: "INFO"},
+		{log: func() { logger.Warn("native-warn") }, wantMsg: "native-warn", wantAlias: "W", wantFull: "WARNING"},
+		{log: func() { logger.Error("native-error") }, wantMsg: "native-error", wantAlias: "E", wantFull: "ERROR"},
+		{log: func() { logger.Log(ctx, slogcp.LevelNotice.Level(), "gcp-notice") }, wantMsg: "gcp-notice", wantAlias: "N", wantFull: "NOTICE"},
+		{log: func() { logger.Log(ctx, slogcp.LevelCritical.Level(), "gcp-critical") }, wantMsg: "gcp-critical", wantAlias: "C", wantFull: "CRITICAL"},
+		{log: func() { logger.Log(ctx, slogcp.LevelAlert.Level(), "gcp-alert") }, wantMsg: "gcp-alert", wantAlias: "A", wantFull: "ALERT"},
+		{log: func() { logger.Log(ctx, slogcp.LevelEmergency.Level(), "gcp-emergency") }, wantMsg: "gcp-emergency", wantAlias: "EMERG", wantFull: "EMERGENCY"},
+		{log: func() { logger.Log(ctx, slogcp.LevelDefault.Level(), "gcp-default") }, wantMsg: "gcp-default", wantAlias: "DEFAULT", wantFull: "DEFAULT"},
 	}
 
 	for _, tc := range testCases {
@@ -57,6 +72,8 @@ func TestSeverityMappingMatchesNativeAndGCPLevels(t *testing.T) {
 		t.Fatalf("decodeLogBuffer() returned %d entries, want %d", len(entries), len(testCases))
 	}
 
+	useAliases := prefersManagedDefaults()
+
 	for i, tc := range testCases {
 		entry := entries[i]
 		if got := entry["message"]; got != tc.wantMsg {
@@ -66,8 +83,12 @@ func TestSeverityMappingMatchesNativeAndGCPLevels(t *testing.T) {
 		if !ok {
 			t.Fatalf("entry %d severity type = %T, want string", i, entry["severity"])
 		}
-		if gotSeverity != tc.wantSeverity {
-			t.Fatalf("entry %d severity = %q, want %q", i, gotSeverity, tc.wantSeverity)
+		want := tc.wantFull
+		if useAliases {
+			want = tc.wantAlias
+		}
+		if gotSeverity != want {
+			t.Fatalf("entry %d severity = %q, want %q", i, gotSeverity, want)
 		}
 	}
 }

@@ -230,7 +230,10 @@ func TestTraceAttributesWithoutProject(t *testing.T) {
 	// Ensure environment-derived project detection is disabled for this test.
 	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "")
 	t.Setenv("SLOGCP_PROJECT_ID", "")
+	t.Setenv("SLOGCP_GCP_PROJECT", "")
 	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+	t.Setenv("GCLOUD_PROJECT", "")
+	t.Setenv("GCP_PROJECT", "")
 
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID: mustTraceID(t, rawTraceHex),
@@ -262,5 +265,70 @@ func TestTraceAttributesWithoutProject(t *testing.T) {
 	}
 	if _, exists := got[slogcp.SpanKey]; exists {
 		t.Fatalf("unexpected Cloud Logging span key present without project: %#v", got)
+	}
+}
+
+// TestTraceAttributesRemoteSpanWithProject verifies that remote-only span
+// contexts omit the Cloud Logging span key while retaining trace metadata.
+func TestTraceAttributesRemoteSpanWithProject(t *testing.T) {
+	const (
+		projectID   = "example-project"
+		rawTraceHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		rawSpanHex  = "deadbeefdeadbeef"
+	)
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    mustTraceID(t, rawTraceHex),
+		SpanID:     mustSpanID(t, rawSpanHex),
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	attrs, ok := slogcp.TraceAttributes(ctx, projectID)
+	if !ok {
+		t.Fatalf("TraceAttributes(_, %q) = (_, false), want true", projectID)
+	}
+
+	got := attrsToMap(attrs)
+	if _, exists := got[slogcp.SpanKey]; exists {
+		t.Fatalf("span key should be omitted for remote contexts: %#v", got)
+	}
+
+	wantTrace := slogcp.FormatTraceResource(projectID, rawTraceHex)
+	if got[slogcp.TraceKey] != wantTrace {
+		t.Fatalf("TraceAttributes() trace key = %v, want %v", got[slogcp.TraceKey], wantTrace)
+	}
+	if got[slogcp.SampledKey] != true {
+		t.Fatalf("TraceAttributes() sampled = %v, want true", got[slogcp.SampledKey])
+	}
+}
+
+// TestTraceAttributesRemoteSpanWithoutProject ensures OTEL fallback keys omit
+// span identifiers when only a remote context is available.
+func TestTraceAttributesRemoteSpanWithoutProject(t *testing.T) {
+	const (
+		rawTraceHex = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		rawSpanHex  = "0123456789abcdef"
+	)
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: mustTraceID(t, rawTraceHex),
+		SpanID:  mustSpanID(t, rawSpanHex),
+		Remote:  true,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	attrs, ok := slogcp.TraceAttributes(ctx, "")
+	if !ok {
+		t.Fatalf("TraceAttributes(_, \"\") = (_, false), want true")
+	}
+
+	got := attrsToMap(attrs)
+	if _, exists := got["otel.span_id"]; exists {
+		t.Fatalf("otel.span_id should be omitted for remote contexts: %#v", got)
+	}
+	if got["otel.trace_id"] != rawTraceHex {
+		t.Fatalf("TraceAttributes() trace fallback = %v, want %v", got["otel.trace_id"], rawTraceHex)
 	}
 }
