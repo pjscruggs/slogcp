@@ -1,48 +1,57 @@
+---
 name: Manual E2E Test Trigger
-on:
+'on':
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Target to run E2E tests on'
+        description: Target to run E2E tests on
         required: false
-        default: 'pr'
+        default: pr
         type: choice
         options:
           - pr
           - main_latest
       pr_number:
-        description: 'PR number to run E2E tests on (required for mode=pr)'
+        description: PR number to run E2E tests on (required for mode=pr)
         required: false
         type: string
+
 permissions:
   checks: write
   contents: read
   pull-requests: write
   issues: write
+
 jobs:
   trigger_e2e:
     name: Manually Trigger E2E Tests
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Verify Authorization
         run: |
-          if [[ "${{ github.actor }}" != "${{ github.repository_owner }}" ]]; then
-            echo "❌ Unauthorized: Only repository maintainers can trigger E2E tests"
+          if [[ "${{ github.actor }}" != "${{ github.repository_owner }}" ]]
+          then
+            printf '%s%s\n' \
+              '❌ Unauthorized: only repository maintainers can trigger' \
+              ' E2E tests'
             exit 1
           fi
           echo "✅ Authorized maintainer: ${{ github.actor }}"
+
       - name: Validate Inputs
         run: |
-          if [[ "${{ github.event.inputs.mode }}" == "pr" && -z "${{ github.event.inputs.pr_number }}" ]]; then
+          if [[ "${{ github.event.inputs.mode }}" == "pr" && \
+                -z "${{ github.event.inputs.pr_number }}" ]]; then
             echo "pr_number is required when mode=pr"
             exit 1
           fi
-      
+
       - name: Get PR Information
         if: ${{ github.event.inputs.mode == 'pr' }}
         id: pr_info
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        # actions/github-script v8 (pinned)
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
             const pr = await github.rest.pulls.get({
@@ -54,10 +63,12 @@ jobs:
             core.setOutput('head_ref', pr.data.head.ref);
             core.setOutput('author', pr.data.user.login);
             return pr.data;
+
       - name: Resolve latest main SHA
         if: ${{ github.event.inputs.mode == 'main_latest' }}
         id: main_sha
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        # actions/github-script v8 (pinned)
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
             const { data: ref } = await github.rest.git.getRef({
@@ -66,38 +77,48 @@ jobs:
               ref: 'heads/main'
             });
             core.setOutput('sha', ref.object.sha);
+
       - name: Select Target SHA
         id: target
         run: |
           if [ "${{ github.event.inputs.mode }}" = "main_latest" ]; then
-            echo "head_sha=${{ steps.main_sha.outputs.sha }}" >> $GITHUB_OUTPUT
-            echo "pr_number=" >> $GITHUB_OUTPUT
+            head_sha="${{ steps.main_sha.outputs.sha }}"
+            pr_number=''
           else
-            echo "head_sha=${{ steps.pr_info.outputs.head_sha }}" >> $GITHUB_OUTPUT
-            echo "pr_number=${{ github.event.inputs.pr_number }}" >> $GITHUB_OUTPUT
+            head_sha="${{ steps.pr_info.outputs.head_sha }}"
+            pr_number="${{ github.event.inputs.pr_number }}"
           fi
+
+          printf 'head_sha=%s\n' "$head_sha" >>"$GITHUB_OUTPUT"
+          printf 'pr_number=%s\n' "$pr_number" >>"$GITHUB_OUTPUT"
+
       - name: Generate E2E Run ID
         id: run_id
         shell: bash
         run: |
-          echo "e2e_run_id=$(date -u +%Y%m%dT%H%M%S)-$RANDOM" >> "$GITHUB_OUTPUT"
-      
+          run_id="$(date -u +%Y%m%dT%H%M%S)-$RANDOM"
+          printf 'e2e_run_id=%s\n' "$run_id" >>"$GITHUB_OUTPUT"
+
       - name: Generate App Token for E2E Dispatch
         id: app_token
-        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        # actions/create-github-app-token v2 (pinned)
+        uses: "actions/create-github-app-token@\
+          67018539274d69449ef7c02e8e71183d1719ab42"
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
           owner: pjscruggs
           repositories: slogcp,slogcp-test
-          
+
       - name: Create Run-Scoped E2E Check
         id: create_check
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        # actions/github-script v8 (pinned)
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
-            const checkName = `E2E Tests (GCP) — ${{ steps.run_id.outputs.e2e_run_id }}`;
+            const checkName =
+              `E2E Tests (GCP) - ${{ steps.run_id.outputs.e2e_run_id }}`;
             const sha = '${{ steps.target.outputs.head_sha }}';
             const { data: checkRun } = await github.rest.checks.create({
               owner: context.repo.owner,
@@ -113,9 +134,11 @@ jobs:
               }
             });
             core.setOutput('check_run_id', checkRun.id);
-          
+
       - name: Dispatch E2E Tests
-        uses: peter-evans/repository-dispatch@5fc4efd1a4797ddb68ffd0714a238564e4cc0e6f # v4
+        # peter-evans/repository-dispatch v4 (pinned)
+        uses: "peter-evans/repository-dispatch@\
+          5fc4efd1a4797ddb68ffd0714a238564e4cc0e6f"
         with:
           token: ${{ steps.app_token.outputs.token }}
           repository: pjscruggs/slogcp-test
@@ -129,15 +152,25 @@ jobs:
               "check_run_id": "${{ steps.create_check.outputs.check_run_id }}",
               "e2e_run_id": "${{ steps.run_id.outputs.e2e_run_id }}"
             }
-      
+
       - name: Add PR Comment
         if: ${{ steps.target.outputs.pr_number != '' }}
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        # actions/github-script v8 (pinned)
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
+            const body = [
+              'E2E tests manually triggered by @' + context.actor,
+              '',
+              'View progress in the E2E Tests (GCP) check:',
+              'https://github.com/${context.repo.owner}/${context.repo.repo}/'
+                + 'pull/'
+                + '${{ steps.target.outputs.pr_number }}/checks'
+            ].join('\n');
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: Number('${{ steps.target.outputs.pr_number }}'),
-              body: `🧪 E2E tests manually triggered by @${context.actor}\n\nView progress in the [E2E Tests (GCP) check](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.target.outputs.pr_number }}/checks)`
+              body
             });

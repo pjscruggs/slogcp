@@ -1,3 +1,17 @@
+// Copyright 2025 Patrick J. Scruggs
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package loggingmock
 
 import (
@@ -20,16 +34,17 @@ const (
 	keyTrace        = "logging.googleapis.com/trace"
 	keySpanID       = "logging.googleapis.com/spanId"
 	keyTraceSampled = "logging.googleapis.com/trace_sampled"
+	keyLabels       = "logging.googleapis.com/labels"
 )
 
 // TransformLogEntryJSON rewrites a single LogEntry JSON to mimic the backend:
 // - Normalize/elevate timestamp (top-level > legacy seconds/nanos > jsonPayload.time > now)
-// - Normalize severity (aliases ok; numeric values NOT accepted -> DEFAULT; empty -> DEFAULT)
+// - Promote severity (valid values go top-level; DEFAULT dropped; invalid payload values remain)
 // - Elevate httpRequest only if entirely canonical (strict)
 // - Elevate special fields from jsonPayload: operation, sourceLocation, trace, spanId, traceSampled
 // - Never HTML-escape output JSON
 func TransformLogEntryJSON(in string, now time.Time) (string, error) {
-	var root map[string]interface{}
+	var root map[string]any
 	dec := json.NewDecoder(strings.NewReader(in))
 	dec.UseNumber()
 	if err := dec.Decode(&root); err != nil {
@@ -42,12 +57,9 @@ func TransformLogEntryJSON(in string, now time.Time) (string, error) {
 	nowUTC := now.UTC()
 	ts, hasTimestamp := normalizeTopLevelTimestamp(root)
 	if !hasTimestamp && payload != nil {
-		if t, ok := payload["time"].(string); ok {
-			if parsed, ok := parseRFC3339Flexible(t); ok {
-				ts = parsed
-				hasTimestamp = true
-				delete(payload, "time")
-			}
+		if parsed, ok := extractPayloadTimestamp(payload); ok {
+			ts = parsed
+			hasTimestamp = true
 		}
 	}
 	if !hasTimestamp {
@@ -56,35 +68,49 @@ func TransformLogEntryJSON(in string, now time.Time) (string, error) {
 	ts = adjustTimestampIfInvalid(ts, nowUTC)
 	root["timestamp"] = formatRFC3339ZNormalized(ts)
 
-	// 2) Severity (no numeric severities; default to DEFAULT)
+	// 2) Severity (promote canonical severities; drop DEFAULT; leave invalid payload values)
+	severitySet := false
 	if sevVal, ok := root["severity"]; ok {
-		root["severity"] = normalizeSeverity(sevVal)
-	} else {
-		root["severity"] = "DEFAULT"
-	}
-
-	// 3) Elevate canonically-valid httpRequest
-	if payload != nil {
-		_, topLevelExists := root["httpRequest"]
-		if hr, ok := payload["httpRequest"]; ok {
-			if hrm := mapFrom(hr); hrm != nil {
-				cleaned, ok := extractHttpRequest(hrm)
-				if ok && !topLevelExists {
-					root["httpRequest"] = cleaned
-				}
-				if len(hrm) == 0 {
-					delete(payload, "httpRequest")
-				}
+		if canonical, valid := canonicalizeSeverity(sevVal); valid {
+			if canonical != "DEFAULT" {
+				root["severity"] = canonical
+				severitySet = true
+			} else {
+				delete(root, "severity")
 			}
+		} else {
+			delete(root, "severity")
 		}
 	}
 
-	// 4) Elevate special fields from jsonPayload (operation/sourceLocation/trace/spanId/traceSampled)
+	// 3) Elevate special fields from jsonPayload
 	if payload != nil {
-		projectID := extractProjectID(root)
+		if rawHTTP, ok := payload["httpRequest"]; ok {
+			if httpMap := mapFrom(rawHTTP); httpMap != nil {
+				canonical, ok := extractHttpRequest(httpMap)
+				if ok && len(httpMap) == 0 {
+					if _, exists := root["httpRequest"]; !exists {
+						root["httpRequest"] = canonical
+					}
+					delete(payload, "httpRequest")
+				} else {
+					payload["httpRequest"] = httpMap
+				}
+			}
+		}
 		elevateOperation(payload, root)
+		if rawSeverity, ok := payload["severity"]; ok {
+			if canonical, valid := canonicalizeSeverity(rawSeverity); valid {
+				delete(payload, "severity")
+				if canonical != "DEFAULT" && !severitySet {
+					root["severity"] = canonical
+					severitySet = true
+				}
+			}
+		}
+		elevateLabels(payload, root)
 		elevateSourceLocation(payload, root)
-		elevateSimpleTrace(payload, root, projectID)
+		elevateSimpleTrace(payload, root)
 		elevateSimpleSpanID(payload, root)
 		elevateSimpleTraceSampled(payload, root)
 		root["jsonPayload"] = payload
@@ -114,17 +140,76 @@ func EnsureJSONObject(in string) error {
 	return nil
 }
 
-// mapFrom returns v as a map[string]interface{} when possible, otherwise nil.
-func mapFrom(v interface{}) map[string]interface{} {
+// mapFrom returns v as a map[string]any when possible, otherwise nil.
+func mapFrom(v any) map[string]any {
 	if v == nil {
 		return nil
 	}
-	m, _ := v.(map[string]interface{})
+	m, _ := v.(map[string]any)
 	return m
 }
 
+const maxValidNanosecondsExclusive int64 = 1000000000
+
+// extractPayloadTimestamp promotes timestamp-related fields from the payload when valid.
+func extractPayloadTimestamp(payload map[string]any) (time.Time, bool) {
+	if raw := payload["timestamp"]; raw != nil {
+		if obj := mapFrom(raw); obj != nil {
+			if ts, ok := parseTimestampStruct(obj); ok {
+				delete(payload, "timestamp")
+				return ts, true
+			}
+		}
+	}
+
+	if secsVal, hasSecs := payload["timestampSeconds"]; hasSecs {
+		if nanosVal, hasNanos := payload["timestampNanos"]; hasNanos {
+			if ts, ok := parseSecondsNanosPair(secsVal, nanosVal); ok {
+				delete(payload, "timestampSeconds")
+				delete(payload, "timestampNanos")
+				return ts, true
+			}
+		}
+	}
+
+	if t, ok := payload["time"].(string); ok {
+		if parsed, ok := parseRFC3339Flexible(t); ok {
+			delete(payload, "time")
+			return parsed, true
+		}
+	}
+
+	return time.Time{}, false
+}
+
+// parseTimestampStruct parses a structured {seconds, nanos} timestamp map.
+func parseTimestampStruct(obj map[string]any) (time.Time, bool) {
+	secs, hasSecs := obj["seconds"]
+	nanos, hasNanos := obj["nanos"]
+	if !hasSecs || !hasNanos {
+		return time.Time{}, false
+	}
+	return parseSecondsNanosPair(secs, nanos)
+}
+
+// parseSecondsNanosPair converts seconds/nanos pairs into a UTC time, validating nanos precision.
+func parseSecondsNanosPair(secsVal any, nanosVal any) (time.Time, bool) {
+	secs, ok := numericToInt64(secsVal)
+	if !ok {
+		return time.Time{}, false
+	}
+	nanos, ok := numericToInt64(nanosVal)
+	if !ok {
+		return time.Time{}, false
+	}
+	if nanos < 0 || nanos >= maxValidNanosecondsExclusive {
+		return time.Time{}, false
+	}
+	return time.Unix(secs, nanos).UTC(), true
+}
+
 // normalizeTopLevelTimestamp lifts timestamp-like fields to a canonical RFC3339 value.
-func normalizeTopLevelTimestamp(root map[string]interface{}) (time.Time, bool) {
+func normalizeTopLevelTimestamp(root map[string]any) (time.Time, bool) {
 	if v, ok := root["timestamp"]; ok {
 		switch val := v.(type) {
 		case string:
@@ -133,89 +218,180 @@ func normalizeTopLevelTimestamp(root map[string]interface{}) (time.Time, bool) {
 				return ts, true
 			}
 			delete(root, "timestamp")
-		case map[string]interface{}:
-			delete(root, "timestamp")
-			secs, hasSecs := numericToInt64(val["seconds"])
-			nanos, hasNanos := numericToInt64(val["nanos"])
-			if !hasNanos {
-				nanos = 0
-			}
-			if hasSecs {
-				ts := time.Unix(secs, nanos).UTC()
+		case map[string]any:
+			if ts, ok := parseTimestampStruct(val); ok {
 				root["timestamp"] = formatRFC3339ZNormalized(ts)
 				return ts, true
 			}
+			delete(root, "timestamp")
 		default:
 			delete(root, "timestamp")
 		}
 	}
 	if rawSecs, ok := root["timestampSeconds"]; ok {
-		delete(root, "timestampSeconds")
-		secs, hasSecs := numericToInt64(rawSecs)
-		rawNanos, hasNanos := root["timestampNanos"]
-		if hasNanos {
-			delete(root, "timestampNanos")
-		}
-		nanos, hasParsedNanos := int64(0), false
-		if hasNanos {
-			nanos, hasParsedNanos = numericToInt64(rawNanos)
-		}
-		if !hasParsedNanos {
-			nanos = 0
-		}
-		if hasSecs {
-			ts := time.Unix(secs, nanos).UTC()
-			root["timestamp"] = formatRFC3339ZNormalized(ts)
-			return ts, true
-		}
-	}
-	if rawTimeNanos, ok := root["timeNanos"]; ok {
-		delete(root, "timeNanos")
-		if nanos, ok := numericToInt64(rawTimeNanos); ok {
-			secs := nanos / 1_000_000_000
-			rem := nanos % 1_000_000_000
-			if rem < 0 {
-				secs--
-				rem += 1_000_000_000
+		if rawNanos, hasNanos := root["timestampNanos"]; hasNanos {
+			if ts, ok := parseSecondsNanosPair(rawSecs, rawNanos); ok {
+				root["timestamp"] = formatRFC3339ZNormalized(ts)
+				delete(root, "timestampSeconds")
+				delete(root, "timestampNanos")
+				return ts, true
 			}
-			ts := time.Unix(secs, rem).UTC()
-			root["timestamp"] = formatRFC3339ZNormalized(ts)
-			return ts, true
+			delete(root, "timestampSeconds")
+			delete(root, "timestampNanos")
+		} else {
+			delete(root, "timestampSeconds")
 		}
 	}
+	delete(root, "timeNanos")
 	return time.Time{}, false
 }
 
 // adjustTimestampIfInvalid bounds future timestamps and replaces invalid values.
 func adjustTimestampIfInvalid(ts time.Time, current time.Time) time.Time {
+	currentUTC := current.UTC()
 	if ts.IsZero() {
-		return current.UTC()
+		return currentUTC
 	}
 	tsUTC := ts.UTC()
-	currentUTC := current.UTC()
-	oneDayLater := currentUTC.Add(24 * time.Hour)
-	if !tsUTC.After(oneDayLater) {
-		return tsUTC
+	if tsUTC.After(currentUTC.Add(24 * time.Hour)) {
+		return currentUTC
 	}
-	nextYear := time.Date(currentUTC.Year()+1, 1, 1, 0, 0, 0, 0, time.UTC)
-	if !tsUTC.Before(nextYear) {
-		return time.Unix(0, 0).UTC()
+	maxPast := currentUTC.Add(-30 * 24 * time.Hour)
+	if !tsUTC.After(maxPast) {
+		return currentUTC
 	}
-	return tsUTC.AddDate(-1, 0, 0)
+	return tsUTC
 }
 
 // parseRFC3339Flexible accepts a broader RFC3339 subset, including lowercase Z zone markers.
 func parseRFC3339Flexible(s string) (time.Time, bool) {
-	str := s
-	// Ruby Time.iso8601 accepts lowercase 'z'; Go requires 'Z'
+	str := strings.TrimSpace(s)
+	if str == "" {
+		return time.Time{}, false
+	}
 	if strings.HasSuffix(strings.ToLower(str), "z") && !strings.HasSuffix(str, "Z") {
 		str = str[:len(str)-1] + "Z"
 	}
-	tt, err := time.Parse(time.RFC3339Nano, str)
+	normalized, ok := normalizeRFC3339String(str)
+	if !ok {
+		return time.Time{}, false
+	}
+	tt, err := time.Parse(time.RFC3339Nano, normalized)
 	if err != nil {
 		return time.Time{}, false
 	}
 	return tt.UTC(), true
+}
+
+// normalizeRFC3339String rewrites offsets/fractions into a layout Go accepts.
+func normalizeRFC3339String(str string) (string, bool) {
+	if !strings.Contains(str, "T") {
+		return "", false
+	}
+	if strings.HasSuffix(str, "Z") {
+		main := str[:len(str)-1]
+		m, ok := normalizeFractionalComponent(main)
+		if !ok {
+			return "", false
+		}
+		return m + "Z", true
+	}
+	lastPlus := strings.LastIndex(str, "+")
+	lastMinus := strings.LastIndex(str, "-")
+	idx := lastPlus
+	if lastMinus > idx {
+		idx = lastMinus
+	}
+	if idx <= len("2006-01-02") {
+		return "", false
+	}
+	main := str[:idx]
+	offset := str[idx:]
+	normMain, ok := normalizeFractionalComponent(main)
+	if !ok {
+		return "", false
+	}
+	normOffset, ok := normalizeOffset(offset)
+	if !ok {
+		return "", false
+	}
+	return normMain + normOffset, true
+}
+
+// normalizeFractionalComponent trims fractional seconds longer than 9 digits.
+func normalizeFractionalComponent(main string) (string, bool) {
+	tIndex := strings.Index(main, "T")
+	if tIndex == -1 {
+		return "", false
+	}
+	dotIndex := strings.LastIndex(main, ".")
+	if dotIndex == -1 {
+		return main, true
+	}
+	if dotIndex < tIndex {
+		return "", false
+	}
+	frac := main[dotIndex+1:]
+	if frac == "" {
+		return "", false
+	}
+	for _, r := range frac {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	if len(frac) > 9 {
+		frac = frac[:9]
+	}
+	return main[:dotIndex+1] + frac, true
+}
+
+// normalizeOffset accepts colon-free or short offsets and rewrites them to ±HH:MM.
+func normalizeOffset(offset string) (string, bool) {
+	if len(offset) < 2 {
+		return "", false
+	}
+	sign := offset[0]
+	if sign != '+' && sign != '-' {
+		return "", false
+	}
+	body := offset[1:]
+	if body == "" {
+		return "", false
+	}
+	if strings.Contains(body, ":") {
+		parts := strings.Split(body, ":")
+		if len(parts) != 2 {
+			return "", false
+		}
+		hours := parts[0]
+		mins := parts[1]
+		if len(hours) == 1 {
+			hours = "0" + hours
+		} else if len(hours) != 2 {
+			return "", false
+		}
+		if len(mins) != 2 {
+			return "", false
+		}
+		if !isAllDigits(hours) || !isAllDigits(mins) {
+			return "", false
+		}
+		return fmt.Sprintf("%c%s:%s", sign, hours, mins), true
+	}
+	if !isAllDigits(body) {
+		return "", false
+	}
+	switch len(body) {
+	case 1:
+		return fmt.Sprintf("%c0%s:00", sign, body), true
+	case 2:
+		return fmt.Sprintf("%c%s:00", sign, body), true
+	case 4:
+		return fmt.Sprintf("%c%s:%s", sign, body[:2], body[2:]), true
+	default:
+		return "", false
+	}
 }
 
 // formatRFC3339ZNormalized emits an RFC3339 string with trimmed fractional precision.
@@ -250,28 +426,29 @@ var (
 	}
 )
 
-// normalizeSeverity coerces severity inputs into canonical Cloud Logging severities.
-func normalizeSeverity(v interface{}) string {
+// canonicalizeSeverity returns the canonical severity name and whether the input was valid.
+func canonicalizeSeverity(v any) (string, bool) {
 	switch vv := v.(type) {
-	case json.Number:
-		return "DEFAULT"
-	case float64, float32, int64, int32, int, uint64, uint32, uint:
-		return "DEFAULT"
+	case json.Number, float64, float32, int64, int32, int, uint64, uint32, uint:
+		return "", false
 	case string:
-		s := strings.TrimSpace(vv)
-		if isAllDigits(s) {
-			return "DEFAULT"
+		if strings.TrimSpace(vv) == "" {
+			return "", false
 		}
-		up := strings.ToUpper(s)
+		// Intentionally avoid trimming to preserve whitespace sensitivity.
+		up := strings.ToUpper(vv)
+		if isAllDigits(up) {
+			return "", false
+		}
 		if _, ok := validSeverities[up]; ok {
-			return up
+			return up, true
 		}
 		if mapped, ok := severityTranslations[up]; ok {
-			return mapped
+			return mapped, true
 		}
-		return "DEFAULT"
+		return "", false
 	default:
-		return "DEFAULT"
+		return "", false
 	}
 }
 
@@ -290,16 +467,15 @@ func isAllDigits(s string) bool {
 
 var (
 	reLatencyFlexible = regexp.MustCompile(`^\s*(\d+)(?:\.(\d+))?\s*s\s*$`)
-	reTraceID         = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
 )
 
 // extractHttpRequest canonicalizes a jsonPayload.httpRequest map for elevation.
-func extractHttpRequest(m map[string]interface{}) (map[string]interface{}, bool) {
+func extractHttpRequest(m map[string]any) (map[string]any, bool) {
 	if m == nil {
 		return nil, false
 	}
 
-	out := make(map[string]interface{})
+	out := make(map[string]any)
 
 	if v, ok := m["requestMethod"]; ok {
 		delete(m, "requestMethod")
@@ -371,7 +547,7 @@ func extractHttpRequest(m map[string]interface{}) (map[string]interface{}, bool)
 }
 
 // parseLatencyValue converts latency representations into backend-friendly strings.
-func parseLatencyValue(v interface{}) (string, bool) {
+func parseLatencyValue(v any) (string, bool) {
 	raw := strings.TrimSpace(fmt.Sprint(v))
 	if raw == "" {
 		return "", false
@@ -392,55 +568,65 @@ func parseLatencyValue(v interface{}) (string, bool) {
 	return intPart + "." + fraction + "s", true
 }
 
-// extractProjectID chooses the best-effort project identifier from a log entry.
-func extractProjectID(root map[string]interface{}) string {
-	logName, ok := root["logName"].(string)
-	if !ok || logName == "" {
-		return ""
-	}
-	trimmed := strings.TrimPrefix(strings.TrimSpace(logName), "/")
-	parts := strings.Split(trimmed, "/")
-	if len(parts) >= 4 && parts[0] == "projects" && parts[2] == "logs" {
-		return parts[1]
-	}
-	return ""
-}
-
-// formatTraceValue formats trace identifiers, adding a project prefix when available.
-func formatTraceValue(v interface{}, projectID string) string {
-	trace := strings.TrimSpace(fmt.Sprint(v))
-	if trace == "" {
-		return trace
-	}
-	if strings.HasPrefix(trace, "projects/") {
-		return trace
-	}
-	if projectID != "" && reTraceID.MatchString(trace) {
-		return fmt.Sprintf("projects/%s/traces/%s", projectID, trace)
-	}
-	return trace
+// formatTraceValue mirrors backend behavior by copying trace identifiers verbatim.
+func formatTraceValue(v any) string {
+	return strings.TrimSpace(fmt.Sprint(v))
 }
 
 // numericToInt64 converts flexible numeric inputs into an int64.
-func numericToInt64(v interface{}) (int64, bool) {
+func numericToInt64(v any) (int64, bool) {
 	switch n := v.(type) {
 	case json.Number:
-		if strings.Contains(n.String(), ".") {
+		str := n.String()
+		if !strings.ContainsAny(str, ".eE") {
+			i, err := n.Int64()
+			return i, err == nil
+		}
+		f, err := n.Float64()
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 			return 0, false
 		}
-		i, err := n.Int64()
-		return i, err == nil
+		trunc := math.Trunc(f)
+		if trunc > math.MaxInt64 || trunc < math.MinInt64 {
+			return 0, false
+		}
+		return int64(trunc), true
 	case float64:
-		if math.Trunc(n) != n {
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, false
+		}
+		trunc := math.Trunc(n)
+		if trunc > math.MaxInt64 || trunc < math.MinInt64 {
+			return 0, false
+		}
+		return int64(trunc), true
+	case float32:
+		f := float64(n)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return 0, false
+		}
+		trunc := math.Trunc(f)
+		if trunc > math.MaxInt64 || trunc < math.MinInt64 {
+			return 0, false
+		}
+		return int64(trunc), true
+	case int64:
+		return n, true
+	case int32:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	case uint:
+		if uint64(n) > math.MaxInt64 {
 			return 0, false
 		}
 		return int64(n), true
-	case string:
-		i, err := strconv.ParseInt(n, 10, 64)
-		return i, err == nil
-	case int64:
-		return n, true
-	case int:
+	case uint32:
+		return int64(n), true
+	case uint64:
+		if n > math.MaxInt64 {
+			return 0, false
+		}
 		return int64(n), true
 	default:
 		return 0, false
@@ -448,7 +634,7 @@ func numericToInt64(v interface{}) (int64, bool) {
 }
 
 // elevateOperation hoists structured operation information from the payload to the root.
-func elevateOperation(payload, root map[string]interface{}) {
+func elevateOperation(payload, root map[string]any) {
 	if _, exists := root["operation"]; exists {
 		return
 	}
@@ -498,7 +684,7 @@ func elevateOperation(payload, root map[string]interface{}) {
 }
 
 // elevateSourceLocation moves source location metadata into the expected top-level field.
-func elevateSourceLocation(payload, root map[string]interface{}) {
+func elevateSourceLocation(payload, root map[string]any) {
 	if _, exists := root["sourceLocation"]; exists {
 		return
 	}
@@ -513,7 +699,7 @@ func elevateSourceLocation(payload, root map[string]interface{}) {
 		useSimpleKey = true
 	}
 
-	extracted := map[string]interface{}{}
+	extracted := map[string]any{}
 	if v, ok := obj["file"]; ok {
 		extracted["file"] = fmt.Sprint(v)
 		delete(obj, "file")
@@ -542,26 +728,26 @@ func elevateSourceLocation(payload, root map[string]interface{}) {
 	}
 }
 
-// elevateSimpleTrace migrates simple trace values while applying project formatting.
-func elevateSimpleTrace(payload, root map[string]interface{}, projectID string) {
+// elevateSimpleTrace migrates simple trace values without rewriting content.
+func elevateSimpleTrace(payload, root map[string]any) {
 	if _, exists := root["trace"]; exists {
 		delete(payload, keyTrace)
 		delete(payload, "trace")
 		return
 	}
 	if v, ok := payload[keyTrace]; ok {
-		root["trace"] = formatTraceValue(v, projectID)
+		root["trace"] = formatTraceValue(v)
 		delete(payload, keyTrace)
 		return
 	}
 	if v, ok := payload["trace"]; ok {
-		root["trace"] = formatTraceValue(v, projectID)
+		root["trace"] = formatTraceValue(v)
 		delete(payload, "trace")
 	}
 }
 
 // elevateSimpleSpanID promotes span identifiers from the payload when present.
-func elevateSimpleSpanID(payload, root map[string]interface{}) {
+func elevateSimpleSpanID(payload, root map[string]any) {
 	if _, exists := root["spanId"]; exists {
 		delete(payload, keySpanID)
 		delete(payload, "spanId")
@@ -579,25 +765,75 @@ func elevateSimpleSpanID(payload, root map[string]interface{}) {
 }
 
 // elevateSimpleTraceSampled converts trace sampling hints into canonical booleans.
-func elevateSimpleTraceSampled(payload, root map[string]interface{}) {
+func elevateSimpleTraceSampled(payload, root map[string]any) {
 	if _, exists := root["traceSampled"]; exists {
 		delete(payload, keyTraceSampled)
 		delete(payload, "traceSampled")
 		return
 	}
 	if v, ok := payload[keyTraceSampled]; ok {
-		root["traceSampled"] = parseBoolRubyish(v)
+		if vb, ok := v.(bool); ok {
+			root["traceSampled"] = vb
+		}
 		delete(payload, keyTraceSampled)
 		return
 	}
 	if v, ok := payload["traceSampled"]; ok {
-		root["traceSampled"] = parseBoolRubyish(v)
+		if vb, ok := v.(bool); ok {
+			root["traceSampled"] = vb
+		}
 		delete(payload, "traceSampled")
 	}
 }
 
+// elevateLabels promotes payload label maps into the top-level entry labels when valid.
+func elevateLabels(payload, root map[string]any) {
+	if _, exists := root["labels"]; exists {
+		delete(payload, keyLabels)
+		delete(payload, "labels")
+		return
+	}
+
+	var (
+		keyUsed string
+		raw     any
+		ok      bool
+	)
+
+	if raw, ok = payload[keyLabels]; ok {
+		keyUsed = keyLabels
+	} else if raw, ok = payload["labels"]; ok {
+		keyUsed = "labels"
+	} else {
+		return
+	}
+
+	labelsMap := mapFrom(raw)
+	if labelsMap == nil {
+		delete(payload, keyUsed)
+		return
+	}
+
+	out := make(map[string]string, len(labelsMap))
+	for k, v := range labelsMap {
+		str, ok := v.(string)
+		if !ok {
+			delete(payload, keyUsed)
+			return
+		}
+		out[k] = str
+	}
+	if len(out) == 0 {
+		delete(payload, keyUsed)
+		return
+	}
+
+	root["labels"] = out
+	delete(payload, keyUsed)
+}
+
 // Ruby-like boolean: true if true, "true", or 1; otherwise false.
-func parseBoolRubyish(v interface{}) bool {
+func parseBoolRubyish(v any) bool {
 	switch x := v.(type) {
 	case bool:
 		return x
@@ -614,7 +850,7 @@ func parseBoolRubyish(v interface{}) bool {
 }
 
 // Ruby-like int: strings -> leading integer or 0 if non-numeric; floats truncated; ints as-is.
-func parseIntRubyish(v interface{}) int64 {
+func parseIntRubyish(v any) int64 {
 	switch x := v.(type) {
 	case json.Number:
 		if i, err := x.Int64(); err == nil {
@@ -665,7 +901,6 @@ func marshalNoHTMLEscape(v any) (string, error) {
 	return strings.TrimSpace(buf.String()), nil
 }
 
-
 // mustUnmarshalMap parses a JSON object string and fails the test on error.
 func mustUnmarshalMap(t *testing.T, s string) map[string]any {
 	t.Helper()
@@ -680,14 +915,15 @@ func mustUnmarshalMap(t *testing.T, s string) map[string]any {
 func TestSeverityNormalization(t *testing.T) {
 	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name        string
+		input       string
+		want        string
+		wantPresent bool
 	}{
-		{"AliasWarn", `{"severity":"warn"}`, "WARNING"},
-		{"LowercaseCritical", `{"severity":"critical"}`, "CRITICAL"},
-		{"NumericString", `{"severity":"400"}`, "DEFAULT"},
-		{"NumericValue", `{"severity":400}`, "DEFAULT"},
+		{"AliasWarn", `{"severity":"warn"}`, "WARNING", true},
+		{"LowercaseCritical", `{"severity":"critical"}`, "CRITICAL", true},
+		{"NumericString", `{"severity":"400"}`, "", false},
+		{"NumericValue", `{"severity":400}`, "", false},
 	}
 	for _, tc := range tests {
 		tc := tc
@@ -697,14 +933,24 @@ func TestSeverityNormalization(t *testing.T) {
 				t.Fatal(err)
 			}
 			m := mustUnmarshalMap(t, out)
-			if got := m["severity"]; got != tc.want {
-				t.Fatalf("severity mismatch: got %v want %v", got, tc.want)
+			got, ok := m["severity"]
+			if tc.wantPresent {
+				if !ok {
+					t.Fatalf("severity missing, want %q", tc.want)
+				}
+				if got != tc.want {
+					t.Fatalf("severity mismatch: got %v want %v", got, tc.want)
+				}
+				return
+			}
+			if ok {
+				t.Fatalf("unexpected severity present: %v", got)
 			}
 		})
 	}
 }
 
-// TestSeverityDefaultWhenMissing verifies missing severity defaults to DEFAULT.
+// TestSeverityDefaultWhenMissing verifies missing severity leaves the entry without a severity field.
 func TestSeverityDefaultWhenMissing(t *testing.T) {
 	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
 	out, err := TransformLogEntryJSON("{}", now)
@@ -712,15 +958,80 @@ func TestSeverityDefaultWhenMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := mustUnmarshalMap(t, out)
-	if got := m["severity"]; got != "DEFAULT" {
-		t.Fatalf("severity mismatch: got %v want DEFAULT", got)
+	if _, ok := m["severity"]; ok {
+		t.Fatalf("unexpected severity present: %v", m["severity"])
+	}
+}
+
+// TestPayloadSeverityHandling ensures payload severities follow backend promotion rules.
+func TestPayloadSeverityHandling(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	tests := []struct {
+		name                string
+		input               string
+		topSeverity         string
+		topSeverityPresent  bool
+		payloadSeverityKept bool
+	}{
+		{
+			name:               "ValidPromoted",
+			input:              `{"jsonPayload":{"severity":"warn","foo":1}}`,
+			topSeverity:        "WARNING",
+			topSeverityPresent: true,
+		},
+		{
+			name:               "DefaultDropped",
+			input:              `{"jsonPayload":{"severity":"DEFAULT","foo":1}}`,
+			topSeverityPresent: false,
+		},
+		{
+			name:                "InvalidRetained",
+			input:               `{"jsonPayload":{"severity":" warn","foo":1}}`,
+			topSeverityPresent:  false,
+			payloadSeverityKept: true,
+		},
+	}
+
+	for _, tc := range tests {
+		c := tc
+		t.Run(c.name, func(t *testing.T) {
+			out, err := TransformLogEntryJSON(c.input, now)
+			if err != nil {
+				t.Fatalf("TransformLogEntryJSON() returned %v", err)
+			}
+			m := mustUnmarshalMap(t, out)
+			got, have := m["severity"]
+			if c.topSeverityPresent {
+				if !have {
+					t.Fatalf("severity missing, want %q", c.topSeverity)
+				}
+				if got != c.topSeverity {
+					t.Fatalf("severity mismatch: got %v want %v", got, c.topSeverity)
+				}
+			} else if have {
+				t.Fatalf("unexpected severity present: %v", got)
+			}
+
+			jp, ok := m["jsonPayload"].(map[string]any)
+			if !ok {
+				t.Fatalf("jsonPayload missing or wrong type: %T", m["jsonPayload"])
+			}
+			_, retained := jp["severity"]
+			if c.payloadSeverityKept {
+				if !retained {
+					t.Fatal("expected severity to remain in jsonPayload")
+				}
+			} else if retained {
+				t.Fatalf("severity unexpectedly retained in jsonPayload: %v", jp["severity"])
+			}
+		})
 	}
 }
 
 // TestTimestampFromStructuredMap confirms timestamp maps become RFC3339 strings.
 func TestTimestampFromStructuredMap(t *testing.T) {
-	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
-	want := time.Date(2024, 2, 3, 4, 5, 6, 700000000, time.UTC)
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	want := time.Date(2025, 11, 3, 17, 50, 58, 123456000, time.UTC)
 	input := fmt.Sprintf(`{"timestamp":{"seconds":%d,"nanos":%d}}`, want.Unix(), want.Nanosecond())
 	out, err := TransformLogEntryJSON(input, now)
 	if err != nil {
@@ -734,9 +1045,9 @@ func TestTimestampFromStructuredMap(t *testing.T) {
 
 // TestTimestampFromLegacyFields checks legacy second/nano fields normalization.
 func TestTimestampFromLegacyFields(t *testing.T) {
-	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
-	want := time.Date(2024, 7, 8, 9, 10, 11, 123456000, time.UTC)
-	input := fmt.Sprintf(`{"timestampSeconds":"%d","timestampNanos":"%d"}`, want.Unix(), want.Nanosecond())
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	want := time.Date(2025, 11, 3, 17, 50, 59, 654321000, time.UTC)
+	input := fmt.Sprintf(`{"timestampSeconds":%d,"timestampNanos":%d}`, want.Unix(), want.Nanosecond())
 	out, err := TransformLogEntryJSON(input, now)
 	if err != nil {
 		t.Fatal(err)
@@ -747,12 +1058,117 @@ func TestTimestampFromLegacyFields(t *testing.T) {
 	}
 }
 
+// TestTimestampLegacyFieldsRejectStrings ensures stringified legacy fields are ignored.
+func TestTimestampLegacyFieldsRejectStrings(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384250000, time.UTC)
+	want := formatRFC3339ZNormalized(now)
+	input := `{"timestampSeconds":"1700000001","timestampNanos":"123"}`
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != want {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, want)
+	}
+	if _, ok := m["timestampSeconds"]; ok {
+		t.Fatalf("timestampSeconds should be dropped: %+v", m)
+	}
+}
+
+// TestTimestampLegacyFieldsFloatSecondsTruncated confirms floating seconds truncate toward zero.
+func TestTimestampLegacyFieldsFloatSecondsTruncated(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	want := time.Date(2025, 11, 3, 17, 50, 57, 789000000, time.UTC)
+	floatSeconds := float64(want.Unix()) + 0.9876
+	input := fmt.Sprintf(`{"timestampSeconds":%s,"timestampNanos":%d}`, strconv.FormatFloat(floatSeconds, 'f', 4, 64), want.Nanosecond())
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(want) {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(want))
+	}
+}
+
+// TestTimestampLegacyFieldsRejectStringNanos ensures mixed string nanos are ignored.
+func TestTimestampLegacyFieldsRejectStringNanos(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	input := `{"timestampSeconds":1700000001,"timestampNanos":"123"}`
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(now) {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(now))
+	}
+}
+
+// TestTimestampStructuredNanosTooLargeFallsBack ensures proto-style timestamp maps with
+// excessive fractional precision fall back to the ingestion time.
+func TestTimestampStructuredNanosTooLargeFallsBack(t *testing.T) {
+	now := time.Date(2025, 11, 4, 23, 13, 12, 655392000, time.UTC)
+	target := now.Add(2 * time.Hour)
+	input := fmt.Sprintf(`{"timestamp":{"seconds":%d,"nanos":1234567891}}`, target.Unix())
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	want := formatRFC3339ZNormalized(now)
+	if got := m["timestamp"]; got != want {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, want)
+	}
+}
+
+// TestTimestampLegacyFieldsExcessNanosFallsBack verifies timestampSeconds/timestampNanos
+// pairs exceeding nanosecond precision revert to the ingestion time and drop the fields.
+func TestTimestampLegacyFieldsExcessNanosFallsBack(t *testing.T) {
+	now := time.Date(2025, 11, 4, 23, 13, 13, 209024000, time.UTC)
+	past := now.Add(-3 * time.Hour)
+	input := fmt.Sprintf(`{"timestampSeconds":%d,"timestampNanos":1234567891234}`, past.Unix())
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	want := formatRFC3339ZNormalized(now)
+	if got := m["timestamp"]; got != want {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, want)
+	}
+	if _, ok := m["timestampSeconds"]; ok {
+		t.Fatalf("timestampSeconds should be removed for invalid nanos: %+v", m["timestampSeconds"])
+	}
+	if _, ok := m["timestampNanos"]; ok {
+		t.Fatalf("timestampNanos should be removed for invalid nanos: %+v", m["timestampNanos"])
+	}
+}
+
+// TestTimestampMapRejectsStringValues ensures proto-style maps with strings are ignored.
+func TestTimestampMapRejectsStringValues(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	input := `{"timestamp":{"seconds":"1700000001","nanos":"123"}}`
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(now) {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(now))
+	}
+	if _, ok := m["timestamp"].(string); !ok {
+		t.Fatalf("expected timestamp to remain a string: %+v", m["timestamp"]) // ensures covering decode
+	}
+}
+
 // TestTimestampFromPayloadTime confirms payload time strings are promoted.
 func TestTimestampFromPayloadTime(t *testing.T) {
-	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
 	input := `{
 	  "jsonPayload": {
-	    "time": "2024-02-03T04:05:06.007z",
+	    "time": "2025-11-03T17:51:01.111111z",
 	    "other": 1
 	  }
 	}`
@@ -761,8 +1177,8 @@ func TestTimestampFromPayloadTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := mustUnmarshalMap(t, out)
-	if got := m["timestamp"]; got != "2024-02-03T04:05:06.007Z" {
-		t.Fatalf("timestamp mismatch: got %v want 2024-02-03T04:05:06.007Z", got)
+	if got := m["timestamp"]; got != "2025-11-03T17:51:01.111111Z" {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, "2025-11-03T17:51:01.111111Z")
 	}
 	jp := m["jsonPayload"].(map[string]any)
 	if _, ok := jp["time"]; ok {
@@ -770,54 +1186,549 @@ func TestTimestampFromPayloadTime(t *testing.T) {
 	}
 }
 
-// TestTimestampFromTimeNanos validates timeNanos inputs are converted correctly.
-func TestTimestampFromTimeNanos(t *testing.T) {
-	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
-	want := time.Date(2024, 5, 6, 7, 8, 9, 123456000, time.UTC)
-	input := fmt.Sprintf(`{"timeNanos":%d}`, want.UnixNano())
+// TestPayloadTimeTruncatesAndTrims verifies fractional seconds truncate then trim trailing zeros.
+func TestPayloadTimeTruncatesAndTrims(t *testing.T) {
+	now := time.Date(2025, 11, 5, 6, 55, 55, 0, time.UTC)
+	input := `{
+	  "jsonPayload": {
+	    "time": "2025-11-05T06:55:55.1200000009Z"
+	  }
+	}`
 	out, err := TransformLogEntryJSON(input, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := mustUnmarshalMap(t, out)
-	if got := m["timestamp"]; got != formatRFC3339ZNormalized(want) {
-		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(want))
+	if got := m["timestamp"]; got != "2025-11-05T06:55:55.120Z" {
+		t.Fatalf("timestamp = %v, want 2025-11-05T06:55:55.120Z", got)
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	if _, ok := jp["time"]; ok {
+		t.Fatalf("expected payload time to be removed after consumption: %+v", jp)
 	}
 }
 
-// TestTimestampAdjustsFuture reduces near-future timestamps within acceptable bounds.
-func TestTimestampAdjustsFuture(t *testing.T) {
+// TestPayloadTimestampStructPromotes verifies structured timestamp maps set the entry timestamp.
+func TestPayloadTimestampStructPromotes(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	wanted := time.Date(2025, 11, 3, 17, 52, 1, 987654000, time.UTC)
+	secondary := "2025-11-03T17:53:02.123456Z"
+	input := fmt.Sprintf(`{
+	  "jsonPayload": {
+	    "timestamp": {
+	      "seconds": %d,
+	      "nanos": %d
+	    },
+	    "time": "%s"
+	  }
+	}`, wanted.Unix(), wanted.Nanosecond(), secondary)
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(wanted) {
+		t.Fatalf("timestamp = %v, want %s", got, formatRFC3339ZNormalized(wanted))
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	if _, exists := jp["timestamp"]; exists {
+		t.Fatalf("jsonPayload timestamp should be removed when used: %v", jp["timestamp"])
+	}
+	if _, exists := jp["time"]; !exists {
+		t.Fatal("jsonPayload time should remain when not used to set timestamp")
+	}
+}
+
+// TestPayloadTimestampSecondsPairPromotes validates timestampSeconds/timestampNanos pairs promote.
+func TestPayloadTimestampSecondsPairPromotes(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	wanted := time.Date(2025, 11, 3, 18, 0, 1, 246000000, time.UTC)
+	input := fmt.Sprintf(`{
+	  "jsonPayload": {
+	    "timestampSeconds": %d,
+	    "timestampNanos": %d
+	  }
+	}`, wanted.Unix(), wanted.Nanosecond())
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(wanted) {
+		t.Fatalf("timestamp = %v, want %s", got, formatRFC3339ZNormalized(wanted))
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	if _, exists := jp["timestampSeconds"]; exists {
+		t.Fatal("timestampSeconds should be removed when used")
+	}
+	if _, exists := jp["timestampNanos"]; exists {
+		t.Fatal("timestampNanos should be removed when used")
+	}
+}
+
+// TestPayloadTimestampInvalidNanosFallsBack ensures invalid nanos values are ignored.
+func TestPayloadTimestampInvalidNanosFallsBack(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	seconds := now.Unix()
+	invalidNanos := int64(2000000000)
+	fallback := "2025-11-03T17:55:08.000001Z"
+	input := fmt.Sprintf(`{
+	  "jsonPayload": {
+	    "timestampSeconds": %d,
+	    "timestampNanos": %d,
+	    "time": "%s"
+	  }
+	}`, seconds, invalidNanos, fallback)
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != fallback {
+		t.Fatalf("timestamp = %v, want %s", got, fallback)
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	if _, exists := jp["timestampSeconds"]; !exists {
+		t.Fatal("timestampSeconds should remain when pair invalid")
+	}
+	if _, exists := jp["timestampNanos"]; !exists {
+		t.Fatal("timestampNanos should remain when pair invalid")
+	}
+	if _, exists := jp["time"]; exists {
+		t.Fatal("time should be removed when used to set timestamp")
+	}
+}
+
+// TestPayloadTimestampStructExcessNanosFallsBack ensures payload timestamp maps with excessive
+// fractional precision fall back to the ingestion time while leaving the payload intact.
+func TestPayloadTimestampStructExcessNanosFallsBack(t *testing.T) {
+	now := time.Date(2025, 11, 4, 23, 13, 12, 655392000, time.UTC)
+	desired := now.Add(90 * time.Minute)
+	input := fmt.Sprintf(`{
+	  "jsonPayload": {
+	    "timestamp": {
+	      "seconds": %d,
+	      "nanos": 1234567891
+	    }
+	  }
+	}`, desired.Unix())
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	want := formatRFC3339ZNormalized(now)
+	if got := m["timestamp"]; got != want {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, want)
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	raw, ok := jp["timestamp"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload timestamp map should remain: %+v", jp["timestamp"])
+	}
+	if toInt64(raw["seconds"]) != desired.Unix() {
+		t.Fatalf("payload seconds altered: %+v", raw["seconds"])
+	}
+	if toInt64(raw["nanos"]) != 1234567891 {
+		t.Fatalf("payload nanos altered: %+v", raw["nanos"])
+	}
+}
+
+// TestPayloadTimestampPairExcessNanosFallsBack verifies payload seconds/nanos pairs that exceed
+// nanosecond precision fall back to the ingestion time and leave the payload untouched.
+func TestPayloadTimestampPairExcessNanosFallsBack(t *testing.T) {
+	now := time.Date(2025, 11, 4, 23, 13, 13, 209024000, time.UTC)
+	past := now.Add(-45 * time.Minute)
+	input := fmt.Sprintf(`{
+	  "jsonPayload": {
+	    "timestampSeconds": %d,
+	    "timestampNanos": 1234567891234
+	  }
+	}`, past.Unix())
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	want := formatRFC3339ZNormalized(now)
+	if got := m["timestamp"]; got != want {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, want)
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	if toInt64(jp["timestampSeconds"]) != past.Unix() {
+		t.Fatalf("payload timestampSeconds altered: %+v", jp["timestampSeconds"])
+	}
+	if toInt64(jp["timestampNanos"]) != 1234567891234 {
+		t.Fatalf("payload timestampNanos altered: %+v", jp["timestampNanos"])
+	}
+}
+
+// TestTimestampPrecedence verifies the backend preference order for timestamp fields.
+func TestTimestampPrecedence(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	structured := time.Date(2025, 11, 3, 17, 50, 58, 123456000, time.UTC)
+	legacy := time.Date(2025, 11, 3, 17, 50, 59, 654321000, time.UTC)
+	payloadLiteral := "2025-11-03T17:51:01.111111Z"
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name: "StructuredMapWins",
+			input: fmt.Sprintf(`{"timestamp":{"seconds":%d,"nanos":%d},"timestampSeconds":%d,"timestampNanos":%d,"jsonPayload":{"time":"%s"}}`,
+				structured.Unix(), structured.Nanosecond(), legacy.Unix(), legacy.Nanosecond(), payloadLiteral),
+			expected: formatRFC3339ZNormalized(structured),
+		},
+		{
+			name: "LegacySecondsWinWhenMapMissing",
+			input: fmt.Sprintf(`{"timestampSeconds":%d,"timestampNanos":%d,"jsonPayload":{"time":"%s"}}`,
+				legacy.Unix(), legacy.Nanosecond(), payloadLiteral),
+			expected: formatRFC3339ZNormalized(legacy),
+		},
+		{
+			name:     "PayloadTimeUsedWhenOthersAbsent",
+			input:    fmt.Sprintf(`{"jsonPayload":{"time":"%s"}}`, payloadLiteral),
+			expected: payloadLiteral,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := TransformLogEntryJSON(tc.input, now)
+			if err != nil {
+				t.Fatalf("TransformLogEntryJSON() error = %v", err)
+			}
+			m := mustUnmarshalMap(t, out)
+			if got := m["timestamp"]; got != tc.expected {
+				t.Fatalf("timestamp mismatch: got %v want %s", got, tc.expected)
+			}
+		})
+	}
+}
+
+// TestPayloadTimeAlternateFormats exercises accepted RFC3339 variants.
+func TestPayloadTimeAlternateFormats(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	wantBase := formatRFC3339ZNormalized(time.Date(2025, 11, 3, 14, 7, 12, 0, time.UTC))
+	wantFrac := formatRFC3339ZNormalized(time.Date(2025, 11, 3, 14, 7, 12, 123456789, time.UTC))
+	wantNanos := formatRFC3339ZNormalized(time.Date(2025, 11, 3, 14, 7, 12, 123456000, time.UTC))
+	tests := []struct {
+		name     string
+		literal  string
+		expected string
+	}{
+		{"CanonicalZ", "2025-11-03T14:07:12Z", wantBase},
+		{"CanonicalNanos", "2025-11-03T14:07:12.123456Z", wantNanos},
+		{"LowercaseZ", "2025-11-03T14:07:12z", wantBase},
+		{"CanonOffset", "2025-11-03T09:07:12-05:00", wantBase},
+		{"ColonFreeOffset", "2025-11-03T17:07:12+0300", wantBase},
+		{"ShortOffset", "2025-11-03T17:07:12+3", wantBase},
+		{"ColonFreeNegativeOffset", "2025-11-03T09:07:12-0500", wantBase},
+		{"LongFractionTruncated", "2025-11-03T14:07:12.123456789123Z", wantFrac},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			payload := fmt.Sprintf(`{"jsonPayload":{"time":"%s","other":1}}`, tc.literal)
+			out, err := TransformLogEntryJSON(payload, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := mustUnmarshalMap(t, out)
+			if got := m["timestamp"]; got != tc.expected {
+				t.Fatalf("timestamp mismatch: got %v want %s", got, tc.expected)
+			}
+			jp := m["jsonPayload"].(map[string]any)
+			if _, ok := jp["time"]; ok {
+				t.Fatalf("expected payload time to be removed: %+v", jp)
+			}
+		})
+	}
+}
+
+// TestPayloadTimeFractionTenDigitsTruncatesWithoutRounding confirms fractional components longer
+// than nine digits are truncated rather than rounded.
+func TestPayloadTimeFractionTenDigitsTruncatesWithoutRounding(t *testing.T) {
+	now := time.Date(2025, 11, 4, 21, 6, 57, 0, time.UTC)
+	want := "2025-11-04T21:06:57.123456789Z"
+	cases := []string{
+		"2025-11-04T21:06:57.1234567894Z",
+		"2025-11-04T21:06:57.1234567895Z",
+		"2025-11-04T21:06:57.1234567896Z",
+	}
+	for _, literal := range cases {
+		payload := fmt.Sprintf(`{"jsonPayload":{"time":"%s","note":1}}`, literal)
+		out, err := TransformLogEntryJSON(payload, now)
+		if err != nil {
+			t.Fatalf("TransformLogEntryJSON() for %s returned %v", literal, err)
+		}
+		m := mustUnmarshalMap(t, out)
+		if got := m["timestamp"]; got != want {
+			t.Fatalf("timestamp mismatch for %s: got %v want %s", literal, got, want)
+		}
+		jp := m["jsonPayload"].(map[string]any)
+		if _, ok := jp["time"]; ok {
+			t.Fatalf("time should be removed after promotion for %s", literal)
+		}
+	}
+}
+
+// TestPayloadTimeFractionNineDigitsPreserved covers accepted nine-digit fractions, including
+// trailing zeros followed by a non-zero digit and maximal precision.
+func TestPayloadTimeFractionNineDigitsPreserved(t *testing.T) {
+	now := time.Date(2025, 11, 10, 17, 22, 49, 0, time.UTC)
+	cases := []struct {
+		name     string
+		literal  string
+		expected string
+	}{
+		{
+			name:     "TrailingZeroNine",
+			literal:  "2025-11-10T17:22:49.120000009Z",
+			expected: "2025-11-10T17:22:49.120000009Z",
+		},
+		{
+			name:     "MaxNines",
+			literal:  "2025-11-04T21:06:57.999999999Z",
+			expected: "2025-11-04T21:06:57.999999999Z",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			payload := fmt.Sprintf(`{"jsonPayload":{"time":"%s","note":2}}`, tc.literal)
+			out, err := TransformLogEntryJSON(payload, now)
+			if err != nil {
+				t.Fatalf("TransformLogEntryJSON() for %s returned %v", tc.literal, err)
+			}
+			m := mustUnmarshalMap(t, out)
+			if got := m["timestamp"]; got != tc.expected {
+				t.Fatalf("timestamp mismatch for %s: got %v want %s", tc.literal, got, tc.expected)
+			}
+			jp := m["jsonPayload"].(map[string]any)
+			if _, ok := jp["time"]; ok {
+				t.Fatalf("time should be removed after promotion for %s", tc.literal)
+			}
+		})
+	}
+}
+
+// TestPayloadTimeFractionTrailingZerosNormalized ensures nine-digit fractions composed entirely
+// of trailing zeros compress down to millisecond precision.
+func TestPayloadTimeFractionTrailingZerosNormalized(t *testing.T) {
+	now := time.Date(2025, 11, 4, 21, 6, 57, 0, time.UTC)
+	payload := `{"jsonPayload":{"time":"2025-11-04T21:06:57.120000000Z"}}`
+	out, err := TransformLogEntryJSON(payload, now)
+	if err != nil {
+		t.Fatalf("TransformLogEntryJSON() returned %v", err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != "2025-11-04T21:06:57.120Z" {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, "2025-11-04T21:06:57.120Z")
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	if _, ok := jp["time"]; ok {
+		t.Fatal("time should be removed after promotion")
+	}
+}
+
+// TestPayloadTimeInvalidFormatsFallback ensures unsupported formats fall back to ingestion.
+func TestPayloadTimeInvalidFormatsFallback(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	invalids := []string{
+		"2025-11-03 14:07:12Z",
+		"2025-11-03T14:07Z",
+		"2025-11-03",
+		"2025-11-03T14:07:12",
+		"2025-12-31T23:59:60Z",
+		"2025-11-03T24:01:01Z",
+		"2025-W45-1T12:00:00Z",
+		"2025-307T12:00:00Z",
+		"2025-11-03T14:07:12PST",
+		"2025-11-03T14:07:12UTC",
+	}
+
+	for _, literal := range invalids {
+		payload := fmt.Sprintf(`{"jsonPayload":{"time":"%s","other":1}}`, literal)
+		out, err := TransformLogEntryJSON(payload, now)
+		if err != nil {
+			t.Fatalf("TransformLogEntryJSON() returned error for %q: %v", literal, err)
+		}
+		m := mustUnmarshalMap(t, out)
+		if got := m["timestamp"]; got != formatRFC3339ZNormalized(now) {
+			t.Fatalf("timestamp mismatch for %q: got %v want %s", literal, got, formatRFC3339ZNormalized(now))
+		}
+		jp := m["jsonPayload"].(map[string]any)
+		if _, ok := jp["time"]; !ok {
+			t.Fatalf("invalid time %q should remain in payload: %+v", literal, jp)
+		}
+	}
+}
+
+// TestTimestampIgnoresTimeNanos validates timeNanos inputs fall back to ingestion time.
+func TestTimestampIgnoresTimeNanos(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	want := formatRFC3339ZNormalized(now)
+	input := fmt.Sprintf(`{"timeNanos":%d}`, time.Date(2024, 5, 6, 7, 8, 9, 123456000, time.UTC).UnixNano())
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != want {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, want)
+	}
+}
+
+// TestTimestampAcceptsFutureWithinWindow keeps timestamps up to 24h ahead.
+func TestTimestampAcceptsFutureWithinWindow(t *testing.T) {
 	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
-	future := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	future := now.Add(24 * time.Hour)
 	input := fmt.Sprintf(`{"timestamp":"%s"}`, future.Format(time.RFC3339))
 	out, err := TransformLogEntryJSON(input, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := mustUnmarshalMap(t, out)
-	want := future.AddDate(-1, 0, 0)
-	if got := m["timestamp"]; got != formatRFC3339ZNormalized(want) {
-		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(want))
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(future) {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(future))
 	}
 }
 
-// TestTimestampResetsFarFuture rewrites far-future timestamps to the epoch.
-func TestTimestampResetsFarFuture(t *testing.T) {
-	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
-	future := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+// TestTimestampClampsFutureBeyondWindow clamps timestamps more than 24h ahead.
+func TestTimestampClampsFutureBeyondWindow(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 123000, time.UTC)
+	future := now.Add(24*time.Hour + time.Minute)
 	input := fmt.Sprintf(`{"timestamp":"%s"}`, future.Format(time.RFC3339))
 	out, err := TransformLogEntryJSON(input, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := mustUnmarshalMap(t, out)
-	if got := m["timestamp"]; got != formatRFC3339ZNormalized(time.Unix(0, 0).UTC()) {
-		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(time.Unix(0, 0).UTC()))
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(now) {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(now))
 	}
 }
 
-// TestHttpRequestExtraction ensures httpRequest payloads are elevated and normalized.
-func TestHttpRequestExtraction(t *testing.T) {
+// TestTimestampLegacyFieldsClampFutureBeyondWindow ensures legacy fields respect the future window.
+func TestTimestampLegacyFieldsClampFutureBeyondWindow(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 500000, time.UTC)
+	future := now.Add(24*time.Hour + 2*time.Minute)
+	input := fmt.Sprintf(`{"timestampSeconds":%d,"timestampNanos":%d}`, future.Unix(), future.Nanosecond())
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(now) {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(now))
+	}
+}
+
+// TestPayloadTimeClampFutureBeyondWindow ensures payload time strings respect the future window.
+func TestPayloadTimeClampFutureBeyondWindow(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 750000, time.UTC)
+	future := now.Add(24*time.Hour + 3*time.Minute)
+	input := fmt.Sprintf(`{"jsonPayload":{"time":"%s"}}`, future.Format(time.RFC3339Nano))
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(now) {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(now))
+	}
+}
+
+// TestTimestampAcceptsPastWithinWindow honors timestamps up to 21 days old.
+func TestTimestampAcceptsPastWithinWindow(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	past := now.Add(-21 * 24 * time.Hour)
+	input := fmt.Sprintf(`{"timestamp":"%s"}`, past.Format(time.RFC3339))
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(past) {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(past))
+	}
+}
+
+// TestTimestampClampsFarPast clamps timestamps 30 days or older.
+func TestTimestampClampsFarPast(t *testing.T) {
+	now := time.Date(2025, 1, 31, 3, 4, 5, 800000, time.UTC)
+	past := now.Add(-30 * 24 * time.Hour)
+	input := fmt.Sprintf(`{"timestamp":"%s"}`, past.Format(time.RFC3339))
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if got := m["timestamp"]; got != formatRFC3339ZNormalized(now) {
+		t.Fatalf("timestamp mismatch: got %v want %s", got, formatRFC3339ZNormalized(now))
+	}
+}
+
+// TestHttpRequestElevatedWhenCanonical ensures canonical httpRequest promotes to root.
+func TestHttpRequestElevatedWhenCanonical(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	input := `{
+	  "jsonPayload": {
+	    "httpRequest": {
+	      "requestMethod": "POST",
+	      "requestUrl": "https://example.com/upload",
+	      "requestSize": 256,
+	      "responseSize": "512",
+	      "cacheFillBytes": 1024,
+	      "status": 200,
+	      "latency": " 2.500 s ",
+	      "cacheHit": "true",
+	      "cacheLookup": 1,
+	      "cacheValidatedWithOriginServer": true
+	    }
+	  }
+	}`
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatalf("TransformLogEntryJSON() returned %v", err)
+	}
+	m := mustUnmarshalMap(t, out)
+	rootHTTP, ok := m["httpRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected httpRequest to be elevated: %+v", m)
+	}
+	if rootHTTP["requestMethod"] != "POST" || rootHTTP["requestUrl"] != "https://example.com/upload" {
+		t.Fatalf("unexpected httpRequest strings: %+v", rootHTTP)
+	}
+	if rootHTTP["requestSize"] != "256" || rootHTTP["responseSize"] != "512" || rootHTTP["cacheFillBytes"] != "1024" {
+		t.Fatalf("size conversions mismatch: %+v", rootHTTP)
+	}
+	if status, ok := rootHTTP["status"].(float64); !ok || status != 200 {
+		t.Fatalf("status mismatch: %+v", rootHTTP["status"])
+	}
+	if latency, ok := rootHTTP["latency"].(string); !ok || latency != "2.5s" {
+		t.Fatalf("latency mismatch: %+v", rootHTTP["latency"])
+	}
+	if lookup, ok := rootHTTP["cacheLookup"].(bool); !ok || !lookup {
+		t.Fatalf("cacheLookup bool mismatch: %+v", rootHTTP)
+	}
+	if hit, ok := rootHTTP["cacheHit"].(bool); !ok || !hit {
+		t.Fatalf("cacheHit bool mismatch: %+v", rootHTTP)
+	}
+	if validated, ok := rootHTTP["cacheValidatedWithOriginServer"].(bool); !ok || !validated {
+		t.Fatalf("cacheValidatedWithOriginServer bool mismatch: %+v", rootHTTP)
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	if _, exists := jp["httpRequest"]; exists {
+		t.Fatalf("httpRequest should be removed from payload after elevation: %+v", jp)
+	}
+}
+
+// TestHttpRequestRemainsInPayload ensures httpRequest stays under jsonPayload.
+func TestHttpRequestRemainsInPayload(t *testing.T) {
 	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
 	input := `{
 	  "jsonPayload": {
@@ -841,37 +1752,21 @@ func TestHttpRequestExtraction(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := mustUnmarshalMap(t, out)
-	httpReq, ok := m["httpRequest"].(map[string]any)
-	if !ok {
-		t.Fatalf("httpRequest not elevated: %+v", m)
-	}
-	if httpReq["requestMethod"] != "GET" || httpReq["requestUrl"] != "/path" {
-		t.Fatalf("unexpected httpRequest strings: %+v", httpReq)
-	}
-	if httpReq["requestSize"] != "123" || httpReq["responseSize"] != "456" || httpReq["cacheFillBytes"] != "789" {
-		t.Fatalf("size coercion mismatch: %+v", httpReq)
-	}
-	if toInt64(httpReq["status"]) != 201 {
-		t.Fatalf("status mismatch: %+v", httpReq)
-	}
-	if httpReq["latency"] != "1.5s" {
-		t.Fatalf("latency mismatch: %+v", httpReq)
-	}
-	if httpReq["cacheHit"] != true || httpReq["cacheLookup"] != true || httpReq["cacheValidatedWithOriginServer"] != true {
-		t.Fatalf("cache booleans mismatch: %+v", httpReq)
+	if _, exists := m["httpRequest"]; exists {
+		t.Fatalf("httpRequest should not be elevated: %+v", m)
 	}
 	jp := m["jsonPayload"].(map[string]any)
-	if hr, ok := jp["httpRequest"].(map[string]any); ok {
-		if len(hr) != 1 || hr["unknown"] != "keep" {
-			t.Fatalf("unexpected residual httpRequest payload: %+v", hr)
-		}
-	} else {
-		t.Fatalf("expected residual httpRequest payload to remain")
+	hr, ok := jp["httpRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload httpRequest missing: %+v", jp)
+	}
+	if len(hr) != 1 || hr["unknown"] != "keep" {
+		t.Fatalf("expected only unknown field to remain: %+v", hr)
 	}
 }
 
-// TestTraceAutoformatWithProject verifies traces gain project-qualified names.
-func TestTraceAutoformatWithProject(t *testing.T) {
+// TestTraceCopiedVerbatimWithProject ensures traces promote without rewriting content.
+func TestTraceCopiedVerbatimWithProject(t *testing.T) {
 	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
 	input := `{
 	  "logName": "projects/acme/logs/test",
@@ -884,7 +1779,7 @@ func TestTraceAutoformatWithProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := mustUnmarshalMap(t, out)
-	want := "projects/acme/traces/0123456789abcdef0123456789abcdef"
+	want := "0123456789abcdef0123456789abcdef"
 	if got := m["trace"]; got != want {
 		t.Fatalf("trace mismatch: got %v want %s", got, want)
 	}
@@ -897,8 +1792,8 @@ func TestTraceAutoformatWithProject(t *testing.T) {
 	}
 }
 
-// TestTraceAutoformatWithoutProject keeps trace IDs untouched when no project exists.
-func TestTraceAutoformatWithoutProject(t *testing.T) {
+// TestTraceCopiedVerbatimWithoutProject keeps trace IDs untouched when no project exists.
+func TestTraceCopiedVerbatimWithoutProject(t *testing.T) {
 	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
 	input := `{
 	  "jsonPayload": {
@@ -916,11 +1811,57 @@ func TestTraceAutoformatWithoutProject(t *testing.T) {
 	}
 }
 
-// TestSpecialFieldsElevation checks special payload keys move to top-level fields.
-func TestSpecialFieldsElevation(t *testing.T) {
+// TestTraceSampledRejectsNonBoolean validates only literal booleans are promoted.
+func TestTraceSampledRejectsNonBoolean(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	tests := []string{
+		`{"jsonPayload":{"logging.googleapis.com/trace_sampled":"true"}}`,
+		`{"jsonPayload":{"logging.googleapis.com/trace_sampled":1}}`,
+		`{"jsonPayload":{"traceSampled":"true"}}`,
+	}
+
+	for _, input := range tests {
+		out, err := TransformLogEntryJSON(input, now)
+		if err != nil {
+			t.Fatalf("TransformLogEntryJSON() returned error for %s: %v", input, err)
+		}
+		m := mustUnmarshalMap(t, out)
+		if _, ok := m["traceSampled"]; ok {
+			t.Fatalf("traceSampled should not be promoted for %s", input)
+		}
+		jp := m["jsonPayload"].(map[string]any)
+		if _, ok := jp["logging.googleapis.com/trace_sampled"]; ok {
+			t.Fatalf("trace_sampled key should be removed for %s", input)
+		}
+		if _, ok := jp["traceSampled"]; ok {
+			t.Fatalf("traceSampled key should be removed for %s", input)
+		}
+	}
+}
+
+// TestTraceSampledPromotesForBoolean ensures literal booleans elevate regardless of key variant.
+func TestTraceSampledPromotesForBoolean(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	input := `{"jsonPayload":{"traceSampled":true}}`
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	if m["traceSampled"] != true {
+		t.Fatalf("traceSampled not promoted for literal boolean: %+v", m)
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	if _, ok := jp["traceSampled"]; ok {
+		t.Fatalf("traceSampled key should be removed from payload")
+	}
+}
+
+// TestSpecialFieldsHandling covers selective promotion of structured payload keys.
+func TestSpecialFieldsHandling(t *testing.T) {
 	input := `{
 	  "jsonPayload": {
-	    "time": "2024-02-03T04:05:06.007Z",
+	    "time": "2025-11-03T17:51:01.111111Z",
 	    "logging.googleapis.com/operation": {
 	      "id":"op-123",
 	      "producer": "svc.foo",
@@ -936,25 +1877,32 @@ func TestSpecialFieldsElevation(t *testing.T) {
 	    },
 	    "logging.googleapis.com/trace": "projects/x/traces/abc",
 	    "logging.googleapis.com/spanId": "0123456789abcdef",
-	    "logging.googleapis.com/trace_sampled": 1
+	    "logging.googleapis.com/trace_sampled": true
 	  }
 	}`
-	out, err := TransformLogEntryJSON(input, time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC))
+	now := time.Date(2025, 11, 3, 17, 50, 57, 384000000, time.UTC)
+	out, err := TransformLogEntryJSON(input, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := mustUnmarshalMap(t, out)
 
-	if got, want := m["timestamp"].(string), "2024-02-03T04:05:06.007Z"; got != want {
+	if got, want := m["timestamp"].(string), "2025-11-03T17:51:01.111111Z"; got != want {
 		t.Fatalf("timestamp mismatch: got %q want %q", got, want)
 	}
 
 	op, ok := m["operation"].(map[string]any)
 	if !ok {
-		t.Fatalf("operation not elevated")
+		t.Fatalf("operation not elevated: %+v", m)
 	}
-	if op["id"] != "op-123" || op["producer"] != "svc.foo" || op["first"] != true || op["last"] != false {
+	if op["id"] != "op-123" || op["producer"] != "svc.foo" {
 		t.Fatalf("operation fields not normalized: %+v", op)
+	}
+	if first, ok := op["first"].(bool); !ok || !first {
+		t.Fatalf("operation first flag mismatch: %+v", op["first"])
+	}
+	if last, ok := op["last"].(bool); !ok || last {
+		t.Fatalf("operation last flag mismatch: %+v", op["last"])
 	}
 
 	jp := m["jsonPayload"].(map[string]any)
@@ -963,7 +1911,7 @@ func TestSpecialFieldsElevation(t *testing.T) {
 			t.Fatalf("operation residual not preserved: %+v", opPayload)
 		}
 	} else {
-		t.Fatalf("expected residual operation map to remain in payload")
+		t.Fatalf("expected operation map inside payload")
 	}
 
 	src, ok := m["sourceLocation"].(map[string]any)
@@ -983,13 +1931,13 @@ func TestSpecialFieldsElevation(t *testing.T) {
 	}
 
 	if m["trace"] != "projects/x/traces/abc" {
-		t.Fatalf("trace not elevated")
+		t.Fatalf("trace not copied verbatim: %+v", m["trace"])
 	}
 	if m["spanId"] != "0123456789abcdef" {
 		t.Fatalf("spanId not elevated")
 	}
 	if m["traceSampled"] != true {
-		t.Fatalf("traceSampled not normalized/elevated")
+		t.Fatalf("traceSampled not elevated for boolean input")
 	}
 	if _, ok := jp["logging.googleapis.com/trace"]; ok {
 		t.Fatalf("trace key should be removed from payload")
@@ -999,6 +1947,62 @@ func TestSpecialFieldsElevation(t *testing.T) {
 	}
 	if _, ok := jp["logging.googleapis.com/trace_sampled"]; ok {
 		t.Fatalf("trace_sampled key should be removed from payload")
+	}
+}
+
+// TestLabelsElevatedForStringMap verifies string-only maps become entry labels.
+func TestLabelsElevatedForStringMap(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 0, time.UTC)
+	input := `{
+	  "jsonPayload": {
+	    "logging.googleapis.com/labels": {
+	      "component": "payments",
+	      "region": "us-central1"
+	    }
+	  }
+	}`
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+	labels, ok := m["labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("labels not elevated: %+v", m)
+	}
+	if labels["component"] != "payments" || labels["region"] != "us-central1" {
+		t.Fatalf("labels mismatch: %+v", labels)
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	if _, ok := jp["logging.googleapis.com/labels"]; ok {
+		t.Fatalf("labels key should be removed from payload: %+v", jp)
+	}
+}
+
+// TestLabelsDroppedWhenInvalid ensures non-string entries remove the label block.
+func TestLabelsDroppedWhenInvalid(t *testing.T) {
+	now := time.Date(2025, 11, 3, 17, 50, 57, 0, time.UTC)
+	tests := []string{
+		`{"jsonPayload":{"logging.googleapis.com/labels":{"component":1}}}`,
+		`{"jsonPayload":{"logging.googleapis.com/labels":["bad"]}}`,
+		`{"jsonPayload":{"labels":{"component":1}}}`,
+	}
+	for _, input := range tests {
+		out, err := TransformLogEntryJSON(input, now)
+		if err != nil {
+			t.Fatalf("TransformLogEntryJSON() returned error for %s: %v", input, err)
+		}
+		m := mustUnmarshalMap(t, out)
+		if _, ok := m["labels"]; ok {
+			t.Fatalf("labels should not be elevated for %s", input)
+		}
+		jp := m["jsonPayload"].(map[string]any)
+		if _, ok := jp["logging.googleapis.com/labels"]; ok {
+			t.Fatalf("invalid labels block should be removed for %s", input)
+		}
+		if _, ok := jp["labels"]; ok {
+			t.Fatalf("invalid labels block should be removed for %s", input)
+		}
 	}
 }
 
@@ -1018,9 +2022,12 @@ func TestSimpleKeysVariantsAlsoElevated(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := mustUnmarshalMap(t, out)
-	op := m["operation"].(map[string]any)
+	op, ok := m["operation"].(map[string]any)
+	if !ok {
+		t.Fatalf("operation not elevated for simple key: %+v", m)
+	}
 	if op["id"] != "99" {
-		t.Fatalf("operation id not stringified: %+v", op)
+		t.Fatalf("operation id not normalized: %+v", op)
 	}
 	src := m["sourceLocation"].(map[string]any)
 	if src["file"] != "a.go" || toInt64(src["line"]) != 3 {
@@ -1032,8 +2039,15 @@ func TestSimpleKeysVariantsAlsoElevated(t *testing.T) {
 	if m["spanId"] != "aaaaaaaaaaaaaaaa" {
 		t.Fatalf("spanId not elevated")
 	}
-	if m["traceSampled"] != true {
-		t.Fatalf("traceSampled not normalized")
+	if _, ok := m["traceSampled"]; ok {
+		t.Fatalf("traceSampled should not elevate for string literal")
+	}
+	jp := m["jsonPayload"].(map[string]any)
+	if _, ok := jp["operation"]; ok {
+		t.Fatalf("operation key should be removed from payload")
+	}
+	if _, ok := jp["traceSampled"]; ok {
+		t.Fatalf("traceSampled string should be removed from payload")
 	}
 }
 

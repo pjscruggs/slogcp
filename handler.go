@@ -1,3 +1,17 @@
+// Copyright 2025 Patrick J. Scruggs
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package slogcp
 
 import (
@@ -10,13 +24,29 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
-const LabelsGroup = "logging.googleapis.com/labels"
+const (
+	LabelsGroup = "logging.googleapis.com/labels"
+
+	envLogLevel        = "SLOGCP_LEVEL"
+	envLogSource       = "SLOGCP_SOURCE_LOCATION"
+	envLogTime         = "SLOGCP_TIME"
+	envLogStackEnabled = "SLOGCP_STACK_TRACE_ENABLED"
+	envLogStackLevel   = "SLOGCP_STACK_TRACE_LEVEL"
+	envSeverityAliases = "SLOGCP_SEVERITY_ALIASES"
+	envTraceProjectID  = "SLOGCP_TRACE_PROJECT_ID"
+	envProjectID       = "SLOGCP_PROJECT_ID"
+	envGoogleProject   = "GOOGLE_CLOUD_PROJECT"
+	envTarget          = "SLOGCP_TARGET"
+	envSlogcpGCP       = "SLOGCP_GCP_PROJECT"
+)
 
 var (
 	ErrInvalidRedirectTarget = errors.New("slogcp: invalid redirect target")
-	errUnsupportedTarget     = errors.New("slogcp: logging to the Cloud Logging API has been removed")
+
+	handlerEnvConfigCache atomic.Pointer[handlerConfig]
 )
 
 // Option mutates Handler construction behaviour when supplied to [NewHandler].
@@ -115,7 +145,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 		internalLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
-	cfg, err := loadConfigFromEnv(internalLogger)
+	cfg, err := cachedConfigFromEnv(internalLogger)
 	if err != nil {
 		return nil, err
 	}
@@ -376,8 +406,10 @@ func WithSourceLocationEnabled(enabled bool) Option {
 	}
 }
 
-// WithTime toggles emission of the top-level RFC3339Nano "time" field. When
-// disabled, Cloud Logging assigns timestamps during ingestion.
+// WithTime toggles emission of the top-level "time" field. By default slogcp
+// omits timestamps on managed GCP runtimes such as Cloud Run or App Engine,
+// since Cloud Logging stamps entries automatically, and emits millisecond
+// precision timestamps elsewhere.
 func WithTime(enabled bool) Option {
 	return func(o *options) {
 		o.emitTimeField = &enabled
@@ -412,8 +444,9 @@ func WithTraceProjectID(id string) Option {
 // WithSeverityAliases configures whether the handler emits Cloud Logging severity
 // aliases (for example, "I" for INFO) instead of the full severity names. Using
 // the aliases trims roughly a nanosecond from JSON marshaling, and Cloud
-// Logging still displays the canonical severity names after ingestion. The
-// default is to emit the aliases.
+// Logging still displays the canonical severity names after ingestion. On a
+// detected GCP runtime the aliases remain enabled by default; otherwise they
+// must be explicitly enabled through options or environment variables.
 func WithSeverityAliases(enabled bool) Option {
 	return func(o *options) {
 		o.useShortSeverity = &enabled
@@ -503,32 +536,92 @@ func WithGroup(name string) Option {
 	}
 }
 
+// prefersManagedGCPDefaults reports whether the detected runtime should use
+// managed Google Cloud defaults for logging configuration.
+func prefersManagedGCPDefaults(info RuntimeInfo) bool {
+	switch info.Environment {
+	case RuntimeEnvCloudRunService,
+		RuntimeEnvCloudRunJob,
+		RuntimeEnvCloudFunctions,
+		RuntimeEnvAppEngineStandard,
+		RuntimeEnvAppEngineFlexible:
+		return true
+	default:
+		return false
+	}
+}
+
+// defaultUseShortSeverityNames reports whether Cloud Logging severity aliases
+// should be enabled implicitly for the current runtime.
+func defaultUseShortSeverityNames() bool {
+	return prefersManagedGCPDefaults(DetectRuntimeInfo())
+}
+
+// defaultEmitTimeField reports whether slogcp should emit the top-level time
+// field without any explicit configuration from the caller.
+func defaultEmitTimeField() bool {
+	return !prefersManagedGCPDefaults(DetectRuntimeInfo())
+}
+
 // loadConfigFromEnv reads handler configuration overrides from environment
 // variables, logging validation issues to logger.
+func cachedConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
+	if cached := handlerEnvConfigCache.Load(); cached != nil {
+		return *cached, nil
+	}
+
+	cfg, err := loadConfigFromEnv(logger)
+	if err != nil {
+		return handlerConfig{}, err
+	}
+
+	entry := new(handlerConfig)
+	*entry = cfg
+	if handlerEnvConfigCache.CompareAndSwap(nil, entry) {
+		return cfg, nil
+	}
+	if cached := handlerEnvConfigCache.Load(); cached != nil {
+		return *cached, nil
+	}
+	return cfg, nil
+}
+
+// resetHandlerConfigCache clears the cached handler configuration derived from
+// environment variables, forcing the next handler to re-read the environment.
+func resetHandlerConfigCache() {
+	handlerEnvConfigCache.Store(nil)
+}
+
+// loadConfigFromEnv reads handler configuration overrides from environment
+// variables, returning the assembled configuration and any validation errors.
 func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 	cfg := handlerConfig{
 		Level:                 slog.LevelInfo,
 		StackTraceLevel:       slog.LevelError,
-		UseShortSeverityNames: true,
+		EmitTimeField:         defaultEmitTimeField(),
+		UseShortSeverityNames: defaultUseShortSeverityNames(),
 	}
 
-	cfg.Level = parseLevelEnv(os.Getenv("LOG_LEVEL"), cfg.Level, logger)
-	cfg.AddSource = parseBoolEnv(os.Getenv("LOG_SOURCE_LOCATION"), cfg.AddSource, logger)
-	cfg.EmitTimeField = parseBoolEnv(os.Getenv("LOG_TIME"), cfg.EmitTimeField, logger)
-	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv("LOG_STACK_TRACE_ENABLED"), cfg.StackTraceEnabled, logger)
-	cfg.StackTraceLevel = parseLevelEnv(os.Getenv("LOG_STACK_TRACE_LEVEL"), cfg.StackTraceLevel, logger)
-	cfg.UseShortSeverityNames = parseBoolEnv(os.Getenv("SLOGCP_SEVERITY_ALIASES"), cfg.UseShortSeverityNames, logger)
+	cfg.Level = parseLevelEnv(os.Getenv(envLogLevel), cfg.Level, logger)
+	cfg.AddSource = parseBoolEnv(os.Getenv(envLogSource), cfg.AddSource, logger)
+	cfg.EmitTimeField = parseBoolEnv(os.Getenv(envLogTime), cfg.EmitTimeField, logger)
+	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv(envLogStackEnabled), cfg.StackTraceEnabled, logger)
+	cfg.StackTraceLevel = parseLevelEnv(os.Getenv(envLogStackLevel), cfg.StackTraceLevel, logger)
+	cfg.UseShortSeverityNames = parseBoolEnv(os.Getenv(envSeverityAliases), cfg.UseShortSeverityNames, logger)
 
-	traceProject := strings.TrimSpace(os.Getenv("SLOGCP_TRACE_PROJECT_ID"))
+	traceProject := strings.TrimSpace(os.Getenv(envTraceProjectID))
 	if traceProject == "" {
-		traceProject = strings.TrimSpace(os.Getenv("SLOGCP_PROJECT_ID"))
+		traceProject = strings.TrimSpace(os.Getenv(envProjectID))
 	}
 	if traceProject == "" {
-		traceProject = strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT"))
+		traceProject = strings.TrimSpace(os.Getenv(envSlogcpGCP))
+	}
+	if traceProject == "" {
+		traceProject = strings.TrimSpace(os.Getenv(envGoogleProject))
 	}
 	cfg.TraceProjectID = traceProject
 
-	if err := applyRedirectFromEnv(&cfg, logger); err != nil {
+	if err := applyTargetFromEnv(&cfg, logger); err != nil {
 		return handlerConfig{}, err
 	}
 
@@ -590,59 +683,38 @@ func applyOptions(cfg *handlerConfig, o *options) {
 	}
 }
 
-// applyRedirectFromEnv adjusts output destinations based on environment
-// variables such as SLOGCP_REDIRECT.
-func applyRedirectFromEnv(cfg *handlerConfig, logger *slog.Logger) error {
-	redirect := strings.TrimSpace(os.Getenv("SLOGCP_REDIRECT_AS_JSON_TARGET"))
-	if redirect != "" {
-		lower := strings.ToLower(redirect)
-		switch {
-		case strings.HasPrefix(lower, "file:"):
-			path := strings.TrimSpace(redirect[len("file:"):])
-			if path == "" {
-				return ErrInvalidRedirectTarget
-			}
-			cfg.FilePath = path
-			cfg.Writer = nil
-			cfg.ClosableWriter = nil
-			cfg.writerExternallyOwned = false
-		case strings.EqualFold(redirect, "stdout"):
-			cfg.Writer = os.Stdout
-			cfg.FilePath = ""
-			cfg.ClosableWriter = nil
-			cfg.writerExternallyOwned = true
-		case strings.EqualFold(redirect, "stderr"):
-			cfg.Writer = os.Stderr
-			cfg.FilePath = ""
-			cfg.ClosableWriter = nil
-			cfg.writerExternallyOwned = true
-		default:
-			return ErrInvalidRedirectTarget
-		}
+// applyTargetFromEnv adjusts the output destination based on SLOGCP_TARGET.
+func applyTargetFromEnv(cfg *handlerConfig, logger *slog.Logger) error {
+	target := strings.TrimSpace(os.Getenv(envTarget))
+	if target == "" {
+		return nil
 	}
 
-	logTarget := strings.TrimSpace(os.Getenv("SLOGCP_LOG_TARGET"))
-	switch strings.ToLower(logTarget) {
-	case "", "stdout":
-		if cfg.Writer == nil && cfg.FilePath == "" && logTarget != "" {
-			cfg.Writer = os.Stdout
-			cfg.writerExternallyOwned = true
-		}
-	case "stderr":
-		if cfg.Writer == nil && cfg.FilePath == "" {
-			cfg.Writer = os.Stderr
-			cfg.writerExternallyOwned = true
-		}
-	case "file":
-		if cfg.FilePath == "" {
+	lower := strings.ToLower(target)
+	switch {
+	case lower == "stdout":
+		cfg.Writer = os.Stdout
+		cfg.FilePath = ""
+		cfg.ClosableWriter = nil
+		cfg.writerExternallyOwned = true
+	case lower == "stderr":
+		cfg.Writer = os.Stderr
+		cfg.FilePath = ""
+		cfg.ClosableWriter = nil
+		cfg.writerExternallyOwned = true
+	case strings.HasPrefix(lower, "file:"):
+		path := strings.TrimSpace(target[len("file:"):])
+		if path == "" {
+			logDiagnostic(logger, slog.LevelWarn, "empty file target", slog.String("variable", envTarget))
 			return ErrInvalidRedirectTarget
 		}
-	case "gcp":
-		return errUnsupportedTarget
+		cfg.FilePath = path
+		cfg.Writer = nil
+		cfg.ClosableWriter = nil
+		cfg.writerExternallyOwned = false
 	default:
-		if logTarget != "" {
-			logDiagnostic(logger, slog.LevelWarn, "unknown SLOGCP_LOG_TARGET", slog.String("value", logTarget))
-		}
+		logDiagnostic(logger, slog.LevelWarn, "unknown SLOGCP_TARGET", slog.String("value", target))
+		return ErrInvalidRedirectTarget
 	}
 
 	return nil

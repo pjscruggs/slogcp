@@ -1,6 +1,21 @@
+// Copyright 2025 Patrick J. Scruggs
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package slogcp
 
 import (
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -10,6 +25,36 @@ import (
 func resetRuntimeInfoCache() {
 	runtimeInfoOnce = sync.Once{}
 	runtimeInfo = RuntimeInfo{}
+	resetHandlerConfigCache()
+}
+
+type stubMetadataClient struct {
+	onGCE  bool
+	values map[string]string
+}
+
+// OnGCE reports whether the stub considers metadata available.
+func (s *stubMetadataClient) OnGCE() bool {
+	return s.onGCE
+}
+
+// Get returns the stubbed metadata value or signals absence.
+func (s *stubMetadataClient) Get(path string) (string, error) {
+	if v, ok := s.values[path]; ok {
+		return v, nil
+	}
+	return "", errors.New("metadata not found")
+}
+
+// withMetadataClient installs a temporary metadata client factory for the test scope.
+func withMetadataClient(t *testing.T, client metadataClient) {
+	original := metadataClientFactory
+	metadataClientFactory = func() metadataClient {
+		return client
+	}
+	t.Cleanup(func() {
+		metadataClientFactory = original
+	})
 }
 
 // TestDetectRuntimeInfoCloudRunService verifies Cloud Run environment variables populate runtime metadata.
@@ -33,22 +78,19 @@ func TestDetectRuntimeInfoCloudRunService(t *testing.T) {
 	if info.Labels["cloud_run.service"] != "svc" {
 		t.Fatalf("label cloud_run.service = %q, want %q", info.Labels["cloud_run.service"], "svc")
 	}
+	if info.Environment != RuntimeEnvCloudRunService {
+		t.Fatalf("Environment = %v, want %v", info.Environment, RuntimeEnvCloudRunService)
+	}
 }
 
 // TestDetectRuntimeInfoMetadataFallback ensures metadata server fallback supplies project ID.
 func TestDetectRuntimeInfoMetadataFallback(t *testing.T) {
 	resetRuntimeInfoCache()
-	originalFetch := metadataFetch
-	metadataFetch = func(path string) (string, bool) {
-		switch path {
-		case "project/project-id":
-			return "meta-project", true
-		default:
-			return "", false
-		}
-	}
-	t.Cleanup(func() {
-		metadataFetch = originalFetch
+	withMetadataClient(t, &stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"project/project-id": "meta-project",
+		},
 	})
 
 	info := detectRuntimeInfo()
@@ -60,21 +102,16 @@ func TestDetectRuntimeInfoMetadataFallback(t *testing.T) {
 // TestNewHandlerUsesRuntimeProjectID confirms handler defaults trace project ID from runtime discovery.
 func TestNewHandlerUsesRuntimeProjectID(t *testing.T) {
 	resetRuntimeInfoCache()
-	originalFetch := metadataFetch
-	metadataFetch = func(path string) (string, bool) {
-		switch path {
-		case "project/project-id":
-			return "meta-project", true
-		default:
-			return "", false
-		}
-	}
-	t.Cleanup(func() {
-		metadataFetch = originalFetch
+	withMetadataClient(t, &stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"project/project-id": "meta-project",
+		},
 	})
 
 	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "")
 	t.Setenv("SLOGCP_PROJECT_ID", "")
+	t.Setenv("SLOGCP_GCP_PROJECT", "")
 	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
 	t.Setenv("GCLOUD_PROJECT", "")
 	t.Setenv("GCP_PROJECT", "")

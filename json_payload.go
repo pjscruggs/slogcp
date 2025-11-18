@@ -209,27 +209,6 @@ func cloneStringMap(src map[string]string) map[string]string {
 	return dup
 }
 
-// mergeStringMaps combines base and overlay maps, preferring overlay values on conflicts.
-func mergeStringMaps(base, overlay map[string]string) map[string]string {
-	if len(base) == 0 && len(overlay) == 0 {
-		return nil
-	}
-	if len(base) == 0 {
-		return cloneStringMap(overlay)
-	}
-	if len(overlay) == 0 {
-		return cloneStringMap(base)
-	}
-	merged := make(map[string]string, len(base)+len(overlay))
-	for k, v := range base {
-		merged[k] = v
-	}
-	for k, v := range overlay {
-		merged[k] = v
-	}
-	return merged
-}
-
 // stringMapToAny converts a string map into a map[string]any while preserving keys.
 func stringMapToAny(src map[string]string) map[string]any {
 	if len(src) == 0 {

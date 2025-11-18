@@ -14,63 +14,55 @@
 
 // Package http provides net/http integration for slogcp.
 //
-// The package offers:
+// The package keeps request-scoped logging, trace correlation, and
+// OpenTelemetry instrumentation aligned with Google Cloud Logging expectations.
+// It exposes helpers for both servers and clients:
+//   - [Middleware] derives a child slog.Logger per request, stores it in the
+//     context via [slogcp.ContextWithLogger], and records a [RequestScope] with
+//     method, route, latency, status, and payload metadata. When [WithOTel]
+//     is enabled (the default) it wraps handlers with [otelhttp.NewHandler]
+//     so spans and trace propagation work automatically. The middleware never
+//     emits request logs by itself; it enriches application logs produced by
+//     your handlers.
+//   - [Transport] wraps an http.RoundTripper to inject W3C trace headers,
+//     optionally synthesise legacy X-Cloud-Trace-Context headers, and expose a
+//     request-scoped logger on outgoing contexts. Options such as
+//     [WithAttrEnricher], [WithAttrTransformer], and [WithIncludeQuery] apply to
+//     both middleware and transport instrumentation.
+//   - [ScopeFromContext] retrieves the RequestScope captured for inbound or
+//     outbound requests so handlers can inspect latency, status codes, and
+//     payload sizes. [HTTPRequestAttr] converts that scope into the
+//     `httpRequest` structured payload used by Cloud Logging when you need to
+//     emit it manually.
+//   - [InjectTraceContextMiddleware] remains available for deployments that
+//     disable OpenTelemetry instrumentation yet still need to recognise the
+//     legacy X-Cloud-Trace-Context header on ingress.
 //
-//  1. [Middleware]: wraps an [http.Handler] to log request/response details
-//     with an application logger. Behaviour is configurable via functional
-//     options or environment variables such as SLOGCP_HTTP_SKIP_PATH_SUBSTRINGS,
-//     SLOGCP_HTTP_SUPPRESS_UNSAMPLED_BELOW, SLOGCP_HTTP_LOG_REQUEST_HEADER_KEYS,
-//     SLOGCP_HTTP_LOG_RESPONSE_HEADER_KEYS, SLOGCP_HTTP_REQUEST_BODY_LIMIT,
-//     SLOGCP_HTTP_RESPONSE_BODY_LIMIT, SLOGCP_HTTP_RECOVER_PANICS, and
-//     SLOGCP_HTTP_TRUST_PROXY_HEADERS.
+// Typical usage:
 //
-//  2. [InjectTraceContextMiddleware]: extracts the legacy X-Cloud-Trace-Context
-//     header and injects a remote span context into the request’s context.
-//     Use this only when you are not already relying on OpenTelemetry HTTP
-//     server instrumentation to do the same.
+//	slogHandler, _ := slogcp.NewHandler(os.Stdout)
+//	logger := slog.New(slogHandler)
 //
-//  3. [NewTraceRoundTripper]: an opt-in client transport that propagates the
-//     current span context on outbound requests (injects W3C traceparent and,
-//     by default, X-Cloud-Trace-Context). This is useful when you are not
-//     using a full OpenTelemetry HTTP client wrapper.
-//
-// These helpers keep inbound and outbound traffic correlated with the JSON
-// payload produced by slogcp’s handler, maintaining trace IDs and the
-// `httpRequest` structure expected by Google Cloud log sinks.
-//
-// # Basic Usage (server)
-//
-//	handler, err := slogcp.NewHandler(os.Stdout)
-//	if err != nil {
-//	    log.Fatalf("failed to create slogcp handler: %v", err)
-//	}
-//	defer handler.Close()
-//
-//	logger := slog.New(handler)
-//
-//	// Import the middleware package
-//	import slogcphttp "github.com/pjscruggs/slogcp/http"
-//
-//	myHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-//	    w.WriteHeader(http.StatusOK)
-//	    w.Write([]byte("Hello, world!"))
+//	mux := http.NewServeMux()
+//	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+//	    slogcp.Logger(r.Context()).Info("health probe")
+//	    w.WriteHeader(http.StatusNoContent)
 //	})
 //
-//	// The trace injector should come before the main logging middleware.
-//	wrapped := slogcphttp.Middleware(logger)(
-//	    slogcphttp.InjectTraceContextMiddleware()(myHandler),
-//	)
+//	serverHandler := slogcphttp.Middleware(
+//	    slogcphttp.WithLogger(logger),
+//	    slogcphttp.WithIncludeQuery(false),
+//	)(mux)
 //
-//	log.Println("Starting server on :8080")
-//	if err := http.ListenAndServe(":8080", wrapped); err != nil {
-//	    log.Fatalf("server failed: %v", err)
+//	server := &http.Server{
+//	    Addr:    ":8080",
+//	    Handler: serverHandler,
 //	}
 //
-// # Basic Usage (client)
-//
-//	// Wrap an HTTP client to propagate trace headers on outbound requests.
-//	client := &http.Client{
-//	    Transport: slogcphttp.NewTraceRoundTripper(nil), // wraps http.DefaultTransport
+//	httpClient := &http.Client{
+//	    Transport: slogcphttp.Transport(nil),
 //	}
-//	// Use client.Do(req.WithContext(ctx)) where ctx carries a span (or an injected remote span).
+//	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
+//	httpClient.Do(req)
 package http
+

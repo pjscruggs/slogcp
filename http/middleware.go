@@ -15,17 +15,18 @@
 package http
 
 import (
-	"fmt"
+	"bufio"
+	"context"
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
+	stdhttp "net/http"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/chatter"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -33,691 +34,514 @@ import (
 
 const instrumentationName = "github.com/pjscruggs/slogcp/http"
 
-const (
-	captureBufferMaxPrealloc = 64 << 10
-	defaultAttrSliceCap      = 12
-	bodyPreviewInlineLimit   = 2 << 10 // Clamp string conversion to 2 KiB to avoid large quoting work.
-)
+// Middleware returns an http.Handler middleware that derives a request-scoped
+// logger, extracts trace context, and leaves application logging to handlers.
+func Middleware(opts ...Option) func(stdhttp.Handler) stdhttp.Handler {
+	cfg := applyOptions(opts)
 
-var cappedBufferPool = sync.Pool{
-	New: func() any {
-		return &cappedBuffer{}
-	},
-}
-
-var attrSlicePool = sync.Pool{
-	New: func() any {
-		slice := make([]slog.Attr, 0, defaultAttrSliceCap)
-		return &slice
-	},
-}
-
-// responseWriter wraps an http.ResponseWriter to capture the HTTP status code
-// written by the handler, the total size of the response body, and an optional
-// excerpt of the body itself. It ensures that a status code (defaulting to 200
-// OK) is recorded even if WriteHeader is not explicitly called by the handler.
-type responseWriter struct {
-	http.ResponseWriter
-	statusCode  int           // Stores the status code written.
-	size        int64         // Stores the total bytes written to the response body.
-	wroteHeader bool          // Tracks whether WriteHeader was called.
-	body        *cappedBuffer // Optional buffer for capturing response payloads.
-}
-
-// WriteHeader records the statusCode and calls the underlying ResponseWriter's
-// WriteHeader method. It prevents multiple calls from affecting the recorded
-// status code or writing the header multiple times.
-func (rw *responseWriter) WriteHeader(statusCode int) {
-	if rw.wroteHeader {
-		return
+	projectID := strings.TrimSpace(cfg.projectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(slogcp.DetectRuntimeInfo().ProjectID)
 	}
-	rw.statusCode = statusCode
-	rw.ResponseWriter.WriteHeader(statusCode)
-	rw.wroteHeader = true
-}
 
-// Write calls the underlying ResponseWriter's Write method, adding the number
-// of bytes written to the tracked size. It ensures WriteHeader(200) is called
-// first if no header has been written yet, matching the behavior of the
-// standard library's http.Server. When configured, it also captures up to the
-// configured limit of response bytes for logging.
-func (rw *responseWriter) Write(b []byte) (int, error) {
-	if !rw.wroteHeader {
-		// Default to 200 OK if Write is called before WriteHeader.
-		rw.WriteHeader(http.StatusOK)
-	}
-	n, err := rw.ResponseWriter.Write(b)
-	rw.size += int64(n)
-	if rw.body != nil && n > 0 {
-		_, _ = rw.body.Write(b[:n])
-	}
-	return n, err
-}
-
-// Middleware returns a standard [http.Handler] middleware function. This
-// middleware wraps an existing handler to log information about each incoming
-// HTTP request and its response using the provided [slog.Logger]. It is
-// designed to work with the slogcp handler, which recognizes the special
-// httpRequestKey attribute.
-//
-// Behaviour can be tuned with functional options or matching environment
-// variables. By default the middleware logs every request without capturing
-// bodies, does not recover from panics, and relies on the remote address for
-// client IP detection. Server errors (5xx) are always logged even when
-// trace-based suppression is enabled.
-//
-// For each request, the middleware:
-//  1. Extracts trace context (Trace ID, Span ID, sampling decision) from
-//     incoming headers using the globally configured OpenTelemetry propagator.
-//     If no valid span context is present after extraction, it falls back to
-//     parsing the legacy X-Cloud-Trace-Context header.
-//  2. Applies configured filters to decide whether the request should be
-//     logged. When logging is disabled but panic recovery is enabled, the
-//     handler still wraps the request to surface panics.
-//  3. Optionally tees the request body and wraps the [http.ResponseWriter] to
-//     capture status code, response size, and response body excerpts.
-//  4. Delegates request handling to the next handler in the chain.
-//  5. Calculates request latency, determines the log level from the status
-//     code (5xx=Error, 4xx=Warn, others=Info), and applies sampling or logger
-//     level gating before emitting a log entry.
-//  6. Logs a final message including the [slogcp.HTTPRequest] struct (via the
-//     special httpRequestKey attribute) along with optional request/response
-//     headers, body excerpts, and panic information when recovery is enabled.
-//
-// Option helpers such as [WithShouldLog], [WithSkipPathSubstrings],
-// [WithSuppressUnsampledBelow], [WithLogRequestHeaderKeys],
-// [WithLogResponseHeaderKeys], [WithRequestBodyLimit],
-// [WithResponseBodyLimit], [WithRecoverPanics], and
-// [WithTrustProxyHeaders] provide programmatic control over the same
-// behaviors exposed through environment variables.
-func Middleware(logger *slog.Logger, opts ...Option) func(http.Handler) http.Handler {
-	envOptions := loadMiddlewareOptionsFromEnv()
-	merged := defaultMiddlewareOptions()
-	merged.LogRequests = envOptions.LogRequests
-	merged.SkipPathSubstrings = append([]string(nil), envOptions.SkipPathSubstrings...)
-	merged.SuppressUnsampledBelow = envOptions.SuppressUnsampledBelow
-	merged.LogRequestHeaderKeys = append([]string(nil), envOptions.LogRequestHeaderKeys...)
-	merged.LogResponseHeaderKeys = append([]string(nil), envOptions.LogResponseHeaderKeys...)
-	merged.RequestBodyLimit = envOptions.RequestBodyLimit
-	merged.ResponseBodyLimit = envOptions.ResponseBodyLimit
-	merged.RecoverPanics = envOptions.RecoverPanics
-	merged.TrustProxyHeaders = envOptions.TrustProxyHeaders
-	merged.ChatterConfig = envOptions.ChatterConfig.Clone()
-	merged.RouteGetter = envOptions.RouteGetter
-
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&merged)
+	return func(next stdhttp.Handler) stdhttp.Handler {
+		if next == nil {
+			next = stdhttp.NotFoundHandler()
 		}
-	}
 
-	propagator := otel.GetTextMapPropagator()
-	tracer := merged.Tracer
-	if tracer == nil {
-		tracer = otel.Tracer(instrumentationName)
-	}
-	traceProjectID := merged.TraceProjectID
-	chatterConfig := merged.ChatterConfig.Clone()
-	auditKeys := chatterConfig.Audit.Keys()
-	chatterEngine, _ := chatter.NewEngine(chatterConfig)
-	if chatterEngine != nil {
-		emitChatterConfig(logger, chatterEngine)
-	}
+		loggingHandler := stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+			start := time.Now()
 
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-			if merged.StartSpanIfAbsent && !trace.SpanContextFromContext(ctx).IsValid() {
-				spanName := fmt.Sprintf("%s %s", r.Method, r.URL.Path)
-				var span trace.Span
-				ctx, span = tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
-				defer span.End()
+			ctx := r.Context()
+
+			scope := newRequestScope(r, start, cfg)
+
+			traceAttrs, _ := slogcp.TraceAttributes(ctx, projectID)
+
+			attrs := scope.loggerAttrs(cfg, traceAttrs)
+			for _, enricher := range cfg.attrEnrichers {
+				if enricher == nil {
+					continue
+				}
+				if extra := enricher(r, scope); len(extra) > 0 {
+					attrs = append(attrs, extra...)
+				}
 			}
+			for _, transformer := range cfg.attrTransformers {
+				if transformer == nil {
+					continue
+				}
+				attrs = transformer(attrs, r, scope)
+			}
+
+			requestLogger := loggerWithAttrs(cfg.logger, attrs)
+
+			ctx = slogcp.ContextWithLogger(ctx, requestLogger)
+			ctx = context.WithValue(ctx, requestScopeKey{}, scope)
 			r = r.WithContext(ctx)
 
-			shouldLog := merged.LogRequests
-			if merged.ShouldLog != nil {
-				shouldLog = merged.ShouldLog(ctx, r)
+			wrapped, recorder := wrapResponseWriter(w, scope)
+
+			defer func() {
+				scope.finalize(recorder.Status(), recorder.BytesWritten(), time.Since(start))
+			}()
+
+			next.ServeHTTP(wrapped, r)
+		})
+
+		handlerChain := stdhttp.Handler(loggingHandler)
+
+		if cfg.enableOTel {
+			otelOpts := []otelhttp.Option{}
+			if cfg.tracerProvider != nil {
+				otelOpts = append(otelOpts, otelhttp.WithTracerProvider(cfg.tracerProvider))
 			}
-			if shouldLog && len(merged.SkipPathSubstrings) > 0 {
-				path := r.URL.Path
-				for _, substr := range merged.SkipPathSubstrings {
-					if substr != "" && strings.Contains(path, substr) {
-						shouldLog = false
-						break
-					}
+			if cfg.propagatorsSet && cfg.propagators != nil {
+				otelOpts = append(otelOpts, otelhttp.WithPropagators(cfg.propagators))
+			}
+			if cfg.publicEndpoint {
+				otelOpts = append(otelOpts, otelhttp.WithPublicEndpoint())
+			}
+			if cfg.spanNameFormatter != nil {
+				otelOpts = append(otelOpts, otelhttp.WithSpanNameFormatter(cfg.spanNameFormatter))
+			}
+			for _, filter := range cfg.filters {
+				if filter != nil {
+					otelOpts = append(otelOpts, otelhttp.WithFilter(filter))
 				}
 			}
 
-			var chatterDecision *chatter.Decision
-			if chatterEngine != nil {
-				chatterDecision = chatterEngine.EvaluateHTTP(r)
-				if chatterDecision != nil && chatterDecision.Matched {
-					ctx = chatter.ContextWithDecision(ctx, chatterDecision)
-					r = r.WithContext(ctx)
-				}
+			handlerChain = otelhttp.NewHandler(handlerChain, instrumentationName, otelOpts...)
+		}
+
+		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+			// Ensure remote trace context is present before otelhttp observes the request.
+			ctx := r.Context()
+			if newCtx, _ := ensureSpanContext(ctx, r, cfg); newCtx != ctx {
+				r = r.WithContext(newCtx)
 			}
-
-			startTime := time.Now()
-
-			captureBodies := shouldLog || merged.RecoverPanics
-
-			var requestBodyBuf *cappedBuffer
-			if captureBodies && merged.RequestBodyLimit > 0 && r.Body != nil {
-				requestBodyBuf = newCappedBuffer(merged.RequestBodyLimit)
-				if requestBodyBuf != nil {
-					defer putCappedBuffer(requestBodyBuf)
-					originalBody := r.Body
-					r.Body = &teeReadCloser{
-						Reader: io.TeeReader(originalBody, requestBodyBuf),
-						Closer: originalBody,
-					}
-				}
-			}
-
-			var responseBodyBuf *cappedBuffer
-			if captureBodies {
-				responseBodyBuf = newCappedBuffer(merged.ResponseBodyLimit)
-				if responseBodyBuf != nil {
-					defer putCappedBuffer(responseBodyBuf)
-				}
-			}
-
-			rw := &responseWriter{
-				ResponseWriter: w,
-				statusCode:     http.StatusOK,
-				body:           responseBodyBuf,
-			}
-
-			routeValue := ""
-			if merged.RouteGetter != nil {
-				routeValue = strings.TrimSpace(merged.RouteGetter(r))
-			}
-
-			if merged.AttachLogger {
-				traceAttrs, hasTrace := slogcp.TraceAttributes(ctx, traceProjectID)
-				requestLogger := logger
-				if hasTrace {
-					requestLogger = withAttrs(requestLogger, traceAttrs)
-				}
-				requestLogger = requestLogger.With(slog.String("http.request.method", r.Method))
-				if routeValue != "" {
-					requestLogger = requestLogger.With(slog.String("http.route", routeValue))
-				}
-				ctx = slogcp.ContextWithLogger(ctx, requestLogger)
-				r = r.WithContext(ctx)
-			}
-
-			var recovered any
-			var stack string
-
-			if merged.RecoverPanics {
-				// runWithRecovery executes the handler while converting panics into
-				// synthetic 500 responses.
-				func() {
-					defer func() {
-						if rec := recover(); rec != nil {
-							recovered = rec
-							stack, _ = slogcp.CaptureStack(nil)
-							if !rw.wroteHeader {
-								rw.WriteHeader(http.StatusInternalServerError)
-							}
-						}
-					}()
-					next.ServeHTTP(rw, r)
-				}()
-			} else {
-				next.ServeHTTP(rw, r)
-			}
-
-			duration := time.Since(startTime)
-			finalStatusCode := rw.statusCode
-
-			if chatterEngine != nil && chatterDecision != nil {
-				chatterEngine.FinalizeHTTP(chatterDecision, finalStatusCode, duration)
-			}
-
-			level := slog.LevelInfo
-			serverError := finalStatusCode >= 500
-			if serverError {
-				level = slog.LevelError
-			} else if finalStatusCode >= 400 {
-				level = slog.LevelWarn
-			}
-
-			if recovered != nil {
-				level = slog.LevelError
-			}
-
-			if chatterDecision != nil {
-				switch strings.ToUpper(chatterDecision.SeverityHint()) {
-				case "WARN":
-					if level < slog.LevelWarn {
-						level = slog.LevelWarn
-					}
-				}
-			}
-
-			spanCtx := trace.SpanContextFromContext(ctx)
-			unsampled := spanCtx.IsValid() && !spanCtx.IsSampled()
-
-			forcedLog := chatterDecision != nil && chatterDecision.ForceLog
-
-			emitLog := shouldLog || recovered != nil || serverError
-			if chatterDecision != nil {
-				if chatterDecision.ShouldLog() {
-					emitLog = true
-				} else if recovered == nil && !serverError {
-					emitLog = false
-				}
-			}
-
-			if emitLog && !forcedLog && recovered == nil {
-				if threshold := merged.SuppressUnsampledBelow; threshold != nil && unsampled && !serverError && level < *threshold {
-					emitLog = false
-				}
-			}
-			if emitLog && !logger.Enabled(ctx, level) {
-				emitLog = false
-			}
-			if !emitLog {
-				return
-			}
-
-			trustProxy := merged.TrustProxyHeaders
-			if !trustProxy && merged.TrustProxyDecisionFunc != nil && merged.TrustProxyDecisionFunc(r) {
-				trustProxy = true
-			}
-
-			reqStruct := &slogcp.HTTPRequest{
-				Request:      r,
-				RequestSize:  r.ContentLength,
-				Status:       finalStatusCode,
-				ResponseSize: rw.size,
-				Latency:      duration,
-				RemoteIP:     resolveRemoteIP(r, trustProxy, merged.TrustProxyDecisionFunc),
-			}
-			slogcp.PrepareHTTPRequest(reqStruct)
-
-			attrsPtr := attrSlicePool.Get().(*[]slog.Attr)
-			attrs := (*attrsPtr)[:0]
-
-			attrs = append(attrs,
-				slog.Any(httpRequestKey, reqStruct),
-				slog.Duration("duration", duration),
-			)
-			if routeValue != "" {
-				attrs = append(attrs, slog.String("http.route", routeValue))
-			}
-
-			attrs = appendChatterAnnotations(attrs, chatterDecision, auditKeys)
-
-			if attr, ok := headersGroupAttr("requestHeaders", r.Header, merged.LogRequestHeaderKeys); ok {
-				attrs = append(attrs, attr)
-			}
-			if attr, ok := headersGroupAttr("responseHeaders", rw.Header(), merged.LogResponseHeaderKeys); ok {
-				attrs = append(attrs, attr)
-			}
-
-			attrs = appendBodyAttrs(attrs, "requestBody", requestBodyBuf)
-			attrs = appendBodyAttrs(attrs, "responseBody", responseBodyBuf)
-
-			message := "HTTP request processed"
-			if recovered != nil {
-				message = "HTTP panic recovered"
-				attrs = append(attrs,
-					slog.Any("panic", recovered),
-					slog.String("panicStack", stack),
-				)
-			}
-
-			logger.LogAttrs(ctx, level, message, attrs...)
-
-			*attrsPtr = attrs[:0]
-			attrSlicePool.Put(attrsPtr)
+			handlerChain.ServeHTTP(w, r)
 		})
 	}
 }
 
-// emitChatterConfig logs chatter configuration warnings surfaced by the engine.
-func emitChatterConfig(logger *slog.Logger, engine *chatter.Engine) {
-	if engine == nil {
-		return
-	}
-	if logger != nil {
-		for _, warn := range engine.Warnings() {
-			logger.Warn("Chatter reduction warning", slog.String("message", warn))
-		}
-	}
+// RequestScope captures request metadata surfaced to handlers via context.
+type RequestScope struct {
+	start       time.Time
+	method      string
+	route       string
+	target      string
+	query       string
+	scheme      string
+	host        string
+	clientIP    string
+	userAgent   string
+	requestSize int64
+
+	status    atomic.Int64
+	respBytes atomic.Int64
+	latencyNS atomic.Int64
 }
 
-// resolveRemoteIP returns the best-effort client IP address for the provided
-// request. When trustProxyHeaders is true, the function prefers values from
-// X-Forwarded-For and X-Real-IP headers before falling back to RemoteAddr.
-func resolveRemoteIP(r *http.Request, trustProxyHeaders bool, trustProxyFunc func(*http.Request) bool) string {
-	if trustProxyFunc != nil && trustProxyFunc(r) {
-		trustProxyHeaders = true
+// newRequestScope builds a RequestScope capturing request metadata and defaults.
+func newRequestScope(r *stdhttp.Request, start time.Time, cfg *config) *RequestScope {
+	scope := &RequestScope{
+		start: start,
 	}
-	if trustProxyHeaders {
-		if values := r.Header.Values("X-Forwarded-For"); len(values) > 0 {
-			for _, value := range values {
-				for _, part := range strings.Split(value, ",") {
-					candidate := strings.TrimSpace(part)
-					if candidate == "" {
-						continue
-					}
-					if ip := net.ParseIP(candidate); ip != nil {
-						return candidate
-					}
+
+	if r != nil {
+		scope.requestSize = r.ContentLength
+		scope.method = r.Method
+		if r.URL != nil {
+			scope.target = r.URL.Path
+			scope.query = r.URL.RawQuery
+			scope.scheme = r.URL.Scheme
+			if scope.scheme == "" {
+				if r.TLS != nil {
+					scope.scheme = "https"
+				} else {
+					scope.scheme = "http"
 				}
 			}
+			scope.host = r.Host
 		}
-		if candidate := strings.TrimSpace(r.Header.Get("X-Real-IP")); candidate != "" {
-			if ip := net.ParseIP(candidate); ip != nil {
-				return candidate
-			}
+		scope.userAgent = r.UserAgent()
+		if cfg.includeClientIP {
+			scope.clientIP = extractIP(r.RemoteAddr)
+		}
+		if cfg.routeGetter != nil {
+			scope.route = strings.TrimSpace(cfg.routeGetter(r))
 		}
 	}
-	return extractIP(r.RemoteAddr)
+
+	scope.status.Store(stdhttp.StatusOK)
+	scope.latencyNS.Store(-1)
+	return scope
 }
 
-// withAttrs returns a logger augmented with the provided attributes when any
-// are supplied.
-func withAttrs(logger *slog.Logger, attrs []slog.Attr) *slog.Logger {
-	if logger == nil || len(attrs) == 0 {
-		return logger
+// loggerAttrs assembles the structured log attributes for the request scope.
+func (rs *RequestScope) loggerAttrs(cfg *config, traceAttrs []slog.Attr) []slog.Attr {
+	attrs := make([]slog.Attr, 0, len(traceAttrs)+10)
+	if len(traceAttrs) > 0 {
+		attrs = append(attrs, traceAttrs...)
+	}
+	if rs.method != "" {
+		attrs = append(attrs, slog.String("http.method", rs.method))
+	}
+	if rs.target != "" {
+		attrs = append(attrs, slog.String("http.target", rs.target))
+	}
+	if cfg.includeQuery && rs.query != "" {
+		attrs = append(attrs, slog.String("http.query", rs.query))
+	}
+	if rs.route != "" {
+		attrs = append(attrs, slog.String("http.route", rs.route))
+	}
+	if rs.scheme != "" {
+		attrs = append(attrs, slog.String("http.scheme", rs.scheme))
+	}
+	if rs.host != "" {
+		attrs = append(attrs, slog.String("http.host", rs.host))
+	}
+	attrs = append(attrs, slog.Attr{
+		Key: "http.status_code",
+		Value: slog.AnyValue(logValueFunc(func() slog.Value {
+			return slog.IntValue(rs.Status())
+		})),
+	})
+	attrs = append(attrs, slog.Attr{
+		Key: "http.latency",
+		Value: slog.AnyValue(logValueFunc(func() slog.Value {
+			return slog.DurationValue(rs.Latency())
+		})),
+	})
+	attrs = append(attrs, slog.Attr{
+		Key: "http.response_size",
+		Value: slog.AnyValue(logValueFunc(func() slog.Value {
+			return slog.Int64Value(rs.ResponseSize())
+		})),
+	})
+	if rs.requestSize > 0 {
+		attrs = append(attrs, slog.Int64("http.request_size", rs.requestSize))
+	}
+	if cfg.includeClientIP && rs.clientIP != "" {
+		attrs = append(attrs, slog.String("network.peer.ip", rs.clientIP))
+	}
+	if cfg.includeUserAgent && rs.userAgent != "" {
+		attrs = append(attrs, slog.String("http.user_agent", rs.userAgent))
+	}
+	return attrs
+}
+
+// Method returns the HTTP method.
+func (rs *RequestScope) Method() string { return rs.method }
+
+// Target returns the request path component.
+func (rs *RequestScope) Target() string { return rs.target }
+
+// Query returns the raw query string without the '?' prefix.
+func (rs *RequestScope) Query() string { return rs.query }
+
+// Route returns the resolved route template, if provided.
+func (rs *RequestScope) Route() string { return rs.route }
+
+// Status returns the response status code with a default of 200.
+func (rs *RequestScope) Status() int {
+	code := rs.status.Load()
+	if code == 0 {
+		return stdhttp.StatusOK
+	}
+	return int(code)
+}
+
+// Latency reports the elapsed time since the request started.
+func (rs *RequestScope) Latency() time.Duration {
+	ns := rs.latencyNS.Load()
+	if ns > 0 {
+		return time.Duration(ns)
+	}
+	return time.Since(rs.start)
+}
+
+// ResponseSize returns the number of bytes written to the client.
+func (rs *RequestScope) ResponseSize() int64 {
+	return rs.respBytes.Load()
+}
+
+// RequestSize returns the content length reported by the client.
+func (rs *RequestScope) RequestSize() int64 {
+	return rs.requestSize
+}
+
+// ClientIP returns the parsed remote address.
+func (rs *RequestScope) ClientIP() string {
+	return rs.clientIP
+}
+
+// UserAgent returns the request's User-Agent header.
+func (rs *RequestScope) UserAgent() string {
+	return rs.userAgent
+}
+
+// Start returns the time the request began processing.
+func (rs *RequestScope) Start() time.Time {
+	return rs.start
+}
+
+// setStatus records the response status, defaulting to 200 when unset.
+func (rs *RequestScope) setStatus(code int) {
+	if code <= 0 {
+		code = stdhttp.StatusOK
+	}
+	rs.status.Store(int64(code))
+}
+
+// addResponseBytes accumulates response bytes if the delta is positive.
+func (rs *RequestScope) addResponseBytes(delta int64) {
+	if delta <= 0 {
+		return
+	}
+	rs.respBytes.Add(delta)
+}
+
+// finalize stores the terminal status, byte count, and latency for the request.
+func (rs *RequestScope) finalize(status int, bytes int64, d time.Duration) {
+	rs.setStatus(status)
+	if bytes >= 0 {
+		rs.respBytes.Store(bytes)
+	}
+	if d < 0 {
+		d = 0
+	}
+	rs.latencyNS.Store(d.Nanoseconds())
+}
+
+type requestScopeKey struct{}
+
+// ScopeFromContext retrieves the RequestScope placed in the request context by
+// the middleware.
+func ScopeFromContext(ctx context.Context) (*RequestScope, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	scope, ok := ctx.Value(requestScopeKey{}).(*RequestScope)
+	return scope, ok && scope != nil
+}
+
+type logValueFunc func() slog.Value
+
+// LogValue implements slog.LogValuer for deferred attribute evaluation.
+func (f logValueFunc) LogValue() slog.Value {
+	return f()
+}
+
+type responseRecorder struct {
+	stdhttp.ResponseWriter
+	scope        *RequestScope
+	status       int
+	wroteHeader  bool
+	bytesWritten int64
+}
+
+// WriteHeader records the status code before delegating to the wrapped writer.
+func (rr *responseRecorder) WriteHeader(status int) {
+	if rr.wroteHeader {
+		rr.ResponseWriter.WriteHeader(status)
+		return
+	}
+	rr.status = status
+	rr.scope.setStatus(status)
+	rr.ResponseWriter.WriteHeader(status)
+	rr.wroteHeader = true
+}
+
+// Write records bytes written and forwards the call to the underlying writer.
+func (rr *responseRecorder) Write(p []byte) (int, error) {
+	if !rr.wroteHeader {
+		rr.WriteHeader(stdhttp.StatusOK)
+	}
+	n, err := rr.ResponseWriter.Write(p)
+	if n > 0 {
+		rr.bytesWritten += int64(n)
+		rr.scope.addResponseBytes(int64(n))
+	}
+	return n, err
+}
+
+// ReadFrom streams data from src while tracking bytes for logging.
+func (rr *responseRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if rf, ok := rr.ResponseWriter.(io.ReaderFrom); ok {
+		if !rr.wroteHeader {
+			rr.WriteHeader(stdhttp.StatusOK)
+		}
+		n, err := rf.ReadFrom(src)
+		if n > 0 {
+			rr.bytesWritten += n
+			rr.scope.addResponseBytes(n)
+		}
+		return n, err
+	}
+	return io.Copy(rr.ResponseWriter, src)
+}
+
+// Status returns the HTTP status code that was written to the client.
+func (rr *responseRecorder) Status() int {
+	if rr.status == 0 {
+		return stdhttp.StatusOK
+	}
+	return rr.status
+}
+
+// BytesWritten reports the cumulative number of bytes sent to the client.
+func (rr *responseRecorder) BytesWritten() int64 {
+	return rr.bytesWritten
+}
+
+// wrapResponseWriter decorates the ResponseWriter to capture response metadata and optional interfaces.
+func wrapResponseWriter(w stdhttp.ResponseWriter, scope *RequestScope) (stdhttp.ResponseWriter, *responseRecorder) {
+	rec := &responseRecorder{
+		ResponseWriter: w,
+		scope:          scope,
+		status:         stdhttp.StatusOK,
+	}
+	scope.setStatus(stdhttp.StatusOK)
+
+	var rw stdhttp.ResponseWriter = rec
+
+	if flusher, ok := w.(stdhttp.Flusher); ok {
+		rw = &flushingRecorder{
+			ResponseWriter: rw,
+			flusher:        flusher,
+		}
+	}
+	if hijacker, ok := w.(stdhttp.Hijacker); ok {
+		rw = &hijackingRecorder{
+			ResponseWriter: rw,
+			hijacker:       hijacker,
+		}
+	}
+	if pusher, ok := w.(stdhttp.Pusher); ok {
+		rw = &pushingRecorder{
+			ResponseWriter: rw,
+			pusher:         pusher,
+		}
+	}
+	if closeNotifier, ok := w.(interface{ CloseNotify() <-chan bool }); ok {
+		rw = &closeNotifyRecorder{
+			ResponseWriter: rw,
+			closeNotifier:  closeNotifier,
+		}
+	}
+	if _, ok := w.(io.ReaderFrom); ok {
+		rw = &readFromRecorder{
+			ResponseWriter: rw,
+			recorder:       rec,
+		}
+	}
+
+	return rw, rec
+}
+
+type flushingRecorder struct {
+	stdhttp.ResponseWriter
+	flusher stdhttp.Flusher
+}
+
+// Flush forwards the flush request to the underlying ResponseWriter.
+func (f *flushingRecorder) Flush() {
+	f.flusher.Flush()
+}
+
+type hijackingRecorder struct {
+	stdhttp.ResponseWriter
+	hijacker stdhttp.Hijacker
+}
+
+// Hijack delegates to the wrapped Hijacker implementation.
+func (h *hijackingRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return h.hijacker.Hijack()
+}
+
+type pushingRecorder struct {
+	stdhttp.ResponseWriter
+	pusher stdhttp.Pusher
+}
+
+// Push forwards HTTP/2 push requests to the wrapped ResponseWriter.
+func (p *pushingRecorder) Push(target string, opts *stdhttp.PushOptions) error {
+	return p.pusher.Push(target, opts)
+}
+
+type closeNotifyRecorder struct {
+	stdhttp.ResponseWriter
+	closeNotifier interface{ CloseNotify() <-chan bool }
+}
+
+// CloseNotify exposes the wrapped CloseNotifier channel.
+func (c *closeNotifyRecorder) CloseNotify() <-chan bool {
+	return c.closeNotifier.CloseNotify()
+}
+
+type readFromRecorder struct {
+	stdhttp.ResponseWriter
+	recorder *responseRecorder
+}
+
+// ReadFrom delegates to the parent recorder while preserving byte accounting.
+func (r *readFromRecorder) ReadFrom(src io.Reader) (int64, error) {
+	return r.recorder.ReadFrom(src)
+}
+
+// ensureSpanContext extracts existing span context or synthesizes one from incoming headers.
+func ensureSpanContext(ctx context.Context, r *stdhttp.Request, cfg *config) (context.Context, trace.SpanContext) {
+	sc := trace.SpanContextFromContext(ctx)
+	if sc.IsValid() {
+		return ctx, sc
+	}
+
+	propagator := cfg.propagators
+	if propagator == nil {
+		propagator = otel.GetTextMapPropagator()
+	}
+	if propagator != nil {
+		extracted := propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
+		sc = trace.SpanContextFromContext(extracted)
+		if sc.IsValid() {
+			return extracted, sc
+		}
+	}
+
+	if header := r.Header.Get(XCloudTraceContextHeader); header != "" {
+		if xctx, ok := contextWithXCloudTrace(ctx, header); ok {
+			return xctx, trace.SpanContextFromContext(xctx)
+		}
+	}
+
+	return ctx, sc
+}
+
+// extractIP strips the port from a host:port string and returns the host component.
+func extractIP(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
+}
+
+// loggerWithAttrs returns a logger enriched with the supplied attributes.
+func loggerWithAttrs(base *slog.Logger, attrs []slog.Attr) *slog.Logger {
+	if base == nil {
+		base = slog.Default()
+	}
+	if len(attrs) == 0 {
+		return base
 	}
 	args := make([]any, len(attrs))
 	for i, attr := range attrs {
 		args[i] = attr
 	}
-	return logger.With(args...)
+	return base.With(args...)
 }
-
-// isGoogleProxyRequest reports whether the request contains proxy headers that
-// indicate Google infrastructure forwarded it.
-func isGoogleProxyRequest(r *http.Request) bool {
-	via := strings.ToLower(strings.TrimSpace(r.Header.Get("Via")))
-	if via == "1.1 google" || strings.Contains(via, "google") {
-		return true
-	}
-	forwardedBy := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-By")))
-	if forwardedBy != "" && strings.Contains(forwardedBy, "google") {
-		return true
-	}
-	return false
-}
-
-// headersGroupAttr materializes a slog.Group containing the requested header
-// keys. It returns false when no requested headers are present.
-func headersGroupAttr(name string, header http.Header, keys []string) (slog.Attr, bool) {
-	if len(keys) == 0 {
-		return slog.Attr{}, false
-	}
-	attrs := make([]slog.Attr, 0, len(keys))
-	for _, key := range keys {
-		if key == "" {
-			continue
-		}
-		if values, ok := header[key]; ok && len(values) > 0 {
-			copied := append([]string(nil), values...)
-			attrs = append(attrs, slog.Any(key, copied))
-		}
-	}
-	if len(attrs) == 0 {
-		return slog.Attr{}, false
-	}
-	return slog.GroupAttrs(name, attrs...), true
-}
-
-// appendBodyAttrs adds logging attributes for a captured request/response body.
-// It clamps the preview string to a small inline limit so that large payloads
-// avoid expensive quoting in slog's text handler while still surfacing the size
-// and truncation status.
-func appendBodyAttrs(attrs []slog.Attr, key string, buf *cappedBuffer) []slog.Attr {
-	if buf == nil {
-		return attrs
-	}
-	length := buf.Len()
-	truncated := buf.Truncated()
-	if length == 0 && !truncated {
-		return attrs
-	}
-
-	previewLen := length
-	previewClipped := false
-	if bodyPreviewInlineLimit > 0 && previewLen > bodyPreviewInlineLimit {
-		previewLen = bodyPreviewInlineLimit
-		previewClipped = true
-	}
-
-	if previewLen > 0 {
-		preview := string(buf.data[:previewLen])
-		attrs = append(attrs, slog.String(key, preview))
-	}
-	if truncated || previewClipped {
-		attrs = append(attrs, slog.Bool(key+"Truncated", true))
-	}
-	attrs = append(attrs, slog.Int(key+"Bytes", length))
-	if previewClipped {
-		attrs = append(attrs, slog.Int(key+"PreviewBytes", previewLen))
-	}
-	return attrs
-}
-
-// appendChatterAnnotations adds chatter reduction metadata to the attribute
-// list when a decision was made.
-func appendChatterAnnotations(attrs []slog.Attr, decision *chatter.Decision, keys chatter.AuditKeys) []slog.Attr {
-	if decision == nil || !decision.Matched {
-		return attrs
-	}
-
-	decisionValue := ""
-	switch {
-	case decision.MarkOnly():
-		decisionValue = "would_suppress"
-	case decision.ForceLog:
-		decisionValue = "suppressed"
-	default:
-		decisionValue = "kept"
-	}
-
-	fieldAttrs := make([]slog.Attr, 0, 4)
-	if keys.Decision != "" && decisionValue != "" {
-		fieldAttrs = append(fieldAttrs, slog.String(keys.Decision, decisionValue))
-	}
-	if keys.Reason != "" && decision.Reason != chatter.ReasonUnknown {
-		fieldAttrs = append(fieldAttrs, slog.String(keys.Reason, string(decision.Reason)))
-	}
-	if keys.Rule != "" && decision.Rule != "" {
-		fieldAttrs = append(fieldAttrs, slog.String(keys.Rule, decision.Rule))
-	}
-	if keys.SafetyRail != "" && decision.SafetyRail != chatter.SafetyRailNone {
-		fieldAttrs = append(fieldAttrs, slog.String(keys.SafetyRail, string(decision.SafetyRail)))
-	}
-
-	if len(fieldAttrs) == 0 {
-		return attrs
-	}
-
-	if keys.Prefix == "" {
-		return append(attrs, fieldAttrs...)
-	}
-
-	group := buildChatterGroup(keys.Prefix, fieldAttrs)
-	return append(attrs, group)
-}
-
-// buildChatterGroup nests attributes under a dotted prefix, producing a slog
-// group for structured chatter details.
-func buildChatterGroup(prefix string, attrs []slog.Attr) slog.Attr {
-	segments := strings.Split(prefix, ".")
-	lastIdx := len(segments) - 1
-	lastKey := strings.TrimSpace(segments[lastIdx])
-	if lastKey == "" {
-		lastKey = prefix
-	}
-	group := slog.GroupAttrs(lastKey, attrs...)
-	for i := len(segments) - 2; i >= 0; i-- {
-		name := strings.TrimSpace(segments[i])
-		if name == "" {
-			continue
-		}
-		group = slog.GroupAttrs(name, group)
-	}
-	return group
-}
-
-// teeReadCloser combines a reader and closer, allowing the middleware to wrap
-// the request body with an io.TeeReader while preserving the original Close behaviour.
-type teeReadCloser struct {
-	io.Reader
-	io.Closer
-}
-
-// cappedBuffer captures up to a configured limit of bytes and notes whether
-// truncation occurred. Buffers are pooled to amortize allocations across
-// requests.
-type cappedBuffer struct {
-	data      []byte
-	remaining int64
-	truncated bool
-}
-
-// newCappedBuffer acquires a cappedBuffer when limit is positive. A nil result
-// signals that capture is disabled, which keeps call sites straightforward.
-func newCappedBuffer(limit int64) *cappedBuffer {
-	if limit <= 0 {
-		return nil
-	}
-	cb := cappedBufferPool.Get().(*cappedBuffer)
-	cb.reset(limit)
-	return cb
-}
-
-// putCappedBuffer returns a captured buffer to the pool after clearing it.
-func putCappedBuffer(cb *cappedBuffer) {
-	if cb == nil {
-		return
-	}
-	if cap(cb.data) > captureBufferMaxPrealloc {
-		cb.data = nil
-	} else {
-		cb.data = cb.data[:0]
-	}
-	cb.remaining = 0
-	cb.truncated = false
-	cappedBufferPool.Put(cb)
-}
-
-// reset prepares the buffer for reuse with the provided capture limit.
-func (cb *cappedBuffer) reset(limit int64) {
-	cb.remaining = limit
-	cb.truncated = false
-
-	desired := limit
-	if desired < 0 {
-		desired = 0
-	}
-	if desired > int64(captureBufferMaxPrealloc) {
-		desired = int64(captureBufferMaxPrealloc)
-	}
-	if desired == 0 {
-		cb.data = cb.data[:0]
-		return
-	}
-	if int64(cap(cb.data)) < desired {
-		cb.data = make([]byte, 0, int(desired))
-	} else {
-		cb.data = cb.data[:0]
-	}
-}
-
-// Write records payload bytes up to the configured limit and notes when
-// truncation occurs. It always reports the original length so wrapped writers
-// see consistent accounting.
-func (cb *cappedBuffer) Write(p []byte) (int, error) {
-	if cb == nil {
-		return len(p), nil
-	}
-	if cb.remaining > 0 {
-		writeLen := len(p)
-		if int64(writeLen) > cb.remaining {
-			writeLen = int(cb.remaining)
-		}
-		if writeLen > 0 {
-			cb.data = append(cb.data, p[:writeLen]...)
-			cb.remaining -= int64(writeLen)
-		}
-		if writeLen < len(p) {
-			cb.truncated = true
-		}
-	} else if len(p) > 0 {
-		cb.truncated = true
-	}
-	return len(p), nil
-}
-
-// String returns the buffered contents. A nil buffer yields an empty string.
-func (cb *cappedBuffer) String() string {
-	if cb == nil {
-		return ""
-	}
-	return string(cb.data)
-}
-
-// Len reports the number of bytes captured so far.
-func (cb *cappedBuffer) Len() int {
-	if cb == nil {
-		return 0
-	}
-	return len(cb.data)
-}
-
-// Truncated reports whether any data exceeded the configured limit.
-func (cb *cappedBuffer) Truncated() bool {
-	if cb == nil {
-		return false
-	}
-	return cb.truncated
-}
-
-// extractIP attempts to parse an IP address from a string typically in the
-// format "IP:port" or "[IPv6]:port" as found in [http.Request.RemoteAddr].
-// It returns only the IP address part as a string. If parsing fails (e.g., for
-// Unix domain sockets or malformed addresses), it returns the original input string.
-func extractIP(addr string) string {
-	if addr == "" {
-		return ""
-	}
-
-	if strings.HasPrefix(addr, "[") {
-		endBracket := strings.Index(addr, "]")
-		if endBracket > 0 {
-			ipStr := addr[1:endBracket]
-			if ip := net.ParseIP(ipStr); ip != nil {
-				return ipStr
-			}
-		}
-	}
-
-	host, _, err := net.SplitHostPort(addr)
-	if err == nil {
-		if ip := net.ParseIP(host); ip != nil {
-			return host
-		}
-		return addr
-	}
-
-	if ip := net.ParseIP(addr); ip != nil {
-		return ip.String()
-	}
-
-	return addr
-}
-
-// httpRequestKey is the attribute key used when logging the [slogcp.HTTPRequest]
-// struct via [slog.Any]. The core slogcp handler specifically looks for this key
-// to extract the struct and populate the corresponding `httpRequest` field in the
-// emitted JSON payload, removing this attribute from the final object.
-const httpRequestKey = "httpRequest"
