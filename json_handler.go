@@ -125,6 +125,18 @@ var jsonBufferPool = sync.Pool{
 	},
 }
 
+var recordSourceFunc = func(r slog.Record) *slog.Source {
+	return r.Source()
+}
+
+var runtimeFrameResolver = func(pc uintptr) runtime.Frame {
+	var pcs [1]uintptr
+	pcs[0] = pc
+	frames := runtime.CallersFrames(pcs[:])
+	frame, _ := frames.Next()
+	return frame
+}
+
 type sourceLocation struct {
 	File     string `json:"file"`
 	Line     int64  `json:"line"`
@@ -298,7 +310,7 @@ func (h *jsonHandler) resolveSourceLocation(r slog.Record) *sourceLocation {
 		return nil
 	}
 
-	if src := r.Source(); src != nil {
+	if src := recordSourceFunc(r); src != nil {
 		if src.Function != "" || src.File != "" {
 			return &sourceLocation{
 				File:     src.File,
@@ -312,10 +324,7 @@ func (h *jsonHandler) resolveSourceLocation(r slog.Record) *sourceLocation {
 		return nil
 	}
 
-	var pcs [1]uintptr
-	pcs[0] = r.PC
-	frames := runtime.CallersFrames(pcs[:])
-	frame, _ := frames.Next()
+	frame := runtimeFrameResolver(r.PC)
 	if frame.Function == "" {
 		return nil
 	}
