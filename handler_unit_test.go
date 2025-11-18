@@ -636,3 +636,205 @@ func (h *severityRecordingHandler) WithAttrs([]slog.Attr) slog.Handler { return 
 
 // WithGroup satisfies slog.Handler while keeping the recorder as-is.
 func (h *severityRecordingHandler) WithGroup(string) slog.Handler { return h }
+
+// TestHandlerStackTraceLevelEmitsStacks verifies the stack trace level option triggers capture.
+func TestHandlerStackTraceLevelEmitsStacks(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h, err := slogcp.NewHandler(&buf,
+		slogcp.WithStackTraceEnabled(true),
+		slogcp.WithStackTraceLevel(slog.LevelWarn),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	slog.New(h).Warn("stack please")
+
+	entries := decodeLogBuffer(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(entries))
+	}
+	stack, _ := entries[0]["stack_trace"].(string)
+	if stack == "" {
+		t.Fatalf("stack_trace missing from warn entry: %#v", entries[0])
+	}
+}
+
+// TestHandlerMiddlewareInvokesHooks ensures slogcp.WithMiddleware attaches middleware correctly.
+func TestHandlerMiddlewareInvokesHooks(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	middlewareCalled := false
+	middleware := func(next slog.Handler) slog.Handler {
+		return middlewareCaptureHandler{
+			next: next,
+			onHandle: func(r *slog.Record) {
+				middlewareCalled = true
+				r.AddAttrs(slog.String("middleware", "wrapped"))
+			},
+		}
+	}
+
+	h, err := slogcp.NewHandler(&buf, slogcp.WithMiddleware(middleware))
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	slog.New(h).Info("middleware test")
+
+	if !middlewareCalled {
+		t.Fatalf("middleware hook not invoked")
+	}
+
+	entries := decodeLogBuffer(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(entries))
+	}
+	if got := entries[0]["middleware"]; got != "wrapped" {
+		t.Fatalf("middleware attribute = %v, want wrapped", got)
+	}
+}
+
+// TestWithRedirectToStdStreams validates WithRedirectToStdout and WithRedirectToStderr writers.
+func TestWithRedirectToStdStreams(t *testing.T) {
+	t.Run("stdout", func(t *testing.T) {
+		reader, restore := captureStdStream(t, "stdout")
+		restored := false
+		defer func() {
+			if !restored {
+				restore()
+			}
+			reader.Close()
+		}()
+
+		h, err := slogcp.NewHandler(io.Discard, slogcp.WithRedirectToStdout(), slogcp.WithSeverityAliases(false))
+		if err != nil {
+			t.Fatalf("NewHandler() returned %v, want nil", err)
+		}
+		logger := slog.New(h)
+		logger.Info("stdout redirect", slog.String("stream", "stdout"))
+		if cerr := h.Close(); cerr != nil {
+			t.Fatalf("Handler.Close() returned %v, want nil", cerr)
+		}
+
+		restore()
+		restored = true
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("ReadAll(stdout) returned %v, want nil", err)
+		}
+		if !strings.Contains(string(data), `"message":"stdout redirect"`) {
+			t.Fatalf("stdout logs missing message: %q", data)
+		}
+	})
+
+	t.Run("stderr", func(t *testing.T) {
+		reader, restore := captureStdStream(t, "stderr")
+		restored := false
+		defer func() {
+			if !restored {
+				restore()
+			}
+			reader.Close()
+		}()
+
+		h, err := slogcp.NewHandler(io.Discard, slogcp.WithRedirectToStderr(), slogcp.WithSeverityAliases(false))
+		if err != nil {
+			t.Fatalf("NewHandler() returned %v, want nil", err)
+		}
+		logger := slog.New(h)
+		logger.Error("stderr redirect", slog.String("stream", "stderr"))
+		if cerr := h.Close(); cerr != nil {
+			t.Fatalf("Handler.Close() returned %v, want nil", cerr)
+		}
+
+		restore()
+		restored = true
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("ReadAll(stderr) returned %v, want nil", err)
+		}
+		if !strings.Contains(string(data), `"message":"stderr redirect"`) {
+			t.Fatalf("stderr logs missing message: %q", data)
+		}
+	})
+}
+
+// middlewareCaptureHandler wraps slog.Handlers to observe and transform records.
+type middlewareCaptureHandler struct {
+	next     slog.Handler
+	onHandle func(*slog.Record)
+}
+
+// Enabled delegates level checks to the wrapped handler.
+func (m middlewareCaptureHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return m.next.Enabled(ctx, level)
+}
+
+// Handle clones the record, invokes onHandle, then forwards to the next handler.
+func (m middlewareCaptureHandler) Handle(ctx context.Context, r slog.Record) error {
+	clone := r.Clone()
+	if m.onHandle != nil {
+		m.onHandle(&clone)
+	}
+	return m.next.Handle(ctx, clone)
+}
+
+// WithAttrs propagates attribute scopes through the middleware.
+func (m middlewareCaptureHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return middlewareCaptureHandler{
+		next:     m.next.WithAttrs(attrs),
+		onHandle: m.onHandle,
+	}
+}
+
+// WithGroup propagates group scopes through the middleware.
+func (m middlewareCaptureHandler) WithGroup(name string) slog.Handler {
+	return middlewareCaptureHandler{
+		next:     m.next.WithGroup(name),
+		onHandle: m.onHandle,
+	}
+}
+
+// captureStdStream routes stdout or stderr through a pipe for assertions.
+func captureStdStream(t *testing.T, target string) (*os.File, func()) {
+	t.Helper()
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() returned %v, want nil", err)
+	}
+
+	switch target {
+	case "stdout":
+		prev := os.Stdout
+		os.Stdout = writer
+		return reader, func() {
+			writer.Close()
+			os.Stdout = prev
+		}
+	case "stderr":
+		prev := os.Stderr
+		os.Stderr = writer
+		return reader, func() {
+			writer.Close()
+			os.Stderr = prev
+		}
+	default:
+		t.Fatalf("captureStdStream: unknown target %q", target)
+		return nil, func() {}
+	}
+}
