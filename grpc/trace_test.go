@@ -3,9 +3,13 @@ package grpc
 import (
 	"context"
 	"encoding/base64"
+	"strings"
 	"testing"
 
+	"github.com/pjscruggs/slogcp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc/metadata"
 )
 
 // TestParseGRPCTraceBin verifies grpc-trace-bin parsing succeeds and fails appropriately.
@@ -62,6 +66,146 @@ func TestContextWithXCloudTrace(t *testing.T) {
 
 	if _, ok := contextWithXCloudTrace(ctx, ""); ok {
 		t.Fatalf("empty header should not create context")
+	}
+}
+
+// TestMetadataCarrierAccessors exercises Get/Set/Keys.
+func TestMetadataCarrierAccessors(t *testing.T) {
+	md := metadata.Pairs("foo", "bar")
+	carrier := metadataCarrier{MD: md}
+
+	if got := carrier.Get("foo"); got != "bar" {
+		t.Fatalf("carrier.Get(foo) = %q, want bar", got)
+	}
+	carrier.Set("foo", "baz")
+	carrier.Set("zip", "zap")
+
+	keys := carrier.Keys()
+	want := map[string]bool{"foo": true, "zip": true}
+	for _, k := range keys {
+		delete(want, k)
+	}
+	if len(want) != 0 {
+		t.Fatalf("carrier.Keys() missing keys: %v", want)
+	}
+	if got := md.Get("foo"); len(got) == 0 || got[0] != "baz" {
+		t.Fatalf("carrier.Set() did not persist new value, got %v", got)
+	}
+}
+
+// TestEnsureServerSpanContextPrefersExisting ensures an existing context short-circuits parsing.
+func TestEnsureServerSpanContextPrefersExisting(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	expected := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), expected)
+
+	cfg := &config{}
+	gotCtx, sc := ensureServerSpanContext(ctx, metadata.New(nil), cfg)
+	if gotCtx != ctx {
+		t.Fatalf("ensureServerSpanContext returned new ctx when existing span present")
+	}
+	if sc.TraceID() != expected.TraceID() || sc.SpanID() != expected.SpanID() {
+		t.Fatalf("span context mismatch: got %v", sc)
+	}
+}
+
+// TestEnsureServerSpanContextExtractsMetadata hits each metadata fallback path.
+func TestEnsureServerSpanContextExtractsMetadata(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+
+	t.Run("propagator", func(t *testing.T) {
+		cfg := &config{propagators: propagation.TraceContext{}}
+		md := metadata.New(nil)
+		ctxWithSpan := trace.ContextWithRemoteSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    traceID,
+			SpanID:     spanID,
+			TraceFlags: trace.FlagsSampled,
+			Remote:     true,
+		}))
+		cfg.propagators.Inject(ctxWithSpan, metadataCarrier{md})
+
+		_, sc := ensureServerSpanContext(context.Background(), md, cfg)
+		if sc.TraceID() != traceID || sc.SpanID() != spanID {
+			t.Fatalf("propagator extraction failed, got %v", sc)
+		}
+	})
+
+	t.Run("grpc-trace-bin", func(t *testing.T) {
+		md := metadata.New(map[string]string{
+			"grpc-trace-bin": encodeTraceBin(traceID, spanID, trace.FlagsSampled),
+		})
+		_, sc := ensureServerSpanContext(context.Background(), md, &config{})
+		if sc.TraceID() != traceID || sc.SpanID() != spanID {
+			t.Fatalf("grpc-trace-bin extraction failed, got %v", sc)
+		}
+	})
+
+	t.Run("traceparent", func(t *testing.T) {
+		md := metadata.New(map[string]string{
+			"traceparent": "00-" + traceID.String() + "-" + spanID.String() + "-01",
+		})
+		_, sc := ensureServerSpanContext(context.Background(), md, &config{})
+		if sc.TraceID() != traceID || sc.SpanID() != spanID {
+			t.Fatalf("traceparent extraction failed, got %v", sc)
+		}
+	})
+
+	t.Run("xcloud", func(t *testing.T) {
+		header := traceID.String() + "/10;o=1"
+		md := metadata.Pairs(strings.ToLower(XCloudTraceContextHeader), header)
+		_, sc := ensureServerSpanContext(context.Background(), md, &config{})
+		if sc.TraceID().String() != traceID.String() {
+			t.Fatalf("xcloud extraction failed, got %v", sc)
+		}
+	})
+}
+
+// TestInjectClientTraceHandlesLegacyHeaders ensures injection covers both modern and legacy metadata.
+func TestInjectClientTraceHandlesLegacyHeaders(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	md := metadata.New(nil)
+	cfg := &config{
+		injectLegacyXCTC: true,
+		propagators:      propagation.TraceContext{},
+	}
+
+	injectClientTrace(ctx, md, cfg)
+	if got := md.Get("traceparent"); len(got) == 0 {
+		t.Fatalf("traceparent header missing after inject")
+	}
+	expected := slogcp.BuildXCloudTraceContext(traceID.String(), spanID.String(), true)
+	if got := md.Get(XCloudTraceContextHeader); len(got) == 0 || got[0] != expected {
+		t.Fatalf("legacy header = %v, want %s", got, expected)
+	}
+}
+
+// TestInjectClientTraceSkipsWhenUnavailable ensures legacy headers are omitted without a valid span.
+func TestInjectClientTraceSkipsWhenUnavailable(t *testing.T) {
+	md := metadata.Pairs(strings.ToLower(XCloudTraceContextHeader), "existing")
+	cfg := &config{injectLegacyXCTC: true}
+
+	injectClientTrace(context.Background(), md, cfg)
+	if got := md.Get(XCloudTraceContextHeader); len(got) == 0 || got[0] != "existing" {
+		t.Fatalf("existing legacy header should remain untouched, got %v", got)
+	}
+
+	emptyMD := metadata.New(nil)
+	injectClientTrace(context.Background(), emptyMD, cfg)
+	if got := emptyMD.Get(XCloudTraceContextHeader); len(got) != 0 {
+		t.Fatalf("no span context should skip legacy injection, got %v", got)
 	}
 }
 

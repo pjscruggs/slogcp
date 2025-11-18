@@ -25,8 +25,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pjscruggs/slogcp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -546,6 +548,153 @@ func TestUnaryClientInterceptorPayloadSizesToggle(t *testing.T) {
 	}
 }
 
+// TestStatsHandlerOptionsHonorsConfig verifies tracer and propagator settings drive otel options.
+func TestStatsHandlerOptionsHonorsConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config{}
+	if opts := statsHandlerOptions(cfg); len(opts) != 0 {
+		t.Fatalf("expected no statsHandlerOptions by default, got %d", len(opts))
+	}
+
+	cfg.tracerProvider = trace.NewNoopTracerProvider()
+	cfg.propagators = propagation.TraceContext{}
+	cfg.propagatorsSet = true
+
+	if opts := statsHandlerOptions(cfg); len(opts) != 2 {
+		t.Fatalf("expected tracer provider and propagator options, got %d", len(opts))
+	}
+}
+
+// TestLoggerWithAttrsCoversBranches ensures nil bases and attribute copies behave as expected.
+func TestLoggerWithAttrsCoversBranches(t *testing.T) {
+	t.Parallel()
+
+	base := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	if got := loggerWithAttrs(base, nil); got != base {
+		t.Fatalf("loggerWithAttrs should return base when attrs empty")
+	}
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false})
+	logger := slog.New(handler)
+	derived := loggerWithAttrs(logger, []slog.Attr{slog.String("foo", "bar")})
+	derived.Info("derived message")
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &entry); err != nil {
+		t.Fatalf("unmarshal derived log: %v", err)
+	}
+	if entry["foo"] != "bar" {
+		t.Fatalf("derived attributes missing, got %v", entry)
+	}
+
+	if got := loggerWithAttrs(nil, []slog.Attr{slog.String("noop", "value")}); got == nil {
+		t.Fatalf("loggerWithAttrs should never return nil")
+	}
+}
+
+// TestClientStreamWrapperSendMsgRecordsErrors validates payload accounting and finalization on send errors.
+func TestClientStreamWrapperSendMsgRecordsErrors(t *testing.T) {
+	t.Parallel()
+
+	info := newRequestInfo("/svc/ClientStream/Upload", "client_stream", true, time.Now())
+	cfg := &config{includeSizes: true}
+	stream := &fakeClientStream{
+		ctx:     context.Background(),
+		sendErr: status.Error(codes.Internal, "boom"),
+	}
+	wrapper := &clientStreamWrapper{
+		ClientStream: stream,
+		cfg:          cfg,
+		info:         info,
+		start:        time.Now(),
+	}
+
+	err := wrapper.SendMsg(&testSizedMessage{n: 12})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("SendMsg returned %v, want Internal", err)
+	}
+	if info.RequestBytes() != 12 || info.RequestCount() != 1 {
+		t.Fatalf("request tracking incorrect: bytes=%d count=%d", info.RequestBytes(), info.RequestCount())
+	}
+	if info.Status() != codes.Internal {
+		t.Fatalf("status = %v, want Internal", info.Status())
+	}
+}
+
+// TestClientStreamWrapperRecvMsgFinalization covers EOF and error completions.
+func TestClientStreamWrapperRecvMsgFinalization(t *testing.T) {
+	t.Parallel()
+
+	info := newRequestInfo("/svc/ClientStream/Recv", "client_stream", true, time.Now())
+	cfg := &config{includeSizes: true}
+	stream := &fakeClientStream{
+		ctx:       context.Background(),
+		responses: []any{&testSizedMessage{n: 5}},
+	}
+	wrapper := &clientStreamWrapper{
+		ClientStream: stream,
+		cfg:          cfg,
+		info:         info,
+		start:        time.Now(),
+	}
+
+	if err := wrapper.RecvMsg(&testSizedMessage{}); err != nil {
+		t.Fatalf("first RecvMsg returned %v", err)
+	}
+	if info.ResponseCount() != 1 || info.ResponseBytes() != 5 {
+		t.Fatalf("response tracking incorrect: bytes=%d count=%d", info.ResponseBytes(), info.ResponseCount())
+	}
+
+	stream.recvErr = io.EOF
+	if err := wrapper.RecvMsg(&testSizedMessage{}); err != io.EOF {
+		t.Fatalf("expected io.EOF, got %v", err)
+	}
+	if info.Status() != codes.OK {
+		t.Fatalf("status after EOF = %v, want OK", info.Status())
+	}
+
+	stream.recvErr = status.Error(codes.DataLoss, "corrupt")
+	wrapper = &clientStreamWrapper{
+		ClientStream: stream,
+		cfg:          cfg,
+		info:         newRequestInfo("/svc/ClientStream/Recv", "client_stream", true, time.Now()),
+		start:        time.Now(),
+	}
+	if err := wrapper.RecvMsg(&testSizedMessage{}); status.Code(err) != codes.DataLoss {
+		t.Fatalf("expected DataLoss, got %v", err)
+	}
+	if wrapper.info.Status() != codes.DataLoss {
+		t.Fatalf("status after error = %v, want DataLoss", wrapper.info.Status())
+	}
+}
+
+// TestClientStreamWrapperCloseSendFinalizes ensures CloseSend errors finalize request info.
+func TestClientStreamWrapperCloseSendFinalizes(t *testing.T) {
+	t.Parallel()
+
+	info := newRequestInfo("/svc/ClientStream/Close", "client_stream", true, time.Now())
+	cfg := &config{}
+	stream := &fakeClientStream{
+		ctx:      context.Background(),
+		closeErr: status.Error(codes.Unavailable, "closed"),
+	}
+	wrapper := &clientStreamWrapper{
+		ClientStream: stream,
+		cfg:          cfg,
+		info:         info,
+		start:        time.Now(),
+	}
+
+	err := wrapper.CloseSend()
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("CloseSend returned %v, want Unavailable", err)
+	}
+	if info.Status() != codes.Unavailable {
+		t.Fatalf("status after CloseSend = %v, want Unavailable", info.Status())
+	}
+}
+
 // decodeStreamEntries converts newline-delimited JSON into a slice of maps.
 func decodeStreamEntries(t *testing.T, raw string) []map[string]any {
 	t.Helper()
@@ -610,6 +759,8 @@ type fakeClientStream struct {
 	ctx       context.Context
 	responses []any
 	recvErr   error
+	sendErr   error
+	closeErr  error
 }
 
 // Header returns captured headers for the client stream.
@@ -619,13 +770,23 @@ func (f *fakeClientStream) Header() (metadata.MD, error) { return metadata.New(n
 func (f *fakeClientStream) Trailer() metadata.MD { return metadata.New(nil) }
 
 // CloseSend closes the send side; no-op here.
-func (f *fakeClientStream) CloseSend() error { return nil }
+func (f *fakeClientStream) CloseSend() error {
+	if f.closeErr != nil {
+		return f.closeErr
+	}
+	return nil
+}
 
 // Context returns the stream context.
 func (f *fakeClientStream) Context() context.Context { return f.ctx }
 
-// SendMsg queues outbound messages; no-op.
-func (f *fakeClientStream) SendMsg(m any) error { return nil }
+// SendMsg queues outbound messages; configurable for tests.
+func (f *fakeClientStream) SendMsg(m any) error {
+	if f.sendErr != nil {
+		return f.sendErr
+	}
+	return nil
+}
 
 // RecvMsg pops queued responses or returns the configured error.
 func (f *fakeClientStream) RecvMsg(m any) error {

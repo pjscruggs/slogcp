@@ -98,3 +98,22 @@ func TestOptionsMutateConfig(t *testing.T) {
 		t.Fatalf("attr transformer not invoked correctly: %v len=%d", got, len(got))
 	}
 }
+
+// TestWithLoggerHandlesNil ensures the option falls back to slog.Default when nil is provided.
+func TestWithLoggerHandlesNil(t *testing.T) {
+	t.Parallel()
+
+	custom := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	cfg := &config{logger: custom}
+
+	WithLogger(nil)(cfg)
+	if cfg.logger != slog.Default() {
+		t.Fatalf("WithLogger(nil) should fall back to slog.Default(), got %v", cfg.logger)
+	}
+
+	alt := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	WithLogger(alt)(cfg)
+	if cfg.logger != alt {
+		t.Fatalf("WithLogger(custom) = %v, want %v", cfg.logger, alt)
+	}
+}
