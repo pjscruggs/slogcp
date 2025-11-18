@@ -316,6 +316,10 @@ func TestStreamClientInterceptorTracksSizes(t *testing.T) {
 		t.Fatalf("StreamClientInterceptor returned %v", err)
 	}
 
+	if gotCtx := cs.Context(); gotCtx == nil {
+		t.Fatalf("client stream Context() returned nil")
+	}
+
 	if err := cs.SendMsg(&testSizedMessage{n: 16}); err != nil {
 		t.Fatalf("SendMsg returned %v", err)
 	}
@@ -362,6 +366,54 @@ func TestStreamClientInterceptorTracksSizes(t *testing.T) {
 	}
 	if got := entry["rpc.response_size"]; got != float64(32) {
 		t.Fatalf("rpc.response_size = %v, want 32 (entry=%v)", got, entry)
+	}
+}
+
+// TestStreamKindVariants exercises the helper on all boolean combinations.
+func TestStreamKindVariants(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		info *grpc.StreamServerInfo
+		want string
+	}{
+		{"bidi", &grpc.StreamServerInfo{IsClientStream: true, IsServerStream: true}, "bidi_stream"},
+		{"client_only", &grpc.StreamServerInfo{IsClientStream: true}, "client_stream"},
+		{"server_only", &grpc.StreamServerInfo{IsServerStream: true}, "server_stream"},
+		{"unary", &grpc.StreamServerInfo{}, "unary"},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := streamKind(tt.info); got != tt.want {
+				t.Fatalf("streamKind(%s) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClientStreamKindVariants covers the client descriptor helper cases.
+func TestClientStreamKindVariants(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		desc *grpc.StreamDesc
+		want string
+	}{
+		{"bidi", &grpc.StreamDesc{ClientStreams: true, ServerStreams: true}, "bidi_stream"},
+		{"client_only", &grpc.StreamDesc{ClientStreams: true}, "client_stream"},
+		{"server_only", &grpc.StreamDesc{ServerStreams: true}, "server_stream"},
+		{"unary", &grpc.StreamDesc{}, "unary"},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := clientStreamKind(tt.desc); got != tt.want {
+				t.Fatalf("clientStreamKind(%s) = %q, want %q", tt.name, got, tt.want)
+			}
+		})
 	}
 }
 
