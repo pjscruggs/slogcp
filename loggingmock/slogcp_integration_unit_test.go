@@ -23,11 +23,14 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	stdhttp "net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pjscruggs/slogcp"
+	slogcphttp "github.com/pjscruggs/slogcp/http"
 )
 
 // TestSlogcpLogEntryTransforms exercises slogcp JSON output against the logging mock transformer.
@@ -183,4 +186,120 @@ func TestSlogcpLogEntryTransforms(t *testing.T) {
 	if got := httpReq["responseSize"]; got != "512" {
 		t.Fatalf("transformed responseSize = %v, want 512", got)
 	}
+}
+
+// TestHTTPRequestAttrCoexistsWithHTTPAttributes ensures httpRequest and http.* attributes appear together.
+func TestHTTPRequestAttrCoexistsWithHTTPAttributes(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h, err := slogcp.NewHandler(
+		io.Discard,
+		slogcp.WithRedirectWriter(&buf),
+		slogcp.WithTraceProjectID("proj-123"),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	baseLogger := slog.New(h)
+
+	var capturedLogger *slog.Logger
+	var capturedScope *slogcphttp.RequestScope
+
+	app := slogcphttp.Middleware(
+		slogcphttp.WithLogger(baseLogger),
+		slogcphttp.WithProjectID("proj-123"),
+		slogcphttp.WithOTel(false),
+		slogcphttp.WithIncludeQuery(true),
+		slogcphttp.WithUserAgent(true),
+	)(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		scope, ok := slogcphttp.ScopeFromContext(r.Context())
+		if !ok {
+			t.Fatalf("ScopeFromContext missing")
+		}
+		capturedScope = scope
+		capturedLogger = slogcp.Logger(r.Context())
+
+		w.WriteHeader(stdhttp.StatusAccepted)
+		if _, err := w.Write([]byte("ok")); err != nil {
+			t.Fatalf("write response: %v", err)
+		}
+	}))
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/widgets/42?q=blue", stdhttp.NoBody)
+	req.RemoteAddr = "198.51.100.50:9000"
+	req.Header.Set("User-Agent", "middleware-test/1.0")
+
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+
+	if capturedLogger == nil || capturedScope == nil {
+		t.Fatalf("request logger or scope missing")
+	}
+
+	capturedLogger.InfoContext(context.Background(),
+		"post-request",
+		slog.String("custom", "value"),
+		slogcphttp.HTTPRequestAttr(req, capturedScope),
+	)
+
+	line := strings.TrimSpace(buf.String())
+	if line == "" {
+		t.Fatalf("expected log output")
+	}
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	transformed := transformLine(t, line, now)
+
+	httpReq, ok := transformed["httpRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("httpRequest missing or wrong type: %T", transformed["httpRequest"])
+	}
+	if got := httpReq["requestMethod"]; got != "GET" {
+		t.Fatalf("requestMethod = %v, want GET", got)
+	}
+	if got := httpReq["status"]; got != float64(stdhttp.StatusAccepted) {
+		t.Fatalf("status = %v, want %d", got, stdhttp.StatusAccepted)
+	}
+	if got := httpReq["requestSize"]; got != "0" {
+		t.Fatalf("requestSize = %v, want 0", got)
+	}
+	if got := httpReq["responseSize"]; got != "2" {
+		t.Fatalf("responseSize = %v, want 2", got)
+	}
+	if got := httpReq["remoteIp"]; got != "198.51.100.50" {
+		t.Fatalf("remoteIp = %v, want 198.51.100.50", got)
+	}
+
+	payload, ok := transformed["jsonPayload"].(map[string]any)
+	if !ok {
+		t.Fatalf("jsonPayload missing or wrong type")
+	}
+	if got := payload["http.method"]; got != "GET" {
+		t.Fatalf("http.method = %v, want GET", got)
+	}
+	if got := payload["http.target"]; got != "/widgets/42" {
+		t.Fatalf("http.target = %v, want /widgets/42", got)
+	}
+	if got := payload["custom"]; got != "value" {
+		t.Fatalf("custom attr = %v, want value", got)
+	}
+}
+
+func transformLine(t *testing.T, line string, now time.Time) map[string]any {
+	t.Helper()
+	out, err := TransformLogEntryJSON(line, now)
+	if err != nil {
+		t.Fatalf("TransformLogEntryJSON returned %v", err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(out), &entry); err != nil {
+		t.Fatalf("json.Unmarshal() returned %v", err)
+	}
+	return entry
 }

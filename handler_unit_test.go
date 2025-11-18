@@ -21,8 +21,10 @@ import (
 	"bytes"
 	"context"
 	json "encoding/json/v2"
+	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -451,4 +453,87 @@ func TestHandlerTimeFieldEmission(t *testing.T) {
 			t.Fatalf("time field %q is not RFC3339Nano: %v", rawTime, err)
 		}
 	})
+}
+
+// TestHandlerHandleJSONEncodingFailure verifies encoding errors propagate and emit diagnostics.
+func TestHandlerHandleJSONEncodingFailure(t *testing.T) {
+	t.Parallel()
+
+	var sink bytes.Buffer
+	var diagBuf bytes.Buffer
+	internalLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
+
+	h, err := slogcp.NewHandler(
+		io.Discard,
+		slogcp.WithRedirectWriter(&sink),
+		slogcp.WithInternalLogger(internalLogger),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	var record slog.Record
+	record.Time = time.Now()
+	record.Level = slog.LevelInfo
+	record.Message = "encode failure"
+	record.AddAttrs(slog.Float64("nan", math.NaN()))
+
+	if err := h.Handle(context.Background(), record); err == nil {
+		t.Fatalf("Handle() returned nil error, want encoding failure")
+	}
+	if sink.Len() != 0 {
+		t.Fatalf("expected no log output, got %q", sink.String())
+	}
+	if !strings.Contains(diagBuf.String(), "failed to render JSON log entry") {
+		t.Fatalf("diagnostic log missing encode failure, got %q", diagBuf.String())
+	}
+}
+
+// TestHandlerHandleWriterFailure verifies writer errors bubble up and trigger diagnostics.
+func TestHandlerHandleWriterFailure(t *testing.T) {
+	t.Parallel()
+
+	var diagBuf bytes.Buffer
+	internalLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
+	fail := &failingWriter{err: errors.New("sink down")}
+
+	h, err := slogcp.NewHandler(
+		io.Discard,
+		slogcp.WithRedirectWriter(fail),
+		slogcp.WithInternalLogger(internalLogger),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	var record slog.Record
+	record.Time = time.Now()
+	record.Level = slog.LevelInfo
+	record.Message = "write failure"
+	record.AddAttrs(slog.String("k", "v"))
+
+	if err := h.Handle(context.Background(), record); err == nil {
+		t.Fatalf("Handle() returned nil, want writer error")
+	}
+	if !strings.Contains(diagBuf.String(), "failed to write JSON log entry") {
+		t.Fatalf("diagnostic log missing writer failure: %q", diagBuf.String())
+	}
+}
+
+type failingWriter struct {
+	err error
+}
+
+func (f *failingWriter) Write([]byte) (int, error) {
+	return 0, f.err
 }
