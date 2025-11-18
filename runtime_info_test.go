@@ -59,6 +59,22 @@ func withMetadataClient(t *testing.T, client metadataClient) {
 	})
 }
 
+type countingMetadataClient struct {
+	onGCE bool
+	calls int
+}
+
+// OnGCE increments the number of availability checks.
+func (c *countingMetadataClient) OnGCE() bool {
+	c.calls++
+	return c.onGCE
+}
+
+// Get always reports missing metadata for availability tests.
+func (c *countingMetadataClient) Get(string) (string, error) {
+	return "", errors.New("metadata not available")
+}
+
 // TestDetectKubernetesUsesMetadata verifies metadata-derived clusters populate labels.
 func TestDetectKubernetesUsesMetadata(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
@@ -542,5 +558,69 @@ func TestMetadataLookupClusterDetails(t *testing.T) {
 	}
 	if got := lookup.clusterLocation(); got != "us-east1-a" {
 		t.Fatalf("clusterLocation() = %q, want %q", got, "us-east1-a")
+	}
+}
+
+// TestMetadataLookupRegionZoneFallbacks covers raw region/zone values and missing data.
+func TestMetadataLookupRegionZoneFallbacks(t *testing.T) {
+	t.Parallel()
+
+	lookup := newMetadataLookup(&stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"instance/region": "us-west1",
+			"instance/zone":   "us-west1-b",
+		},
+	})
+
+	if got := lookup.region(); got != "us-west1" {
+		t.Fatalf("region() = %q, want %q", got, "us-west1")
+	}
+	if got := lookup.zone(); got != "us-west1-b" {
+		t.Fatalf("zone() = %q, want %q", got, "us-west1-b")
+	}
+
+	missing := newMetadataLookup(&stubMetadataClient{onGCE: true})
+	if got := missing.region(); got != "" {
+		t.Fatalf("region() with no metadata = %q, want empty", got)
+	}
+	if got := missing.zone(); got != "" {
+		t.Fatalf("zone() with no metadata = %q, want empty", got)
+	}
+}
+
+// TestMetadataLookupAvailabilityGuard exercises nil and cached availability paths.
+func TestMetadataLookupAvailabilityGuard(t *testing.T) {
+	t.Parallel()
+
+	var nilLookup *metadataLookup
+	if nilLookup.isAvailable() {
+		t.Fatalf("nil lookup unexpectedly reported availability")
+	}
+
+	l := newMetadataLookup(nil)
+	if l.isAvailable() {
+		t.Fatalf("lookup without client unexpectedly reported availability")
+	}
+
+	counter := &countingMetadataClient{onGCE: true}
+	l = newMetadataLookup(counter)
+	if !l.isAvailable() {
+		t.Fatalf("lookup with OnGCE=true reported unavailable")
+	}
+	if !l.isAvailable() {
+		t.Fatalf("lookup should continue reporting cached availability")
+	}
+	if counter.calls != 1 {
+		t.Fatalf("OnGCE() call count = %d, want 1", counter.calls)
+	}
+
+	counter = &countingMetadataClient{onGCE: false}
+	l = newMetadataLookup(counter)
+	if l.isAvailable() {
+		t.Fatalf("lookup with OnGCE=false reported available")
+	}
+	if counter.calls != 1 {
+		t.Fatalf("OnGCE() call count = %d, want 1", counter.calls)
 	}
 }

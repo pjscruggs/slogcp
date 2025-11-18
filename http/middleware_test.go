@@ -687,6 +687,34 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 	})
 }
 
+// TestResponseRecorderStatusCoversDefaults validates Status() behavior with and without explicit writes.
+func TestResponseRecorderStatusCoversDefaults(t *testing.T) {
+	t.Parallel()
+
+	var rr responseRecorder
+	if got := rr.Status(); got != stdhttp.StatusOK {
+		t.Fatalf("Status() = %d, want %d", got, stdhttp.StatusOK)
+	}
+	rr.status = stdhttp.StatusCreated
+	if got := rr.Status(); got != stdhttp.StatusCreated {
+		t.Fatalf("Status() = %d, want %d", got, stdhttp.StatusCreated)
+	}
+}
+
+// TestRequestScopeStatusDefaults verifies the atomic status fallback behavior.
+func TestRequestScopeStatusDefaults(t *testing.T) {
+	t.Parallel()
+
+	var scope RequestScope
+	if got := scope.Status(); got != stdhttp.StatusOK {
+		t.Fatalf("Status() = %d, want %d", got, stdhttp.StatusOK)
+	}
+	scope.setStatus(stdhttp.StatusBadRequest)
+	if got := scope.Status(); got != stdhttp.StatusBadRequest {
+		t.Fatalf("Status() = %d, want %d", got, stdhttp.StatusBadRequest)
+	}
+}
+
 type capturingRoundTripper struct {
 	req *stdhttp.Request
 	ctx context.Context
