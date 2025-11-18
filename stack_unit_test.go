@@ -17,7 +17,7 @@ package slogcp_test
 import (
 	"bytes"
 	"context"
-	json "encoding/json/v2"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"

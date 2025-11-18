@@ -16,7 +16,7 @@ package slogcp_test
 
 import (
 	"bytes"
-	json "encoding/json/v2"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"strings"
