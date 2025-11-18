@@ -76,6 +76,65 @@ func TestTransportRoundTripHandlesNilRequest(t *testing.T) {
 	}
 }
 
+// TestTransportRoundTripRecordsFailure ensures finalize runs when the base transport returns no response.
+func TestTransportRoundTripRecordsFailure(t *testing.T) {
+	t.Parallel()
+
+	errStub := &stubRoundTripper{err: errors.New("boom")}
+	rt := Transport(errStub)
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+
+	if _, err := rt.RoundTrip(req); !errors.Is(err, errStub.err) {
+		t.Fatalf("RoundTrip error = %v, want boom", err)
+	}
+	if errStub.req == nil {
+		t.Fatalf("base RoundTripper was not invoked")
+	}
+	scope, ok := ScopeFromContext(errStub.req.Context())
+	if !ok {
+		t.Fatalf("request scope missing after failed RoundTrip")
+	}
+	if scope.Status() != stdhttp.StatusOK {
+		t.Fatalf("scope.Status = %d, want %d", scope.Status(), stdhttp.StatusOK)
+	}
+	if scope.Latency() < 0 {
+		t.Fatalf("scope.Latency = %v, want >= 0", scope.Latency())
+	}
+}
+
+// TestTransportRoundTripAppliesAttrHooks ensures attr enrichers and transformers run.
+func TestTransportRoundTripAppliesAttrHooks(t *testing.T) {
+	t.Parallel()
+
+	var (
+		sawEnricher    bool
+		sawTransformer bool
+	)
+
+	rt := Transport(&stubRoundTripper{}, WithAttrEnricher(func(r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+		sawEnricher = true
+		return []slog.Attr{slog.String("extra", "value")}
+	}), WithAttrTransformer(func(attrs []slog.Attr, r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+		sawTransformer = true
+		return attrs[:0]
+	}))
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/widgets", nil)
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip returned %v", err)
+	}
+	defer resp.Body.Close()
+
+	if !sawEnricher {
+		t.Fatalf("attr enricher did not run")
+	}
+	if !sawTransformer {
+		t.Fatalf("attr transformer did not run")
+	}
+}
+
 // TestRoundTripperInjectTraceLegacy covers header injection scenarios.
 func TestRoundTripperInjectTraceLegacy(t *testing.T) {
 	t.Parallel()
