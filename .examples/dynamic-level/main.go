@@ -27,8 +27,7 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
-//TODO: all functions in this repo MUST have nice modern Go doc comments.
-// Check the other main.go files for missing comments too, and to learn the style of the comments that go above the `main` function.
+// main configures slogcp to showcase runtime level adjustments through SetLevel and LevelVar.
 func main() {
 	handler, err := slogcp.NewHandler(os.Stdout)
 	if err != nil {
