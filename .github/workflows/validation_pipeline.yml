@@ -41,11 +41,14 @@ jobs:
       
       - name: 🔍 Determine branch name
         id: get-branch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "BRANCH_NAME=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            echo "BRANCH_NAME=$PR_HEAD_REF" >> "$GITHUB_OUTPUT"
           else
-            echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+            echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 🔢 Determine Go version
@@ -405,5 +408,4 @@ jobs:
                 summary: `Secrets not available or validation not successful. A maintainer can run the "Manual E2E Test Trigger" workflow with PR #${{ github.event.pull_request.number }}.`
               }
             });
-
 
