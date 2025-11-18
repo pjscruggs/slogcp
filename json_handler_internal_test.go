@@ -54,6 +54,34 @@ func TestJSONHandlerResolveSourceLocation(t *testing.T) {
 	if loc := enabled.resolveSourceLocation(missingPC); loc != nil {
 		t.Fatalf("expected nil source location when PC is zero, got %+v", loc)
 	}
+
+	origSourceFunc := recordSourceFunc
+	origFrameResolver := runtimeFrameResolver
+	t.Cleanup(func() {
+		recordSourceFunc = origSourceFunc
+		runtimeFrameResolver = origFrameResolver
+	})
+
+	recordSourceFunc = func(slog.Record) *slog.Source {
+		return &slog.Source{}
+	}
+	runtimeFrameResolver = func(uintptr) runtime.Frame {
+		return runtime.Frame{
+			File:     "fallback.go",
+			Line:     123,
+			Function: "fallback",
+		}
+	}
+	fallbackRecord := slog.NewRecord(time.Now(), slog.LevelInfo, "needs-fallback", pc)
+	if loc := enabled.resolveSourceLocation(fallbackRecord); loc == nil || loc.Function != "fallback" {
+		t.Fatalf("expected fallback data, got %+v", loc)
+	}
+
+	recordSourceFunc = func(slog.Record) *slog.Source { return &slog.Source{} }
+	runtimeFrameResolver = func(uintptr) runtime.Frame { return runtime.Frame{} }
+	if loc := enabled.resolveSourceLocation(fallbackRecord); loc != nil {
+		t.Fatalf("expected nil when frame lacks metadata, got %+v", loc)
+	}
 }
 
 // TestPruneEmptyMapsRemovesEntries ensures empty nested maps vanish from payloads.
