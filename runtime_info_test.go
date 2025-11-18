@@ -17,6 +17,8 @@ package slogcp
 import (
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -55,6 +57,111 @@ func withMetadataClient(t *testing.T, client metadataClient) {
 	t.Cleanup(func() {
 		metadataClientFactory = original
 	})
+}
+
+// TestDetectKubernetesUsesMetadata verifies metadata-derived clusters populate labels.
+func TestDetectKubernetesUsesMetadata(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	t.Setenv("POD_NAME", "api-0")
+	t.Setenv("CONTAINER_NAME", "edge")
+
+	tmp := filepath.Join(t.TempDir(), "namespace")
+	if err := os.WriteFile(tmp, []byte("prod\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) = %v", tmp, err)
+	}
+	prevPath := kubernetesNamespacePath
+	kubernetesNamespacePath = tmp
+	t.Cleanup(func() { kubernetesNamespacePath = prevPath })
+
+	info := RuntimeInfo{}
+	lookup := newMetadataLookup(&stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"instance/attributes/cluster-name":     "gke-orders",
+			"instance/attributes/cluster-location": "us-central1-a",
+			"project/project-id":                   "meta-project",
+		},
+	})
+
+	if !detectKubernetes(&info, lookup) {
+		t.Fatalf("detectKubernetes returned false")
+	}
+	if info.Environment != RuntimeEnvKubernetes {
+		t.Fatalf("Environment = %v, want %v", info.Environment, RuntimeEnvKubernetes)
+	}
+	if got := info.ProjectID; got != "meta-project" {
+		t.Fatalf("ProjectID = %q, want %q", got, "meta-project")
+	}
+	if got := info.Labels["k8s.cluster.name"]; got != "gke-orders" {
+		t.Fatalf("k8s.cluster.name = %q, want %q", got, "gke-orders")
+	}
+	if got := info.Labels["k8s.location"]; got != "us-central1-a" {
+		t.Fatalf("k8s.location = %q, want %q", got, "us-central1-a")
+	}
+	if got := info.Labels["k8s.namespace.name"]; got != "prod" {
+		t.Fatalf("k8s.namespace.name = %q, want %q", got, "prod")
+	}
+	if got := info.Labels["k8s.pod.name"]; got != "api-0" {
+		t.Fatalf("k8s.pod.name = %q, want %q", got, "api-0")
+	}
+	if got := info.Labels["k8s.container.name"]; got != "edge" {
+		t.Fatalf("k8s.container.name = %q, want %q", got, "edge")
+	}
+}
+
+// TestDetectKubernetesEnvFallback exercises the environment fallback paths.
+func TestDetectKubernetesEnvFallback(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	t.Setenv("CLUSTER_NAME", "env-cluster")
+	t.Setenv("CLUSTER_LOCATION", "europe-west4")
+	t.Setenv("NAMESPACE_NAME", "payments")
+	t.Setenv("POD_NAME", "payments-57df9")
+	t.Setenv("CONTAINER_NAME", "payments-api")
+
+	info := RuntimeInfo{}
+	lookup := newMetadataLookup(&stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"project/project-id": "env-project",
+		},
+	})
+
+	if !detectKubernetes(&info, lookup) {
+		t.Fatalf("detectKubernetes returned false")
+	}
+	if got := info.ProjectID; got != "env-project" {
+		t.Fatalf("ProjectID = %q, want %q", got, "env-project")
+	}
+	if got := info.Labels["k8s.cluster.name"]; got != "env-cluster" {
+		t.Fatalf("k8s.cluster.name = %q, want %q", got, "env-cluster")
+	}
+	if got := info.Labels["k8s.location"]; got != "europe-west4" {
+		t.Fatalf("k8s.location = %q, want %q", got, "europe-west4")
+	}
+	if got := info.Labels["k8s.namespace.name"]; got != "payments" {
+		t.Fatalf("k8s.namespace.name = %q, want %q", got, "payments")
+	}
+	if got := info.Labels["k8s.pod.name"]; got != "payments-57df9" {
+		t.Fatalf("k8s.pod.name = %q, want %q", got, "payments-57df9")
+	}
+	if got := info.Labels["k8s.container.name"]; got != "payments-api" {
+		t.Fatalf("k8s.container.name = %q, want %q", got, "payments-api")
+	}
+}
+
+// TestReadNamespaceUsesOverride ensures readNamespace honours the configurable path.
+func TestReadNamespaceUsesOverride(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "namespace")
+	if err := os.WriteFile(tmp, []byte("observability\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) = %v", tmp, err)
+	}
+	prev := kubernetesNamespacePath
+	kubernetesNamespacePath = tmp
+	t.Cleanup(func() { kubernetesNamespacePath = prev })
+
+	if got := readNamespace(); got != "observability" {
+		t.Fatalf("readNamespace() = %q, want %q", got, "observability")
+	}
 }
 
 // TestDetectRuntimeInfoCloudRunService verifies Cloud Run environment variables populate runtime metadata.

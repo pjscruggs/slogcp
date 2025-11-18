@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/pjscruggs/slogcp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -469,6 +470,34 @@ func TestResponseRecorderReadFromFallback(t *testing.T) {
 	}
 }
 
+// TestResponseRecorderReadFromDelegates ensures ReaderFrom on the base writer is honoured.
+func TestResponseRecorderReadFromDelegates(t *testing.T) {
+	t.Parallel()
+
+	scope := newRequestScope(httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	base := &readerFromResponseWriter{header: make(stdhttp.Header)}
+
+	wrapped, recorder := wrapResponseWriter(base, scope)
+	readerFrom, ok := wrapped.(io.ReaderFrom)
+	if !ok {
+		t.Fatalf("wrapped writer did not expose ReaderFrom")
+	}
+
+	n, err := readerFrom.ReadFrom(strings.NewReader("upstream-data"))
+	if err != nil {
+		t.Fatalf("ReadFrom returned %v", err)
+	}
+	if n != base.readFromBytes {
+		t.Fatalf("base readFromBytes = %d, want %d", base.readFromBytes, n)
+	}
+	if recorder.BytesWritten() != n {
+		t.Fatalf("BytesWritten = %d, want %d", recorder.BytesWritten(), n)
+	}
+	if scope.ResponseSize() != n {
+		t.Fatalf("scope.ResponseSize = %d, want %d", scope.ResponseSize(), n)
+	}
+}
+
 // TestResponseRecorderOptionalInterfacesFallback covers ErrNotSupported paths.
 func TestResponseRecorderOptionalInterfacesFallback(t *testing.T) {
 	t.Parallel()
@@ -489,6 +518,50 @@ func TestResponseRecorderOptionalInterfacesFallback(t *testing.T) {
 	}
 }
 
+// TestResponseRecorderOptionalInterfacesForwarding verifies optional behaviours delegate to the wrapped writer.
+func TestResponseRecorderOptionalInterfacesForwarding(t *testing.T) {
+	t.Parallel()
+
+	scope := newRequestScope(nil, time.Now(), defaultConfig())
+	base := newOptionalResponseWriter()
+	_, recorder := wrapResponseWriter(base, scope)
+
+	recorder.Flush()
+	if base.flushCount != 1 {
+		t.Fatalf("Flush count = %d, want 1", base.flushCount)
+	}
+
+	conn, rw, err := recorder.Hijack()
+	if err != nil {
+		t.Fatalf("Hijack returned %v", err)
+	}
+	if conn != base.hijackConn || rw != base.hijackRW {
+		t.Fatalf("Hijack returned unexpected connection pair")
+	}
+
+	if err := recorder.Push("/events", nil); err != nil {
+		t.Fatalf("Push returned %v", err)
+	}
+	if len(base.pushedTargets) != 1 || base.pushedTargets[0] != "/events" {
+		t.Fatalf("pushedTargets = %v, want [/events]", base.pushedTargets)
+	}
+
+	ch := recorder.CloseNotify()
+	if ch == nil {
+		t.Fatalf("CloseNotify returned nil channel")
+	}
+
+	base.closeCh <- true
+	select {
+	case got := <-ch:
+		if !got {
+			t.Fatalf("CloseNotify value = %v, want true", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("CloseNotify did not forward values")
+	}
+}
+
 // TestExtractIPVariants validates IP parsing for several address formats.
 func TestExtractIPVariants(t *testing.T) {
 	t.Parallel()
@@ -498,6 +571,7 @@ func TestExtractIPVariants(t *testing.T) {
 		want string
 	}{
 		{addr: "198.51.100.1:443", want: "198.51.100.1"},
+		{addr: "[2001:db8::2]:8443", want: "2001:db8::2"},
 		{addr: "2001:db8::1:8080", want: "2001:db8::1:8080"},
 		{addr: "", want: ""},
 		{addr: "example.com:80", want: "example.com"},
@@ -513,9 +587,8 @@ func TestExtractIPVariants(t *testing.T) {
 
 // TestLoggerWithAttrs ensures nil base loggers fall back to slog.Default().
 func TestLoggerWithAttrs(t *testing.T) {
-	t.Parallel()
-
 	defaultLogger := slog.Default()
+
 	if got := loggerWithAttrs(nil, nil); got != defaultLogger {
 		t.Fatalf("loggerWithAttrs(nil,nil) != slog.Default()")
 	}
@@ -538,6 +611,80 @@ func TestLoggerWithAttrs(t *testing.T) {
 	if got := entry["k"]; got != "v" {
 		t.Fatalf("attribute missing, got %v", got)
 	}
+
+	var defaultBuf bytes.Buffer
+	customDefault := slog.New(slog.NewJSONHandler(&defaultBuf, &slog.HandlerOptions{AddSource: false}))
+	prevDefault := slog.Default()
+	slog.SetDefault(customDefault)
+	defer slog.SetDefault(prevDefault)
+
+	loggerWithAttrs(nil, []slog.Attr{slog.String("extra", "value")}).
+		Info("using default")
+
+	if !strings.Contains(defaultBuf.String(), `"extra":"value"`) {
+		t.Fatalf("default logger output missing attribute: %s", defaultBuf.String())
+	}
+}
+
+// TestEnsureSpanContextVariants covers the propagation fallbacks used by the middleware.
+func TestEnsureSpanContextVariants(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+
+	t.Run("existing", func(t *testing.T) {
+		ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    traceID,
+			SpanID:     spanID,
+			TraceFlags: trace.FlagsSampled,
+		}))
+		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+
+		gotCtx, sc := ensureSpanContext(ctx, req, defaultConfig())
+		if gotCtx != ctx {
+			t.Fatalf("ensureSpanContext returned new context for existing span")
+		}
+		if sc.TraceID() != traceID {
+			t.Fatalf("TraceID = %s, want %s", sc.TraceID(), traceID)
+		}
+	})
+
+	t.Run("propagator", func(t *testing.T) {
+		cfg := defaultConfig()
+		cfg.propagators = propagation.TraceContext{}
+
+		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		carrier := propagation.HeaderCarrier(req.Header)
+
+		src := trace.ContextWithRemoteSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    traceID,
+			SpanID:     spanID,
+			TraceFlags: trace.FlagsSampled,
+			Remote:     true,
+		}))
+		cfg.propagators.Inject(src, carrier)
+
+		_, sc := ensureSpanContext(context.Background(), req, cfg)
+		if sc.TraceID() != traceID || sc.SpanID() != spanID {
+			t.Fatalf("propagator extraction failed, got %v", sc)
+		}
+	})
+
+	t.Run("xcloud", func(t *testing.T) {
+		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		req.Header.Set(XCloudTraceContextHeader, traceID.String()+"/33;o=1")
+
+		_, sc := ensureSpanContext(context.Background(), req, defaultConfig())
+		if sc.TraceID() != traceID {
+			t.Fatalf("xcloud extraction failed, got %v", sc)
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		if _, sc := ensureSpanContext(context.Background(), req, defaultConfig()); sc.IsValid() {
+			t.Fatalf("unexpected span context detected: %v", sc)
+		}
+	})
 }
 
 type capturingRoundTripper struct {
