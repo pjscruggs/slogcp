@@ -397,3 +397,43 @@ func TestRuntimeDefaults(t *testing.T) {
 		})
 	}
 }
+
+// TestMetadataLookupRegionZone verifies region and zone parsing.
+func TestMetadataLookupRegionZone(t *testing.T) {
+	t.Parallel()
+
+	lookup := newMetadataLookup(&stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"instance/region": "projects/1/regions/us-central1",
+			"instance/zone":   "projects/1/zones/us-central1-b",
+		},
+	})
+
+	if got := lookup.region(); got != "us-central1" {
+		t.Fatalf("region() = %q, want %q", got, "us-central1")
+	}
+	if got := lookup.zone(); got != "us-central1-b" {
+		t.Fatalf("zone() = %q, want %q", got, "us-central1-b")
+	}
+}
+
+// TestMetadataLookupClusterDetails ensures cluster metadata helpers trim values.
+func TestMetadataLookupClusterDetails(t *testing.T) {
+	t.Parallel()
+
+	lookup := newMetadataLookup(&stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"instance/attributes/cluster-name":     "gke-cluster",
+			"instance/attributes/cluster-location": "us-east1-a",
+		},
+	})
+
+	if got := lookup.clusterName(); got != "gke-cluster" {
+		t.Fatalf("clusterName() = %q, want %q", got, "gke-cluster")
+	}
+	if got := lookup.clusterLocation(); got != "us-east1-a" {
+		t.Fatalf("clusterLocation() = %q, want %q", got, "us-east1-a")
+	}
+}

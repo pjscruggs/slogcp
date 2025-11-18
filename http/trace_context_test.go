@@ -16,6 +16,8 @@ package http
 
 import (
 	"context"
+	stdhttp "net/http"
+	"net/http/httptest"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
@@ -95,5 +97,62 @@ func TestParseXCloudTraceRejectsBadTraceID(t *testing.T) {
 
 	if sc, ok := parseXCloudTrace("zzz"); ok || sc.IsValid() {
 		t.Fatalf("expected parse failure for invalid trace id")
+	}
+}
+
+// TestInjectTraceContextMiddlewareExtractsHeader ensures middleware attaches spans.
+func TestInjectTraceContextMiddlewareExtractsHeader(t *testing.T) {
+	t.Parallel()
+
+	var captured trace.SpanContext
+	handler := InjectTraceContextMiddleware()(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		captured = trace.SpanContextFromContext(r.Context())
+		w.WriteHeader(stdhttp.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/10;o=1")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if !captured.IsValid() {
+		t.Fatalf("expected span context after middleware")
+	}
+	if captured.TraceID().String() != "105445aa7843bc8bf206b12000100000" {
+		t.Fatalf("TraceID = %s", captured.TraceID())
+	}
+	if captured.SpanID().String() != "000000000000000a" {
+		t.Fatalf("SpanID = %s, want decimal encoded 10", captured.SpanID())
+	}
+}
+
+// TestInjectTraceContextMiddlewareHonorsExistingSpan ensures header is ignored when span exists.
+func TestInjectTraceContextMiddlewareHonorsExistingSpan(t *testing.T) {
+	t.Parallel()
+
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+
+	var ctxAfter trace.SpanContext
+	handler := InjectTraceContextMiddleware()(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		ctxAfter = trace.SpanContextFromContext(r.Context())
+		w.WriteHeader(stdhttp.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+	req = req.WithContext(trace.ContextWithSpanContext(req.Context(), spanCtx))
+	req.Header.Set(XCloudTraceContextHeader, "00000000000000000000000000000000/5;o=1")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if ctxAfter.TraceID() != spanCtx.TraceID() || ctxAfter.SpanID() != spanCtx.SpanID() {
+		t.Fatalf("existing span context should remain, got %v", ctxAfter)
 	}
 }

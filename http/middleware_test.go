@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -342,6 +343,203 @@ func TestWrapResponseWriterReadFromAccounting(t *testing.T) {
 	}
 }
 
+// TestRequestScopeFinalizeClampsValues ensures status, bytes, and latency handling cover edge cases.
+func TestRequestScopeFinalizeClampsValues(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/items?id=42", strings.NewReader("body"))
+	req.RemoteAddr = "203.0.113.5:443"
+
+	scope := newRequestScope(req, time.Now().Add(-10*time.Millisecond), cfg)
+	if scope.Status() != stdhttp.StatusOK {
+		t.Fatalf("default status = %d, want %d", scope.Status(), stdhttp.StatusOK)
+	}
+
+	scope.setStatus(0)
+	if scope.Status() != stdhttp.StatusOK {
+		t.Fatalf("zero status fallback = %d, want %d", scope.Status(), stdhttp.StatusOK)
+	}
+
+	scope.setStatus(stdhttp.StatusAccepted)
+	if scope.Status() != stdhttp.StatusAccepted {
+		t.Fatalf("setStatus = %d, want %d", scope.Status(), stdhttp.StatusAccepted)
+	}
+
+	scope.addResponseBytes(-1)
+	if scope.ResponseSize() != 0 {
+		t.Fatalf("negative bytes mutated size = %d", scope.ResponseSize())
+	}
+	scope.addResponseBytes(128)
+	if scope.ResponseSize() != 128 {
+		t.Fatalf("ResponseSize = %d, want 128", scope.ResponseSize())
+	}
+
+	scope.finalize(stdhttp.StatusGatewayTimeout, 256, 25*time.Millisecond)
+	if scope.Status() != stdhttp.StatusGatewayTimeout {
+		t.Fatalf("finalize status = %d, want %d", scope.Status(), stdhttp.StatusGatewayTimeout)
+	}
+	if scope.ResponseSize() != 256 {
+		t.Fatalf("finalize ResponseSize = %d, want 256", scope.ResponseSize())
+	}
+	if got := scope.Latency(); got != 25*time.Millisecond {
+		t.Fatalf("Latency = %v, want 25ms", got)
+	}
+
+	scope.finalize(0, -1, -time.Millisecond)
+	if scope.Status() != stdhttp.StatusOK {
+		t.Fatalf("finalize fallback status = %d, want %d", scope.Status(), stdhttp.StatusOK)
+	}
+	if scope.ResponseSize() != 256 {
+		t.Fatalf("ResponseSize should remain unchanged, got %d", scope.ResponseSize())
+	}
+	if got := scope.latencyNS.Load(); got != 0 {
+		t.Fatalf("expected latencyNS clamp to 0, got %d", got)
+	}
+}
+
+// TestScopeFromContextNil verifies nil and empty contexts return no scope.
+func TestScopeFromContextNil(t *testing.T) {
+	t.Parallel()
+
+	if scope, ok := ScopeFromContext(nil); scope != nil || ok {
+		t.Fatalf("ScopeFromContext(nil) = (%v,%v), want (nil,false)", scope, ok)
+	}
+	if scope, ok := ScopeFromContext(context.Background()); scope != nil || ok {
+		t.Fatalf("ScopeFromContext(empty) = (%v,%v), want (nil,false)", scope, ok)
+	}
+}
+
+// TestResponseRecorderWriteAndStatus exercises Write and Status bookkeeping.
+func TestResponseRecorderWriteAndStatus(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", stdhttp.NoBody)
+	scope := newRequestScope(req, time.Now(), defaultConfig())
+	base := httptest.NewRecorder()
+
+	wrapped, recorder := wrapResponseWriter(base, scope)
+	if recorder.Status() != stdhttp.StatusOK {
+		t.Fatalf("initial Status() = %d, want %d", recorder.Status(), stdhttp.StatusOK)
+	}
+	if _, err := wrapped.Write([]byte("payload")); err != nil {
+		t.Fatalf("Write returned %v", err)
+	}
+	if recorder.Status() != stdhttp.StatusOK {
+		t.Fatalf("Status after write = %d, want %d", recorder.Status(), stdhttp.StatusOK)
+	}
+	if recorder.BytesWritten() != int64(len("payload")) {
+		t.Fatalf("BytesWritten = %d, want %d", recorder.BytesWritten(), len("payload"))
+	}
+	if scope.ResponseSize() != int64(len("payload")) {
+		t.Fatalf("scope.ResponseSize = %d, want %d", scope.ResponseSize(), len("payload"))
+	}
+
+	recorder.WriteHeader(stdhttp.StatusTeapot)
+	if recorder.Status() != stdhttp.StatusTeapot {
+		t.Fatalf("Status = %d, want %d", recorder.Status(), stdhttp.StatusTeapot)
+	}
+}
+
+// TestResponseRecorderReadFromFallback ensures io.Copy path accounts for bytes.
+func TestResponseRecorderReadFromFallback(t *testing.T) {
+	t.Parallel()
+
+	scope := newRequestScope(httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	base := &minimalResponseWriter{header: make(stdhttp.Header)}
+
+	wrapped, recorder := wrapResponseWriter(base, scope)
+	readerFrom, ok := wrapped.(io.ReaderFrom)
+	if !ok {
+		t.Fatalf("wrap response writer did not expose ReaderFrom")
+	}
+
+	n, err := readerFrom.ReadFrom(strings.NewReader("chunks"))
+	if err != nil {
+		t.Fatalf("ReadFrom fallback returned %v", err)
+	}
+	if n != int64(len("chunks")) {
+		t.Fatalf("ReadFrom n = %d, want %d", n, len("chunks"))
+	}
+	if scope.ResponseSize() != n {
+		t.Fatalf("scope.ResponseSize = %d, want %d", scope.ResponseSize(), n)
+	}
+	if recorder.BytesWritten() != n {
+		t.Fatalf("BytesWritten = %d, want %d", recorder.BytesWritten(), n)
+	}
+}
+
+// TestResponseRecorderOptionalInterfacesFallback covers ErrNotSupported paths.
+func TestResponseRecorderOptionalInterfacesFallback(t *testing.T) {
+	t.Parallel()
+
+	scope := newRequestScope(nil, time.Now(), defaultConfig())
+	base := &minimalResponseWriter{header: make(stdhttp.Header)}
+	_, recorder := wrapResponseWriter(base, scope)
+
+	recorder.Flush()
+	if _, _, err := recorder.Hijack(); !errors.Is(err, stdhttp.ErrNotSupported) {
+		t.Fatalf("Hijack error = %v, want ErrNotSupported", err)
+	}
+	if err := recorder.Push("/events", nil); !errors.Is(err, stdhttp.ErrNotSupported) {
+		t.Fatalf("Push error = %v, want ErrNotSupported", err)
+	}
+	if ch := recorder.CloseNotify(); ch != nil {
+		t.Fatalf("CloseNotify = %v, want nil", ch)
+	}
+}
+
+// TestExtractIPVariants validates IP parsing for several address formats.
+func TestExtractIPVariants(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		addr string
+		want string
+	}{
+		{addr: "198.51.100.1:443", want: "198.51.100.1"},
+		{addr: "2001:db8::1:8080", want: "2001:db8::1:8080"},
+		{addr: "", want: ""},
+		{addr: "example.com:80", want: "example.com"},
+		{addr: "example.com", want: "example.com"},
+	}
+
+	for _, tt := range tests {
+		if got := extractIP(tt.addr); got != tt.want {
+			t.Fatalf("extractIP(%q) = %q, want %q", tt.addr, got, tt.want)
+		}
+	}
+}
+
+// TestLoggerWithAttrs ensures nil base loggers fall back to slog.Default().
+func TestLoggerWithAttrs(t *testing.T) {
+	t.Parallel()
+
+	defaultLogger := slog.Default()
+	if got := loggerWithAttrs(nil, nil); got != defaultLogger {
+		t.Fatalf("loggerWithAttrs(nil,nil) != slog.Default()")
+	}
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false})
+	base := slog.New(handler)
+
+	logger := loggerWithAttrs(base, []slog.Attr{slog.String("k", "v")})
+	logger.Info("test")
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected single line output, got %d", len(lines))
+	}
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+	if got := entry["k"]; got != "v" {
+		t.Fatalf("attribute missing, got %v", got)
+	}
+}
+
 type capturingRoundTripper struct {
 	req *stdhttp.Request
 	ctx context.Context
@@ -471,3 +669,17 @@ func (r *readerFromResponseWriter) ReadFrom(src io.Reader) (int64, error) {
 	r.readFromBytes += n
 	return n, err
 }
+
+// minimalResponseWriter implements only the base ResponseWriter for fallback tests.
+type minimalResponseWriter struct {
+	header stdhttp.Header
+}
+
+// Header implements http.ResponseWriter.
+func (m *minimalResponseWriter) Header() stdhttp.Header { return m.header }
+
+// Write writes len(p) bytes without exposing optional interfaces.
+func (m *minimalResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// WriteHeader records the status code but performs no IO.
+func (m *minimalResponseWriter) WriteHeader(int) {}

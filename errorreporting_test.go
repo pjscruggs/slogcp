@@ -72,6 +72,30 @@ func TestReportErrorEmitsStructuredRecord(t *testing.T) {
 	}
 }
 
+// TestErrorReportingAttrsNilError returns nil when err is nil.
+func TestErrorReportingAttrsNilError(t *testing.T) {
+	t.Parallel()
+
+	if attrs := slogcp.ErrorReportingAttrs(nil); attrs != nil {
+		t.Fatalf("ErrorReportingAttrs(nil) = %v, want nil", attrs)
+	}
+}
+
+// TestReportErrorNilArguments ensures nil logger or error are no-ops.
+func TestReportErrorNilArguments(t *testing.T) {
+	t.Parallel()
+
+	recorder := &recordingHandler{}
+	logger := slog.New(recorder)
+
+	slogcp.ReportError(context.Background(), nil, errors.New("boom"), "ignored")
+	slogcp.ReportError(context.Background(), logger, nil, "ignored")
+
+	if recorder.lastRecord != nil {
+		t.Fatalf("expected no log entries for nil inputs, got %+v", recorder.lastRecord)
+	}
+}
+
 // attrsToMap converts attributes into a simple map for assertions.
 func attrsToMap(attrs []slog.Attr) map[string]any {
 	out := make(map[string]any, len(attrs))

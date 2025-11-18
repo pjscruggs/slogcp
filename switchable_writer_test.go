@@ -5,52 +5,54 @@ import (
 	"testing"
 )
 
-// TestSwitchableWriterSetAndGet exercises writer swapping and GetCurrentWriter coverage paths.
-func TestSwitchableWriterSetAndGet(t *testing.T) {
+// TestSwitchableWriterSetWriter verifies writes follow the current writer.
+func TestSwitchableWriterSetWriter(t *testing.T) {
 	t.Parallel()
 
-	first := &bytes.Buffer{}
-	sw := NewSwitchableWriter(first)
+	var buf bytes.Buffer
+	sw := NewSwitchableWriter(&buf)
 
-	if got := sw.GetCurrentWriter(); got != first {
-		t.Fatalf("initial writer = %v, want %v", got, first)
+	if _, err := sw.Write([]byte("first")); err != nil {
+		t.Fatalf("Write returned %v", err)
 	}
-
-	second := &bytes.Buffer{}
-	sw.SetWriter(second)
-
-	if _, err := sw.Write([]byte("hello")); err != nil {
-		t.Fatalf("Write returned %v, want nil", err)
-	}
-	if second.String() != "hello" {
-		t.Fatalf("second writer captured %q, want %q", second.String(), "hello")
+	if got := buf.String(); got != "first" {
+		t.Fatalf("buffer = %q, want %q", got, "first")
 	}
 
 	sw.SetWriter(nil)
 	if _, err := sw.Write([]byte("discarded")); err != nil {
-		t.Fatalf("Write after nil SetWriter returned %v, want nil", err)
+		t.Fatalf("Write to nil writer returned %v", err)
 	}
-	if got := sw.GetCurrentWriter(); got == nil {
-		t.Fatalf("GetCurrentWriter returned nil after SetWriter(nil)")
+
+	var second bytes.Buffer
+	sw.SetWriter(&second)
+	if _, err := sw.Write([]byte("second")); err != nil {
+		t.Fatalf("Write returned %v", err)
+	}
+	if got := second.String(); got != "second" {
+		t.Fatalf("second buffer = %q, want %q", got, "second")
 	}
 }
 
-// TestSwitchableWriterClose closes an owned writer and routes subsequent writes to io.Discard.
+// TestSwitchableWriterClose closes closable writers and guards repeated calls.
 func TestSwitchableWriterClose(t *testing.T) {
 	t.Parallel()
 
-	closer := &closableBuffer{}
-	sw := NewSwitchableWriter(closer)
+	writer := &closableBuffer{}
+	sw := NewSwitchableWriter(writer)
 
 	if err := sw.Close(); err != nil {
-		t.Fatalf("Close returned %v, want nil", err)
+		t.Fatalf("Close returned %v", err)
 	}
-	if !closer.closed {
-		t.Fatalf("underlying writer was not closed")
+	if !writer.closed {
+		t.Fatalf("underlying writer not closed")
 	}
 
-	if n, err := sw.Write([]byte("after-close")); err != nil || n != len("after-close") {
-		t.Fatalf("Write after Close = (%d, %v), want (%d, nil)", n, err, len("after-close"))
+	if err := sw.Close(); err != nil {
+		t.Fatalf("second Close returned %v", err)
+	}
+	if _, err := sw.Write([]byte("after-close")); err != nil {
+		t.Fatalf("Write after Close returned %v", err)
 	}
 }
 
@@ -59,7 +61,7 @@ type closableBuffer struct {
 	closed bool
 }
 
-// Close marks the buffer closed for verification.
+// Close marks the buffer closed to verify SwitchableWriter.Close invokes it.
 func (c *closableBuffer) Close() error {
 	c.closed = true
 	return nil
