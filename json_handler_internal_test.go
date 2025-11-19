@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -86,6 +87,37 @@ func TestJSONHandlerResolveSourceLocation(t *testing.T) {
 	runtimeFrameResolver = func(uintptr) runtime.Frame { return runtime.Frame{} }
 	if loc := enabled.resolveSourceLocation(fallbackRecord); loc != nil {
 		t.Fatalf("expected nil when frame lacks metadata, got %+v", loc)
+	}
+}
+
+// TestJSONHandlerResolveSourceLocationUsesDefaultFrameResolver ensures the default runtimeFrameResolver is exercised.
+func TestJSONHandlerResolveSourceLocationUsesDefaultFrameResolver(t *testing.T) {
+	t.Parallel()
+
+	baseLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := newJSONHandler(&handlerConfig{
+		AddSource: true,
+		Writer:    io.Discard,
+	}, slog.LevelInfo, baseLogger)
+
+	pc, _, _, _ := runtime.Caller(0)
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "default-frame", pc)
+
+	orig := recordSourceFunc
+	t.Cleanup(func() { recordSourceFunc = orig })
+	recordSourceFunc = func(slog.Record) *slog.Source {
+		return nil
+	}
+
+	loc := handler.resolveSourceLocation(record)
+	if loc == nil {
+		t.Fatal("expected fallback source location when record Source is unavailable")
+	}
+	if loc.Function == "" || !strings.Contains(loc.Function, "TestJSONHandlerResolveSourceLocationUsesDefaultFrameResolver") {
+		t.Fatalf("unexpected source location: %+v", loc)
+	}
+	if loc.Line == 0 || loc.File == "" {
+		t.Fatalf("expected populated file/line in fallback source location: %+v", loc)
 	}
 }
 
@@ -399,6 +431,78 @@ func TestJSONHandlerHandleMergesLabels(t *testing.T) {
 	}
 	if serviceContext["service"] != "checkout" || serviceContext["version"] != "v1" {
 		t.Fatalf("serviceContext mismatch: %#v", serviceContext)
+	}
+}
+
+// TestJSONHandlerHandleUsesRuntimeLabelsWithoutRecordLabels covers the runtime label fallback path.
+func TestJSONHandlerHandleUsesRuntimeLabelsWithoutRecordLabels(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	cfg := &handlerConfig{
+		Level:         slog.LevelInfo,
+		Writer:        &buf,
+		runtimeLabels: map[string]string{"service": "billing"},
+	}
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(slog.LevelInfo)
+	handler := newJSONHandler(cfg, levelVar, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "billing started", 0)
+	record.AddAttrs(slog.String("component", "worker"))
+
+	if err := handler.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() returned %v", err)
+	}
+
+	entry := decodeJSONEntry(t, &buf)
+	labels, ok := entry[LabelsGroup].(map[string]any)
+	if !ok {
+		t.Fatalf("labels missing or wrong type: %T", entry[LabelsGroup])
+	}
+	if len(labels) != 1 || labels["service"] != "billing" {
+		t.Fatalf("labels = %#v, want only runtime labels", labels)
+	}
+	if cfg.runtimeLabels["service"] != "billing" {
+		t.Fatalf("runtime labels mutated: %#v", cfg.runtimeLabels)
+	}
+	if component, _ := entry["component"].(string); component != "worker" {
+		t.Fatalf("component attr not preserved: %v", component)
+	}
+}
+
+// TestJSONHandlerBuildPayloadSkipsEmptyKeysAndNilValues verifies attr filtering and empty initial groups are handled.
+func TestJSONHandlerBuildPayloadSkipsEmptyKeysAndNilValues(t *testing.T) {
+	t.Parallel()
+
+	cfg := &handlerConfig{
+		Writer:        io.Discard,
+		InitialGroups: []string{""},
+	}
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "payload", 0)
+	record.AddAttrs(
+		slog.String("", "ignored"),
+		slog.Any("nil_value", nil),
+		slog.String("kept", "value"),
+	)
+
+	state := &payloadState{}
+	payload, _, _, _, _, dynamicLabels := handler.buildPayload(record, state)
+	state.recycle()
+
+	if _, exists := payload[""]; exists {
+		t.Fatalf("empty attr key should be ignored, payload: %#v", payload)
+	}
+	if _, exists := payload["nil_value"]; exists {
+		t.Fatalf("nil attr values should be skipped, payload: %#v", payload)
+	}
+	if got := payload["kept"]; got != "value" {
+		t.Fatalf("payload[kept] = %v, want %q", got, "value")
+	}
+	if len(dynamicLabels) != 0 {
+		t.Fatalf("expected no dynamic labels, got %#v", dynamicLabels)
 	}
 }
 
