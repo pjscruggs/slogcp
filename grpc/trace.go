@@ -31,6 +31,8 @@ import (
 
 const XCloudTraceContextHeader = "X-Cloud-Trace-Context"
 
+var randReader = rand.Read
+
 type metadataCarrier struct {
 	metadata.MD
 }
@@ -231,7 +233,7 @@ func parseXCloudTrace(header string) (trace.SpanContext, bool) {
 		}
 	}
 	if !spanID.IsValid() {
-		if _, err := rand.Read(spanID[:]); err != nil {
+		if _, err := randReader(spanID[:]); err != nil {
 			return trace.SpanContext{}, false
 		}
 	}
