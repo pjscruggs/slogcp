@@ -603,7 +603,9 @@ func TestJSONHandlerCapturesErrorAttr(t *testing.T) {
 	t.Parallel()
 
 	cfg := &handlerConfig{
-		Writer: io.Discard,
+		Writer:            io.Discard,
+		StackTraceEnabled: true,
+		StackTraceLevel:   slog.LevelError,
 	}
 	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
@@ -687,4 +689,74 @@ func decodeJSONEntry(t *testing.T, buf *bytes.Buffer) map[string]any {
 		t.Fatalf("json.Unmarshal returned %v", err)
 	}
 	return entry
+}
+
+// TestJSONHandler_ReplaceAttr_InGroup verifies that ReplaceAttr is correctly invoked for attributes within groups.
+func TestJSONHandler_ReplaceAttr_InGroup(t *testing.T) {
+	// Ensure ReplaceAttr is called for attributes within groups,
+	// and that the groups argument is correctly populated.
+	replace := func(groups []string, a slog.Attr) slog.Attr {
+		if len(groups) > 0 && groups[0] == "g" && a.Key == "k" {
+			return slog.String("k", "replaced")
+		}
+		return a
+	}
+	var buf bytes.Buffer
+	h := newJSONHandler(&handlerConfig{ReplaceAttr: replace, Writer: &buf}, slog.LevelInfo, nil)
+	logger := slog.New(h).WithGroup("g")
+
+	// We need to trigger buildPayload. Handle does that.
+	logger.Info("msg", "k", "v")
+
+	entry := decodeJSONEntry(t, &buf)
+	group, ok := entry["g"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected group 'g' in output")
+	}
+	if group["k"] != "replaced" {
+		t.Errorf("expected 'k' to be 'replaced', got %v", group["k"])
+	}
+}
+
+// TestJSONHandler_ErrorValue_Attribute verifies that error values in attributes are correctly captured.
+func TestJSONHandler_ErrorValue_Attribute(t *testing.T) {
+	// Ensure that an error value in an attribute is captured as the first error
+	// if one hasn't been captured yet.
+
+	// We need an attribute that is an error.
+	err := errors.New("my error")
+	var buf bytes.Buffer
+	h := newJSONHandler(&handlerConfig{Writer: &buf}, slog.LevelInfo, nil)
+	logger := slog.New(h)
+
+	// This should trigger the error capture logic in walkAttr
+	logger.Info("msg", "my_err", err)
+
+	entry := decodeJSONEntry(t, &buf)
+	if msg, ok := entry["message"].(string); !ok || !strings.Contains(msg, "my error") {
+		t.Errorf("expected message to contain error text, got %v", entry["message"])
+	}
+}
+
+// TestJSONHandler_LabelsGroup_InBaseAttrs verifies that the special LabelsGroup is handled correctly when present in base attributes.
+func TestJSONHandler_LabelsGroup_InBaseAttrs(t *testing.T) {
+	// Ensure that the special LabelsGroup is handled correctly when present
+	// in the base attributes (e.g. via WithGroup).
+
+	var buf bytes.Buffer
+	h := newJSONHandler(&handlerConfig{Writer: &buf}, slog.LevelInfo, nil)
+	// Create a logger with the special labels group and some attributes inside it
+	logger := slog.New(h).WithGroup(LabelsGroup).With("label_key", "label_val")
+
+	// Log something to trigger processing of baseAttrs
+	logger.Info("msg")
+
+	entry := decodeJSONEntry(t, &buf)
+	labels, ok := entry[LabelsGroup].(map[string]any)
+	if !ok {
+		t.Fatalf("expected labels group in output")
+	}
+	if labels["label_key"] != "label_val" {
+		t.Errorf("expected label_key=label_val, got %v", labels["label_key"])
+	}
 }
