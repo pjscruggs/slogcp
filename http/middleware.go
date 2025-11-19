@@ -34,6 +34,8 @@ import (
 
 const instrumentationName = "github.com/pjscruggs/slogcp/http"
 
+var xCloudTraceContextExtractor = contextWithXCloudTrace
+
 // Middleware returns an http.Handler middleware that derives a request-scoped
 // logger, extracts trace context, and leaves application logging to handlers.
 func Middleware(opts ...Option) func(stdhttp.Handler) stdhttp.Handler {
@@ -467,7 +469,7 @@ func ensureSpanContext(ctx context.Context, r *stdhttp.Request, cfg *config) (co
 	}
 
 	if header := r.Header.Get(XCloudTraceContextHeader); header != "" {
-		if xctx, ok := contextWithXCloudTrace(ctx, header); ok {
+		if xctx, ok := xCloudTraceContextExtractor(ctx, header); ok {
 			return xctx, trace.SpanContextFromContext(xctx)
 		}
 	}
