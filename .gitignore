@@ -158,4 +158,5 @@ tags
 /coverage.txt
 /coverage
 /coverage-func.txt
+/coverage-report.json
 **/*debug_log.txt
