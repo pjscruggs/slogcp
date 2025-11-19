@@ -122,6 +122,54 @@ func TestOptionHelpersMutateOptions(t *testing.T) {
 	})
 }
 
+// TestNewHandlerPropagatesEnvErrors ensures invalid environment overrides bubble up to the caller.
+func TestNewHandlerPropagatesEnvErrors(t *testing.T) {
+	clearHandlerEnv(t)
+	t.Setenv(envTarget, "invalid-target")
+
+	if _, err := NewHandler(io.Discard); err == nil || !errors.Is(err, ErrInvalidRedirectTarget) {
+		t.Fatalf("NewHandler() error = %v, want ErrInvalidRedirectTarget", err)
+	}
+}
+
+// TestNewHandlerDefaultsToStdoutWriter verifies stdout is used when no writer or default is provided.
+func TestNewHandlerDefaultsToStdoutWriter(t *testing.T) {
+	clearHandlerEnv(t)
+
+	h, err := NewHandler(nil)
+	if err != nil {
+		t.Fatalf("NewHandler(nil) returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v", cerr)
+		}
+	})
+
+	if h.cfg.Writer != os.Stdout {
+		t.Fatalf("cfg.Writer = %T, want os.Stdout", h.cfg.Writer)
+	}
+	if !h.cfg.writerExternallyOwned {
+		t.Fatalf("writerExternallyOwned = false, want true for default stdout")
+	}
+}
+
+// TestNewHandlerFileOpenFailure surfaces file creation problems to the caller.
+func TestNewHandlerFileOpenFailure(t *testing.T) {
+	clearHandlerEnv(t)
+
+	dir := t.TempDir()
+	badPath := filepath.Join(dir, "missing", "app.log")
+
+	_, err := NewHandler(io.Discard, WithRedirectToFile(badPath))
+	if err == nil {
+		t.Fatalf("NewHandler() error = nil, want failure opening %q", badPath)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("NewHandler() error = %v, want wrapping os.ErrNotExist", err)
+	}
+}
+
 // TestNewHandlerWrapsSourceAwareHandler verifies handlers with AddSource=true expose HasSource.
 func TestNewHandlerWrapsSourceAwareHandler(t *testing.T) {
 	t.Parallel()
