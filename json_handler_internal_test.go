@@ -173,6 +173,22 @@ func TestNewJSONHandlerInitialStateFromConfig(t *testing.T) {
 	}
 }
 
+// TestJSONHandlerWithAttrsReturnsSelf ensures WithAttrs short circuits when attrs are empty.
+func TestJSONHandlerWithAttrsReturnsSelf(t *testing.T) {
+	t.Parallel()
+
+	base := newJSONHandler(&handlerConfig{
+		Writer: io.Discard,
+	}, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if got := base.WithAttrs(nil); got != base {
+		t.Fatalf("WithAttrs(nil) should return same handler instance")
+	}
+	if got := base.WithAttrs([]slog.Attr{}); got != base {
+		t.Fatalf("WithAttrs(empty) should return same handler instance")
+	}
+}
+
 // TestJSONHandlerWithGroupAndAttrsExtendState verifies WithGroup/WithAttrs reuse mutexes and isolate state.
 func TestJSONHandlerWithGroupAndAttrsExtendState(t *testing.T) {
 	t.Parallel()
@@ -471,6 +487,82 @@ func TestJSONHandlerHandleUsesRuntimeLabelsWithoutRecordLabels(t *testing.T) {
 	}
 }
 
+// TestJSONHandlerBuildPayloadNestedGroups ensures nested slog.Group attrs flatten predictably.
+func TestJSONHandlerBuildPayloadNestedGroups(t *testing.T) {
+	t.Parallel()
+
+	cfg := &handlerConfig{Writer: io.Discard}
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "nested", 0)
+	record.AddAttrs(
+		slog.Group("outer",
+			slog.String("child", "value"),
+			slog.Group("inner", slog.Int("depth", 2)),
+		),
+		slog.String("root", "present"),
+	)
+
+	state := &payloadState{}
+	t.Cleanup(state.recycle)
+	payload, _, _, _, _, dynamicLabels := handler.buildPayload(record, state)
+
+	if len(dynamicLabels) != 0 {
+		t.Fatalf("expected no labels, got %#v", dynamicLabels)
+	}
+	outer, ok := payload["outer"].(map[string]any)
+	if !ok {
+		t.Fatalf("outer group missing or wrong type: %T", payload["outer"])
+	}
+	if got := outer["child"]; got != "value" {
+		t.Fatalf("outer[child] = %v, want %q", got, "value")
+	}
+	inner, ok := outer["inner"].(map[string]any)
+	if !ok {
+		t.Fatalf("inner group missing or wrong type: %T", outer["inner"])
+	}
+	if got := inner["depth"]; got != int64(2) {
+		t.Fatalf("inner[depth] = %v, want 2", got)
+	}
+	if got := payload["root"]; got != "present" {
+		t.Fatalf("root attr missing: %v", payload)
+	}
+}
+
+// TestJSONHandlerBuildPayloadInitialLabelsGroup ensures initial label groups route attrs into dynamic labels.
+func TestJSONHandlerBuildPayloadInitialLabelsGroup(t *testing.T) {
+	t.Parallel()
+
+	cfg := &handlerConfig{
+		Writer:        io.Discard,
+		InitialGroups: []string{LabelsGroup},
+	}
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "labels", 0)
+	record.AddAttrs(
+		slog.String("region", "us-central1"),
+		slog.String("role", "ingress"),
+	)
+
+	state := &payloadState{}
+	t.Cleanup(state.recycle)
+	payload, _, _, _, _, dynamicLabels := handler.buildPayload(record, state)
+
+	if len(dynamicLabels) != 2 {
+		t.Fatalf("expected two labels, got %#v", dynamicLabels)
+	}
+	if dynamicLabels["region"] != "us-central1" || dynamicLabels["role"] != "ingress" {
+		t.Fatalf("dynamic labels mismatch: %#v", dynamicLabels)
+	}
+	if _, exists := payload["region"]; exists {
+		t.Fatalf("region should not exist in payload: %#v", payload)
+	}
+	if _, exists := payload["role"]; exists {
+		t.Fatalf("role should not exist in payload: %#v", payload)
+	}
+}
+
 // TestJSONHandlerBuildPayloadSkipsEmptyKeysAndNilValues verifies attr filtering and empty initial groups are handled.
 func TestJSONHandlerBuildPayloadSkipsEmptyKeysAndNilValues(t *testing.T) {
 	t.Parallel()
@@ -489,8 +581,8 @@ func TestJSONHandlerBuildPayloadSkipsEmptyKeysAndNilValues(t *testing.T) {
 	)
 
 	state := &payloadState{}
+	t.Cleanup(state.recycle)
 	payload, _, _, _, _, dynamicLabels := handler.buildPayload(record, state)
-	state.recycle()
 
 	if _, exists := payload[""]; exists {
 		t.Fatalf("empty attr key should be ignored, payload: %#v", payload)
@@ -503,6 +595,55 @@ func TestJSONHandlerBuildPayloadSkipsEmptyKeysAndNilValues(t *testing.T) {
 	}
 	if len(dynamicLabels) != 0 {
 		t.Fatalf("expected no dynamic labels, got %#v", dynamicLabels)
+	}
+}
+
+// TestJSONHandlerEmitJSONReturnsWriterError exercises the no-writer guard.
+func TestJSONHandlerEmitJSONReturnsWriterError(t *testing.T) {
+	t.Parallel()
+
+	handler := newJSONHandler(&handlerConfig{
+		Writer: io.Discard,
+	}, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler.writer = nil
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "missing writer", 0)
+	if err := handler.emitJSON(record, map[string]any{}, nil, nil, "", "", "", false, false, "", "", ""); err == nil {
+		t.Fatal("emitJSON returned nil error without configured writer")
+	}
+}
+
+// TestJSONHandlerEmitJSONUsesServiceContextAny ensures serviceContextAny is forwarded without buffer pooling.
+func TestJSONHandlerEmitJSONUsesServiceContextAny(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	cfg := &handlerConfig{
+		Writer: &buf,
+		runtimeServiceContextAny: map[string]any{
+			"service": "checkout",
+			"version": "v2",
+		},
+		runtimeServiceContext: map[string]string{
+			"service": "checkout",
+		},
+	}
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler.bufferPool = nil
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "service context", 0)
+	payload := map[string]any{}
+	if err := handler.emitJSON(record, payload, nil, nil, "", "", "", false, false, "", "", ""); err != nil {
+		t.Fatalf("emitJSON returned %v", err)
+	}
+
+	entry := decodeJSONEntry(t, &buf)
+	ctx, ok := entry["serviceContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("serviceContext missing or wrong type: %T", entry["serviceContext"])
+	}
+	if ctx["service"] != "checkout" || ctx["version"] != "v2" {
+		t.Fatalf("serviceContext = %#v, want service=checkout version=v2", ctx)
 	}
 }
 

@@ -152,6 +152,30 @@ func TestResolveSlogValueCoversKinds(t *testing.T) {
 	if val := resolveSlogValue(emptyGroup); val != nil {
 		t.Fatalf("empty group resolution = %#v, want nil", val)
 	}
+
+	groupWithBlank := slog.GroupValue(
+		slog.String("", "skip"),
+		slog.String("kept", "ok"),
+	)
+	if resolved := resolveSlogValue(groupWithBlank); resolved == nil {
+		t.Fatalf("group with blank key returned nil")
+	} else if group, ok := resolved.(map[string]any); !ok {
+		t.Fatalf("group resolution type = %T, want map", resolved)
+	} else {
+		if _, exists := group[""]; exists {
+			t.Fatalf("blank keys should be omitted: %#v", group)
+		}
+		if group["kept"] != "ok" {
+			t.Fatalf("group[kept] = %v, want %q", group["kept"], "ok")
+		}
+	}
+
+	groupAllNil := slog.GroupValue(
+		slog.Any("only_nil", slog.AnyValue(nil)),
+	)
+	if val := resolveSlogValue(groupAllNil); val != nil {
+		t.Fatalf("group with only nil values should resolve to nil, got %#v", val)
+	}
 }
 
 // TestLabelValueToStringHandlesKinds validates conversion of different slog kinds.
@@ -177,6 +201,8 @@ func TestLabelValueToStringHandlesKinds(t *testing.T) {
 		{"time", slog.TimeValue(now), now.Format(time.RFC3339), true},
 		{"stringer", slog.AnyValue(testStringer("ok")), "ok", true},
 		{"nil_any", slog.AnyValue(nil), "", false},
+		{"any_default", slog.AnyValue([]int{1, 2}), "[1 2]", true},
+		{"unsupported_kind", slog.GroupValue(slog.String("k", "v")), "", false},
 	}
 
 	for _, tt := range tests {
