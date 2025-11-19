@@ -124,9 +124,9 @@ logger.InfoContext(ctx, "served", slogcphttp.HTTPRequestAttr(r, scope))
 | `WithAttrEnricher` / `WithAttrTransformer` | Allow custom attribute enrichment or redaction for outbound requests. |
 | `WithClientIP(bool)` | Toggles inclusion of the resolved host address as `network.peer.ip`. Enabled by default. |
 | `WithIncludeQuery(bool)` / `WithUserAgent(bool)` | Control whether the query string and user agent are recorded on derived loggers. |
-| `WithLegacyXCloudInjection(bool)` | Synthesises the legacy `X-Cloud-Trace-Context` header in addition to W3C trace headers. |
+| `WithLegacyXCloudInjection(bool)` | Synthesizes the legacy `X-Cloud-Trace-Context` header in addition to W3C trace headers. |
 
-Client requests also populate a `RequestScope`, making latency, status, and payload sizes available via `ScopeFromContext`. `InjectTraceContextMiddleware` remains available for the rare case where you disable `otelhttp` and still need to recognise `X-Cloud-Trace-Context` manually.
+Client requests also populate a `RequestScope`, making latency, status, and payload sizes available via `ScopeFromContext`. `InjectTraceContextMiddleware` remains available for the rare case where you disable `otelhttp` and still need to recognize `X-Cloud-Trace-Context` manually.
 
 ## gRPC Integration (`github.com/pjscruggs/slogcp/grpc`)
 
@@ -143,10 +143,10 @@ Important options:
 | `WithPublicEndpoint(bool)` | Marks the service as public for telemetry. |
 | `WithOTel(bool)` | Enables or disables otelgrpc StatsHandlers (enabled by default). |
 | `WithSpanAttributes(attribute.KeyValue...)` / `WithFilter(otelgrpc.Filter)` | Mirrors otelgrpc configuration knobs. |
-| `WithAttrEnricher(func(context.Context, *RequestInfo) []slog.Attr)` / `WithAttrTransformer(func(context.Context, []slog.Attr, *RequestInfo) []slog.Attr)` | Customises logger attributes before they are applied. |
+| `WithAttrEnricher(func(context.Context, *RequestInfo) []slog.Attr)` / `WithAttrTransformer(func(context.Context, []slog.Attr, *RequestInfo) []slog.Attr)` | Customizes logger attributes before they are applied. |
 | `WithPeerInfo(bool)` | Toggles `net.peer.ip` enrichment for inbound RPCs (enabled by default). |
 | `WithPayloadSizes(bool)` | Controls request/response byte counting (enabled by default). |
-| `WithLegacyXCloudInjection(bool)` | Synthesises `x-cloud-trace-context` on outgoing RPCs in addition to standard OpenTelemetry headers. |
+| `WithLegacyXCloudInjection(bool)` | Synthesizes `x-cloud-trace-context` on outgoing RPCs in addition to standard OpenTelemetry headers. |
 
 `RequestInfo` tracks service/method names, stream kinds, latencies, status codes, peer addresses, and (when enabled) message sizes. Use it to enrich application logs or emit custom metrics without recomputing the values.
 
