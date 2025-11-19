@@ -89,6 +89,139 @@ func TestJSONHandlerResolveSourceLocation(t *testing.T) {
 	}
 }
 
+// TestNewJSONHandlerInitialStateFromConfig ensures initial attrs/groups and default leveler are honored.
+func TestNewJSONHandlerInitialStateFromConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := &handlerConfig{
+		Writer:        io.Discard,
+		InitialGroups: []string{"service", "component"},
+		InitialAttrs: []slog.Attr{
+			slog.String("env", "prod"),
+			{},
+			{Key: "", Value: slog.IntValue(7)},
+		},
+	}
+	handler := newJSONHandler(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if handler.leveler == nil {
+		t.Fatalf("expected default leveler when none provided")
+	}
+	if got := handler.leveler.Level(); got != slog.LevelInfo {
+		t.Fatalf("leveler.Level() = %v, want %v", got, slog.LevelInfo)
+	}
+	if len(handler.groups) != 2 {
+		t.Fatalf("groups len = %d, want 2", len(handler.groups))
+	}
+	if handler.groups[0] != "service" || handler.groups[1] != "component" {
+		t.Fatalf("groups = %v, want %v", handler.groups, []string{"service", "component"})
+	}
+	if got := len(handler.groupedAttrs); got != 2 {
+		t.Fatalf("groupedAttrs len = %d, want 2", got)
+	}
+	if handler.groupedAttrs[0].attr.Key != "env" {
+		t.Fatalf("first initial attr = %v, want key env", handler.groupedAttrs[0].attr)
+	}
+	if handler.groupedAttrs[1].attr.Value.Int64() != 7 {
+		t.Fatalf("second initial attr value = %v, want 7", handler.groupedAttrs[1].attr.Value)
+	}
+
+	// Mutating the original config should not affect the handler's copies.
+	cfg.InitialGroups[0] = "mutated"
+	cfg.InitialAttrs[0] = slog.String("env", "stage")
+
+	if handler.groups[0] != "service" {
+		t.Fatalf("groups mutated unexpectedly: %v", handler.groups)
+	}
+	if handler.groupedAttrs[0].attr.Value.String() != "prod" {
+		t.Fatalf("initial attr value mutated, got %v", handler.groupedAttrs[0].attr.Value)
+	}
+	if handler.groupedAttrs[0].groups[0] != "service" {
+		t.Fatalf("group association mutated, got %v", handler.groupedAttrs[0].groups)
+	}
+}
+
+// TestJSONHandlerWithGroupAndAttrsExtendState verifies WithGroup/WithAttrs reuse mutexes and isolate state.
+func TestJSONHandlerWithGroupAndAttrsExtendState(t *testing.T) {
+	t.Parallel()
+
+	cfg := &handlerConfig{Writer: io.Discard}
+	base := newJSONHandler(cfg, slog.LevelDebug, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	base.groups = append(base.groups, "base")
+	base.groupedAttrs = append(base.groupedAttrs, groupedAttr{
+		groups: []string{"base"},
+		attr:   slog.String("existing", "1"),
+	})
+
+	if got := base.WithGroup(""); got != base {
+		t.Fatalf("WithGroup(\"\") should return same handler instance")
+	}
+
+	childHandler, ok := base.WithGroup("child").(*jsonHandler)
+	if !ok {
+		t.Fatalf("WithGroup did not return *jsonHandler")
+	}
+	if childHandler == base {
+		t.Fatalf("WithGroup should return a new handler when name non-empty")
+	}
+	if childHandler.mu != base.mu {
+		t.Fatalf("child handler should reuse base mutex")
+	}
+	if len(childHandler.groups) != len(base.groups)+1 {
+		t.Fatalf("child groups len = %d, want %d", len(childHandler.groups), len(base.groups)+1)
+	}
+	if childHandler.groups[len(childHandler.groups)-1] != "child" {
+		t.Fatalf("missing appended group, groups = %v", childHandler.groups)
+	}
+	if len(base.groups) != 1 {
+		t.Fatalf("base groups mutated: %v", base.groups)
+	}
+	if len(childHandler.groupedAttrs) != len(base.groupedAttrs) {
+		t.Fatalf("child grouped attrs len = %d, want %d", len(childHandler.groupedAttrs), len(base.groupedAttrs))
+	}
+
+	attrHandler, ok := base.WithAttrs([]slog.Attr{slog.String("new", "value")}).(*jsonHandler)
+	if !ok {
+		t.Fatalf("WithAttrs should return *jsonHandler")
+	}
+	if attrHandler == base {
+		t.Fatalf("WithAttrs should create a new handler")
+	}
+	if len(attrHandler.groupedAttrs) != len(base.groupedAttrs)+1 {
+		t.Fatalf("grouped attr len = %d, want %d", len(attrHandler.groupedAttrs), len(base.groupedAttrs)+1)
+	}
+	last := attrHandler.groupedAttrs[len(attrHandler.groupedAttrs)-1]
+	if len(last.groups) != len(base.groups) {
+		t.Fatalf("expected attr groups to mirror base groups, got %v", last.groups)
+	}
+	if last.attr.Key != "new" || last.attr.Value.String() != "value" {
+		t.Fatalf("new attr mismatch: %#v", last.attr)
+	}
+}
+
+// TestJSONHandlerHandleSkipsDisabledLevels ensures Handle short-circuits below the threshold.
+func TestJSONHandlerHandleSkipsDisabledLevels(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	cfg := &handlerConfig{
+		Level:  slog.LevelWarn,
+		Writer: &buf,
+	}
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(slog.LevelWarn)
+
+	handler := newJSONHandler(cfg, levelVar, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "ignored", 0)
+	if err := handler.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected no output when level disabled, got %q", buf.String())
+	}
+}
+
 // TestPruneEmptyMapsRemovesEntries ensures empty nested maps vanish from payloads.
 func TestPruneEmptyMapsRemovesEntries(t *testing.T) {
 	t.Parallel()
