@@ -2,9 +2,11 @@ package slogcp
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +143,43 @@ type testStringer string
 // String returns the string value for formatting tests.
 func (t testStringer) String() string { return string(t) }
 
+// TestFormatErrorForReportingHandlesNilAndStackTracer ensures stack traces are extracted correctly.
+func TestFormatErrorForReportingHandlesNilAndStackTracer(t *testing.T) {
+	t.Parallel()
+
+	fe, stack := formatErrorForReporting(nil)
+	if fe.Message != "<nil error>" {
+		t.Fatalf("nil error message = %q, want %q", fe.Message, "<nil error>")
+	}
+	if fe.Type != "" {
+		t.Fatalf("nil error type = %q, want empty", fe.Type)
+	}
+	if stack != "" {
+		t.Fatalf("nil error stack = %q, want empty", stack)
+	}
+
+	pcs := make([]uintptr, 32)
+	if n := runtime.Callers(0, pcs); n > 0 {
+		pcs = pcs[:n]
+	}
+	traceErr := &stubTracingError{pcs: pcs}
+
+	formatted, traceStack := formatErrorForReporting(traceErr)
+	if formatted.Message != traceErr.Error() {
+		t.Fatalf("stack error message = %q, want %q", formatted.Message, traceErr.Error())
+	}
+	wantType := fmt.Sprintf("%T", traceErr)
+	if formatted.Type != wantType {
+		t.Fatalf("stack error type = %q, want %q", formatted.Type, wantType)
+	}
+	if traceStack == "" {
+		t.Fatalf("expected stack trace for tracing error")
+	}
+	if !strings.Contains(traceStack, "TestFormatErrorForReportingHandlesNilAndStackTracer") {
+		t.Fatalf("stack trace missing test frame: %q", traceStack)
+	}
+}
+
 // TestCloneStringMapAndStringMapToAny ensure helper conversions copy the map content.
 func TestCloneStringMapAndStringMapToAny(t *testing.T) {
 	t.Parallel()
@@ -173,3 +212,14 @@ func TestCloneStringMapAndStringMapToAny(t *testing.T) {
 		t.Fatalf("stringMapToAny(empty) = %#v, want nil", m)
 	}
 }
+
+// stubTracingError implements stackTracer for exercising formatErrorForReporting.
+type stubTracingError struct {
+	pcs []uintptr
+}
+
+// Error returns the fixed error message.
+func (e *stubTracingError) Error() string { return "trace me" }
+
+// StackTrace exposes stored program counters to satisfy the stackTracer contract.
+func (e *stubTracingError) StackTrace() []uintptr { return e.pcs }

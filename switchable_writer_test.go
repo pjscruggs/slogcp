@@ -2,7 +2,9 @@ package slogcp
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"os"
 	"testing"
 )
 
@@ -85,6 +87,20 @@ func TestSwitchableWriterClose(t *testing.T) {
 	}
 	if _, err := sw.Write([]byte("after-close")); err != nil {
 		t.Fatalf("Write after Close returned %v", err)
+	}
+}
+
+// TestSwitchableWriterWriteHandlesNil guards the os.ErrClosed branch used by zero-value writers.
+func TestSwitchableWriterWriteHandlesNil(t *testing.T) {
+	t.Parallel()
+
+	var sw SwitchableWriter
+	n, err := sw.Write([]byte("data"))
+	if n != 0 {
+		t.Fatalf("Write bytes = %d, want 0", n)
+	}
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("Write err = %v, want os.ErrClosed", err)
 	}
 }
 

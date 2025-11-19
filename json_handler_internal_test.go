@@ -1,6 +1,11 @@
 package slogcp
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"runtime"
@@ -186,4 +191,95 @@ func TestPayloadStateBorrowMapRecycle(t *testing.T) {
 	if len(ps.freeMaps) != 1 {
 		t.Fatalf("freeMaps = %d after borrowing recycled map, want 1", len(ps.freeMaps))
 	}
+}
+
+// TestJSONHandlerHandleMergesLabels ensures runtime labels are merged with dynamic labels and
+// service context fields are emitted alongside error metadata.
+func TestJSONHandlerHandleMergesLabels(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	cfg := &handlerConfig{
+		Level:             slog.LevelInfo,
+		StackTraceEnabled: true,
+		StackTraceLevel:   slog.LevelInfo,
+		Writer:            &buf,
+		runtimeLabels:     map[string]string{"role": "api", "region": "static"},
+		runtimeServiceContext: map[string]string{
+			"service": "checkout",
+			"version": "v1",
+		},
+	}
+
+	internalLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(slog.LevelInfo)
+	handler := newJSONHandler(cfg, levelVar, internalLogger)
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "order created", 0)
+	record.AddAttrs(
+		slog.String("component", "worker"),
+		slog.Any("error", errors.New("flush failed")),
+		slog.Group(LabelsGroup,
+			slog.String("env", "prod"),
+			slog.String("region", "dynamic"),
+		),
+	)
+
+	if err := handler.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle returned %v", err)
+	}
+
+	entry := decodeJSONEntry(t, &buf)
+
+	labels, ok := entry[LabelsGroup].(map[string]any)
+	if !ok {
+		t.Fatalf("labels missing or wrong type: %T", entry[LabelsGroup])
+	}
+	if labels["env"] != "prod" {
+		t.Fatalf("env label = %v, want %q", labels["env"], "prod")
+	}
+	if labels["role"] != "api" {
+		t.Fatalf("role label = %v, want %q", labels["role"], "api")
+	}
+	if labels["region"] != "dynamic" {
+		t.Fatalf("region label = %v, want %q", labels["region"], "dynamic")
+	}
+	if cfg.runtimeLabels["region"] != "static" {
+		t.Fatalf("runtime labels were mutated: %#v", cfg.runtimeLabels)
+	}
+
+	if msg, _ := entry[messageKey].(string); msg != "order created: flush failed" {
+		t.Fatalf("message = %q, want %q", msg, "order created: flush failed")
+	}
+	wantType := errors.New("x")
+	if got := entry["error_type"]; got != fmt.Sprintf("%T", wantType) {
+		t.Fatalf("error_type = %v, want %T", got, wantType)
+	}
+	if stack, _ := entry[stackTraceKey].(string); stack == "" {
+		t.Fatalf("stack_trace missing in entry: %#v", entry)
+	}
+
+	serviceContext, ok := entry["serviceContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("serviceContext missing or wrong type: %T", entry["serviceContext"])
+	}
+	if serviceContext["service"] != "checkout" || serviceContext["version"] != "v1" {
+		t.Fatalf("serviceContext mismatch: %#v", serviceContext)
+	}
+}
+
+// decodeJSONEntry unmarshals newline-delimited JSON payloads emitted by the handler.
+func decodeJSONEntry(t *testing.T, buf *bytes.Buffer) map[string]any {
+	t.Helper()
+
+	data := bytes.TrimSpace(buf.Bytes())
+	if len(data) == 0 {
+		t.Fatalf("expected handler output")
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(data, &entry); err != nil {
+		t.Fatalf("json.Unmarshal returned %v", err)
+	}
+	return entry
 }

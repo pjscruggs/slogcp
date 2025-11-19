@@ -57,3 +57,21 @@ func TestEnsurePropagationHonorsDisableFlag(t *testing.T) {
 		t.Fatalf("expected stub propagator to remain installed when auto-set disabled")
 	}
 }
+
+// TestDisableAutoSetParsesValues exercises parsing of environment overrides without mutating the propagator.
+func TestDisableAutoSetParsesValues(t *testing.T) {
+	t.Setenv("SLOGCP_DISABLE_PROPAGATOR_AUTOSET", "TRUE")
+	if !disableAutoSet() {
+		t.Fatalf("disableAutoSet() = false, want true for TRUE")
+	}
+
+	t.Setenv("SLOGCP_DISABLE_PROPAGATOR_AUTOSET", "false")
+	if disableAutoSet() {
+		t.Fatalf("disableAutoSet() = true, want false for false")
+	}
+
+	t.Setenv("SLOGCP_DISABLE_PROPAGATOR_AUTOSET", "not-a-bool")
+	if disableAutoSet() {
+		t.Fatalf("disableAutoSet() = true, want false for invalid values")
+	}
+}
