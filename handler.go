@@ -152,15 +152,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 
 	applyOptions(&cfg, builder)
 
-	if cfg.Writer == nil && cfg.FilePath == "" {
-		if defaultWriter != nil {
-			cfg.Writer = defaultWriter
-			cfg.writerExternallyOwned = true
-		} else {
-			cfg.Writer = os.Stdout
-			cfg.writerExternallyOwned = true
-		}
-	}
+	ensureWriterDefaults(&cfg, defaultWriter)
 
 	var (
 		ownedFile    *os.File
@@ -179,10 +171,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 		cfg.writerExternallyOwned = false
 	}
 
-	if cfg.Writer == nil {
-		cfg.Writer = os.Stdout
-		cfg.writerExternallyOwned = true
-	}
+	ensureWriterFallback(&cfg)
 
 	if cfg.ClosableWriter == nil && !cfg.writerExternallyOwned {
 		if c, ok := cfg.Writer.(io.Closer); ok && !isStdStream(cfg.Writer) {
@@ -224,6 +213,30 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	}
 
 	return h, nil
+}
+
+// ensureWriterDefaults assigns cfg.Writer when unset by falling back to either
+// the provided defaultWriter or os.Stdout. It also marks the writer as
+// externally owned so Close does not manage it.
+func ensureWriterDefaults(cfg *handlerConfig, defaultWriter io.Writer) {
+	if cfg.Writer == nil && cfg.FilePath == "" {
+		if defaultWriter != nil {
+			cfg.Writer = defaultWriter
+		} else {
+			cfg.Writer = os.Stdout
+		}
+		cfg.writerExternallyOwned = true
+	}
+}
+
+// ensureWriterFallback guarantees cfg.Writer is non-nil even when no writer
+// options were configured.
+func ensureWriterFallback(cfg *handlerConfig) {
+	if cfg.Writer != nil {
+		return
+	}
+	cfg.Writer = os.Stdout
+	cfg.writerExternallyOwned = true
 }
 
 // Close releases any resources owned by the handler such as log files or
@@ -563,6 +576,11 @@ func defaultEmitTimeField() bool {
 	return !prefersManagedGCPDefaults(DetectRuntimeInfo())
 }
 
+var (
+	loadConfigFromEnvFunc = loadConfigFromEnv
+	cachedConfigRaceHook  func()
+)
+
 // loadConfigFromEnv reads handler configuration overrides from environment
 // variables, logging validation issues to logger.
 func cachedConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
@@ -570,7 +588,7 @@ func cachedConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 		return *cached, nil
 	}
 
-	cfg, err := loadConfigFromEnv(logger)
+	cfg, err := loadConfigFromEnvFunc(logger)
 	if err != nil {
 		return handlerConfig{}, err
 	}
@@ -579,6 +597,9 @@ func cachedConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 	*entry = cfg
 	if handlerEnvConfigCache.CompareAndSwap(nil, entry) {
 		return cfg, nil
+	}
+	if cachedConfigRaceHook != nil {
+		cachedConfigRaceHook()
 	}
 	if cached := handlerEnvConfigCache.Load(); cached != nil {
 		return *cached, nil
