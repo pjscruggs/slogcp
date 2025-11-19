@@ -23,8 +23,6 @@ func TestSpanIDHexToDecimalCoversSuccessAndFailure(t *testing.T) {
 
 // TestDetectTraceProjectIDFromEnvPriority ensures higher-priority variables win.
 func TestDetectTraceProjectIDFromEnvPriority(t *testing.T) {
-	t.Parallel()
-
 	t.Setenv("SLOGCP_PROJECT_ID", "project-id")
 	t.Setenv("GOOGLE_CLOUD_PROJECT", "gcp-project")
 	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "trace-id")
@@ -36,8 +34,6 @@ func TestDetectTraceProjectIDFromEnvPriority(t *testing.T) {
 
 // TestCachedTraceProjectIDCachesFirstValue verifies the cached helper does not reread env vars.
 func TestCachedTraceProjectIDCachesFirstValue(t *testing.T) {
-	t.Parallel()
-
 	resetTraceProjectEnvCache()
 	t.Cleanup(resetTraceProjectEnvCache)
 
@@ -112,8 +108,6 @@ func TestTraceAttributesOmitsSpanForRemote(t *testing.T) {
 
 // TestTraceAttributesFallsBackToEnvProjectID validates env-derived project IDs.
 func TestTraceAttributesFallsBackToEnvProjectID(t *testing.T) {
-	t.Parallel()
-
 	resetTraceProjectEnvCache()
 	t.Cleanup(resetTraceProjectEnvCache)
 

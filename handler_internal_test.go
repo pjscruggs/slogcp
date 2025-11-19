@@ -42,6 +42,119 @@ func TestSourceAwareHandlerHandlesNilChildren(t *testing.T) {
 	}
 }
 
+// TestOptionHelpersMutateOptions ensures the option helpers toggle internal handler options.
+func TestOptionHelpersMutateOptions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("WithTime", func(t *testing.T) {
+		var opts options
+		WithTime(true)(&opts)
+		if opts.emitTimeField == nil || !*opts.emitTimeField {
+			t.Fatalf("emitTimeField = %v, want true", opts.emitTimeField)
+		}
+		WithTime(false)(&opts)
+		if opts.emitTimeField == nil || *opts.emitTimeField {
+			t.Fatalf("emitTimeField = %v, want false", opts.emitTimeField)
+		}
+	})
+
+	t.Run("WithTraceProjectID", func(t *testing.T) {
+		var opts options
+		WithTraceProjectID("  proj-123  ")(&opts)
+		if opts.traceProjectID == nil || *opts.traceProjectID != "proj-123" {
+			t.Fatalf("traceProjectID = %v, want proj-123", opts.traceProjectID)
+		}
+	})
+
+	t.Run("RedirectTargets", func(t *testing.T) {
+		var opts options
+		WithRedirectToStdout()(&opts)
+		if opts.writer != os.Stdout || !opts.writerExternallyOwned {
+			t.Fatalf("stdout writer not configured correctly: %+v", opts)
+		}
+		if opts.writerFilePath != nil {
+			t.Fatalf("writerFilePath should be nil for stdout redirect")
+		}
+
+		WithRedirectToStderr()(&opts)
+		if opts.writer != os.Stderr || !opts.writerExternallyOwned {
+			t.Fatalf("stderr writer not configured correctly: %+v", opts)
+		}
+
+		WithRedirectToFile("  ./logs/app.json  ")(&opts)
+		if opts.writerFilePath == nil || *opts.writerFilePath != "./logs/app.json" {
+			t.Fatalf("writerFilePath = %v, want ./logs/app.json", opts.writerFilePath)
+		}
+		if opts.writer != nil || opts.writerExternallyOwned {
+			t.Fatalf("writer should be nil and not externally owned after file redirect")
+		}
+	})
+
+	t.Run("WithAttrsCopiesValues", func(t *testing.T) {
+		attrs := []slog.Attr{slog.String("env", "prod")}
+		var opts options
+		WithAttrs(attrs)(&opts)
+		if len(opts.attrs) != 1 || len(opts.attrs[0]) != 1 {
+			t.Fatalf("attrs were not appended: %+v", opts.attrs)
+		}
+		attrs[0].Value = slog.StringValue("staging")
+		if got := opts.attrs[0][0].Value.String(); got != "prod" {
+			t.Fatalf("stored attribute mutated with input slice: got %q", got)
+		}
+	})
+
+	t.Run("WithGroupTrimAndReset", func(t *testing.T) {
+		var opts options
+		opts.groups = []string{"initial"}
+
+		WithGroup("  api  ")(&opts)
+		if !opts.groupsSet {
+			t.Fatalf("groupsSet should be true after WithGroup")
+		}
+		if want := []string{"initial", "api"}; len(opts.groups) != len(want) || opts.groups[1] != want[1] {
+			t.Fatalf("groups not appended/trimmed: %+v", opts.groups)
+		}
+
+		WithGroup(" ")(&opts)
+		if opts.groups != nil {
+			t.Fatalf("blank group should reset groups slice, got %+v", opts.groups)
+		}
+	})
+}
+
+// TestNewHandlerWrapsSourceAwareHandler verifies handlers with AddSource=true expose HasSource.
+func TestNewHandlerWrapsSourceAwareHandler(t *testing.T) {
+	t.Parallel()
+
+	h, err := NewHandler(io.Discard, WithSourceLocationEnabled(true))
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v", cerr)
+		}
+	})
+
+	wrapper, ok := h.Handler.(sourceAwareHandler)
+	if !ok {
+		t.Fatalf("handler not wrapped with sourceAwareHandler: %T", h.Handler)
+	}
+	if !wrapper.HasSource() {
+		t.Fatalf("HasSource() = false, want true")
+	}
+
+	child := wrapper.WithAttrs([]slog.Attr{slog.String("feature", "source-aware")})
+	if _, ok := child.(sourceAwareHandler); !ok {
+		t.Fatalf("WithAttrs did not retain source awareness: %T", child)
+	}
+
+	grouped := wrapper.WithGroup("nested")
+	if _, ok := grouped.(sourceAwareHandler); !ok {
+		t.Fatalf("WithGroup did not retain source awareness: %T", grouped)
+	}
+}
+
 // TestHandlerCloseClosesOwnedResources exercises the branches that release switchable writers,
 // owned files, and configured closers.
 func TestHandlerCloseClosesOwnedResources(t *testing.T) {

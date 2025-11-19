@@ -343,6 +343,10 @@ func TestIsStdStream(t *testing.T) {
 	if isStdStream(io.Discard) {
 		t.Fatalf("io.Discard should not be treated as std stream")
 	}
+	var nilFile *os.File
+	if isStdStream(nilFile) {
+		t.Fatalf("nil *os.File should not be reported as std stream")
+	}
 }
 
 // TestLogDiagnosticHandlesNilLogger ensures nil loggers are ignored.

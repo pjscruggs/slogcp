@@ -403,7 +403,8 @@ func TestRequestScopeFinalizeClampsValues(t *testing.T) {
 func TestScopeFromContextNil(t *testing.T) {
 	t.Parallel()
 
-	if scope, ok := ScopeFromContext(nil); scope != nil || ok {
+	var nilCtx context.Context
+	if scope, ok := ScopeFromContext(nilCtx); scope != nil || ok {
 		t.Fatalf("ScopeFromContext(nil) = (%v,%v), want (nil,false)", scope, ok)
 	}
 	if scope, ok := ScopeFromContext(context.Background()); scope != nil || ok {
@@ -565,7 +566,7 @@ func TestResponseRecorderOptionalInterfacesFallback(t *testing.T) {
 	}
 }
 
-// TestResponseRecorderOptionalInterfacesForwarding verifies optional behaviours delegate to the wrapped writer.
+// TestResponseRecorderOptionalInterfacesForwarding verifies optional behaviors delegate to the wrapped writer.
 func TestResponseRecorderOptionalInterfacesForwarding(t *testing.T) {
 	t.Parallel()
 
