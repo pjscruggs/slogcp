@@ -34,6 +34,19 @@ var stackPCPool = sync.Pool{
 	},
 }
 
+type frameIterator interface {
+	Next() (runtime.Frame, bool)
+}
+
+var (
+	runtimeCallersFunc = runtime.Callers
+	runtimeStackFunc   = runtime.Stack
+	callersFramesFunc  = func(pcs []uintptr) frameIterator {
+		return runtime.CallersFrames(pcs)
+	}
+	goroutineHeaderFunc = defaultGoroutineHeader
+)
+
 // stackTracer defines an interface errors can implement to provide their own stack trace
 // in the form of program counters. Compatible with github.com/pkg/errors.
 type stackTracer interface {
@@ -80,7 +93,7 @@ func formatPCsToStackString(pcs []uintptr) string {
 	}
 
 	var intBuf [20]byte
-	frames := runtime.CallersFrames(pcs)
+	frames := callersFramesFunc(pcs)
 	frameCount := 0
 
 	for {
@@ -142,7 +155,7 @@ func trimStackPCs(pcs []uintptr, skipFn func(string) bool) []uintptr {
 		return pcs
 	}
 
-	frames := runtime.CallersFrames(pcs)
+	frames := callersFramesFunc(pcs)
 	skip := 0
 	for {
 		frame, more := frames.Next()
@@ -198,7 +211,7 @@ func CaptureStack(skipFn func(string) bool) (string, runtime.Frame) {
 	bufPtr := stackPCPool.Get().(*[]uintptr)
 	pcs := (*bufPtr)[:cap(*bufPtr)]
 
-	n := runtime.Callers(0, pcs)
+	n := runtimeCallersFunc(0, pcs)
 	if n == 0 {
 		stackPCPool.Put(bufPtr)
 		return "", runtime.Frame{}
@@ -215,7 +228,7 @@ func CaptureStack(skipFn func(string) bool) (string, runtime.Frame) {
 
 	var top runtime.Frame
 	if len(trimmed) > 0 {
-		iter := runtime.CallersFrames(trimmed)
+		iter := callersFramesFunc(trimmed)
 		top, _ = iter.Next()
 	}
 
@@ -226,10 +239,15 @@ func CaptureStack(skipFn func(string) bool) (string, runtime.Frame) {
 
 // currentGoroutineHeader returns the goroutine header emitted by runtime.Stack.
 func currentGoroutineHeader() string {
+	return goroutineHeaderFunc()
+}
+
+// defaultGoroutineHeader retrieves and normalizes the active goroutine header from runtime.Stack.
+func defaultGoroutineHeader() string {
 	const fallbackHeader = "goroutine 0 [running]:"
 
 	var buf [128]byte
-	n := runtime.Stack(buf[:], false)
+	n := runtimeStackFunc(buf[:], false)
 	if n <= 0 {
 		return fallbackHeader
 	}

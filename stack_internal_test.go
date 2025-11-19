@@ -81,6 +81,37 @@ func TestFormatPCsToStackStringHandlesEmptySlice(t *testing.T) {
 	}
 }
 
+// TestFormatPCsToStackStringSkipsInvalidFrames forces headerless formatting and invalid frames.
+func TestFormatPCsToStackStringSkipsInvalidFrames(t *testing.T) {
+	origHeader := goroutineHeaderFunc
+	origFrames := callersFramesFunc
+	t.Cleanup(func() {
+		goroutineHeaderFunc = origHeader
+		callersFramesFunc = origFrames
+	})
+
+	goroutineHeaderFunc = func() string { return "" }
+	callersFramesFunc = func([]uintptr) frameIterator {
+		return &stubFrameIterator{frames: []runtime.Frame{
+			{PC: 1, Function: ""},
+			{PC: 2, Function: "runtime.goexit"},
+			{PC: 3, Function: "main.main", File: "main.go", Line: 42, Entry: 2},
+			{PC: 0},
+		}}
+	}
+
+	result := formatPCsToStackString([]uintptr{1, 2, 3, 0})
+	if result == "" {
+		t.Fatalf("expected formatted stack trace without header")
+	}
+	if strings.Contains(result, "goroutine") {
+		t.Fatalf("unexpected goroutine header in %q", result)
+	}
+	if !strings.Contains(result, "main.main") || !strings.Contains(result, "main.go:42") {
+		t.Fatalf("formatted stack missing frame info: %q", result)
+	}
+}
+
 // TestTrimStackPCsSkipsRuntimeFrames verifies runtime frames fall through and all-skip cases return nil.
 func TestTrimStackPCsSkipsRuntimeFrames(t *testing.T) {
 	t.Parallel()
@@ -166,6 +197,21 @@ func TestCaptureStackFallsBackWhenTrimmedEmpty(t *testing.T) {
 	}
 }
 
+// TestCaptureStackHandlesEmptyRuntimeCallers exercises the path where runtime.Callers returns no PCs.
+func TestCaptureStackHandlesEmptyRuntimeCallers(t *testing.T) {
+	orig := runtimeCallersFunc
+	t.Cleanup(func() { runtimeCallersFunc = orig })
+	runtimeCallersFunc = func(int, []uintptr) int { return 0 }
+
+	stack, frame := CaptureStack(nil)
+	if stack != "" {
+		t.Fatalf("expected empty stack string when runtime.Callers yields nothing, got %q", stack)
+	}
+	if frame.Function != "" || frame.PC != 0 {
+		t.Fatalf("expected zero frame when runtime.Callers yields nothing, got %+v", frame)
+	}
+}
+
 // TestCurrentGoroutineHeaderIsClean asserts the header contains printable data with no control runes.
 func TestCurrentGoroutineHeaderIsClean(t *testing.T) {
 	t.Parallel()
@@ -180,4 +226,37 @@ func TestCurrentGoroutineHeaderIsClean(t *testing.T) {
 	if strings.Contains(header, "\r") {
 		t.Fatalf("goroutine header should not contain carriage return: %q", header)
 	}
+}
+
+// TestCurrentGoroutineHeaderFallback verifies fallback header when runtime.Stack fails.
+func TestCurrentGoroutineHeaderFallback(t *testing.T) {
+	origStack := runtimeStackFunc
+	origHeader := goroutineHeaderFunc
+	t.Cleanup(func() {
+		runtimeStackFunc = origStack
+		goroutineHeaderFunc = origHeader
+	})
+
+	runtimeStackFunc = func([]byte, bool) int { return 0 }
+	goroutineHeaderFunc = defaultGoroutineHeader
+
+	if header := currentGoroutineHeader(); header != "goroutine 0 [running]:" {
+		t.Fatalf("fallback header = %q, want goroutine 0 [running]:", header)
+	}
+}
+
+// stubFrameIterator implements frameIterator for tests.
+type stubFrameIterator struct {
+	frames []runtime.Frame
+	idx    int
+}
+
+// Next returns the next runtime.Frame in the stubbed sequence.
+func (s *stubFrameIterator) Next() (runtime.Frame, bool) {
+	if s.idx >= len(s.frames) {
+		return runtime.Frame{}, false
+	}
+	frame := s.frames[s.idx]
+	s.idx++
+	return frame, s.idx < len(s.frames)
 }
