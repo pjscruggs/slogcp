@@ -50,6 +50,11 @@ var (
 	runtimeInfoOnce sync.Once
 )
 
+var (
+	metadataOnGCEWrapper          = metadata.OnGCE
+	metadataGetWithContextWrapper = metadata.GetWithContext
+)
+
 // DetectRuntimeInfo inspects well-known environment variables to infer
 // platform-specific labels and service context. Results are cached for reuse.
 func DetectRuntimeInfo() RuntimeInfo {
@@ -411,10 +416,10 @@ type defaultMetadataClient struct{}
 
 var (
 	metadataOnGCEFunc = func() bool {
-		return metadata.OnGCE()
+		return metadataOnGCEWrapper()
 	}
 	metadataGetFunc = func(ctx context.Context, path string) (string, error) {
-		return metadata.GetWithContext(ctx, path)
+		return metadataGetWithContextWrapper(ctx, path)
 	}
 )
 
