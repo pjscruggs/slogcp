@@ -15,6 +15,7 @@
 package http
 
 import (
+	"log/slog"
 	stdhttp "net/http"
 	"net/http/httptest"
 	"testing"
@@ -108,5 +109,43 @@ func TestHTTPRequestAttrIncorporatesScope(t *testing.T) {
 	}
 	if value.RequestURL != "https://api.example.com/things?id=99" {
 		t.Fatalf("RequestURL = %q, want original URL", value.RequestURL)
+	}
+}
+
+// TestHTTPRequestAttrHandlesNilInputs confirms zero-value attrs when both inputs are nil.
+func TestHTTPRequestAttrHandlesNilInputs(t *testing.T) {
+	t.Parallel()
+
+	attr := HTTPRequestAttr(nil, nil)
+	if attr.Key != "" || attr.Value.Kind() != slog.KindAny || attr.Value.Any() != nil {
+		t.Fatalf("HTTPRequestAttr(nil,nil) = %#v, want zero attr", attr)
+	}
+}
+
+// TestPrepareHTTPRequestDerivesDefaults ensures missing metadata is sourced from the request.
+func TestPrepareHTTPRequestDerivesDefaults(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://derived.example.com/parts", nil)
+	req.RemoteAddr = "198.51.100.99:9000"
+	req.ContentLength = 123
+
+	payload := &slogcp.HTTPRequest{Request: req}
+	slogcp.PrepareHTTPRequest(payload)
+
+	if payload.RequestSize != req.ContentLength {
+		t.Fatalf("RequestSize = %d, want %d", payload.RequestSize, req.ContentLength)
+	}
+	if payload.RemoteIP != "198.51.100.99" {
+		t.Fatalf("RemoteIP = %q, want 198.51.100.99", payload.RemoteIP)
+	}
+	if payload.RequestMethod != stdhttp.MethodGet {
+		t.Fatalf("RequestMethod = %q, want GET", payload.RequestMethod)
+	}
+	if payload.RequestURL != req.URL.String() {
+		t.Fatalf("RequestURL = %q, want %q", payload.RequestURL, req.URL.String())
+	}
+	if payload.Request != nil {
+		t.Fatalf("Request should be nil after PrepareHTTPRequest")
 	}
 }

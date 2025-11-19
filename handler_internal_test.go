@@ -154,6 +154,18 @@ func TestNewHandlerDefaultsToStdoutWriter(t *testing.T) {
 	}
 }
 
+// TestEnsureWriterFallbackSetsStdout verifies the fallback helper installs stdout.
+func TestEnsureWriterFallbackSetsStdout(t *testing.T) {
+	cfg := handlerConfig{FilePath: "/var/log/app.log"}
+	ensureWriterFallback(&cfg)
+	if cfg.Writer != os.Stdout {
+		t.Fatalf("Writer = %v, want stdout", cfg.Writer)
+	}
+	if !cfg.writerExternallyOwned {
+		t.Fatalf("writerExternallyOwned = false, want true")
+	}
+}
+
 // TestNewHandlerFileOpenFailure surfaces file creation problems to the caller.
 func TestNewHandlerFileOpenFailure(t *testing.T) {
 	clearHandlerEnv(t)
@@ -242,6 +254,46 @@ func TestHandlerCloseClosesOwnedResources(t *testing.T) {
 	}
 	if err := h.Close(); err != nil {
 		t.Fatalf("second Handler.Close() returned %v, want nil", err)
+	}
+}
+
+// TestHandlerCloseReportsOwnedFileErrors exercises the log file close error branch.
+func TestHandlerCloseReportsOwnedFileErrors(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		internalLogger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ownedFile:      os.NewFile(^uintptr(0)>>1, "invalid"),
+	}
+	if err := h.Close(); err == nil {
+		t.Fatalf("Handler.Close() = nil, want error from invalid file")
+	}
+}
+
+// TestHandlerReopenLogFileWarnsOnCloseError ensures warnings do not abort reopen.
+func TestHandlerReopenLogFileWarnsOnCloseError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "app.log")
+
+	h := &Handler{
+		cfg: &handlerConfig{
+			FilePath: logPath,
+		},
+		switchableWriter: NewSwitchableWriter(io.Discard),
+		internalLogger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ownedFile:        os.NewFile(^uintptr(0)>>1, "invalid"),
+	}
+
+	if err := h.ReopenLogFile(); err != nil {
+		t.Fatalf("ReopenLogFile() = %v, want nil despite close warning", err)
+	}
+	if h.ownedFile == nil {
+		t.Fatalf("ownedFile not updated after reopen")
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("Handler.Close() after reopen returned %v", err)
 	}
 }
 

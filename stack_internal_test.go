@@ -112,6 +112,27 @@ func TestFormatPCsToStackStringSkipsInvalidFrames(t *testing.T) {
 	}
 }
 
+// TestFormatPCsToStackStringHandlesTrailingEmptyFunction covers the branch where no frames remain.
+func TestFormatPCsToStackStringHandlesTrailingEmptyFunction(t *testing.T) {
+	origHeader := goroutineHeaderFunc
+	origFrames := callersFramesFunc
+	t.Cleanup(func() {
+		goroutineHeaderFunc = origHeader
+		callersFramesFunc = origFrames
+	})
+
+	goroutineHeaderFunc = func() string { return "" }
+	callersFramesFunc = func([]uintptr) frameIterator {
+		return &stubFrameIterator{frames: []runtime.Frame{
+			{PC: 1, Function: ""},
+		}}
+	}
+
+	if got := formatPCsToStackString([]uintptr{1}); got != "" {
+		t.Fatalf("formatPCsToStackString() = %q, want empty string for trailing empty frame", got)
+	}
+}
+
 // TestTrimStackPCsSkipsRuntimeFrames verifies runtime frames fall through and all-skip cases return nil.
 func TestTrimStackPCsSkipsRuntimeFrames(t *testing.T) {
 	t.Parallel()
@@ -242,6 +263,26 @@ func TestCurrentGoroutineHeaderFallback(t *testing.T) {
 
 	if header := currentGoroutineHeader(); header != "goroutine 0 [running]:" {
 		t.Fatalf("fallback header = %q, want goroutine 0 [running]:", header)
+	}
+}
+
+// TestDefaultGoroutineHeaderTrimsWhitespace ensures empty headers fall back to the default string.
+func TestDefaultGoroutineHeaderTrimsWhitespace(t *testing.T) {
+	origStack := runtimeStackFunc
+	origHeader := goroutineHeaderFunc
+	t.Cleanup(func() {
+		runtimeStackFunc = origStack
+		goroutineHeaderFunc = origHeader
+	})
+
+	runtimeStackFunc = func(buf []byte, _ bool) int {
+		copy(buf, "\n\t \r\n")
+		return len("\n\t \r\n")
+	}
+	goroutineHeaderFunc = defaultGoroutineHeader
+
+	if header := currentGoroutineHeader(); header != "goroutine 0 [running]:" {
+		t.Fatalf("header = %q, want fallback", header)
 	}
 }
 

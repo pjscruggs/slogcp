@@ -16,6 +16,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	stdhttp "net/http"
 	"net/http/httptest"
 	"testing"
@@ -70,6 +71,48 @@ func TestContextWithXCloudTraceInvalid(t *testing.T) {
 	if newCtx != ctx {
 		t.Fatalf("context should not change for invalid header")
 	}
+}
+
+// TestParseXCloudTraceFailureCases covers the early return branches.
+func TestParseXCloudTraceFailureCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty_header", func(t *testing.T) {
+		if _, ok := parseXCloudTrace(""); ok {
+			t.Fatalf("empty header should fail")
+		}
+	})
+
+	t.Run("blank_id", func(t *testing.T) {
+		if _, ok := parseXCloudTrace("   ;o=1"); ok {
+			t.Fatalf("blank id should fail")
+		}
+	})
+
+	t.Run("rand_error", func(t *testing.T) {
+		orig := randRead
+		defer func() { randRead = orig }()
+		randRead = func([]byte) (int, error) {
+			return 0, errors.New("entropy unavailable")
+		}
+		if _, ok := parseXCloudTrace("105445aa7843bc8bf206b12000100000"); ok {
+			t.Fatalf("expected failure when randRead errors")
+		}
+	})
+
+	t.Run("invalid_span_context", func(t *testing.T) {
+		orig := randRead
+		defer func() { randRead = orig }()
+		randRead = func(b []byte) (int, error) {
+			for i := range b {
+				b[i] = 0
+			}
+			return len(b), nil
+		}
+		if _, ok := parseXCloudTrace("105445aa7843bc8bf206b12000100000"); ok {
+			t.Fatalf("expected failure when span context remains invalid")
+		}
+	})
 }
 
 // TestParseXCloudTraceGeneratesSpan ensures parseXCloudTrace synthesizes span IDs when omitted.

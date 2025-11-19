@@ -598,6 +598,33 @@ func TestJSONHandlerBuildPayloadSkipsEmptyKeysAndNilValues(t *testing.T) {
 	}
 }
 
+// TestJSONHandlerCapturesErrorAttr ensures error-valued attrs populate reporting metadata.
+func TestJSONHandlerCapturesErrorAttr(t *testing.T) {
+	t.Parallel()
+
+	cfg := &handlerConfig{
+		Writer: io.Discard,
+	}
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	record := slog.NewRecord(time.Now(), slog.LevelError, "boom", 0)
+	record.AddAttrs(slog.Any("failure", errors.New("kaboom")))
+
+	state := &payloadState{}
+	t.Cleanup(state.recycle)
+	_, _, errType, errMsg, stackStr, _ := handler.buildPayload(record, state)
+
+	if errType == "" || !strings.Contains(errType, "errorString") {
+		t.Fatalf("errType = %q, want non-empty error type", errType)
+	}
+	if errMsg != "kaboom" {
+		t.Fatalf("errMsg = %q, want kaboom", errMsg)
+	}
+	if stackStr == "" {
+		t.Fatalf("expected stack trace to be captured for error records")
+	}
+}
+
 // TestJSONHandlerEmitJSONReturnsWriterError exercises the no-writer guard.
 func TestJSONHandlerEmitJSONReturnsWriterError(t *testing.T) {
 	t.Parallel()

@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -108,6 +109,70 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 	}
 	if _, ok := entry["http.latency"]; !ok {
 		t.Errorf("http.latency attribute missing")
+	}
+}
+
+// TestMiddlewareNilNextUsesNotFound ensures nil handlers fall back to http.NotFoundHandler.
+func TestMiddlewareNilNextUsesNotFound(t *testing.T) {
+	t.Parallel()
+
+	handler := Middleware()(nil)
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/missing", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != stdhttp.StatusNotFound {
+		t.Fatalf("Status = %d, want %d", rr.Code, stdhttp.StatusNotFound)
+	}
+}
+
+// TestMiddlewareSkipsNilAttrHooks verifies attr hooks tolerate nil entries.
+func TestMiddlewareSkipsNilAttrHooks(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	mw := Middleware(
+		WithLogger(logger),
+		withRawAttrHooks(
+			[]AttrEnricher{
+				nil,
+				// addPhaseAttr appends a marker attribute so the enricher execution is observable in tests.
+				func(r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+					return []slog.Attr{slog.String("phase", "enriched")}
+				},
+			},
+			[]AttrTransformer{
+				nil,
+				// appendPhaseAttr ensures the transformer stage runs by appending a marker attribute.
+				func(attrs []slog.Attr, r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+					return append(attrs, slog.String("phase", "transformed"))
+				},
+			},
+		),
+	)
+
+	handler := mw(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		slogcp.Logger(r.Context()).Info("nil-friendly")
+	}))
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/hooks", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != stdhttp.StatusOK {
+		t.Fatalf("Status = %d, want %d", rr.Code, stdhttp.StatusOK)
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("expected log output")
+	}
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("json.Unmarshal = %v", err)
+	}
+	if entry["phase"] != "transformed" {
+		t.Fatalf("phase attribute = %v, want transformed", entry["phase"])
 	}
 }
 
@@ -412,6 +477,20 @@ func TestScopeFromContextNil(t *testing.T) {
 	}
 }
 
+// TestNewRequestScopeInfersTLSScheme ensures HTTPS is inferred from TLS state.
+func TestNewRequestScopeInfersTLSScheme(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "http://example.com/secure", nil)
+	req.URL.Scheme = ""
+	req.TLS = &tls.ConnectionState{}
+
+	scope := newRequestScope(req, time.Now(), defaultConfig())
+	if scope.scheme != "https" {
+		t.Fatalf("scheme = %q, want https", scope.scheme)
+	}
+}
+
 // TestResponseRecorderWriteAndStatus exercises Write and Status bookkeeping.
 func TestResponseRecorderWriteAndStatus(t *testing.T) {
 	t.Parallel()
@@ -439,6 +518,22 @@ func TestResponseRecorderWriteAndStatus(t *testing.T) {
 	}
 	if scope.ResponseSize() != int64(len("payload")) {
 		t.Fatalf("scope.ResponseSize = %d, want %d", scope.ResponseSize(), len("payload"))
+	}
+}
+
+// TestResponseRecorderWriteAutoHeader ensures Write defaults to StatusOK.
+func TestResponseRecorderWriteAutoHeader(t *testing.T) {
+	t.Parallel()
+
+	scope := newRequestScope(httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	writer := &statusTrackingResponseWriter{header: make(stdhttp.Header)}
+	wrapped, _ := wrapResponseWriter(writer, scope)
+
+	if _, err := wrapped.Write([]byte("payload")); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if len(writer.codes) != 1 || writer.codes[0] != stdhttp.StatusOK {
+		t.Fatalf("WriteHeader codes = %#v, want [StatusOK]", writer.codes)
 	}
 }
 
@@ -735,6 +830,36 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 	})
 }
 
+// TestEnsureSpanContextUsesLegacyHeader ensures legacy headers populate the context.
+func TestEnsureSpanContextUsesLegacyHeader(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	cfg.propagators = noopPropagator{}
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/1;o=1")
+
+	origExtractor := xCloudTraceContextExtractor
+	defer func() { xCloudTraceContextExtractor = origExtractor }()
+	var called bool
+	xCloudTraceContextExtractor = func(ctx context.Context, header string) (context.Context, bool) {
+		called = true
+		return contextWithXCloudTrace(ctx, header)
+	}
+
+	ctx := context.Background()
+	gotCtx, sc := ensureSpanContext(ctx, req, cfg)
+	if gotCtx == ctx {
+		t.Fatalf("expected new context when legacy header present")
+	}
+	if !sc.IsValid() {
+		t.Fatalf("span context invalid")
+	}
+	if !called {
+		t.Fatalf("legacy extractor was not invoked")
+	}
+}
+
 // TestResponseRecorderStatusCoversDefaults validates Status() behavior with and without explicit writes.
 func TestResponseRecorderStatusCoversDefaults(t *testing.T) {
 	t.Parallel()
@@ -937,3 +1062,24 @@ func (s *statusTrackingResponseWriter) Write(p []byte) (int, error) { return len
 func (s *statusTrackingResponseWriter) WriteHeader(status int) {
 	s.codes = append(s.codes, status)
 }
+
+// withRawAttrHooks injects raw attr hooks (including nil entries) for testing.
+func withRawAttrHooks(enrichers []AttrEnricher, transformers []AttrTransformer) Option {
+	return func(cfg *config) {
+		cfg.attrEnrichers = append(cfg.attrEnrichers, enrichers...)
+		cfg.attrTransformers = append(cfg.attrTransformers, transformers...)
+	}
+}
+
+type noopPropagator struct{}
+
+// Inject satisfies the propagation.TextMapPropagator interface while remaining a no-op for tests.
+func (noopPropagator) Inject(context.Context, propagation.TextMapCarrier) {}
+
+// Extract returns the provided context unchanged to simulate a no-op propagator.
+func (noopPropagator) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+	return ctx
+}
+
+// Fields reports no carrier fields because the noop propagator does not inject anything.
+func (noopPropagator) Fields() []string { return nil }
