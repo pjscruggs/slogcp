@@ -102,6 +102,33 @@ func TestTrimStackPCsSkipsRuntimeFrames(t *testing.T) {
 	}
 }
 
+// TestTrimStackPCsHandlesEmptyAndPassthrough ensures empty slices and noop skip functions are preserved.
+func TestTrimStackPCsHandlesEmptyAndPassthrough(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty_input", func(t *testing.T) {
+		empty := []uintptr{}
+		trimmed := trimStackPCs(empty, nil)
+		if len(trimmed) != 0 {
+			t.Fatalf("trimStackPCs should leave empty slices untouched, got len=%d", len(trimmed))
+		}
+		if trimmed == nil {
+			t.Fatalf("trimStackPCs should preserve zero-length slices instead of returning nil")
+		}
+	})
+
+	t.Run("no_skips", func(t *testing.T) {
+		pcs := captureProgramCounters(t)
+		trimmed := trimStackPCs(pcs, func(string) bool { return false })
+		if len(trimmed) != len(pcs) {
+			t.Fatalf("expected identical slice when skipFn never matches, got %d vs %d", len(trimmed), len(pcs))
+		}
+		if &trimmed[0] != &pcs[0] {
+			t.Fatalf("expected trimStackPCs to reuse input slice when nothing skipped")
+		}
+	})
+}
+
 // TestSkipInternalStackFrameRecognizesPrefixes covers well-known prefixes and user frames.
 func TestSkipInternalStackFrameRecognizesPrefixes(t *testing.T) {
 	t.Parallel()
@@ -114,6 +141,15 @@ func TestSkipInternalStackFrameRecognizesPrefixes(t *testing.T) {
 	}
 	if SkipInternalStackFrame("main.main") {
 		t.Fatalf("application frames should not be considered internal")
+	}
+}
+
+// TestSkipInternalStackFrameBlankInput returns false when funcName is empty to avoid trimming user frames.
+func TestSkipInternalStackFrameBlankInput(t *testing.T) {
+	t.Parallel()
+
+	if SkipInternalStackFrame("") {
+		t.Fatalf("blank function names should not be classified as internal")
 	}
 }
 
