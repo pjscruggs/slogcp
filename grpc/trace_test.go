@@ -62,6 +62,14 @@ func TestParseGRPCTraceBin(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("invalid-trace-id", func(t *testing.T) {
+		// All zeros TraceID makes the SpanContext invalid
+		payload := encodeTraceBin(trace.TraceID{}, spanID, flags)
+		if _, ok := parseGRPCTraceBin(payload); ok {
+			t.Fatalf("parseGRPCTraceBin(zero-trace-id) unexpectedly succeeded")
+		}
+	})
 }
 
 // TestParseXCloudTrace checks parsing of X-Cloud-Trace-Context headers.

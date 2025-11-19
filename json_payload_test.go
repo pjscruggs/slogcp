@@ -294,6 +294,12 @@ func TestCloneStringMapAndStringMapToAny(t *testing.T) {
 	}
 }
 
+// TestPrepareHTTPRequest_Nil verifies that PrepareHTTPRequest handles nil input gracefully.
+func TestPrepareHTTPRequest_Nil(t *testing.T) {
+	// Ensure PrepareHTTPRequest handles nil input gracefully.
+	PrepareHTTPRequest(nil)
+}
+
 // stubTracingError implements stackTracer for exercising formatErrorForReporting.
 type stubTracingError struct {
 	pcs []uintptr
