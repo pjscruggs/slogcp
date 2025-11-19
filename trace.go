@@ -171,9 +171,6 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 	}
 	attrs = append(attrs, slog.Bool("otel.trace_sampled", sampled))
 
-	if len(attrs) == 0 {
-		return nil, false
-	}
 	return attrs, true
 }
 
