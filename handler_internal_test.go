@@ -84,6 +84,71 @@ func TestHandlerCloseClosesOwnedResources(t *testing.T) {
 	}
 }
 
+// TestHandlerCloseReturnsConfigCloserError ensures ClosableWriter errors surface when no other errors occur.
+func TestHandlerCloseReturnsConfigCloserError(t *testing.T) {
+	t.Parallel()
+
+	cfgCloser := &closerSpy{err: errors.New("config-close")}
+	h := &Handler{
+		Handler:        slog.NewJSONHandler(io.Discard, nil),
+		internalLogger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		cfg:            &handlerConfig{ClosableWriter: cfgCloser},
+	}
+
+	err := h.Close()
+	if !errors.Is(err, cfgCloser.err) {
+		t.Fatalf("Handler.Close() error = %v, want %v", err, cfgCloser.err)
+	}
+	if cfgCloser.closed != 1 {
+		t.Fatalf("config closer closed = %d, want 1", cfgCloser.closed)
+	}
+}
+
+// TestHandlerReopenLogFileSuccess ensures ReopenLogFile rotates descriptors and updates the switchable writer.
+func TestHandlerReopenLogFileSuccess(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "app.log")
+
+	oldFile, err := os.CreateTemp(dir, "old-log-*.txt")
+	if err != nil {
+		t.Fatalf("os.CreateTemp() = %v", err)
+	}
+
+	h := &Handler{
+		cfg:              &handlerConfig{FilePath: logPath},
+		switchableWriter: NewSwitchableWriter(io.Discard),
+		internalLogger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ownedFile:        oldFile,
+	}
+
+	if err := h.ReopenLogFile(); err != nil {
+		t.Fatalf("ReopenLogFile() returned %v, want nil", err)
+	}
+
+	// The previous file should be closed.
+	if _, err := oldFile.WriteString("stale"); err == nil {
+		t.Fatalf("expected write to closed file to fail")
+	}
+
+	currentWriter := h.switchableWriter.GetCurrentWriter()
+	file, ok := currentWriter.(*os.File)
+	if !ok {
+		t.Fatalf("current writer type = %T, want *os.File", currentWriter)
+	}
+	if file.Name() != logPath {
+		t.Fatalf("writer path = %q, want %q", file.Name(), logPath)
+	}
+	if _, err := file.WriteString("hello\n"); err != nil {
+		t.Fatalf("write to reopened file returned %v", err)
+	}
+
+	if err := h.Close(); err != nil {
+		t.Fatalf("Handler.Close() after reopen returned %v", err)
+	}
+}
+
 type nilChildHandler struct{}
 
 // Enabled implements slog.Handler.

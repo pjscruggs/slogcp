@@ -66,6 +66,33 @@ func TestFlattenHTTPRequestToMapNormalizesEmbeddedRequest(t *testing.T) {
 	}
 }
 
+// TestFlattenHTTPRequestToMapHandlesNil ensures nil requests short-circuit gracefully.
+func TestFlattenHTTPRequestToMapHandlesNil(t *testing.T) {
+	t.Parallel()
+
+	if payload := flattenHTTPRequestToMap(nil); payload != nil {
+		t.Fatalf("flattenHTTPRequestToMap(nil) = %#v, want nil", payload)
+	}
+
+	req := &HTTPRequest{
+		RequestMethod: "GET",
+		RequestURL:    "https://example.com",
+		RequestSize:   42,
+		ResponseSize:  84,
+		Status:        http.StatusOK,
+	}
+	payload := flattenHTTPRequestToMap(req)
+	if payload == nil {
+		t.Fatalf("flattenHTTPRequestToMap(non-nil) returned nil")
+	}
+	if payload.RequestSize != "42" || payload.ResponseSize != "84" {
+		t.Fatalf("size conversion failed: %#v", payload)
+	}
+	if payload.Latency != "" {
+		t.Fatalf("Latency field should be empty when zero, got %q", payload.Latency)
+	}
+}
+
 // TestResolveSlogValueCoversKinds exercises the less common slog value cases.
 func TestResolveSlogValueCoversKinds(t *testing.T) {
 	t.Parallel()
@@ -96,6 +123,34 @@ func TestResolveSlogValueCoversKinds(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	if got := resolveSlogValue(slog.AnyValue(req)); got != nil {
 		t.Fatalf("http.Request resolution = %v, want nil", got)
+	}
+
+	now := time.Unix(1700000000, 0).UTC()
+	if got := resolveSlogValue(slog.TimeValue(now)); got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("time resolution = %v, want %q", got, now.Format(time.RFC3339Nano))
+	}
+	if got := resolveSlogValue(slog.BoolValue(true)); got != true {
+		t.Fatalf("bool resolution = %v, want true", got)
+	}
+	if got := resolveSlogValue(slog.Int64Value(99)); got != int64(99) {
+		t.Fatalf("int resolution = %v, want 99", got)
+	}
+	if got := resolveSlogValue(slog.Uint64Value(77)); got != uint64(77) {
+		t.Fatalf("uint resolution = %v, want 77", got)
+	}
+	if got := resolveSlogValue(slog.Float64Value(3.5)); got != 3.5 {
+		t.Fatalf("float resolution = %v, want 3.5", got)
+	}
+	if got := resolveSlogValue(slog.DurationValue(2 * time.Second)); got != (2 * time.Second).String() {
+		t.Fatalf("duration resolution = %v, want %q", got, (2 * time.Second).String())
+	}
+	if got := resolveSlogValue(slog.StringValue("text")); got != "text" {
+		t.Fatalf("string resolution = %v, want %q", got, "text")
+	}
+
+	emptyGroup := slog.GroupValue()
+	if val := resolveSlogValue(emptyGroup); val != nil {
+		t.Fatalf("empty group resolution = %#v, want nil", val)
 	}
 }
 
