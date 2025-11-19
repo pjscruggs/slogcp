@@ -37,8 +37,9 @@ func TestContextWithLoggerStoresAndRetrievesLogger(t *testing.T) {
 func TestContextWithLoggerHandlesNilInputs(t *testing.T) {
 	t.Parallel()
 
+	var nilCtx context.Context
 	custom := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if got := slogcp.ContextWithLogger(nil, custom); got != nil {
+	if got := slogcp.ContextWithLogger(nilCtx, custom); got != nilCtx {
 		t.Fatalf("ContextWithLogger(nil, custom) = %v, want nil", got)
 	}
 
@@ -47,7 +48,7 @@ func TestContextWithLoggerHandlesNilInputs(t *testing.T) {
 		t.Fatalf("ContextWithLogger(ctx, nil) = %v, want original context", got)
 	}
 
-	if got := slogcp.Logger(nil); got != slog.Default() {
+	if got := slogcp.Logger(nilCtx); got != slog.Default() {
 		t.Fatalf("Logger(nil) = %v, want default logger %v", got, slog.Default())
 	}
 }

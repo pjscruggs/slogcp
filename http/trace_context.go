@@ -29,6 +29,8 @@ import (
 // XCloudTraceContextHeader is the Google Cloud legacy trace propagation header.
 const XCloudTraceContextHeader = "X-Cloud-Trace-Context"
 
+var randRead = rand.Read
+
 // InjectTraceContextMiddleware extracts legacy X-Cloud-Trace-Context headers
 // when no OpenTelemetry span is present in the incoming context. The extracted
 // span context becomes the active context for downstream handlers.
@@ -100,7 +102,7 @@ func parseXCloudTrace(header string) (trace.SpanContext, bool) {
 		}
 	}
 	if !spanID.IsValid() {
-		if _, err := rand.Read(spanID[:]); err != nil {
+		if _, err := randRead(spanID[:]); err != nil {
 			return trace.SpanContext{}, false
 		}
 	}

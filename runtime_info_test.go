@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -74,6 +75,17 @@ func (c *countingMetadataClient) OnGCE() bool {
 // Get always reports missing metadata for availability tests.
 func (c *countingMetadataClient) Get(string) (string, error) {
 	return "", errors.New("metadata not available")
+}
+
+type countingGetMetadataClient struct {
+	*stubMetadataClient
+	getCalls int
+}
+
+// Get increments the call counter and proxies the stub metadata client lookup.
+func (c *countingGetMetadataClient) Get(path string) (string, error) {
+	c.getCalls++
+	return c.stubMetadataClient.Get(path)
 }
 
 // TestDetectKubernetesUsesMetadata verifies metadata-derived clusters populate labels.
@@ -166,6 +178,46 @@ func TestDetectKubernetesEnvFallback(t *testing.T) {
 	}
 }
 
+// TestDetectKubernetesLegacyFallback exercises HOSTNAME and NAMESPACE fallbacks.
+func TestDetectKubernetesLegacyFallback(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	t.Setenv("CLUSTER_NAME", "legacy-cluster")
+	t.Setenv("CLUSTER_LOCATION", "asia-south1")
+	t.Setenv("NAMESPACE_NAME", "")
+	t.Setenv("NAMESPACE", "legacy-ns")
+	t.Setenv("POD_NAME", "")
+	t.Setenv("HOSTNAME", "legacy-host")
+	t.Setenv("CONTAINER_NAME", "legacy-container")
+	t.Setenv("SLOGCP_GCP_PROJECT", "")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+
+	tmpNamespace := filepath.Join(t.TempDir(), "namespace")
+	prevPath := kubernetesNamespacePath
+	kubernetesNamespacePath = tmpNamespace
+	t.Cleanup(func() { kubernetesNamespacePath = prevPath })
+
+	info := RuntimeInfo{}
+	lookup := newMetadataLookup(&stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"project/project-id": "legacy-project",
+		},
+	})
+
+	if !detectKubernetes(&info, lookup) {
+		t.Fatalf("detectKubernetes returned false")
+	}
+	if got := info.Labels["k8s.namespace.name"]; got != "legacy-ns" {
+		t.Fatalf("k8s.namespace.name = %q, want %q", got, "legacy-ns")
+	}
+	if got := info.Labels["k8s.pod.name"]; got != "legacy-host" {
+		t.Fatalf("k8s.pod.name = %q, want %q", got, "legacy-host")
+	}
+	if got := info.ProjectID; got != "legacy-project" {
+		t.Fatalf("ProjectID = %q, want %q", got, "legacy-project")
+	}
+}
+
 // TestDetectKubernetesRequiresClusterName exercises the guard rails for missing cluster metadata.
 func TestDetectKubernetesRequiresClusterName(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
@@ -217,6 +269,7 @@ func TestDetectRuntimeInfoCloudRunService(t *testing.T) {
 	t.Setenv("K_SERVICE", "svc")
 	t.Setenv("K_REVISION", "rev")
 	t.Setenv("K_CONFIGURATION", "cfg")
+	t.Setenv("CLOUD_RUN_REGION", "us-central1")
 	t.Setenv("GOOGLE_CLOUD_PROJECT", "my-project")
 
 	info := detectRuntimeInfo()
@@ -231,6 +284,9 @@ func TestDetectRuntimeInfoCloudRunService(t *testing.T) {
 	}
 	if info.Labels["cloud_run.service"] != "svc" {
 		t.Fatalf("label cloud_run.service = %q, want %q", info.Labels["cloud_run.service"], "svc")
+	}
+	if got := info.Labels["cloud_run.region"]; got != "us-central1" {
+		t.Fatalf("label cloud_run.region = %q, want %q", got, "us-central1")
 	}
 	if info.Environment != RuntimeEnvCloudRunService {
 		t.Fatalf("Environment = %v, want %v", info.Environment, RuntimeEnvCloudRunService)
@@ -250,6 +306,34 @@ func TestDetectRuntimeInfoMetadataFallback(t *testing.T) {
 	info := detectRuntimeInfo()
 	if got := info.ProjectID; got != "meta-project" {
 		t.Fatalf("ProjectID = %q, want %q", got, "meta-project")
+	}
+}
+
+// TestDetectAppEngineUsesMetadataProjectID ensures App Engine discovery falls back to metadata.
+func TestDetectAppEngineUsesMetadataProjectID(t *testing.T) {
+	t.Setenv("GAE_SERVICE", "default")
+	t.Setenv("GAE_VERSION", "v2")
+	t.Setenv("GAE_INSTANCE", "instance-2")
+	t.Setenv("GAE_APPLICATION", "")
+	t.Setenv("SLOGCP_GCP_PROJECT", "")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+
+	info := RuntimeInfo{}
+	lookup := newMetadataLookup(&stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"project/project-id": "meta-app",
+		},
+	})
+
+	if !detectAppEngine(&info, lookup) {
+		t.Fatalf("detectAppEngine returned false")
+	}
+	if got := info.ProjectID; got != "meta-app" {
+		t.Fatalf("ProjectID = %q, want %q", got, "meta-app")
+	}
+	if info.Environment != RuntimeEnvAppEngineStandard {
+		t.Fatalf("Environment = %v, want %v", info.Environment, RuntimeEnvAppEngineStandard)
 	}
 }
 
@@ -552,6 +636,86 @@ func TestRuntimeDefaults(t *testing.T) {
 	}
 }
 
+// TestMetadataLookupCachesEntries verifies that metadata lookups reuse cached values.
+func TestMetadataLookupCachesEntries(t *testing.T) {
+	t.Parallel()
+
+	client := &countingGetMetadataClient{
+		stubMetadataClient: &stubMetadataClient{
+			onGCE: true,
+			values: map[string]string{
+				"project/project-id": "cached-project",
+			},
+		},
+	}
+
+	lookup := newMetadataLookup(client)
+
+	if got, ok := lookup.get("project/project-id"); !ok || got != "cached-project" {
+		t.Fatalf("first lookup = %q, ok=%v; want cached-project, true", got, ok)
+	}
+	if client.getCalls != 1 {
+		t.Fatalf("Get call count = %d, want 1", client.getCalls)
+	}
+	if got, ok := lookup.get("project/project-id"); !ok || got != "cached-project" {
+		t.Fatalf("cached lookup = %q, ok=%v; want cached-project, true", got, ok)
+	}
+	if client.getCalls != 1 {
+		t.Fatalf("cached lookup should not invoke metadata client; got %d calls", client.getCalls)
+	}
+}
+
+// TestCachedConfigFromEnvHandlesClearedCache exercises the fallback path when the cache is cleared mid-race.
+func TestCachedConfigFromEnvHandlesClearedCache(t *testing.T) {
+	t.Parallel()
+
+	resetHandlerConfigCache()
+	origLoader := loadConfigFromEnvFunc
+	origHook := cachedConfigRaceHook
+	t.Cleanup(func() {
+		loadConfigFromEnvFunc = origLoader
+		cachedConfigRaceHook = origHook
+		resetHandlerConfigCache()
+	})
+
+	start := make(chan struct{}, 2)
+	release := make(chan struct{})
+	loadConfigFromEnvFunc = func(logger *slog.Logger) (handlerConfig, error) {
+		start <- struct{}{}
+		<-release
+		return handlerConfig{Writer: io.Discard}, nil
+	}
+	cachedConfigRaceHook = func() {
+		resetHandlerConfigCache()
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	worker := func() {
+		defer wg.Done()
+		_, err := cachedConfigFromEnv(logger)
+		results <- err
+	}
+
+	wg.Add(2)
+	go worker()
+	go worker()
+
+	<-start
+	<-start
+	close(release)
+
+	wg.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("cachedConfigFromEnv returned %v", err)
+		}
+	}
+}
+
 // TestMetadataLookupRegionZone verifies region and zone parsing.
 func TestMetadataLookupRegionZone(t *testing.T) {
 	t.Parallel()
@@ -707,5 +871,55 @@ func TestDefaultMetadataClientHooks(t *testing.T) {
 	}
 	if val != "stub-value" {
 		t.Fatalf("Get() = %q, want %q", val, "stub-value")
+	}
+}
+
+// TestDefaultMetadataClientUsesWrappers ensures the default wrapper paths are executed.
+func TestDefaultMetadataClientUsesWrappers(t *testing.T) {
+	t.Parallel()
+
+	origOnGCE := metadataOnGCEWrapper
+	origGet := metadataGetWithContextWrapper
+	t.Cleanup(func() {
+		metadataOnGCEWrapper = origOnGCE
+		metadataGetWithContextWrapper = origGet
+	})
+
+	var (
+		onGCECalled bool
+		getCalled   bool
+	)
+
+	metadataOnGCEWrapper = func() bool {
+		onGCECalled = true
+		return true
+	}
+	metadataGetWithContextWrapper = func(ctx context.Context, path string) (string, error) {
+		getCalled = true
+		if ctx == nil {
+			t.Fatalf("expected non-nil context")
+		}
+		if path != "project/project-id" {
+			t.Fatalf("path = %q, want project/project-id", path)
+		}
+		return "wrapped-id", nil
+	}
+
+	client := defaultMetadataClient{}
+	if !client.OnGCE() {
+		t.Fatalf("OnGCE() = false, want true")
+	}
+	if !onGCECalled {
+		t.Fatalf("wrapper for metadata.OnGCE was not invoked")
+	}
+	val, err := client.Get("project/project-id")
+	if err != nil {
+		t.Fatalf("Get() returned error: %v", err)
+	}
+	if val != "wrapped-id" {
+		t.Fatalf("Get() = %q, want %q", val, "wrapped-id")
+	}
+	if !getCalled {
+		t.Fatalf("wrapper for metadata.GetWithContext was not invoked")
 	}
 }

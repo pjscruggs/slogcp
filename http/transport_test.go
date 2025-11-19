@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	stdhttp "net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -135,6 +136,76 @@ func TestTransportRoundTripAppliesAttrHooks(t *testing.T) {
 	}
 }
 
+// TestTransportSkipsNilHooks ensures nil attr hooks do not panic.
+func TestTransportSkipsNilHooks(t *testing.T) {
+	t.Parallel()
+
+	var (
+		sawEnricher    bool
+		sawTransformer bool
+	)
+
+	rt := Transport(&stubRoundTripper{}, withRawAttrHooks(
+		[]AttrEnricher{
+			nil,
+			// observeEnricher sets a flag so the test knows the enricher hook executed.
+			func(r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+				sawEnricher = true
+				return nil
+			},
+		},
+		[]AttrTransformer{
+			nil,
+			// observeTransformer toggles a flag when the transformer hook is invoked.
+			func(attrs []slog.Attr, r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+				sawTransformer = true
+				return attrs
+			},
+		},
+	))
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/nil-hooks", nil)
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip returned %v", err)
+	}
+	defer resp.Body.Close()
+
+	if !sawEnricher {
+		t.Fatalf("expected enricher to run")
+	}
+	if !sawTransformer {
+		t.Fatalf("expected transformer to run")
+	}
+}
+
+// TestTransportUsesContextLoggerFallback verifies the context logger is used when no base logger is set.
+func TestTransportUsesContextLoggerFallback(t *testing.T) {
+	t.Parallel()
+
+	ctxLogger := slog.New(&spyHandler{name: "ctx"})
+	stub := &stubRoundTripper{}
+	rt := Transport(stub, func(cfg *config) { cfg.logger = nil })
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/logger", nil)
+	req = req.WithContext(slogcp.ContextWithLogger(req.Context(), ctxLogger))
+
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip returned %v", err)
+	}
+	defer resp.Body.Close()
+
+	logger := slogcp.Logger(stub.req.Context())
+	handler, ok := logger.Handler().(*spyHandler)
+	if !ok {
+		t.Fatalf("handler type = %T, want *spyHandler", logger.Handler())
+	}
+	if handler.name != "ctx" {
+		t.Fatalf("handler name = %q, want ctx", handler.name)
+	}
+}
+
 // TestRoundTripperInjectTraceLegacy covers header injection scenarios.
 func TestRoundTripperInjectTraceLegacy(t *testing.T) {
 	t.Parallel()
@@ -215,6 +286,11 @@ func TestOutboundHost(t *testing.T) {
 			req:  nil,
 			want: "",
 		},
+		{
+			name: "no_host_information",
+			req:  &stdhttp.Request{URL: &url.URL{Path: "/only-path"}},
+			want: "",
+		},
 	}
 
 	for _, tc := range cases {
@@ -253,3 +329,19 @@ func slogcpLogger(ctx context.Context) *slog.Logger {
 	}
 	return slogcp.Logger(ctx)
 }
+
+type spyHandler struct {
+	name string
+}
+
+// Enabled reports true so tests can exercise downstream logic without filtering.
+func (s *spyHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle discards records to satisfy slog.Handler without producing output.
+func (s *spyHandler) Handle(context.Context, slog.Record) error { return nil }
+
+// WithAttrs clones the handler name to mimic slog.Handler semantics for assertions.
+func (s *spyHandler) WithAttrs([]slog.Attr) slog.Handler { return &spyHandler{name: s.name} }
+
+// WithGroup returns a similarly configured spy handler for nested groups.
+func (s *spyHandler) WithGroup(string) slog.Handler { return &spyHandler{name: s.name} }

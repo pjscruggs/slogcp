@@ -30,6 +30,7 @@ import (
 	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	nooptrace "go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -178,6 +179,40 @@ func TestUnaryClientInterceptorInjectsTrace(t *testing.T) {
 	}
 	if got := entry["logging.googleapis.com/trace"]; got != "projects/proj-123/traces/105445aa7843bc8bf206b12000100000" {
 		t.Errorf("trace = %v", got)
+	}
+}
+
+// TestUnaryClientInterceptorCopiesMetadata ensures outgoing metadata maps are not mutated in place.
+func TestUnaryClientInterceptorCopiesMetadata(t *testing.T) {
+	t.Parallel()
+
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+
+	interceptor := UnaryClientInterceptor(WithLegacyXCloudInjection(true))
+
+	origMD := metadata.Pairs("custom", "value")
+	ctx := metadata.NewOutgoingContext(trace.ContextWithSpanContext(context.Background(), spanCtx), origMD)
+
+	var injected metadata.MD
+	invoker := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, opts ...grpc.CallOption) error {
+		injected, _ = metadata.FromOutgoingContext(ctx)
+		return nil
+	}
+
+	if err := interceptor(ctx, "/svc/Call", &struct{}{}, &struct{}{}, nil, invoker); err != nil {
+		t.Fatalf("interceptor returned %v", err)
+	}
+	if injected == nil || injected.Get(XCloudTraceContextHeader) == nil {
+		t.Fatalf("legacy header not injected, metadata: %#v", injected)
+	}
+	if origMD.Get(XCloudTraceContextHeader) != nil {
+		t.Fatalf("original metadata mutated: %#v", origMD)
 	}
 }
 
@@ -368,6 +403,39 @@ func TestStreamClientInterceptorTracksSizes(t *testing.T) {
 	}
 	if got := entry["rpc.response_size"]; got != float64(32) {
 		t.Fatalf("rpc.response_size = %v, want 32 (entry=%v)", got, entry)
+	}
+}
+
+// TestStreamClientInterceptorCopiesMetadata ensures outgoing metadata copies are isolated.
+func TestStreamClientInterceptorCopiesMetadata(t *testing.T) {
+	t.Parallel()
+
+	traceID, _ := trace.TraceIDFromHex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	spanID, _ := trace.SpanIDFromHex("bbbbbbbbbbbbbbbb")
+	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+
+	interceptor := StreamClientInterceptor(WithLegacyXCloudInjection(true))
+
+	origMD := metadata.Pairs("existing", "value")
+	ctx := metadata.NewOutgoingContext(trace.ContextWithSpanContext(context.Background(), spanCtx), origMD)
+
+	streamer := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		md, _ := metadata.FromOutgoingContext(ctx)
+		if md.Get(XCloudTraceContextHeader) == nil {
+			return nil, errors.New("legacy header missing")
+		}
+		return &fakeClientStream{ctx: ctx}, nil
+	}
+
+	if _, err := interceptor(ctx, &grpc.StreamDesc{}, nil, "/svc/Stream", streamer); err != nil {
+		t.Fatalf("interceptor returned %v", err)
+	}
+	if origMD.Get(XCloudTraceContextHeader) != nil {
+		t.Fatalf("original metadata mutated: %#v", origMD)
 	}
 }
 
@@ -665,7 +733,7 @@ func TestStatsHandlerOptionsHonorsConfig(t *testing.T) {
 		t.Fatalf("expected no statsHandlerOptions by default, got %d", len(opts))
 	}
 
-	cfg.tracerProvider = trace.NewNoopTracerProvider()
+	cfg.tracerProvider = nooptrace.NewTracerProvider()
 	cfg.propagators = propagation.TraceContext{}
 	cfg.propagatorsSet = true
 
@@ -931,7 +999,8 @@ func copyMessage(dst any, src any) error {
 func TestInfoFromContextHandlesNilInputs(t *testing.T) {
 	t.Parallel()
 
-	if info, ok := InfoFromContext(nil); info != nil || ok {
+	var nilCtx context.Context
+	if info, ok := InfoFromContext(nilCtx); info != nil || ok {
 		t.Fatalf("InfoFromContext(nil) = (%v,%v), want (nil,false)", info, ok)
 	}
 

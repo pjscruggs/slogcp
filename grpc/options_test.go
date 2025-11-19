@@ -10,7 +10,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/trace"
+	nooptrace "go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc/stats"
 )
 
@@ -20,7 +20,7 @@ func TestOptionsMutateConfig(t *testing.T) {
 
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	prop := propagation.TraceContext{}
-	tp := trace.NewNoopTracerProvider()
+	tp := nooptrace.NewTracerProvider()
 	filterInvoked := false
 	filter := otelgrpc.Filter(func(info *stats.RPCTagInfo) bool {
 		filterInvoked = true

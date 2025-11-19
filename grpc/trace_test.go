@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,6 +13,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
 )
+
+type serverSpanContextKey struct{}
 
 // TestParseGRPCTraceBin verifies grpc-trace-bin parsing succeeds and fails appropriately.
 func TestParseGRPCTraceBin(t *testing.T) {
@@ -80,6 +83,48 @@ func TestParseXCloudTrace(t *testing.T) {
 	if _, ok := parseXCloudTrace("not-a-trace"); ok {
 		t.Fatalf("expected invalid header to fail")
 	}
+}
+
+// TestParseXCloudTraceFailureCases exercises error branches.
+func TestParseXCloudTraceFailureCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty_header", func(t *testing.T) {
+		if _, ok := parseXCloudTrace(""); ok {
+			t.Fatalf("empty header should fail")
+		}
+	})
+
+	t.Run("blank_id", func(t *testing.T) {
+		if _, ok := parseXCloudTrace("   ;o=1"); ok {
+			t.Fatalf("blank id should fail")
+		}
+	})
+
+	t.Run("rand_error", func(t *testing.T) {
+		orig := randReader
+		defer func() { randReader = orig }()
+		randReader = func([]byte) (int, error) {
+			return 0, errors.New("entropy unavailable")
+		}
+		if _, ok := parseXCloudTrace("105445aa7843bc8bf206b12000100000"); ok {
+			t.Fatalf("expected failure when rand.Read errors")
+		}
+	})
+
+	t.Run("invalid_span_context", func(t *testing.T) {
+		orig := randReader
+		defer func() { randReader = orig }()
+		randReader = func(b []byte) (int, error) {
+			for i := range b {
+				b[i] = 0
+			}
+			return len(b), nil
+		}
+		if _, ok := parseXCloudTrace("105445aa7843bc8bf206b12000100000"); ok {
+			t.Fatalf("expected failure when span context remains invalid")
+		}
+	})
 }
 
 // TestParseXCloudTraceGeneratesSpanWhenMissing ensures missing span IDs are synthesized.
@@ -156,7 +201,7 @@ func TestEnsureServerSpanContextPrefersExisting(t *testing.T) {
 
 // TestEnsureServerSpanContextHandlesMissingMetadata ensures the original context is preserved when nothing is extracted.
 func TestEnsureServerSpanContextHandlesMissingMetadata(t *testing.T) {
-	ctx := context.WithValue(context.Background(), struct{}{}, "marker")
+	ctx := context.WithValue(context.Background(), serverSpanContextKey{}, "marker")
 	tests := []struct {
 		name string
 		md   metadata.MD

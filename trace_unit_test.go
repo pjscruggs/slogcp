@@ -21,6 +21,16 @@ func TestSpanIDHexToDecimalCoversSuccessAndFailure(t *testing.T) {
 	}
 }
 
+// TestBuildXCloudTraceContextUnsampled ensures the unsampled branch is exercised.
+func TestBuildXCloudTraceContextUnsampled(t *testing.T) {
+	t.Parallel()
+
+	got := BuildXCloudTraceContext("105445aa7843bc8bf206b12000100000", "000000000000000a", false)
+	if got != "105445aa7843bc8bf206b12000100000/10;o=0" {
+		t.Fatalf("BuildXCloudTraceContext() = %q, want unsampled formatting", got)
+	}
+}
+
 // TestDetectTraceProjectIDFromEnvPriority ensures higher-priority variables win.
 func TestDetectTraceProjectIDFromEnvPriority(t *testing.T) {
 	t.Setenv("SLOGCP_PROJECT_ID", "project-id")
@@ -170,6 +180,14 @@ func TestTraceAttributesReturnsNilWithoutSpan(t *testing.T) {
 
 	if attrs, ok := TraceAttributes(context.Background(), "proj"); ok || len(attrs) != 0 {
 		t.Fatalf("TraceAttributes() without span = (%v,%v), want (nil,false)", attrs, ok)
+	}
+}
+
+// TestTraceAttributesNilContext ensures nil contexts short circuit.
+func TestTraceAttributesNilContext(t *testing.T) {
+	var nilCtx context.Context
+	if attrs, ok := TraceAttributes(nilCtx, "proj"); ok || len(attrs) != 0 {
+		t.Fatalf("TraceAttributes(nil) = (%v,%v), want (nil,false)", attrs, ok)
 	}
 }
 
