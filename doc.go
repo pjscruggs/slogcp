@@ -31,8 +31,9 @@
 //     emit single-letter severity aliases when desired, defaulting to full names
 //     outside Cloud Run, Cloud Run Jobs, Cloud Functions, and App Engine.
 //   - Timestamp emission that mirrors Cloud Logging expectations: omit the field
-//     on those managed runtimes and emit millisecond precision timestamps
-//     elsewhere (configurable to RFC3339Nano).
+//     on those managed runtimes and otherwise leave log/slog's JSONHandler
+//     default `time` field (a time.RFC3339Nano value) untouched so local and
+//     on-premise logs keep the native precision unless you override it.
 //   - Middleware hooks that allow additional [slog.Handler] layers to enrich or
 //     filter records before they are encoded.
 //

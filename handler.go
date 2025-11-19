@@ -408,8 +408,8 @@ func WithSourceLocationEnabled(enabled bool) Option {
 
 // WithTime toggles emission of the top-level "time" field. By default slogcp
 // omits timestamps on managed GCP runtimes such as Cloud Run or App Engine,
-// since Cloud Logging stamps entries automatically, and emits millisecond
-// precision timestamps elsewhere.
+// since Cloud Logging stamps entries automatically. Enabling this option stops
+// slogcp from suppressing `log/slog`'s default timestamp behavior.
 func WithTime(enabled bool) Option {
 	return func(o *options) {
 		o.emitTimeField = &enabled
