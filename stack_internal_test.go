@@ -49,3 +49,23 @@ func TestTrimStackPCsSkipsFrames(t *testing.T) {
 		t.Fatalf("unexpected top frame %q", frame.Function)
 	}
 }
+
+// TestTrimStackPCsHandlesEmptyInput ensures empty inputs are tolerated.
+func TestTrimStackPCsHandlesEmptyInput(t *testing.T) {
+	if trimmed := trimStackPCs(nil, func(string) bool { return true }); trimmed != nil {
+		t.Fatalf("trimStackPCs(nil, fn) = %v, want nil", trimmed)
+	}
+	if trimmed := trimStackPCs([]uintptr{}, nil); len(trimmed) != 0 {
+		t.Fatalf("trimStackPCs(empty, nil) length = %d, want 0", len(trimmed))
+	}
+}
+
+// TestTrimStackPCsReturnsNilWhenAllFramesSkipped ensures the helper returns nil when everything is filtered away.
+func TestTrimStackPCsReturnsNilWhenAllFramesSkipped(t *testing.T) {
+	pcs := make([]uintptr, 8)
+	n := runtime.Callers(0, pcs)
+	trimmed := trimStackPCs(pcs[:n], func(string) bool { return true })
+	if trimmed != nil {
+		t.Fatalf("trimStackPCs(all skipped) = %v, want nil", trimmed)
+	}
+}

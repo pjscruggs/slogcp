@@ -818,3 +818,17 @@ func copyMessage(dst any, src any) error {
 	rdst.Elem().Set(reflect.ValueOf(src).Elem())
 	return nil
 }
+
+// TestInfoFromContextHandlesNilInputs exercises nil and missing context cases.
+func TestInfoFromContextHandlesNilInputs(t *testing.T) {
+	t.Parallel()
+
+	if info, ok := InfoFromContext(nil); info != nil || ok {
+		t.Fatalf("InfoFromContext(nil) = (%v,%v), want (nil,false)", info, ok)
+	}
+
+	ctx := context.WithValue(context.Background(), requestInfoKey{}, (*RequestInfo)(nil))
+	if info, ok := InfoFromContext(ctx); info != nil || ok {
+		t.Fatalf("InfoFromContext(with nil value) = (%v,%v), want (nil,false)", info, ok)
+	}
+}

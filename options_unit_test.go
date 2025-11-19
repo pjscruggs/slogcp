@@ -167,3 +167,68 @@ func TestWithGroupAccumulatesOptions(t *testing.T) {
 		t.Fatalf("nested group tenant = %v, want %q", got, "acme")
 	}
 }
+
+// TestWithGroupTrimsWhitespace ensures group names are trimmed before use.
+func TestWithGroupTrimsWhitespace(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h, err := slogcp.NewHandler(io.Discard,
+		slogcp.WithRedirectWriter(&buf),
+		slogcp.WithGroup("  service  "),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	slog.New(h).Info("trimmed", slog.String("name", "worker"))
+
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned %v", err)
+	}
+	if _, ok := payload["service"]; !ok {
+		t.Fatalf("trimmed group missing from payload: %v", payload)
+	}
+	if _, ok := payload["  service  "]; ok {
+		t.Fatalf("payload unexpectedly contains untrimmed group key: %v", payload)
+	}
+}
+
+// TestWithGroupClearsWhenBlank ensures blank options clear any prior grouping.
+func TestWithGroupClearsWhenBlank(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h, err := slogcp.NewHandler(io.Discard,
+		slogcp.WithRedirectWriter(&buf),
+		slogcp.WithGroup("parent"),
+		slogcp.WithGroup("   "), // clears groups
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	slog.New(h).Info("cleared", slog.String("child", "value"))
+
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned %v", err)
+	}
+	if _, ok := payload["parent"]; ok {
+		t.Fatalf("parent group should be cleared in payload: %v", payload)
+	}
+	if got := payload["child"]; got != "value" {
+		t.Fatalf("child attribute = %v, want %q", got, "value")
+	}
+}

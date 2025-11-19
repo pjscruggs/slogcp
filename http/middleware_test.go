@@ -423,11 +423,15 @@ func TestResponseRecorderWriteAndStatus(t *testing.T) {
 	if recorder.Status() != stdhttp.StatusOK {
 		t.Fatalf("initial Status() = %d, want %d", recorder.Status(), stdhttp.StatusOK)
 	}
+	wrapped.WriteHeader(stdhttp.StatusTeapot)
+	if recorder.Status() != stdhttp.StatusTeapot {
+		t.Fatalf("Status after WriteHeader = %d, want %d", recorder.Status(), stdhttp.StatusTeapot)
+	}
 	if _, err := wrapped.Write([]byte("payload")); err != nil {
 		t.Fatalf("Write returned %v", err)
 	}
-	if recorder.Status() != stdhttp.StatusOK {
-		t.Fatalf("Status after write = %d, want %d", recorder.Status(), stdhttp.StatusOK)
+	if recorder.Status() != stdhttp.StatusTeapot {
+		t.Fatalf("Status after write = %d, want %d", recorder.Status(), stdhttp.StatusTeapot)
 	}
 	if recorder.BytesWritten() != int64(len("payload")) {
 		t.Fatalf("BytesWritten = %d, want %d", recorder.BytesWritten(), len("payload"))
@@ -435,10 +439,29 @@ func TestResponseRecorderWriteAndStatus(t *testing.T) {
 	if scope.ResponseSize() != int64(len("payload")) {
 		t.Fatalf("scope.ResponseSize = %d, want %d", scope.ResponseSize(), len("payload"))
 	}
+}
 
-	recorder.WriteHeader(stdhttp.StatusTeapot)
-	if recorder.Status() != stdhttp.StatusTeapot {
-		t.Fatalf("Status = %d, want %d", recorder.Status(), stdhttp.StatusTeapot)
+// TestResponseRecorderWriteHeaderIgnoresDuplicates ensures repeated WriteHeader calls leave Status unchanged.
+func TestResponseRecorderWriteHeaderIgnoresDuplicates(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", stdhttp.NoBody)
+	scope := newRequestScope(req, time.Now(), defaultConfig())
+
+	writer := &statusTrackingResponseWriter{header: make(stdhttp.Header)}
+	wrapped, recorder := wrapResponseWriter(writer, scope)
+
+	wrapped.WriteHeader(stdhttp.StatusAccepted)
+	wrapped.WriteHeader(stdhttp.StatusBadGateway)
+
+	if recorder.Status() != stdhttp.StatusAccepted {
+		t.Fatalf("Status after duplicate headers = %d, want %d", recorder.Status(), stdhttp.StatusAccepted)
+	}
+	if len(writer.codes) != 2 {
+		t.Fatalf("underlying writer saw %d WriteHeader calls, want 2", len(writer.codes))
+	}
+	if writer.codes[1] != stdhttp.StatusBadGateway {
+		t.Fatalf("second WriteHeader status = %d, want %d", writer.codes[1], stdhttp.StatusBadGateway)
 	}
 }
 
@@ -858,3 +881,20 @@ func (m *minimalResponseWriter) Write(p []byte) (int, error) { return len(p), ni
 
 // WriteHeader records the status code but performs no IO.
 func (m *minimalResponseWriter) WriteHeader(int) {}
+
+// statusTrackingResponseWriter records each WriteHeader invocation for verification.
+type statusTrackingResponseWriter struct {
+	header stdhttp.Header
+	codes  []int
+}
+
+// Header implements http.ResponseWriter.
+func (s *statusTrackingResponseWriter) Header() stdhttp.Header { return s.header }
+
+// Write reports bytes to satisfy the interface.
+func (s *statusTrackingResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// WriteHeader records the status code for assertions.
+func (s *statusTrackingResponseWriter) WriteHeader(status int) {
+	s.codes = append(s.codes, status)
+}

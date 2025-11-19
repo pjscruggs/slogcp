@@ -122,3 +122,35 @@ func (c *closerSpy) Close() error {
 	c.closed++
 	return c.err
 }
+
+// TestHandlerReopenLogFileNoopWithoutFile ensures file rotation is a no-op when no file is configured.
+func TestHandlerReopenLogFileNoopWithoutFile(t *testing.T) {
+	t.Parallel()
+
+	var h Handler
+	if err := h.ReopenLogFile(); err != nil {
+		t.Fatalf("ReopenLogFile() = %v, want nil", err)
+	}
+}
+
+// TestHandlerReopenLogFileReportsErrors exercises the error branch used when reopen fails.
+func TestHandlerReopenLogFileReportsErrors(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	missingPath := filepath.Join(dir, "missing", "app.log")
+
+	h := &Handler{
+		cfg:              &handlerConfig{FilePath: missingPath},
+		switchableWriter: NewSwitchableWriter(io.Discard),
+		internalLogger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	err := h.ReopenLogFile()
+	if err == nil {
+		t.Fatalf("ReopenLogFile() = nil, want error")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ReopenLogFile() error = %v, want wrapping os.ErrNotExist", err)
+	}
+}
