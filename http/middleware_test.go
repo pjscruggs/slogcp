@@ -493,6 +493,30 @@ func TestResponseRecorderReadFromFallback(t *testing.T) {
 	}
 }
 
+// TestResponseRecorderWriteHandlesZeroBytes verifies Write properly tracks zero-byte writes and existing headers.
+func TestResponseRecorderWriteHandlesZeroBytes(t *testing.T) {
+	t.Parallel()
+
+	scope := newRequestScope(httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	base := &failingResponseWriter{header: make(stdhttp.Header)}
+
+	writer, recorder := wrapResponseWriter(base, scope)
+	writer.WriteHeader(stdhttp.StatusAccepted)
+
+	if _, err := writer.Write([]byte("payload")); err == nil {
+		t.Fatalf("expected write failure from failingResponseWriter")
+	}
+	if recorder.BytesWritten() != 0 {
+		t.Fatalf("BytesWritten = %d, want 0", recorder.BytesWritten())
+	}
+	if scope.ResponseSize() != 0 {
+		t.Fatalf("scope.ResponseSize = %d, want 0", scope.ResponseSize())
+	}
+	if base.status != stdhttp.StatusAccepted {
+		t.Fatalf("base status = %d, want %d", base.status, stdhttp.StatusAccepted)
+	}
+}
+
 // TestResponseRecorderReadFromDelegates ensures ReaderFrom on the base writer is honoured.
 func TestResponseRecorderReadFromDelegates(t *testing.T) {
 	t.Parallel()
@@ -811,6 +835,20 @@ func (o *optionalResponseWriter) Push(target string, _ *stdhttp.PushOptions) err
 func (o *optionalResponseWriter) CloseNotify() <-chan bool {
 	return o.closeCh
 }
+
+type failingResponseWriter struct {
+	header stdhttp.Header
+	status int
+}
+
+// Header implements http.ResponseWriter.
+func (f *failingResponseWriter) Header() stdhttp.Header { return f.header }
+
+// Write always reports no bytes written.
+func (f *failingResponseWriter) Write([]byte) (int, error) { return 0, errors.New("failing writer") }
+
+// WriteHeader stores the status code for later verification.
+func (f *failingResponseWriter) WriteHeader(status int) { f.status = status }
 
 // nopConn is a minimal net.Conn implementation for hijack testing.
 type nopConn struct{}

@@ -371,6 +371,40 @@ func TestStreamClientInterceptorTracksSizes(t *testing.T) {
 	}
 }
 
+// TestStreamClientInterceptorHandlesStreamError ensures errors returned by the streamer are propagated and logged.
+func TestStreamClientInterceptorHandlesStreamError(t *testing.T) {
+	t.Parallel()
+
+	interceptor := StreamClientInterceptor()
+	desc := &grpc.StreamDesc{StreamName: "ClientStream", ClientStreams: true}
+
+	wantErr := status.Error(codes.Unavailable, "dial failed")
+	var capturedInfo *RequestInfo
+
+	streamer := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		info, ok := InfoFromContext(ctx)
+		if !ok {
+			return nil, errors.New("missing request info in context")
+		}
+		capturedInfo = info
+		return nil, wantErr
+	}
+
+	cs, err := interceptor(context.Background(), desc, nil, "/example.Service/Streaming", streamer)
+	if err == nil || status.Code(err) != codes.Unavailable {
+		t.Fatalf("StreamClientInterceptor error = %v, want %v", err, wantErr)
+	}
+	if cs != nil {
+		t.Fatalf("StreamClientInterceptor returned non-nil stream on error")
+	}
+	if capturedInfo == nil {
+		t.Fatalf("RequestInfo not captured")
+	}
+	if capturedInfo.Status() != codes.Unavailable {
+		t.Fatalf("RequestInfo.Status = %v, want Unavailable", capturedInfo.Status())
+	}
+}
+
 // TestStreamKindVariants exercises the helper on all boolean combinations.
 func TestStreamKindVariants(t *testing.T) {
 	t.Parallel()
@@ -512,6 +546,80 @@ func TestUnaryServerInterceptorPeerControl(t *testing.T) {
 	}
 	if _, exists := entry["net.peer.ip"]; exists {
 		t.Fatalf("net.peer.ip should be omitted when WithPeerInfo(false)")
+	}
+}
+
+// TestAttachLoggerFallsBackToContextLogger verifies attr hooks run when the config logger is nil.
+func TestAttachLoggerFallsBackToContextLogger(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+	ctx := slogcp.ContextWithLogger(context.Background(), baseLogger)
+
+	cfg := &config{
+		attrEnrichers: []AttrEnricher{
+			nil,
+			// addFullMethodAttr enriches log entries with the full method name.
+			func(ctx context.Context, info *RequestInfo) []slog.Attr {
+				return []slog.Attr{slog.String("enriched", info.FullMethod())}
+			},
+		},
+		attrTransformers: []AttrTransformer{
+			nil,
+			// appendTransformer appends a sentinel attribute for verification.
+			func(ctx context.Context, attrs []slog.Attr, info *RequestInfo) []slog.Attr {
+				return append(attrs, slog.String("transformed", "yes"))
+			},
+		},
+	}
+
+	info := newRequestInfo("/example.Service/Method", "unary", false, time.Now())
+	ctx = attachLogger(ctx, cfg, info, "")
+
+	if got, ok := InfoFromContext(ctx); !ok || got != info {
+		t.Fatalf("InfoFromContext() = (%v,%v), want (%v,true)", got, ok, info)
+	}
+
+	slogcp.Logger(ctx).Info("attach")
+	lines := decodeStreamEntries(t, buf.String())
+	if len(lines) != 1 {
+		t.Fatalf("expected single log entry, got %d", len(lines))
+	}
+	entry := lines[0]
+	if entry["enriched"] != "/example.Service/Method" {
+		t.Fatalf("enriched attribute missing, got %v", entry)
+	}
+	if entry["transformed"] != "yes" {
+		t.Fatalf("transformed attribute missing, got %v", entry)
+	}
+}
+
+// TestPeerAddressVariants exercises host extraction fallbacks.
+func TestPeerAddressVariants(t *testing.T) {
+	t.Parallel()
+
+	if addr, ok := peerAddress(context.Background()); addr != "" || ok {
+		t.Fatalf("peerAddress on empty context = (%q,%v), want ('',false)", addr, ok)
+	}
+
+	ctx := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.ParseIP("198.51.100.10"), Port: 9000},
+	})
+	if addr, ok := peerAddress(ctx); !ok || addr != "198.51.100.10" {
+		t.Fatalf("peerAddress TCP = (%q,%v), want (%q,true)", addr, ok, "198.51.100.10")
+	}
+
+	ctx = peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.UnixAddr{Name: "unix-sock", Net: "unix"},
+	})
+	if addr, ok := peerAddress(ctx); !ok || addr != "unix-sock" {
+		t.Fatalf("peerAddress unix = (%q,%v), want (%q,true)", addr, ok, "unix-sock")
+	}
+
+	ctx = peer.NewContext(context.Background(), &peer.Peer{})
+	if addr, ok := peerAddress(ctx); addr != "" || ok {
+		t.Fatalf("peerAddress without addr = (%q,%v), want ('',false)", addr, ok)
 	}
 }
 

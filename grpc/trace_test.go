@@ -82,6 +82,17 @@ func TestParseXCloudTrace(t *testing.T) {
 	}
 }
 
+// TestParseXCloudTraceGeneratesSpanWhenMissing ensures missing span IDs are synthesized.
+func TestParseXCloudTraceGeneratesSpanWhenMissing(t *testing.T) {
+	sc, ok := parseXCloudTrace("105445aa7843bc8bf206b12000100000")
+	if !ok {
+		t.Fatalf("parseXCloudTrace() without span returned false")
+	}
+	if !sc.SpanID().IsValid() {
+		t.Fatalf("expected synthesized span ID to be valid")
+	}
+}
+
 // TestContextWithXCloudTrace ensures the helper augments contexts with remote spans.
 func TestContextWithXCloudTrace(t *testing.T) {
 	ctx := context.Background()
@@ -265,6 +276,25 @@ func TestInjectClientTraceSkipsWhenUnavailable(t *testing.T) {
 	injectClientTrace(context.Background(), emptyMD, cfg)
 	if got := emptyMD.Get(XCloudTraceContextHeader); len(got) != 0 {
 		t.Fatalf("no span context should skip legacy injection, got %v", got)
+	}
+}
+
+// TestInjectClientTraceRespectsExistingLegacyHeader ensures legacy headers are not overwritten when present.
+func TestInjectClientTraceRespectsExistingLegacyHeader(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	md := metadata.Pairs(strings.ToLower(XCloudTraceContextHeader), "existing")
+	cfg := &config{injectLegacyXCTC: true, propagators: propagation.TraceContext{}}
+
+	injectClientTrace(ctx, md, cfg)
+	if got := md.Get(XCloudTraceContextHeader); len(got) == 0 || got[0] != "existing" {
+		t.Fatalf("legacy header should remain untouched, got %v", got)
 	}
 }
 

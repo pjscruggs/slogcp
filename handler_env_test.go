@@ -282,6 +282,11 @@ func TestParseLevelEnvCoversAliases(t *testing.T) {
 		input string
 		want  slog.Level
 	}{
+		{input: "info", want: slog.LevelInfo},
+		{input: "warn", want: slog.LevelWarn},
+		{input: "warning", want: slog.LevelWarn},
+		{input: "error", want: slog.LevelError},
+		{input: "default", want: slog.Level(LevelDefault)},
 		{input: "debug", want: slog.LevelDebug},
 		{input: "NOTICE", want: slog.Level(LevelNotice)},
 		{input: "critical", want: slog.Level(LevelCritical)},
@@ -297,6 +302,31 @@ func TestParseLevelEnvCoversAliases(t *testing.T) {
 
 	if got := parseLevelEnv("invalid", slog.LevelWarn, logger); got != slog.LevelWarn {
 		t.Fatalf("parseLevelEnv invalid should retain current level")
+	}
+}
+
+// TestCachedConfigFromEnvCachesResults ensures the first successful load is reused.
+func TestCachedConfigFromEnvCachesResults(t *testing.T) {
+	clearHandlerEnv(t)
+	t.Cleanup(resetHandlerConfigCache)
+
+	t.Setenv(envLogLevel, "error")
+	cfg, err := cachedConfigFromEnv(newDiscardLogger())
+	if err != nil {
+		t.Fatalf("cachedConfigFromEnv() returned %v", err)
+	}
+	if cfg.Level != slog.LevelError {
+		t.Fatalf("cached level = %v, want %v", cfg.Level, slog.LevelError)
+	}
+
+	// Changing the environment without resetting the cache should not affect the result.
+	t.Setenv(envLogLevel, "debug")
+	cfgAgain, err := cachedConfigFromEnv(newDiscardLogger())
+	if err != nil {
+		t.Fatalf("cachedConfigFromEnv() second call returned %v", err)
+	}
+	if cfgAgain.Level != slog.LevelError {
+		t.Fatalf("cached level after env change = %v, want %v", cfgAgain.Level, slog.LevelError)
 	}
 }
 

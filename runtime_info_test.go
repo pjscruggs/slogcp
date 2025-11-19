@@ -166,6 +166,18 @@ func TestDetectKubernetesEnvFallback(t *testing.T) {
 	}
 }
 
+// TestDetectKubernetesRequiresClusterName exercises the guard rails for missing cluster metadata.
+func TestDetectKubernetesRequiresClusterName(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+
+	info := RuntimeInfo{}
+	lookup := newMetadataLookup(&stubMetadataClient{onGCE: true})
+
+	if detectKubernetes(&info, lookup) {
+		t.Fatalf("detectKubernetes should return false when cluster name is unavailable")
+	}
+}
+
 // TestReadNamespaceUsesOverride ensures readNamespace honours the configurable path.
 func TestReadNamespaceUsesOverride(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "namespace")
@@ -178,6 +190,24 @@ func TestReadNamespaceUsesOverride(t *testing.T) {
 
 	if got := readNamespace(); got != "observability" {
 		t.Fatalf("readNamespace() = %q, want %q", got, "observability")
+	}
+}
+
+// TestDetectRuntimeInfoFallsBackToMetadata verifies metadata-derived project IDs populate defaults.
+func TestDetectRuntimeInfoFallsBackToMetadata(t *testing.T) {
+	resetRuntimeInfoCache()
+	t.Cleanup(resetRuntimeInfoCache)
+
+	withMetadataClient(t, &stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"project/project-id": "meta-project",
+		},
+	})
+
+	info := DetectRuntimeInfo()
+	if info.ProjectID != "meta-project" {
+		t.Fatalf("ProjectID = %q, want %q", info.ProjectID, "meta-project")
 	}
 }
 
