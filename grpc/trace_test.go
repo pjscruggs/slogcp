@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pjscruggs/slogcp"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
@@ -27,8 +28,36 @@ func TestParseGRPCTraceBin(t *testing.T) {
 		t.Fatalf("parsed context mismatch: got %v", sc)
 	}
 
-	if _, ok := parseGRPCTraceBin("invalid-base64"); ok {
-		t.Fatalf("expected invalid payload to return false")
+	validBytes, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatalf("DecodeString(valid payload) returned %v", err)
+	}
+	mutate := func(fn func([]byte) []byte) string {
+		b := append([]byte(nil), validBytes...)
+		return base64.StdEncoding.EncodeToString(fn(b))
+	}
+
+	invalidCases := []struct {
+		name string
+		val  string
+	}{
+		{name: "empty", val: ""},
+		{name: "invalid-base64", val: "not-base64"},
+		{name: "short-buffer", val: base64.StdEncoding.EncodeToString(validBytes[:10])},
+		{name: "bad-version", val: mutate(func(b []byte) []byte { b[0] = 1; return b })},
+		{name: "bad-trace-sentinel", val: mutate(func(b []byte) []byte { b[1] = 9; return b })},
+		{name: "bad-span-sentinel", val: mutate(func(b []byte) []byte { b[18] = 9; return b })},
+		{name: "bad-flags-sentinel", val: mutate(func(b []byte) []byte { b[27] = 9; return b })},
+		{name: "missing-flags", val: base64.StdEncoding.EncodeToString(validBytes[:len(validBytes)-1])},
+	}
+
+	for _, tt := range invalidCases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if _, ok := parseGRPCTraceBin(tt.val); ok {
+				t.Fatalf("parseGRPCTraceBin(%s) unexpectedly succeeded", tt.name)
+			}
+		})
 	}
 }
 
@@ -114,10 +143,40 @@ func TestEnsureServerSpanContextPrefersExisting(t *testing.T) {
 	}
 }
 
+// TestEnsureServerSpanContextHandlesMissingMetadata ensures the original context is preserved when nothing is extracted.
+func TestEnsureServerSpanContextHandlesMissingMetadata(t *testing.T) {
+	ctx := context.WithValue(context.Background(), struct{}{}, "marker")
+	tests := []struct {
+		name string
+		md   metadata.MD
+	}{
+		{name: "empty", md: metadata.New(nil)},
+		{name: "nil", md: nil},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			gotCtx, sc := ensureServerSpanContext(ctx, tt.md, &config{})
+			if gotCtx != ctx {
+				t.Fatalf("expected ensureServerSpanContext to return original context when no metadata")
+			}
+			if sc.IsValid() {
+				t.Fatalf("expected invalid span context when metadata missing, got %v", sc)
+			}
+		})
+	}
+}
+
 // TestEnsureServerSpanContextExtractsMetadata hits each metadata fallback path.
 func TestEnsureServerSpanContextExtractsMetadata(t *testing.T) {
 	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
 	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+
+	origPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(origPropagator)
+	})
 
 	t.Run("propagator", func(t *testing.T) {
 		cfg := &config{propagators: propagation.TraceContext{}}

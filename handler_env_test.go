@@ -2,11 +2,11 @@ package slogcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -324,7 +324,11 @@ func TestLogDiagnosticHandlesNilLogger(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
 	logDiagnostic(logger, slog.LevelInfo, "hello", slog.String("k", "v"))
-	if !strings.Contains(buf.String(), `"message":"hello"`) {
-		t.Fatalf("log output missing message, got %q", buf.String())
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned %v", err)
+	}
+	if got := payload["msg"]; got != "hello" {
+		t.Fatalf("payload msg = %v, want %q", got, "hello")
 	}
 }
