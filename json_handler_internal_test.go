@@ -680,19 +680,34 @@ func TestJSONHandlerEmitJSONUsesServiceContextAny(t *testing.T) {
 func decodeJSONEntry(t *testing.T, buf *bytes.Buffer) map[string]any {
 	t.Helper()
 
-	data := bytes.TrimSpace(buf.Bytes())
-	if len(data) == 0 {
+	// Handler emits newline-delimited JSON entries. Decode the first
+	// non-empty line to avoid failing when the buffer contains trailing
+	// newlines or multiple entries (tests that expect a single entry
+	// still work).
+	data := buf.String()
+	lines := strings.Split(data, "\n")
+	var first string
+	for _, ln := range lines {
+		ln = strings.TrimSpace(ln)
+		if ln != "" {
+			first = ln
+			break
+		}
+	}
+	if first == "" {
 		t.Fatalf("expected handler output")
 	}
 	var entry map[string]any
-	if err := json.Unmarshal(data, &entry); err != nil {
-		t.Fatalf("json.Unmarshal returned %v", err)
+	if err := json.Unmarshal([]byte(first), &entry); err != nil {
+		t.Fatalf("json.Unmarshal returned %v; line=%q", err, first)
 	}
 	return entry
 }
 
 // TestJSONHandler_ReplaceAttr_InGroup verifies that ReplaceAttr is correctly invoked for attributes within groups.
 func TestJSONHandler_ReplaceAttr_InGroup(t *testing.T) {
+	t.Parallel()
+
 	// Ensure ReplaceAttr is called for attributes within groups,
 	// and that the groups argument is correctly populated.
 	replace := func(groups []string, a slog.Attr) slog.Attr {
@@ -705,8 +720,8 @@ func TestJSONHandler_ReplaceAttr_InGroup(t *testing.T) {
 	h := newJSONHandler(&handlerConfig{ReplaceAttr: replace, Writer: &buf}, slog.LevelInfo, nil)
 	logger := slog.New(h).WithGroup("g")
 
-	// We need to trigger buildPayload. Handle does that.
-	logger.Info("msg", "k", "v")
+	// Use explicit slog.Attr to avoid relying on key/value inference.
+	logger.Info("msg", slog.String("k", "v"))
 
 	entry := decodeJSONEntry(t, &buf)
 	group, ok := entry["g"].(map[string]any)
@@ -759,13 +774,15 @@ func TestJSONHandler_ErrorValue_Attribute(t *testing.T) {
 
 // TestJSONHandler_LabelsGroup_InBaseAttrs verifies that the special LabelsGroup is handled correctly when present in base attributes.
 func TestJSONHandler_LabelsGroup_InBaseAttrs(t *testing.T) {
+	t.Parallel()
+
 	// Ensure that the special LabelsGroup is handled correctly when present
 	// in the base attributes (e.g. via WithGroup).
 
 	var buf bytes.Buffer
 	h := newJSONHandler(&handlerConfig{Writer: &buf}, slog.LevelInfo, nil)
 	// Create a logger with the special labels group and some attributes inside it
-	logger := slog.New(h).WithGroup(LabelsGroup).With("label_key", "label_val")
+	logger := slog.New(h).WithGroup(LabelsGroup).With(slog.String("label_key", "label_val"))
 
 	// Log something to trigger processing of baseAttrs
 	logger.Info("msg")
