@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
 	"strconv"
@@ -87,8 +88,10 @@ func TransformLogEntryJSON(in string, now time.Time) (string, error) {
 	if payload != nil {
 		if rawHTTP, ok := payload["httpRequest"]; ok {
 			if httpMap := mapFrom(rawHTTP); httpMap != nil {
-				canonical, ok := extractHttpRequest(httpMap)
-				if ok && len(httpMap) == 0 {
+				clone := make(map[string]any, len(httpMap))
+				maps.Copy(clone, httpMap)
+				canonical, ok := extractHttpRequest(clone)
+				if ok && len(clone) == 0 {
 					if _, exists := root["httpRequest"]; !exists {
 						root["httpRequest"] = canonical
 					}
@@ -490,97 +493,297 @@ func extractHttpRequest(m map[string]any) (map[string]any, bool) {
 		return nil, false
 	}
 
-	out := make(map[string]any)
+	rawLatency, hasLatency := m["latency"]
+	var latency string
+	var latencyValid, latencyWithinRange bool
 
-	if v, ok := m["requestMethod"]; ok {
-		delete(m, "requestMethod")
-		out["requestMethod"] = fmt.Sprint(v)
-	}
-	if v, ok := m["requestUrl"]; ok {
-		delete(m, "requestUrl")
-		out["requestUrl"] = fmt.Sprint(v)
-	}
-	if v, ok := m["userAgent"]; ok {
-		delete(m, "userAgent")
-		out["userAgent"] = fmt.Sprint(v)
-	}
-	if v, ok := m["remoteIp"]; ok {
-		delete(m, "remoteIp")
-		out["remoteIp"] = fmt.Sprint(v)
-	}
-	if v, ok := m["serverIp"]; ok {
-		delete(m, "serverIp")
-		out["serverIp"] = fmt.Sprint(v)
-	}
-	if v, ok := m["referer"]; ok {
-		delete(m, "referer")
-		out["referer"] = fmt.Sprint(v)
-	}
-	if v, ok := m["protocol"]; ok {
-		delete(m, "protocol")
-		out["protocol"] = fmt.Sprint(v)
-	}
-	if v, ok := m["requestSize"]; ok {
-		delete(m, "requestSize")
-		out["requestSize"] = strconv.FormatInt(parseIntRubyish(v), 10)
-	}
-	if v, ok := m["responseSize"]; ok {
-		delete(m, "responseSize")
-		out["responseSize"] = strconv.FormatInt(parseIntRubyish(v), 10)
-	}
-	if v, ok := m["cacheFillBytes"]; ok {
-		delete(m, "cacheFillBytes")
-		out["cacheFillBytes"] = strconv.FormatInt(parseIntRubyish(v), 10)
-	}
-	if v, ok := m["status"]; ok {
-		delete(m, "status")
-		out["status"] = int(parseIntRubyish(v))
-	}
-	if v, ok := m["latency"]; ok {
+	if hasLatency {
+		latency, latencyValid, latencyWithinRange = parseLatencyValue(rawLatency)
+		if !latencyValid {
+			return nil, false
+		}
 		delete(m, "latency")
-		if latency, ok := parseLatencyValue(v); ok {
-			out["latency"] = latency
+	}
+
+	promoted := make(map[string]any)
+
+	process := func(key string, handler func(any)) {
+		if v, ok := m[key]; ok {
+			handler(v)
+			delete(m, key)
 		}
 	}
-	if v, ok := m["cacheLookup"]; ok {
-		delete(m, "cacheLookup")
-		out["cacheLookup"] = parseBoolRubyish(v)
-	}
-	if v, ok := m["cacheHit"]; ok {
-		delete(m, "cacheHit")
-		out["cacheHit"] = parseBoolRubyish(v)
-	}
-	if v, ok := m["cacheValidatedWithOriginServer"]; ok {
-		delete(m, "cacheValidatedWithOriginServer")
-		out["cacheValidatedWithOriginServer"] = parseBoolRubyish(v)
+
+	process("requestMethod", func(v any) { promoted["requestMethod"] = fmt.Sprint(v) })
+	process("requestUrl", func(v any) { promoted["requestUrl"] = fmt.Sprint(v) })
+	process("userAgent", func(v any) { promoted["userAgent"] = fmt.Sprint(v) })
+	process("remoteIp", func(v any) { promoted["remoteIp"] = fmt.Sprint(v) })
+	process("serverIp", func(v any) { promoted["serverIp"] = fmt.Sprint(v) })
+	process("referer", func(v any) { promoted["referer"] = fmt.Sprint(v) })
+	process("protocol", func(v any) { promoted["protocol"] = fmt.Sprint(v) })
+
+	process("requestSize", func(v any) {
+		if size, ok := formatHTTPSize(v); ok {
+			promoted["requestSize"] = size
+		}
+	})
+	process("responseSize", func(v any) {
+		if size, ok := formatHTTPSize(v); ok {
+			promoted["responseSize"] = size
+		}
+	})
+	process("cacheFillBytes", func(v any) {
+		if size, ok := formatHTTPSize(v); ok && !isZeroSize(size) {
+			promoted["cacheFillBytes"] = size
+		}
+	})
+	process("status", func(v any) {
+		if statusVal, ok := normalizeStatusValue(v); ok {
+			promoted["status"] = statusVal
+		}
+	})
+
+	// Cache booleans: invalid encoding blocks promotion; accepted falsy values are dropped.
+	cacheBoolKeys := []string{"cacheLookup", "cacheHit", "cacheValidatedWithOriginServer"}
+	for _, key := range cacheBoolKeys {
+		raw, ok := m[key]
+		if !ok {
+			continue
+		}
+		val, valid := parseHTTPBool(raw)
+		if !valid {
+			return nil, false
+		}
+		if val {
+			promoted[key] = true
+		}
+		delete(m, key)
 	}
 
-	if len(out) == 0 {
-		return nil, false
+	if hasLatency && latencyWithinRange {
+		promoted["latency"] = latency
 	}
-	return out, true
+
+	return promoted, true
 }
 
-// parseLatencyValue converts latency representations into backend-friendly strings.
-func parseLatencyValue(v any) (string, bool) {
-	raw := strings.TrimSpace(fmt.Sprint(v))
+// parseLatencyValue returns the canonical latency, whether parsing succeeded, and whether it
+// falls within the Duration range. Valid formats require a trailing lowercase s, no whitespace,
+// up to nine fractional digits, and optionally a leading dot.
+func parseLatencyValue(v any) (string, bool, bool) {
+	raw := fmt.Sprint(v)
 	if raw == "" {
-		return "", false
+		return "", false, false
 	}
-	matches := reLatencyFlexible.FindStringSubmatch(strings.ToLower(raw))
-	if matches == nil {
-		return "", false
+	if strings.ContainsAny(raw, " \t") {
+		return "", false, false
 	}
-	intPart := matches[1]
-	fraction := matches[2]
-	if len(fraction) > 9 {
-		fraction = fraction[:9]
+	if !strings.HasSuffix(raw, "s") {
+		return "", false, false
 	}
-	fraction = strings.TrimRight(fraction, "0")
-	if fraction == "" {
-		return intPart + "s", true
+
+	body := raw[:len(raw)-1]
+	if body == "" {
+		return "", false, false
 	}
-	return intPart + "." + fraction + "s", true
+
+	if strings.Contains(body, "S") {
+		return "", false, false
+	}
+
+	sign := 1
+	switch body[0] {
+	case '-':
+		sign = -1
+		body = body[1:]
+	case '+':
+		body = body[1:]
+	}
+	if body == "" {
+		return "", false, false
+	}
+
+	var intPart, fracPart string
+	if strings.HasPrefix(body, ".") {
+		intPart = "0"
+		fracPart = body[1:]
+	} else if strings.Contains(body, ".") {
+		parts := strings.SplitN(body, ".", 2)
+		intPart = parts[0]
+		fracPart = parts[1]
+	} else {
+		intPart = body
+	}
+
+	if intPart == "" {
+		intPart = "0"
+	}
+	if !isAllDigits(intPart) {
+		return "", false, false
+	}
+	if fracPart != "" && !isAllDigits(fracPart) {
+		return "", false, false
+	}
+	if len(fracPart) > 9 {
+		return "", false, false
+	}
+
+	secs, err := strconv.ParseInt(intPart, 10, 64)
+	if err != nil {
+		return "", false, false
+	}
+	nanos := int32(0)
+	if fracPart != "" {
+		scale := int64(math.Pow10(9 - len(fracPart)))
+		fracInt, _ := strconv.ParseInt(fracPart, 10, 64)
+		nanos = int32(fracInt * scale)
+	}
+
+	secs *= int64(sign)
+	nanos *= int32(sign)
+
+	withinRange := true
+	if abs64(secs) > 315576000000 {
+		withinRange = false
+	} else if abs64(secs) == 315576000000 && nanos != 0 {
+		withinRange = false
+	}
+
+	return formatDurationSecondsNanos(secs, nanos), true, withinRange
+}
+
+// formatDurationSecondsNanos renders a Duration-like latency with 3/6/9-digit fractions.
+func formatDurationSecondsNanos(secs int64, nanos int32) string {
+	sign := ""
+	if secs < 0 || nanos < 0 {
+		sign = "-"
+		secs = abs64(secs)
+		nanos = int32(abs64(int64(nanos)))
+	}
+
+	frac := ""
+	if nanos != 0 {
+		if nanos%1_000_000 == 0 {
+			frac = fmt.Sprintf(".%03d", nanos/1_000_000)
+		} else if nanos%1_000 == 0 {
+			frac = fmt.Sprintf(".%06d", nanos/1_000)
+		} else {
+			frac = fmt.Sprintf(".%09d", nanos)
+		}
+	}
+
+	return fmt.Sprintf("%s%d%s%s", sign, secs, frac, "s")
+}
+
+// normalizeStatusValue coerces the status code where possible.
+func normalizeStatusValue(v any) (any, bool) {
+	switch x := v.(type) {
+	case json.Number:
+		if i, err := x.Int64(); err == nil {
+			return float64(i), true
+		}
+		if f, err := x.Float64(); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return float64(int64(f)), true
+		}
+		return nil, false
+	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return nil, false
+		}
+		return float64(int64(x)), true
+	case float32:
+		f := float64(x)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, false
+		}
+		return float64(int64(f)), true
+	case int64, int32, int, uint64, uint32, uint:
+		if i, ok := numericToInt64(x); ok {
+			return float64(i), true
+		}
+		return nil, false
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return nil, false
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return float64(int64(f)), true
+		}
+		return s, true
+	default:
+		return nil, false
+	}
+}
+
+// formatHTTPSize normalizes numeric-ish values to string representations.
+func formatHTTPSize(v any) (string, bool) {
+	if i, ok := numericToInt64(v); ok {
+		return strconv.FormatInt(i, 10), true
+	}
+
+	switch x := v.(type) {
+	case json.Number:
+		if f, err := x.Float64(); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return strconv.FormatInt(int64(f), 10), true
+		}
+	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return "", false
+		}
+		return strconv.FormatInt(int64(x), 10), true
+	case float32:
+		f := float64(x)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return "", false
+		}
+		return strconv.FormatInt(int64(f), 10), true
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return "", false
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			if f == math.Trunc(f) {
+				return strconv.FormatInt(int64(f), 10), true
+			}
+			return s, true
+		}
+		return s, true
+	}
+	return "", false
+}
+
+// parseHTTPBool enforces the accepted cache* encodings.
+func parseHTTPBool(v any) (bool, bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case string:
+		if x == "true" {
+			return true, true
+		}
+		if x == "false" {
+			return false, true
+		}
+		return false, false
+	default:
+		return false, false
+	}
+}
+
+// isZeroSize checks if a string representation of a number is zero.
+func isZeroSize(s string) bool {
+	f, err := strconv.ParseFloat(s, 64)
+	return err == nil && f == 0
+}
+
+// abs64 returns the absolute value of an int64.
+func abs64(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // formatTraceValue mirrors backend behavior by copying trace identifiers verbatim.
@@ -1699,9 +1902,9 @@ func TestHttpRequestElevatedWhenCanonical(t *testing.T) {
 	      "responseSize": "512",
 	      "cacheFillBytes": 1024,
 	      "status": 200,
-	      "latency": " 2.500 s ",
+	      "latency": "2.500s",
 	      "cacheHit": "true",
-	      "cacheLookup": 1,
+	      "cacheLookup": true,
 	      "cacheValidatedWithOriginServer": true
 	    }
 	  }
@@ -1724,7 +1927,7 @@ func TestHttpRequestElevatedWhenCanonical(t *testing.T) {
 	if status, ok := rootHTTP["status"].(float64); !ok || status != 200 {
 		t.Fatalf("status mismatch: %+v", rootHTTP["status"])
 	}
-	if latency, ok := rootHTTP["latency"].(string); !ok || latency != "2.5s" {
+	if latency, ok := rootHTTP["latency"].(string); !ok || latency != "2.500s" {
 		t.Fatalf("latency mismatch: %+v", rootHTTP["latency"])
 	}
 	if lookup, ok := rootHTTP["cacheLookup"].(bool); !ok || !lookup {
@@ -1775,8 +1978,9 @@ func TestHttpRequestRemainsInPayload(t *testing.T) {
 	if !ok {
 		t.Fatalf("payload httpRequest missing: %+v", jp)
 	}
-	if len(hr) != 1 || hr["unknown"] != "keep" {
-		t.Fatalf("expected only unknown field to remain: %+v", hr)
+	// Expect full map because invalid fields block promotion/consumption
+	if len(hr) < 10 {
+		t.Fatalf("expected httpRequest to remain intact: %+v", hr)
 	}
 }
 
@@ -2078,5 +2282,274 @@ func toInt64(v any) int64 {
 		return i
 	default:
 		return 0
+	}
+}
+
+// TestHttpRequestPromotionOutcomes covers specific promotion rules for httpRequest.
+func TestHttpRequestPromotionOutcomes(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	tests := []struct {
+		name             string
+		httpRequest      map[string]any
+		shouldPromote    bool
+		expectedLatency  string // empty if dropped or not promoted
+		expectedCacheHit any    // nil if dropped
+	}{
+		// Latency Valid
+		{
+			name:            "LatencyValid_0.321s",
+			httpRequest:     map[string]any{"latency": "0.321s"},
+			shouldPromote:   true,
+			expectedLatency: "0.321s",
+		},
+		{
+			name:            "LatencyValid_1.234s",
+			httpRequest:     map[string]any{"latency": "1.234s"},
+			shouldPromote:   true,
+			expectedLatency: "1.234s",
+		},
+		{
+			name:            "LatencyValid_3s",
+			httpRequest:     map[string]any{"latency": "3s"},
+			shouldPromote:   true,
+			expectedLatency: "3s",
+		},
+		{
+			name:            "LatencyValid_.5s",
+			httpRequest:     map[string]any{"latency": ".5s"},
+			shouldPromote:   true,
+			expectedLatency: "0.500s",
+		},
+		{
+			name:            "LatencyValid_Trimmed",
+			httpRequest:     map[string]any{"latency": "0.1200000s"},
+			shouldPromote:   true,
+			expectedLatency: "0.120s",
+		},
+		{
+			name:            "LatencyValid_9Digits",
+			httpRequest:     map[string]any{"latency": "0.123456789s"},
+			shouldPromote:   true,
+			expectedLatency: "0.123456789s",
+		},
+		{
+			name:            "LatencyValid_42s",
+			httpRequest:     map[string]any{"latency": "42s"},
+			shouldPromote:   true,
+			expectedLatency: "42s",
+		},
+		{
+			name:            "LatencyValid_0s",
+			httpRequest:     map[string]any{"latency": "0s"},
+			shouldPromote:   true,
+			expectedLatency: "0s",
+		},
+		{
+			name:            "LatencyValid_Negative",
+			httpRequest:     map[string]any{"latency": "-1s"},
+			shouldPromote:   true,
+			expectedLatency: "-1s",
+		},
+		{
+			name:            "LatencyValid_LeadingZero",
+			httpRequest:     map[string]any{"latency": "0000123s"},
+			shouldPromote:   true,
+			expectedLatency: "123s",
+		},
+
+		// Latency Invalid / Blocking
+		{
+			name:          "LatencyInvalid_Whitespace",
+			httpRequest:   map[string]any{"latency": "0.123 s"},
+			shouldPromote: false,
+		},
+		{
+			name:          "LatencyInvalid_Tab",
+			httpRequest:   map[string]any{"latency": "1\ts"},
+			shouldPromote: false,
+		},
+		{
+			name:          "LatencyInvalid_MissingSuffix",
+			httpRequest:   map[string]any{"latency": "0.789"},
+			shouldPromote: false,
+		},
+		{
+			name:          "LatencyInvalid_UppercaseS",
+			httpRequest:   map[string]any{"latency": "1.5S"},
+			shouldPromote: false,
+		},
+		{
+			name:          "LatencyInvalid_OtherUnits",
+			httpRequest:   map[string]any{"latency": "150ms"},
+			shouldPromote: false,
+		},
+		{
+			name:          "LatencyInvalid_RawNumeric",
+			httpRequest:   map[string]any{"latency": 1.5},
+			shouldPromote: false,
+		},
+		{
+			name:          "LatencyInvalid_10Digits",
+			httpRequest:   map[string]any{"latency": "0.1234567891s"},
+			shouldPromote: false,
+		},
+		{
+			name:          "LatencyInvalid_LeadingDot10Digits",
+			httpRequest:   map[string]any{"latency": ".1234567899s"},
+			shouldPromote: false,
+		},
+
+		// Latency Range (Promotes but drops field)
+		{
+			name:            "LatencyRange_TooLarge",
+			httpRequest:     map[string]any{"latency": "999999999999s"},
+			shouldPromote:   true,
+			expectedLatency: "", // Dropped
+		},
+
+		// Cache Fields
+		{
+			name:             "Cache_TrueLiteral",
+			httpRequest:      map[string]any{"cacheHit": true},
+			shouldPromote:    true,
+			expectedCacheHit: true,
+		},
+		{
+			name:             "Cache_TrueString",
+			httpRequest:      map[string]any{"cacheHit": "true"},
+			shouldPromote:    true,
+			expectedCacheHit: true,
+		},
+		{
+			name:             "Cache_FalseLiteral",
+			httpRequest:      map[string]any{"cacheHit": false},
+			shouldPromote:    true,
+			expectedCacheHit: nil, // Dropped
+		},
+		{
+			name:             "Cache_FalseString",
+			httpRequest:      map[string]any{"cacheHit": "false"},
+			shouldPromote:    true,
+			expectedCacheHit: nil, // Dropped
+		},
+		{
+			name:          "Cache_Invalid_Int",
+			httpRequest:   map[string]any{"cacheHit": 1},
+			shouldPromote: false,
+		},
+		{
+			name:          "Cache_Invalid_StringInt",
+			httpRequest:   map[string]any{"cacheHit": "1"},
+			shouldPromote: false,
+		},
+		{
+			name:          "Cache_Invalid_Uppercase",
+			httpRequest:   map[string]any{"cacheHit": "TRUE"},
+			shouldPromote: false,
+		},
+		{
+			name:          "Cache_Invalid_MixedCase",
+			httpRequest:   map[string]any{"cacheHit": "True"},
+			shouldPromote: false,
+		},
+		{
+			name:          "Cache_Invalid_Yes",
+			httpRequest:   map[string]any{"cacheHit": "yes"},
+			shouldPromote: false,
+		},
+		{
+			name:          "Cache_Invalid_Empty",
+			httpRequest:   map[string]any{"cacheHit": ""},
+			shouldPromote: false,
+		},
+
+		// Other Fields
+		{
+			name:          "Status_String",
+			httpRequest:   map[string]any{"status": "404"},
+			shouldPromote: true,
+		},
+		{
+			name:          "Status_Negative",
+			httpRequest:   map[string]any{"status": -1},
+			shouldPromote: true,
+		},
+		{
+			name:          "Status_DecimalString",
+			httpRequest:   map[string]any{"status": "200.0"},
+			shouldPromote: true,
+		},
+		{
+			name:          "Size_Float",
+			httpRequest:   map[string]any{"requestSize": 1.0},
+			shouldPromote: true,
+		},
+		{
+			name:          "CacheFillBytes_Zero",
+			httpRequest:   map[string]any{"cacheFillBytes": 0},
+			shouldPromote: true,
+			// Check logic manually for dropped field
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]any{"httpRequest": tc.httpRequest}
+			root := map[string]any{"jsonPayload": payload}
+			inputBytes, _ := json.Marshal(root)
+			out, err := TransformLogEntryJSON(string(inputBytes), now)
+			if err != nil {
+				t.Fatalf("TransformLogEntryJSON failed: %v", err)
+			}
+			m := mustUnmarshalMap(t, out)
+
+			if tc.shouldPromote {
+				if _, ok := m["httpRequest"]; !ok {
+					t.Fatal("expected httpRequest to be promoted")
+				}
+				if _, ok := m["jsonPayload"].(map[string]any)["httpRequest"]; ok {
+					t.Fatal("expected httpRequest to be removed from jsonPayload")
+				}
+
+				promoted := m["httpRequest"].(map[string]any)
+
+				// Check Latency
+				if tc.expectedLatency != "" {
+					if got := promoted["latency"]; got != tc.expectedLatency {
+						t.Fatalf("latency mismatch: got %v, want %v", got, tc.expectedLatency)
+					}
+				} else if _, ok := promoted["latency"]; ok {
+					// If we expected empty (dropped) but got something, fail unless we didn't specify expectation (e.g. status tests)
+					// But for latency tests we set expectedLatency to "" for dropped.
+					// For other tests (Cache, Status), latency is missing from input, so it won't be there.
+					if _, hadLatency := tc.httpRequest["latency"]; hadLatency {
+						t.Fatalf("expected latency to be dropped, got %v", promoted["latency"])
+					}
+				}
+
+				// Check CacheHit
+				if _, hasCache := tc.httpRequest["cacheHit"]; hasCache {
+					if tc.expectedCacheHit != nil {
+						if got := promoted["cacheHit"]; got != tc.expectedCacheHit {
+							t.Fatalf("cacheHit mismatch: got %v, want %v", got, tc.expectedCacheHit)
+						}
+					} else {
+						if _, ok := promoted["cacheHit"]; ok {
+							t.Fatalf("expected cacheHit to be dropped, got %v", promoted["cacheHit"])
+						}
+					}
+				}
+
+			} else {
+				if _, ok := m["httpRequest"]; ok {
+					t.Fatal("expected httpRequest NOT to be promoted")
+				}
+				if _, ok := m["jsonPayload"].(map[string]any)["httpRequest"]; !ok {
+					t.Fatal("expected httpRequest to remain in jsonPayload")
+				}
+			}
+		})
 	}
 }
