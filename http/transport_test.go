@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -247,6 +248,86 @@ func TestRoundTripperInjectTraceLegacy(t *testing.T) {
 			t.Fatalf("header should not be injected without span context")
 		}
 	})
+}
+
+// TestTransportInjectsTraceAndLogger ensures the transport adds trace headers and a logger.
+func TestTransportInjectsTraceAndLogger(t *testing.T) {
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	stub := &stubRoundTripper{
+		resp: &stdhttp.Response{
+			StatusCode: stdhttp.StatusAccepted,
+			Body:       io.NopCloser(strings.NewReader("ok")),
+		},
+	}
+	rt := Transport(
+		stub,
+		WithLogger(baseLogger),
+		WithProjectID("proj-123"),
+		WithLegacyXCloudInjection(true),
+	)
+
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+
+	ctx := trace.ContextWithSpanContext(context.Background(), spanCtx)
+
+	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, "https://api.example.com/v1/resource", stdhttp.NoBody)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("User-Agent", "test-client/1.0")
+
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	if resp.StatusCode != stdhttp.StatusAccepted {
+		t.Fatalf("response code = %d", resp.StatusCode)
+	}
+
+	if stub.req == nil {
+		t.Fatalf("captured request missing")
+	}
+
+	if got := stub.req.Header.Get("traceparent"); got == "" {
+		t.Fatalf("traceparent header missing")
+	}
+
+	expectedXCTC := "105445aa7843bc8bf206b12000100000/654584908287820719;o=1"
+	if got := stub.req.Header.Get(XCloudTraceContextHeader); got != expectedXCTC {
+		t.Fatalf("x-cloud-trace-context = %q want %q", got, expectedXCTC)
+	}
+
+	// stub.req.Context() should have the logger
+	logger := slogcp.Logger(stub.req.Context())
+	logger.Info("client completed")
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("no log output captured")
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	if got := entry["http.method"]; got != "POST" {
+		t.Errorf("http.method = %v", got)
+	}
+	if got := entry["http.host"]; got != "api.example.com" {
+		t.Errorf("http.host = %v", got)
+	}
+	if got := entry["logging.googleapis.com/trace"]; got != "projects/proj-123/traces/105445aa7843bc8bf206b12000100000" {
+		t.Errorf("trace = %v", got)
+	}
 }
 
 // TestOutboundHost exercises the host resolution helper.

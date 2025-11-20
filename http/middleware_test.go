@@ -176,84 +176,6 @@ func TestMiddlewareSkipsNilAttrHooks(t *testing.T) {
 	}
 }
 
-// TestTransportInjectsTraceAndLogger ensures the transport adds trace headers and a logger.
-func TestTransportInjectsTraceAndLogger(t *testing.T) {
-	var buf bytes.Buffer
-	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
-
-	capture := &capturingRoundTripper{}
-	rt := Transport(
-		capture,
-		WithLogger(baseLogger),
-		WithProjectID("proj-123"),
-		WithLegacyXCloudInjection(true),
-	)
-
-	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
-	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
-	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     spanID,
-		TraceFlags: trace.FlagsSampled,
-	})
-
-	ctx := trace.ContextWithSpanContext(context.Background(), spanCtx)
-
-	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, "https://api.example.com/v1/resource", stdhttp.NoBody)
-	if err != nil {
-		t.Fatalf("build request: %v", err)
-	}
-	req.Header.Set("User-Agent", "test-client/1.0")
-
-	resp, err := rt.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("round trip: %v", err)
-	}
-	if resp.StatusCode != stdhttp.StatusAccepted {
-		t.Fatalf("response code = %d", resp.StatusCode)
-	}
-
-	if capture.req == nil {
-		t.Fatalf("captured request missing")
-	}
-
-	if got := capture.req.Header.Get("traceparent"); got == "" {
-		t.Fatalf("traceparent header missing")
-	}
-
-	expectedXCTC := "105445aa7843bc8bf206b12000100000/654584908287820719;o=1"
-	if got := capture.req.Header.Get(XCloudTraceContextHeader); got != expectedXCTC {
-		t.Fatalf("x-cloud-trace-context = %q want %q", got, expectedXCTC)
-	}
-
-	if capture.ctx == nil {
-		t.Fatalf("captured context missing")
-	}
-
-	logger := slogcp.Logger(capture.ctx)
-	logger.Info("client completed")
-
-	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) == 0 {
-		t.Fatalf("no log output captured")
-	}
-
-	var entry map[string]any
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
-		t.Fatalf("unmarshal log: %v", err)
-	}
-
-	if got := entry["http.method"]; got != "POST" {
-		t.Errorf("http.method = %v", got)
-	}
-	if got := entry["http.host"]; got != "api.example.com" {
-		t.Errorf("http.host = %v", got)
-	}
-	if got := entry["logging.googleapis.com/trace"]; got != "projects/proj-123/traces/105445aa7843bc8bf206b12000100000" {
-		t.Errorf("trace = %v", got)
-	}
-}
-
 // TestMiddlewareAttrEnricherAndTransformer ensures custom enrichers/transformers affect derived loggers.
 func TestMiddlewareAttrEnricherAndTransformer(t *testing.T) {
 	var buf bytes.Buffer
@@ -886,25 +808,6 @@ func TestRequestScopeStatusDefaults(t *testing.T) {
 	if got := scope.Status(); got != stdhttp.StatusBadRequest {
 		t.Fatalf("Status() = %d, want %d", got, stdhttp.StatusBadRequest)
 	}
-}
-
-type capturingRoundTripper struct {
-	req *stdhttp.Request
-	ctx context.Context
-}
-
-// RoundTrip records the request and context before returning a canned response.
-func (c *capturingRoundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
-	c.req = req
-	c.ctx = req.Context()
-
-	body := io.NopCloser(strings.NewReader("ok"))
-	return &stdhttp.Response{
-		StatusCode:    stdhttp.StatusAccepted,
-		Body:          body,
-		ContentLength: 2,
-		Request:       req,
-	}, nil
 }
 
 // optionalResponseWriter implements every optional http.ResponseWriter interface for testing.
