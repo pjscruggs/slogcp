@@ -747,7 +747,7 @@ func TestJSONHandler_ErrorValue_Attribute(t *testing.T) {
 	logger := slog.New(h)
 
 	// This should trigger the error capture logic in walkAttr
-	logger.Info("msg", "my_err", err)
+	logger.Info("msg", slog.Any("my_err", err))
 
 	entry := decodeJSONEntry(t, &buf)
 	msg, ok := entry["message"].(string)
