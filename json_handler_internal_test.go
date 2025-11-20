@@ -720,21 +720,40 @@ func TestJSONHandler_ReplaceAttr_InGroup(t *testing.T) {
 
 // TestJSONHandler_ErrorValue_Attribute verifies that error values in attributes are correctly captured.
 func TestJSONHandler_ErrorValue_Attribute(t *testing.T) {
+	t.Parallel()
+
 	// Ensure that an error value in an attribute is captured as the first error
 	// if one hasn't been captured yet.
 
 	// We need an attribute that is an error.
 	err := errors.New("my error")
 	var buf bytes.Buffer
-	h := newJSONHandler(&handlerConfig{Writer: &buf}, slog.LevelInfo, nil)
+	h := newJSONHandler(&handlerConfig{Writer: &buf}, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	logger := slog.New(h)
 
 	// This should trigger the error capture logic in walkAttr
 	logger.Info("msg", "my_err", err)
 
 	entry := decodeJSONEntry(t, &buf)
-	if msg, ok := entry["message"].(string); !ok || !strings.Contains(msg, "my error") {
-		t.Errorf("expected message to contain error text, got %v", entry["message"])
+	msg, ok := entry["message"].(string)
+	if !ok {
+		t.Fatalf("message type = %T, want string", entry["message"])
+	}
+	if msg != "msg: my error" {
+		t.Fatalf("message = %q, want %q", msg, "msg: my error")
+	}
+	if got := entry["my_err"]; got != err.Error() {
+		t.Fatalf("my_err attr = %v, want %q", got, err.Error())
+	}
+	if got := entry["error_type"]; got != fmt.Sprintf("%T", err) {
+		t.Fatalf("error_type = %v, want %T", got, err)
+	}
+	wantSeverity := severityString(slog.LevelInfo, false)
+	if sev, ok := entry["severity"].(string); !ok || sev != wantSeverity {
+		t.Fatalf("severity = %v (type %T), want %s", entry["severity"], entry["severity"], wantSeverity)
+	}
+	if _, exists := entry[stackTraceKey]; exists {
+		t.Fatalf("unexpected stack_trace present when stack traces are disabled: %#v", entry)
 	}
 }
 

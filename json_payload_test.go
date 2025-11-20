@@ -294,10 +294,42 @@ func TestCloneStringMapAndStringMapToAny(t *testing.T) {
 	}
 }
 
-// TestPrepareHTTPRequest_Nil verifies that PrepareHTTPRequest handles nil input gracefully.
+// TestPrepareHTTPRequest_Nil verifies that PrepareHTTPRequest handles nil input gracefully
+// and still normalizes fields when the embedded *http.Request is absent.
 func TestPrepareHTTPRequest_Nil(t *testing.T) {
-	// Ensure PrepareHTTPRequest handles nil input gracefully.
+	t.Parallel()
+
 	PrepareHTTPRequest(nil)
+
+	req := &HTTPRequest{
+		RequestMethod: http.MethodPatch,
+		RequestURL:    "https://example.com/update",
+		RequestSize:   -5,
+		ResponseSize:  -10,
+		RemoteIP:      "203.0.113.7:9000",
+		Protocol:      "HTTP/2",
+	}
+
+	PrepareHTTPRequest(req)
+
+	if req.Request != nil {
+		t.Fatalf("Request should remain nil when not provided")
+	}
+	if req.RemoteIP != "203.0.113.7" {
+		t.Fatalf("RemoteIP = %q, want %q", req.RemoteIP, "203.0.113.7")
+	}
+	if req.RequestSize != -1 || req.ResponseSize != -1 {
+		t.Fatalf("size normalization = (%d, %d), want (-1, -1)", req.RequestSize, req.ResponseSize)
+	}
+	if req.RequestMethod != http.MethodPatch {
+		t.Fatalf("RequestMethod = %q, want %q", req.RequestMethod, http.MethodPatch)
+	}
+	if req.RequestURL != "https://example.com/update" {
+		t.Fatalf("RequestURL = %q, want %q", req.RequestURL, "https://example.com/update")
+	}
+	if req.Protocol != "HTTP/2" {
+		t.Fatalf("Protocol = %q, want %q", req.Protocol, "HTTP/2")
+	}
 }
 
 // stubTracingError implements stackTracer for exercising formatErrorForReporting.
