@@ -69,6 +69,11 @@ func Middleware(opts ...Option) func(stdhttp.Handler) stdhttp.Handler {
 					attrs = append(attrs, extra...)
 				}
 			}
+			if cfg.includeHTTPRequestAttr {
+				if attr := HTTPRequestAttr(r, scope); attr.Key != "" {
+					attrs = append(attrs, attr)
+				}
+			}
 			for _, transformer := range cfg.attrTransformers {
 				if transformer == nil {
 					continue

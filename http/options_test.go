@@ -21,3 +21,18 @@ func TestWithLoggerHandlesNil(t *testing.T) {
 		t.Fatalf("WithLogger custom logger mismatch")
 	}
 }
+
+// TestWithHTTPRequestAttr toggles automatic httpRequest enrichment flag.
+func TestWithHTTPRequestAttr(t *testing.T) {
+	t.Parallel()
+
+	cfg := applyOptions([]Option{WithHTTPRequestAttr(true)})
+	if !cfg.includeHTTPRequestAttr {
+		t.Fatalf("includeHTTPRequestAttr = false, want true")
+	}
+
+	cfg = applyOptions([]Option{WithHTTPRequestAttr(false)})
+	if cfg.includeHTTPRequestAttr {
+		t.Fatalf("includeHTTPRequestAttr = true, want false")
+	}
+}
