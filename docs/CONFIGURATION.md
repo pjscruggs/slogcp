@@ -104,13 +104,18 @@ Important options:
 | `WithClientIP(bool)` | Toggles inclusion of `network.peer.ip` (enabled by default). |
 | `WithIncludeQuery(bool)` | Opts into logging raw query strings (disabled by default). |
 | `WithUserAgent(bool)` | Opts into logging the `User-Agent` string (disabled by default). |
+| `WithHTTPRequestAttr(bool)` | Enables automatic addition of the Cloud Logging `httpRequest` payload to the derived logger. Disabled by default so applications must opt in. |
 
-`RequestScope` captures derived metadata and can be retrieved with `slogcphttp.ScopeFromContext(ctx)`. The same helper works for outbound requests instrumented by `Transport`. To emit [the Cloud Logging `httpRequest` payload](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#HttpRequest) explicitly:
+`RequestScope` captures derived metadata and can be retrieved with `slogcphttp.ScopeFromContext(ctx)`. The same helper works for outbound requests instrumented by `Transport`. To emit [the Cloud Logging `httpRequest` payload](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#HttpRequest) you can either opt in globally via `slogcphttp.WithHTTPRequestAttr(true)` or attach the attribute ad hoc:
 
 ```go
-scope, _ := slogcphttp.ScopeFromContext(ctx)
-logger.InfoContext(ctx, "served", slogcphttp.HTTPRequestAttr(r, scope))
+logger := slogcp.Logger(ctx)
+logger.InfoContext(ctx, "served",
+	slogcphttp.HTTPRequestAttrFromContext(ctx, r),
+)
 ```
+
+If you prefer more control, `slogcphttp.HTTPRequestAttr` accepts the explicit `scope` value, and `slogcphttp.HTTPRequestEnricher` implements `AttrEnricher` for use with `WithAttrEnricher`. Outside of the middleware, `slogcp.HTTPRequestFromRequest(req)` creates a Cloud Logging payload from any standard library `*http.Request`.
 
 ### HTTP Client Transport
 

@@ -37,22 +37,23 @@ type AttrTransformer func([]slog.Attr, *stdhttp.Request, *RequestScope) []slog.A
 type Option func(*config)
 
 type config struct {
-	logger            *slog.Logger
-	projectID         string
-	enableOTel        bool
-	tracerProvider    trace.TracerProvider
-	propagators       propagation.TextMapPropagator
-	propagatorsSet    bool
-	publicEndpoint    bool
-	spanNameFormatter func(string, *stdhttp.Request) string
-	filters           []otelhttp.Filter
-	attrEnrichers     []AttrEnricher
-	attrTransformers  []AttrTransformer
-	routeGetter       func(*stdhttp.Request) string
-	includeClientIP   bool
-	includeQuery      bool
-	includeUserAgent  bool
-	injectLegacyXCTC  bool
+	logger                 *slog.Logger
+	projectID              string
+	enableOTel             bool
+	tracerProvider         trace.TracerProvider
+	propagators            propagation.TextMapPropagator
+	propagatorsSet         bool
+	publicEndpoint         bool
+	spanNameFormatter      func(string, *stdhttp.Request) string
+	filters                []otelhttp.Filter
+	attrEnrichers          []AttrEnricher
+	attrTransformers       []AttrTransformer
+	routeGetter            func(*stdhttp.Request) string
+	includeClientIP        bool
+	includeQuery           bool
+	includeUserAgent       bool
+	injectLegacyXCTC       bool
+	includeHTTPRequestAttr bool
 }
 
 // defaultConfig returns the baseline configuration for slogcp HTTP helpers.
@@ -129,7 +130,7 @@ func WithOTel(enabled bool) Option {
 	}
 }
 
-// WithSpanNameFormatter customises otelhttp span naming.
+// WithSpanNameFormatter customizes otelhttp span naming.
 func WithSpanNameFormatter(formatter func(string, *stdhttp.Request) string) Option {
 	return func(cfg *config) {
 		cfg.spanNameFormatter = formatter
@@ -204,5 +205,14 @@ func WithUserAgent(enabled bool) Option {
 func WithLegacyXCloudInjection(enabled bool) Option {
 	return func(cfg *config) {
 		cfg.injectLegacyXCTC = enabled
+	}
+}
+
+// WithHTTPRequestAttr toggles automatic inclusion of the Cloud Logging
+// httpRequest payload on the derived request-scoped logger. The attribute is
+// disabled by default so applications opt in explicitly.
+func WithHTTPRequestAttr(enabled bool) Option {
+	return func(cfg *config) {
+		cfg.includeHTTPRequestAttr = enabled
 	}
 }

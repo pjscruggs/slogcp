@@ -15,6 +15,7 @@
 package http
 
 import (
+	"context"
 	"log/slog"
 	stdhttp "net/http"
 
@@ -50,3 +51,24 @@ func HTTPRequestAttr(r *stdhttp.Request, scope *RequestScope) slog.Attr {
 	slogcp.PrepareHTTPRequest(req)
 	return slog.Any(httpRequestKey, req)
 }
+
+// HTTPRequestAttrFromContext returns the Cloud Logging httpRequest attribute by
+// retrieving the RequestScope stored in ctx (if any). Callers can pass the
+// original *http.Request so derived metadata such as headers are preserved.
+func HTTPRequestAttrFromContext(ctx context.Context, r *stdhttp.Request) slog.Attr {
+	scope, _ := ScopeFromContext(ctx)
+	return HTTPRequestAttr(r, scope)
+}
+
+// HTTPRequestEnricher is an AttrEnricher that appends the Cloud Logging
+// httpRequest payload when data is available. It can be supplied to
+// WithAttrEnricher or used directly for custom instrumentation.
+func HTTPRequestEnricher(r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+	attr := HTTPRequestAttr(r, scope)
+	if attr.Key == "" {
+		return nil
+	}
+	return []slog.Attr{attr}
+}
+
+var _ AttrEnricher = HTTPRequestEnricher

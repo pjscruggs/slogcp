@@ -15,14 +15,21 @@
 package slogcp
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
 )
 
-// HTTPRequest represents the common subset of Google Cloud Logging HTTP request
-// metadata captured by slogcp's HTTP middleware. It mirrors the public API
-// surface of cloud.google.com/go/logging.HTTPRequest.
+// HTTPRequest mirrors the Cloud Logging HTTP request payload stored in
+// LogEntry.http_request / httpRequest. It is shaped after the
+// google.logging.type.HttpRequest proto message (see [Cloud Logging RPC])
+// and matches the JSON schema described at [Cloud Logging REST].
+// The corresponding Go proto type is
+// [google.golang.org/genproto/googleapis/logging/type.HttpRequest].
+//
+// [Cloud Logging RPC]: https://cloud.google.com/logging/docs/reference/v2/rpc/google.logging.type#httprequest
+// [Cloud Logging REST]: https://cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#HttpRequest
 type HTTPRequest struct {
 	// Request is the original HTTP request. It is used for extracting
 	// high-level details such as method, URL, headers, and protocol. The
@@ -128,4 +135,67 @@ func PrepareHTTPRequest(req *HTTPRequest) {
 	if req.ResponseSize < 0 {
 		req.ResponseSize = -1
 	}
+}
+
+// HTTPRequestFromRequest constructs an HTTPRequest from a standard library
+// *http.Request, normalizing it via PrepareHTTPRequest. It is useful when you
+// need to emit Cloud Logging-compatible httpRequest payloads without using the
+// slogcp/http middleware helpers.
+func HTTPRequestFromRequest(r *http.Request) *HTTPRequest {
+	if r == nil {
+		return nil
+	}
+	req := &HTTPRequest{Request: r}
+	PrepareHTTPRequest(req)
+	return req
+}
+
+// LogValue implements slog.LogValuer so HTTPRequest payloads render using the
+// Cloud Logging httpRequest schema even when emitted through generic slog
+// handlers.
+func (req *HTTPRequest) LogValue() slog.Value {
+	if req == nil {
+		return slog.Value{}
+	}
+	clone := *req
+	payload := flattenHTTPRequestToMap(&clone)
+	if payload == nil {
+		return slog.Value{}
+	}
+	m := map[string]any{
+		"requestMethod":                  payload.RequestMethod,
+		"requestUrl":                     payload.RequestURL,
+		"userAgent":                      payload.UserAgent,
+		"referer":                        payload.Referer,
+		"protocol":                       payload.Protocol,
+		"requestSize":                    payload.RequestSize,
+		"status":                         payload.Status,
+		"responseSize":                   payload.ResponseSize,
+		"remoteIp":                       payload.RemoteIP,
+		"serverIp":                       payload.ServerIP,
+		"cacheHit":                       payload.CacheHit,
+		"cacheValidatedWithOriginServer": payload.CacheValidatedWithOriginServer,
+		"cacheFillBytes":                 payload.CacheFillBytes,
+		"cacheLookup":                    payload.CacheLookup,
+	}
+	if payload.Latency != "" {
+		m["latency"] = payload.Latency
+	}
+	return slog.AnyValue(m)
+}
+
+// httpRequestFromValue extracts an *HTTPRequest pointer from a slog.Value if
+// it was attached via slog.Any with a value that implements slog.LogValuer.
+func httpRequestFromValue(v slog.Value) (*HTTPRequest, bool) {
+	switch v.Kind() {
+	case slog.KindAny:
+		if req, ok := v.Any().(*HTTPRequest); ok {
+			return req, true
+		}
+	case slog.KindLogValuer:
+		if req, ok := v.LogValuer().(*HTTPRequest); ok {
+			return req, true
+		}
+	}
+	return nil, false
 }

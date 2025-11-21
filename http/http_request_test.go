@@ -15,6 +15,7 @@
 package http
 
 import (
+	"context"
 	"log/slog"
 	stdhttp "net/http"
 	"net/http/httptest"
@@ -147,5 +148,73 @@ func TestPrepareHTTPRequestDerivesDefaults(t *testing.T) {
 	}
 	if payload.Request != nil {
 		t.Fatalf("Request should be nil after PrepareHTTPRequest")
+	}
+}
+
+// TestHTTPRequestAttrFromContext pulls the scope from context before building the attr.
+func TestHTTPRequestAttrFromContext(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://ctx.example.com/widgets", nil)
+	scope := &RequestScope{}
+	ctx := context.WithValue(context.Background(), requestScopeKey{}, scope)
+
+	attr := HTTPRequestAttrFromContext(ctx, req)
+	if attr.Key != httpRequestKey {
+		t.Fatalf("HTTPRequestAttrFromContext key = %q, want %q", attr.Key, httpRequestKey)
+	}
+
+	baseline := HTTPRequestAttr(req, scope)
+	if attr.Value.Any() == nil || baseline.Value.Any() == nil {
+		t.Fatalf("attrs should contain payloads")
+	}
+	if attr.Value.Any().(*slogcp.HTTPRequest).RequestURL != baseline.Value.Any().(*slogcp.HTTPRequest).RequestURL {
+		t.Fatalf("RequestURL mismatch between helpers")
+	}
+}
+
+// TestHTTPRequestEnricher ensures the helper satisfies AttrEnricher.
+func TestHTTPRequestEnricher(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(stdhttp.MethodPost, "https://enrich.example.com/api", nil)
+	scope := &RequestScope{}
+	scope.status.Store(201)
+	scope.latencyNS.Store(250 * time.Millisecond.Nanoseconds())
+
+	attrs := HTTPRequestEnricher(req, scope)
+	if len(attrs) != 1 {
+		t.Fatalf("HTTPRequestEnricher len = %d, want 1", len(attrs))
+	}
+	if attrs[0].Key != httpRequestKey {
+		t.Fatalf("HTTPRequestEnricher attr key = %q, want %q", attrs[0].Key, httpRequestKey)
+	}
+
+	if extra := HTTPRequestEnricher(nil, nil); len(extra) != 0 {
+		t.Fatalf("HTTPRequestEnricher with nil inputs should return no attrs")
+	}
+}
+
+// TestHTTPRequestFromRequest verifies the convenience constructor normalizes data.
+func TestHTTPRequestFromRequest(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://derived.example.com/parts", nil)
+	req.RemoteAddr = "198.51.100.99:9000"
+	req.ContentLength = 123
+
+	payload := slogcp.HTTPRequestFromRequest(req)
+	if payload == nil {
+		t.Fatalf("HTTPRequestFromRequest returned nil")
+	}
+	if payload.Request != nil {
+		t.Fatalf("HTTPRequestFromRequest should call PrepareHTTPRequest and clear Request")
+	}
+	if payload.RequestURL != req.URL.String() {
+		t.Fatalf("RequestURL = %q, want %q", payload.RequestURL, req.URL.String())
+	}
+
+	if payload := slogcp.HTTPRequestFromRequest(nil); payload != nil {
+		t.Fatalf("HTTPRequestFromRequest(nil) should return nil, got %#v", payload)
 	}
 }

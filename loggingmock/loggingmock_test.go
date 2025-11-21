@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -482,10 +481,6 @@ func isAllDigits(s string) bool {
 	}
 	return true
 }
-
-var (
-	reLatencyFlexible = regexp.MustCompile(`^\s*(\d+)(?:\.(\d+))?\s*s\s*$`)
-)
 
 // extractHttpRequest canonicalizes a jsonPayload.httpRequest map for elevation.
 func extractHttpRequest(m map[string]any) (map[string]any, bool) {

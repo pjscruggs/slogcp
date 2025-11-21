@@ -385,6 +385,7 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 
 	var walkAttr func(groupsLen int, currMap map[string]any, attr slog.Attr, inLabels bool)
 	walkAttr = func(groupsLen int, currMap map[string]any, attr slog.Attr, inLabels bool) {
+		rawValue := attr.Value
 		attr.Value = attr.Value.Resolve()
 		kind := attr.Value.Kind()
 		if kind != slog.KindGroup && h.cfg.ReplaceAttr != nil {
@@ -393,6 +394,7 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 				groupsArg = groupStack[:groupsLen]
 			}
 			attr = h.cfg.ReplaceAttr(groupsArg, attr)
+			rawValue = attr.Value
 			attr.Value = attr.Value.Resolve()
 			kind = attr.Value.Kind()
 		}
@@ -437,7 +439,7 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 		}
 
 		if attr.Key == httpRequestKey {
-			if req, ok := attr.Value.Any().(*HTTPRequest); ok && httpReq == nil {
+			if req, ok := httpRequestFromValue(rawValue); ok && httpReq == nil {
 				PrepareHTTPRequest(req)
 				httpReq = req
 			}

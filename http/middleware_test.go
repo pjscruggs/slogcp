@@ -238,6 +238,48 @@ func TestMiddlewareAttrEnricherAndTransformer(t *testing.T) {
 	}
 }
 
+// TestMiddlewareIncludesHTTPRequestAttr ensures enabling the option injects the Cloud Logging payload.
+func TestMiddlewareIncludesHTTPRequestAttr(t *testing.T) {
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	mw := Middleware(
+		WithLogger(baseLogger),
+		WithOTel(false),
+		WithHTTPRequestAttr(true),
+	)
+
+	handler := mw(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		slogcp.Logger(r.Context()).Info("http attr enabled")
+	}))
+
+	req := httptest.NewRequest(stdhttp.MethodPost, "https://example.com/orders", strings.NewReader("body"))
+	req.RemoteAddr = "203.0.113.10:8080"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected single log line, got %d", len(lines))
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	httpPayload, ok := entry["httpRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("httpRequest attribute missing or wrong type: %T", entry["httpRequest"])
+	}
+	if got := httpPayload["requestMethod"]; got != stdhttp.MethodPost {
+		t.Fatalf("requestMethod = %v, want POST", got)
+	}
+	if got := httpPayload["remoteIp"]; got != "203.0.113.10" {
+		t.Fatalf("remoteIp = %v, want 203.0.113.10", got)
+	}
+}
+
 // TestWrapResponseWriterPreservesOptionalInterfaces ensures wrapResponseWriter retains
 // optional HTTP interfaces such as Flusher, Hijacker, Pusher, CloseNotifier, and ReaderFrom.
 func TestWrapResponseWriterPreservesOptionalInterfaces(t *testing.T) {
