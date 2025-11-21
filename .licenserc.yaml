@@ -29,4 +29,4 @@ header:
 
   comment: on-failure
 
-  license-location-threshold: 200
+  license-location-threshold: 1000
