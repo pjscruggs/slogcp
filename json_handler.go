@@ -533,13 +533,23 @@ func (h *jsonHandler) emitJSON(
 		jsonPayload["logging.googleapis.com/sourceLocation"] = sourceLoc
 	}
 
-	if fmtTrace != "" {
+	switch {
+	case fmtTrace != "":
 		jsonPayload[TraceKey] = fmtTrace
 		if ownsSpan && spanID != "" {
 			jsonPayload[SpanKey] = spanID
 		}
 		jsonPayload[SampledKey] = sampled
-	} else if rawTrace != "" {
+	case rawTrace != "" && h.cfg.traceAllowAutoformat:
+		jsonPayload[TraceKey] = rawTrace
+		if ownsSpan && spanID != "" {
+			jsonPayload[SpanKey] = spanID
+		}
+		jsonPayload[SampledKey] = sampled
+	case rawTrace != "":
+		if h.cfg.traceDiagnosticsState != nil {
+			h.cfg.traceDiagnosticsState.warnUnknownProject()
+		}
 		jsonPayload["otel.trace_id"] = rawTrace
 		jsonPayload["otel.span_id"] = spanID
 		jsonPayload["otel.trace_sampled"] = sampled
