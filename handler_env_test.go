@@ -1,8 +1,23 @@
+// Copyright 2025 Patrick J. Scruggs
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package slogcp
 
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -365,4 +380,118 @@ func TestLogDiagnosticHandlesNilLogger(t *testing.T) {
 	if got := payload["msg"]; got != "hello" {
 		t.Fatalf("payload msg = %v, want %q", got, "hello")
 	}
+}
+
+// TestNewTraceDiagnosticsFallbacks ensures a default logger is created when the global logger is nil.
+func TestNewTraceDiagnosticsFallbacks(t *testing.T) {
+	original := traceDiagnosticLogger
+	t.Cleanup(func() {
+		traceDiagnosticLogger = original
+	})
+	traceDiagnosticLogger = nil
+
+	if td := newTraceDiagnostics(TraceDiagnosticsOff); td != nil {
+		t.Fatalf("newTraceDiagnostics(off) = %v, want nil", td)
+	}
+
+	td := newTraceDiagnostics(TraceDiagnosticsWarnOnce)
+	if td == nil {
+		t.Fatalf("newTraceDiagnostics returned nil in warn once mode")
+	}
+	if td.logger == nil {
+		t.Fatalf("trace diagnostics logger should fall back to non-nil instance")
+	}
+}
+
+// TestTraceDiagnosticsWarnUnknownProjectLogsOnce ensures warnings are emitted at most once per instance.
+func TestTraceDiagnosticsWarnUnknownProjectLogsOnce(t *testing.T) {
+	t.Parallel()
+
+	logger := &diagRecorder{}
+	td := &traceDiagnostics{mode: TraceDiagnosticsWarnOnce, logger: logger}
+	td.warnUnknownProject()
+	td.warnUnknownProject()
+
+	if len(logger.messages) != 1 {
+		t.Fatalf("warnUnknownProject logged %d messages, want 1", len(logger.messages))
+	}
+
+	silent := &traceDiagnostics{mode: TraceDiagnosticsOff, logger: logger}
+	silent.warnUnknownProject()
+	if len(logger.messages) != 1 {
+		t.Fatalf("TraceDiagnosticsOff should not log warnings")
+	}
+}
+
+// TestParseTraceDiagnosticsEnvCoversModes validates environment inputs and defaults.
+func TestParseTraceDiagnosticsEnvCoversModes(t *testing.T) {
+	t.Parallel()
+
+	logger := newDiscardLogger()
+	tests := []struct {
+		name    string
+		value   string
+		current TraceDiagnosticsMode
+		want    TraceDiagnosticsMode
+	}{
+		{"blank", "", TraceDiagnosticsWarnOnce, TraceDiagnosticsWarnOnce},
+		{"off_alias", "disable", TraceDiagnosticsWarnOnce, TraceDiagnosticsOff},
+		{"warn_alias", "warn-once", TraceDiagnosticsOff, TraceDiagnosticsWarnOnce},
+		{"strict", "strict", TraceDiagnosticsWarnOnce, TraceDiagnosticsStrict},
+		{"invalid", "mystery", TraceDiagnosticsStrict, TraceDiagnosticsStrict},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseTraceDiagnosticsEnv(tt.value, tt.current, logger); got != tt.want {
+				t.Fatalf("parseTraceDiagnosticsEnv(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCachedConfigFromEnvInvokesRaceHook simulates a concurrent cache fill to ensure the hook fires.
+func TestCachedConfigFromEnvInvokesRaceHook(t *testing.T) {
+	clearHandlerEnv(t)
+	resetHandlerConfigCache()
+
+	originalLoader := loadConfigFromEnvFunc
+	originalHook := cachedConfigRaceHook
+	t.Cleanup(func() {
+		loadConfigFromEnvFunc = originalLoader
+		cachedConfigRaceHook = originalHook
+		resetHandlerConfigCache()
+	})
+
+	raceWinner := &handlerConfig{Level: slog.LevelWarn}
+	loadConfigFromEnvFunc = func(logger *slog.Logger) (handlerConfig, error) {
+		handlerEnvConfigCache.Store(raceWinner)
+		return handlerConfig{Level: slog.LevelInfo}, nil
+	}
+
+	hookCalled := false
+	cachedConfigRaceHook = func() {
+		hookCalled = true
+	}
+
+	cfg, err := cachedConfigFromEnv(newDiscardLogger())
+	if err != nil {
+		t.Fatalf("cachedConfigFromEnv() returned %v, want nil", err)
+	}
+	if !hookCalled {
+		t.Fatalf("cachedConfigRaceHook was not invoked")
+	}
+	if cfg.Level != raceWinner.Level {
+		t.Fatalf("cfg.Level = %v, want %v from existing cache", cfg.Level, raceWinner.Level)
+	}
+}
+
+type diagRecorder struct {
+	messages []string
+}
+
+// Printf appends formatted messages for verification in tests.
+func (l *diagRecorder) Printf(format string, args ...any) {
+	l.messages = append(l.messages, fmt.Sprintf(format, args...))
 }

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"os"
 	"strconv"
@@ -30,17 +31,27 @@ import (
 const (
 	LabelsGroup = "logging.googleapis.com/labels"
 
-	envLogLevel        = "SLOGCP_LEVEL"
-	envLogSource       = "SLOGCP_SOURCE_LOCATION"
-	envLogTime         = "SLOGCP_TIME"
-	envLogStackEnabled = "SLOGCP_STACK_TRACE_ENABLED"
-	envLogStackLevel   = "SLOGCP_STACK_TRACE_LEVEL"
-	envSeverityAliases = "SLOGCP_SEVERITY_ALIASES"
-	envTraceProjectID  = "SLOGCP_TRACE_PROJECT_ID"
-	envProjectID       = "SLOGCP_PROJECT_ID"
-	envGoogleProject   = "GOOGLE_CLOUD_PROJECT"
-	envTarget          = "SLOGCP_TARGET"
-	envSlogcpGCP       = "SLOGCP_GCP_PROJECT"
+	envLogLevel         = "SLOGCP_LEVEL"
+	envLogSource        = "SLOGCP_SOURCE_LOCATION"
+	envLogTime          = "SLOGCP_TIME"
+	envLogStackEnabled  = "SLOGCP_STACK_TRACE_ENABLED"
+	envLogStackLevel    = "SLOGCP_STACK_TRACE_LEVEL"
+	envSeverityAliases  = "SLOGCP_SEVERITY_ALIASES"
+	envTraceProjectID   = "SLOGCP_TRACE_PROJECT_ID"
+	envProjectID        = "SLOGCP_PROJECT_ID"
+	envGoogleProject    = "GOOGLE_CLOUD_PROJECT"
+	envTarget           = "SLOGCP_TARGET"
+	envSlogcpGCP        = "SLOGCP_GCP_PROJECT"
+	envTraceDiagnostics = "SLOGCP_TRACE_DIAGNOSTICS"
+)
+
+// TraceDiagnosticsMode controls how slogcp surfaces trace correlation issues.
+type TraceDiagnosticsMode int
+
+const (
+	TraceDiagnosticsOff TraceDiagnosticsMode = iota
+	TraceDiagnosticsWarnOnce
+	TraceDiagnosticsStrict
 )
 
 var (
@@ -75,6 +86,42 @@ type Handler struct {
 	closeOnce sync.Once
 }
 
+type diagLogger interface {
+	Printf(format string, args ...any)
+}
+
+var traceDiagnosticLogger diagLogger = log.New(os.Stderr, "slogcp: ", log.LstdFlags)
+
+type traceDiagnostics struct {
+	mode      TraceDiagnosticsMode
+	logger    diagLogger
+	unknownMu sync.Once
+}
+
+// newTraceDiagnostics constructs a traceDiagnostics helper unless tracing is disabled.
+func newTraceDiagnostics(mode TraceDiagnosticsMode) *traceDiagnostics {
+	if mode == TraceDiagnosticsOff {
+		return nil
+	}
+	logger := traceDiagnosticLogger
+	if logger == nil {
+		logger = log.New(io.Discard, "slogcp: ", log.LstdFlags)
+	}
+	return &traceDiagnostics{mode: mode, logger: logger}
+}
+
+// warnUnknownProject emits a single warning when we cannot resolve the Cloud project ID.
+func (td *traceDiagnostics) warnUnknownProject() {
+	if td == nil || td.mode == TraceDiagnosticsOff {
+		return
+	}
+	td.unknownMu.Do(func() {
+		if td.logger != nil {
+			td.logger.Printf("trace correlation disabled: unable to determine Cloud project ID; set SLOGCP_TRACE_PROJECT_ID/GOOGLE_CLOUD_PROJECT or call slogcp.WithTraceProjectID")
+		}
+	})
+}
+
 type handlerConfig struct {
 	Level                 slog.Level
 	AddSource             bool
@@ -82,6 +129,7 @@ type handlerConfig struct {
 	StackTraceEnabled     bool
 	StackTraceLevel       slog.Level
 	TraceProjectID        string
+	TraceDiagnostics      TraceDiagnosticsMode
 	UseShortSeverityNames bool
 	Writer                io.Writer
 	ClosableWriter        io.Closer
@@ -95,6 +143,8 @@ type handlerConfig struct {
 	runtimeLabels            map[string]string
 	runtimeServiceContext    map[string]string
 	runtimeServiceContextAny map[string]any
+	traceAllowAutoformat     bool
+	traceDiagnosticsState    *traceDiagnostics
 }
 
 type options struct {
@@ -105,6 +155,7 @@ type options struct {
 	stackTraceEnabled     *bool
 	stackTraceLevel       *slog.Level
 	traceProjectID        *string
+	traceDiagnostics      *TraceDiagnosticsMode
 	useShortSeverity      *bool
 	writer                io.Writer
 	writerFilePath        *string
@@ -191,6 +242,11 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	cfg.runtimeServiceContextAny = stringMapToAny(cfg.runtimeServiceContext)
 	if cfg.TraceProjectID == "" {
 		cfg.TraceProjectID = strings.TrimSpace(runtimeInfo.ProjectID)
+	}
+	cfg.traceAllowAutoformat = cfg.TraceProjectID == "" && prefersManagedGCPDefaults(runtimeInfo)
+	cfg.traceDiagnosticsState = newTraceDiagnostics(cfg.TraceDiagnostics)
+	if cfg.TraceDiagnostics == TraceDiagnosticsStrict && cfg.TraceProjectID == "" && !cfg.traceAllowAutoformat {
+		return nil, errors.New("slogcp: trace diagnostics strict mode requires a Cloud project ID; set SLOGCP_TRACE_PROJECT_ID or provide slogcp.WithTraceProjectID")
 	}
 
 	cfgPtr := &cfg
@@ -454,6 +510,13 @@ func WithTraceProjectID(id string) Option {
 	}
 }
 
+// WithTraceDiagnostics adjusts how slogcp reports trace correlation issues.
+func WithTraceDiagnostics(mode TraceDiagnosticsMode) Option {
+	return func(o *options) {
+		o.traceDiagnostics = &mode
+	}
+}
+
 // WithSeverityAliases configures whether the handler emits Cloud Logging severity
 // aliases (for example, "I" for INFO) instead of the full severity names. Using
 // the aliases trims roughly a nanosecond from JSON marshaling, and Cloud
@@ -620,6 +683,7 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 		Level:                 slog.LevelInfo,
 		StackTraceLevel:       slog.LevelError,
 		EmitTimeField:         defaultEmitTimeField(),
+		TraceDiagnostics:      TraceDiagnosticsWarnOnce,
 		UseShortSeverityNames: defaultUseShortSeverityNames(),
 	}
 
@@ -629,6 +693,7 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv(envLogStackEnabled), cfg.StackTraceEnabled, logger)
 	cfg.StackTraceLevel = parseLevelEnv(os.Getenv(envLogStackLevel), cfg.StackTraceLevel, logger)
 	cfg.UseShortSeverityNames = parseBoolEnv(os.Getenv(envSeverityAliases), cfg.UseShortSeverityNames, logger)
+	cfg.TraceDiagnostics = parseTraceDiagnosticsEnv(os.Getenv(envTraceDiagnostics), cfg.TraceDiagnostics, logger)
 
 	traceProject := strings.TrimSpace(os.Getenv(envTraceProjectID))
 	if traceProject == "" {
@@ -672,6 +737,9 @@ func applyOptions(cfg *handlerConfig, o *options) {
 	}
 	if o.traceProjectID != nil {
 		cfg.TraceProjectID = *o.traceProjectID
+	}
+	if o.traceDiagnostics != nil {
+		cfg.TraceDiagnostics = *o.traceDiagnostics
 	}
 	if o.useShortSeverity != nil {
 		cfg.UseShortSeverityNames = *o.useShortSeverity
@@ -790,6 +858,26 @@ func parseLevelEnv(value string, current slog.Level, logger *slog.Logger) slog.L
 
 	logDiagnostic(logger, slog.LevelWarn, "invalid log level environment variable", slog.String("value", value))
 	return current
+}
+
+// parseTraceDiagnosticsEnv validates diagnostics mode overrides from env vars.
+func parseTraceDiagnosticsEnv(value string, current TraceDiagnosticsMode, logger *slog.Logger) TraceDiagnosticsMode {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return current
+	}
+
+	switch trimmed {
+	case "off", "disable", "disabled", "none":
+		return TraceDiagnosticsOff
+	case "warn", "warn_once", "warn-once", "warnonce":
+		return TraceDiagnosticsWarnOnce
+	case "strict":
+		return TraceDiagnosticsStrict
+	default:
+		logDiagnostic(logger, slog.LevelWarn, "invalid trace diagnostics mode", slog.String("value", value))
+		return current
+	}
 }
 
 // isStdStream reports whether w is stdout or stderr.

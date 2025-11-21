@@ -1,3 +1,17 @@
+// Copyright 2025 Patrick J. Scruggs
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package slogcp
 
 import (
@@ -7,8 +21,51 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
+
+type strictMetadataClient struct{}
+
+// OnGCE reports that the strictMetadataClient is never running on GCE.
+func (strictMetadataClient) OnGCE() bool { return false }
+
+// Get always returns an error so diagnostics must rely on explicit project IDs.
+func (strictMetadataClient) Get(string) (string, error) { return "", errors.New("unavailable") }
+
+// TestNewHandlerStrictDiagnosticsRequiresProject ensures strict diagnostics fail fast when no project can be detected.
+func TestNewHandlerStrictDiagnosticsRequiresProject(t *testing.T) {
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "")
+	t.Setenv("SLOGCP_PROJECT_ID", "")
+	t.Setenv("SLOGCP_GCP_PROJECT", "")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+	t.Setenv("GCLOUD_PROJECT", "")
+	t.Setenv("GCP_PROJECT", "")
+	t.Setenv("PROJECT_ID", "")
+
+	origFactory := metadataClientFactory
+	metadataClientFactory = func() metadataClient { return strictMetadataClient{} }
+	t.Cleanup(func() { metadataClientFactory = origFactory })
+
+	runtimeInfoOnce = sync.Once{}
+	runtimeInfo = RuntimeInfo{}
+	t.Cleanup(func() {
+		runtimeInfoOnce = sync.Once{}
+		runtimeInfo = RuntimeInfo{}
+	})
+
+	handler, err := NewHandler(io.Discard, WithTraceDiagnostics(TraceDiagnosticsStrict))
+	if err == nil {
+		t.Fatalf("NewHandler() returned nil error, want strict mode failure")
+	}
+	if handler != nil {
+		t.Fatalf("NewHandler() returned handler despite strict diagnostics failure")
+	}
+	if !strings.Contains(err.Error(), "requires a Cloud project ID") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
 // TestSourceAwareHandlerPropagatesSourceMetadata validates HasSource/With* wrappers.
 func TestSourceAwareHandlerPropagatesSourceMetadata(t *testing.T) {

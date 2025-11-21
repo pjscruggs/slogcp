@@ -1,3 +1,17 @@
+// Copyright 2025 Patrick J. Scruggs
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package slogcp
 
 import (
@@ -12,6 +26,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TestJSONHandlerResolveSourceLocation exercises the enabled/disabled branches.
@@ -245,6 +261,124 @@ func TestJSONHandlerWithGroupAndAttrsExtendState(t *testing.T) {
 	if last.attr.Key != "new" || last.attr.Value.String() != "value" {
 		t.Fatalf("new attr mismatch: %#v", last.attr)
 	}
+}
+
+type recordingDiagLogger struct {
+	messages []string
+}
+
+// Printf records a formatted diagnostic message so tests can assert on warnings.
+func (r *recordingDiagLogger) Printf(format string, args ...any) {
+	r.messages = append(r.messages, fmt.Sprintf(format, args...))
+}
+
+// TestJSONHandlerWarnsOnceWhenProjectUnknown ensures diagnostics fire once per process.
+func TestJSONHandlerWarnsOnceWhenProjectUnknown(t *testing.T) {
+	var diag recordingDiagLogger
+	origLogger := traceDiagnosticLogger
+	traceDiagnosticLogger = &diag
+	t.Cleanup(func() { traceDiagnosticLogger = origLogger })
+
+	var buf bytes.Buffer
+	cfg := &handlerConfig{
+		Writer:                &buf,
+		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+	}
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	traceID, _ := trace.TraceIDFromHex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	spanID, _ := trace.SpanIDFromHex("bbbbbbbbbbbbbbbb")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "missing-project", 0)
+	if err := handler.Handle(ctx, record); err != nil {
+		t.Fatalf("Handle() returned %v", err)
+	}
+
+	entry := decodeJSONLine(t, buf.String())
+	if _, exists := entry[TraceKey]; exists {
+		t.Fatalf("expected trace field to be omitted when project unknown: %v", entry)
+	}
+	if got := entry["otel.trace_id"]; got != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("otel.trace_id = %v, want trace id", got)
+	}
+	if len(diag.messages) != 1 {
+		t.Fatalf("expected single diagnostic message, got %d (%v)", len(diag.messages), diag.messages)
+	}
+
+	buf.Reset()
+	if err := handler.Handle(ctx, record); err != nil {
+		t.Fatalf("Handle() second call returned %v", err)
+	}
+	if len(diag.messages) != 1 {
+		t.Fatalf("diagnostics should warn once, got %d", len(diag.messages))
+	}
+}
+
+// TestJSONHandlerAutoformatTraceFallback ensures raw trace IDs populate Cloud Logging keys when autoformat is allowed.
+func TestJSONHandlerAutoformatTraceFallback(t *testing.T) {
+	var diag recordingDiagLogger
+	origLogger := traceDiagnosticLogger
+	traceDiagnosticLogger = &diag
+	t.Cleanup(func() { traceDiagnosticLogger = origLogger })
+
+	var buf bytes.Buffer
+	cfg := &handlerConfig{
+		Writer:                &buf,
+		traceAllowAutoformat:  true,
+		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+	}
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "autoformat", 0)
+	if err := handler.Handle(ctx, record); err != nil {
+		t.Fatalf("Handle() returned %v", err)
+	}
+
+	entry := decodeJSONLine(t, buf.String())
+	if got := entry[TraceKey]; got != "105445aa7843bc8bf206b12000100000" {
+		t.Fatalf("trace field = %v, want raw trace id", got)
+	}
+	if got := entry[SpanKey]; got != "09158d8185d3c3af" {
+		t.Fatalf("spanId = %v, want span id", got)
+	}
+	if got := entry[SampledKey]; got != true {
+		t.Fatalf("trace_sampled = %v, want true", got)
+	}
+	if _, exists := entry["otel.trace_id"]; exists {
+		t.Fatalf("otel.trace_id should be omitted when Cloud Logging fields are emitted: %v", entry)
+	}
+	if len(diag.messages) != 0 {
+		t.Fatalf("autoformat path should not emit diagnostics, got %d", len(diag.messages))
+	}
+}
+
+// decodeJSONLine unpacks the final JSON line written by the handler for assertions.
+func decodeJSONLine(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		t.Fatalf("no log output to decode")
+	}
+	lines := strings.Split(trimmed, "\n")
+	line := strings.TrimSpace(lines[len(lines)-1])
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("json.Unmarshal() returned %v", err)
+	}
+	return entry
 }
 
 // TestJSONHandlerHandleSkipsDisabledLevels ensures Handle short-circuits below the threshold.
