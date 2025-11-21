@@ -158,7 +158,12 @@ func (req *HTTPRequest) LogValue() slog.Value {
 		return slog.Value{}
 	}
 	clone := *req
-	payload := flattenHTTPRequestToMap(&clone)
+	return httpRequestPayloadValue(flattenHTTPRequestToMap(&clone))
+}
+
+// httpRequestPayloadValue converts an httpRequestPayload into a slog.Value while gracefully
+// handling nil payloads.
+func httpRequestPayloadValue(payload *httpRequestPayload) slog.Value {
 	if payload == nil {
 		return slog.Value{}
 	}
@@ -187,15 +192,14 @@ func (req *HTTPRequest) LogValue() slog.Value {
 // httpRequestFromValue extracts an *HTTPRequest pointer from a slog.Value if
 // it was attached via slog.Any with a value that implements slog.LogValuer.
 func httpRequestFromValue(v slog.Value) (*HTTPRequest, bool) {
-	switch v.Kind() {
-	case slog.KindAny:
-		if req, ok := v.Any().(*HTTPRequest); ok {
-			return req, true
-		}
-	case slog.KindLogValuer:
-		if req, ok := v.LogValuer().(*HTTPRequest); ok {
-			return req, true
-		}
+	if v.Kind() == slog.KindLogValuer {
+		return httpRequestFromLogValuer(v.LogValuer())
 	}
 	return nil, false
+}
+
+// httpRequestFromLogValuer unwraps HTTPRequest pointers stored as slog.LogValuer values.
+func httpRequestFromLogValuer(v slog.LogValuer) (*HTTPRequest, bool) {
+	req, ok := v.(*HTTPRequest)
+	return req, ok
 }

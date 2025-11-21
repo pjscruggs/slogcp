@@ -101,8 +101,6 @@ func resolveSlogValue(v slog.Value) any {
 		switch vt := val.(type) {
 		case error:
 			return vt.Error()
-		case *HTTPRequest:
-			return vt
 		case *http.Request:
 			return nil
 		}

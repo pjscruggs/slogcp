@@ -76,6 +76,7 @@ Core environment variables for configuring slogcp:
 | `SLOGCP_SOURCE_LOCATION` | Include source file/line (`true`, `false`) | `false` |
 | `SLOGCP_TIME` | Emit RFC3339Nano `time` field (`slogcp.WithTime(true)` programmatic equivalent) | `false` |
 | `SLOGCP_STACK_TRACE_ENABLED` | Enable stack traces (`true`, `false`) | `false` |
+| `SLOGCP_TRACE_DIAGNOSTICS` | Controls trace-correlation diagnostics: `off`, `warn`/`warn_once`, or `strict` | `warn_once` |
 
 ### Dynamic Level Control
 
