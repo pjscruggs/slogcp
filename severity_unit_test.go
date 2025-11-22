@@ -187,3 +187,76 @@ func TestDefaultSeverityNotFilteredByHigherMinimum(t *testing.T) {
 		}
 	}
 }
+
+// TestHelperSeverityParity ensures slogcp.Debug/Info/Warn/Error (and their
+// Context counterparts) emit the same severity strings as their native slog
+// equivalents, preserving syntax parity for developers.
+func TestHelperSeverityParity(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h, err := slogcp.NewHandler(io.Discard, slogcp.WithRedirectWriter(&buf), slogcp.WithLevel(slog.LevelDebug))
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	logger := slog.New(h)
+	ctx := context.Background()
+
+	slogcp.Debug(logger, "helper-debug")
+	slogcp.Info(logger, "helper-info")
+	slogcp.Warn(logger, "helper-warn")
+	slogcp.Error(logger, "helper-error")
+	slogcp.DebugContext(ctx, logger, "helper-debug-ctx")
+	slogcp.InfoContext(ctx, logger, "helper-info-ctx")
+	slogcp.WarnContext(ctx, logger, "helper-warn-ctx")
+	slogcp.ErrorContext(ctx, logger, "helper-error-ctx")
+
+	entries := decodeLogBuffer(t, &buf)
+	if len(entries) != 8 {
+		t.Fatalf("decodeLogBuffer() returned %d entries, want 8", len(entries))
+	}
+
+	useAliases := prefersManagedDefaults()
+	expectations := []struct {
+		msg   string
+		full  string
+		alias string
+	}{
+		{msg: "helper-debug", full: "DEBUG", alias: "D"},
+		{msg: "helper-info", full: "INFO", alias: "I"},
+		{msg: "helper-warn", full: "WARNING", alias: "W"},
+		{msg: "helper-error", full: "ERROR", alias: "E"},
+		{msg: "helper-debug-ctx", full: "DEBUG", alias: "D"},
+		{msg: "helper-info-ctx", full: "INFO", alias: "I"},
+		{msg: "helper-warn-ctx", full: "WARNING", alias: "W"},
+		{msg: "helper-error-ctx", full: "ERROR", alias: "E"},
+	}
+
+	for i, expect := range expectations {
+		entry := entries[i]
+		msg, ok := entry["message"].(string)
+		if !ok {
+			t.Fatalf("entry %d message type = %T, want string", i, entry["message"])
+		}
+		if msg != expect.msg {
+			t.Fatalf("entry %d message = %q, want %q", i, msg, expect.msg)
+		}
+		sev, ok := entry["severity"].(string)
+		if !ok {
+			t.Fatalf("entry %d severity type = %T, want string", i, entry["severity"])
+		}
+		want := expect.full
+		if useAliases {
+			want = expect.alias
+		}
+		if sev != want {
+			t.Fatalf("entry %d severity = %q, want %q", i, sev, want)
+		}
+	}
+}
