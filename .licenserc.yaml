@@ -1,4 +1,6 @@
 ---
+# NOTE: validation_pipeline.yml reads and rewrites this file (year + header settings).
+# Keep the structure/paths stable unless you also update that workflow.
 header:
   license:
     spdx-id: Apache-2.0
