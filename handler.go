@@ -394,6 +394,13 @@ func Default(logger *slog.Logger, msg string, args ...any) {
 	logger.Log(context.Background(), LevelDefault.Level(), msg, args...)
 }
 
+// Debug logs a structured message at LevelDebug severity without requiring a
+// context. It mirrors slog.Logger.Debug while guaranteeing Cloud Logging
+// severity alignment.
+func Debug(logger *slog.Logger, msg string, args ...any) {
+	DebugContext(context.Background(), logger, msg, args...)
+}
+
 // DefaultContext logs a structured message at [LevelDefault] severity while
 // attaching contextual attributes from ctx. It is suitable for routing
 // application level events through Cloud Logging.
@@ -402,6 +409,60 @@ func DefaultContext(ctx context.Context, logger *slog.Logger, msg string, args .
 		return
 	}
 	logger.Log(ctx, LevelDefault.Level(), msg, args...)
+}
+
+// DebugContext logs a message at LevelDebug severity while attaching
+// contextual attributes from ctx.
+func DebugContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Log(ctx, LevelDebug.Level(), msg, args...)
+}
+
+// Info logs a structured message at LevelInfo severity without requiring a
+// context, mirroring slog.Logger.Info.
+func Info(logger *slog.Logger, msg string, args ...any) {
+	InfoContext(context.Background(), logger, msg, args...)
+}
+
+// InfoContext logs a message at LevelInfo severity while attaching contextual
+// attributes from ctx.
+func InfoContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Log(ctx, LevelInfo.Level(), msg, args...)
+}
+
+// Warn logs a structured message at LevelWarn severity without requiring a
+// context, mirroring slog.Logger.Warn.
+func Warn(logger *slog.Logger, msg string, args ...any) {
+	WarnContext(context.Background(), logger, msg, args...)
+}
+
+// WarnContext logs a message at LevelWarn severity while attaching contextual
+// attributes from ctx.
+func WarnContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Log(ctx, LevelWarn.Level(), msg, args...)
+}
+
+// Error logs a structured message at LevelError severity without requiring a
+// context, mirroring slog.Logger.Error.
+func Error(logger *slog.Logger, msg string, args ...any) {
+	ErrorContext(context.Background(), logger, msg, args...)
+}
+
+// ErrorContext logs a message at LevelError severity while attaching
+// contextual attributes from ctx.
+func ErrorContext(ctx context.Context, logger *slog.Logger, msg string, args ...any) {
+	if logger == nil {
+		return
+	}
+	logger.Log(ctx, LevelError.Level(), msg, args...)
 }
 
 // NoticeContext logs a message at notice severity for operational events that
