@@ -27,8 +27,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	slogcp "github.com/pjscruggs/slogcp"
-	slogcphttp "github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/slogcphttp"
 )
 
 const maxConnectionsPerHost = 50
