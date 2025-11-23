@@ -22,9 +22,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pjscruggs/slogcp/slogcphttp"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
+	"github.com/pjscruggs/slogcp/slogcphttp"
 )
 
 // TestTransportForwardsTraceHeaders validates that the example transport

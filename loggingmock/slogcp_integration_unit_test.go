@@ -27,11 +27,12 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
+
 	"github.com/pjscruggs/slogcp"
 	"github.com/pjscruggs/slogcp/slogcpgrpc"
 	"github.com/pjscruggs/slogcp/slogcphttp"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 )
 
 // TestSlogcpLogEntryTransforms exercises slogcp JSON output against the logging mock transformer.

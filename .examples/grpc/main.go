@@ -28,11 +28,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcpgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	pb "google.golang.org/grpc/examples/helloworld/helloworld"
+
+	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/slogcpgrpc"
 )
 
 type greeterServer struct {

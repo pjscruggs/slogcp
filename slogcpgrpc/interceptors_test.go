@@ -27,7 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	nooptrace "go.opentelemetry.io/otel/trace/noop"
@@ -36,6 +35,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 // TestUnaryServerInterceptorAttachesLogger ensures the server interceptor attaches a request logger and info.

@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/m-mizutani/masq"
+
 	"github.com/pjscruggs/slogcp"
 )
 

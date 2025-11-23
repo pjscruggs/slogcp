@@ -30,9 +30,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 // TestMiddlewareAttachesRequestLogger verifies the middleware injects a request scope and logger.

@@ -28,10 +28,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcphttp"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
+	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/slogcphttp"
 )
 
 func main() {
