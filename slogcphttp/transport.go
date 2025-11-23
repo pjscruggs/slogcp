@@ -21,10 +21,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 // Transport returns an http.RoundTripper that injects trace context and derives

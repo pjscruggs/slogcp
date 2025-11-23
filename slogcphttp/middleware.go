@@ -25,11 +25,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 const instrumentationName = "github.com/pjscruggs/slogcp/slogcphttp"

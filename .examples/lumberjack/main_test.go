@@ -24,8 +24,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pjscruggs/slogcp"
 	"gopkg.in/natefinch/lumberjack.v2"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 // TestLumberjackIntegration exercises the lumberjack example by writing

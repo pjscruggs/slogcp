@@ -23,13 +23,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 type requestInfoKey struct{}

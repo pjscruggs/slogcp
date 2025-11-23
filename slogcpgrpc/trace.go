@@ -22,11 +22,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 const XCloudTraceContextHeader = "X-Cloud-Trace-Context"

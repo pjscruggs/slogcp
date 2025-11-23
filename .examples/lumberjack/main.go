@@ -23,8 +23,9 @@ import (
 	"log"
 	"log/slog"
 
-	"github.com/pjscruggs/slogcp"
 	"gopkg.in/natefinch/lumberjack.v2"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 func main() {

@@ -22,8 +22,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pjscruggs/slogcp"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/pjscruggs/slogcp"
 )
 
 // TestHandlerEmitsCloudLoggingTraceFields verifies the final JSON carries Cloud Logging keys.
