@@ -61,6 +61,7 @@ func TestOptionsMutateConfig(t *testing.T) {
 			transformCalled = true
 			return attrs
 		}),
+		WithTracePropagation(false),
 		WithPeerInfo(false),
 		WithPayloadSizes(false),
 		WithLegacyXCloudInjection(true),
@@ -104,6 +105,9 @@ func TestOptionsMutateConfig(t *testing.T) {
 	}
 	if !cfg.injectLegacyXCTC {
 		t.Fatalf("expected legacy XCTC injection enabled")
+	}
+	if cfg.propagateTrace {
+		t.Fatalf("propagateTrace = true, want false")
 	}
 
 	base := []slog.Attr{slog.String("keep", "yes")}

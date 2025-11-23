@@ -264,6 +264,43 @@ func TestRoundTripperInjectTraceLegacy(t *testing.T) {
 	})
 }
 
+// TestTransportSkipsTraceInjectionWhenDisabled verifies trace headers are not injected when propagation is disabled.
+func TestTransportSkipsTraceInjectionWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubRoundTripper{}
+	rt := Transport(
+		stub,
+		WithLegacyXCloudInjection(true),
+		WithTracePropagation(false),
+	)
+
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/api", nil).WithContext(trace.ContextWithSpanContext(context.Background(), spanCtx))
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip returned %v", err)
+	}
+	defer resp.Body.Close()
+
+	if stub.req == nil {
+		t.Fatalf("base RoundTripper not invoked")
+	}
+	if got := stub.req.Header.Get("traceparent"); got != "" {
+		t.Fatalf("traceparent header injected unexpectedly: %q", got)
+	}
+	if got := stub.req.Header.Get(XCloudTraceContextHeader); got != "" {
+		t.Fatalf("x-cloud-trace-context injected unexpectedly: %q", got)
+	}
+}
+
 // TestTransportInjectsTraceAndLogger ensures the transport adds trace headers and a logger.
 func TestTransportInjectsTraceAndLogger(t *testing.T) {
 	var buf bytes.Buffer

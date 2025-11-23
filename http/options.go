@@ -43,6 +43,7 @@ type config struct {
 	tracerProvider         trace.TracerProvider
 	propagators            propagation.TextMapPropagator
 	propagatorsSet         bool
+	propagateTrace         bool
 	publicEndpoint         bool
 	spanNameFormatter      func(string, *stdhttp.Request) string
 	filters                []otelhttp.Filter
@@ -62,6 +63,7 @@ func defaultConfig() *config {
 		logger:          slog.Default(),
 		enableOTel:      true,
 		includeClientIP: true,
+		propagateTrace:  true,
 	}
 }
 
@@ -112,6 +114,14 @@ func WithPropagators(p propagation.TextMapPropagator) Option {
 func WithTracerProvider(tp trace.TracerProvider) Option {
 	return func(cfg *config) {
 		cfg.tracerProvider = tp
+	}
+}
+
+// WithTracePropagation toggles extraction and injection of trace context on
+// HTTP middleware and transports. Enabled by default.
+func WithTracePropagation(enabled bool) Option {
+	return func(cfg *config) {
+		cfg.propagateTrace = enabled
 	}
 }
 

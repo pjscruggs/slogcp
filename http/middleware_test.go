@@ -792,6 +792,25 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 			t.Fatalf("unexpected span context detected: %v", sc)
 		}
 	})
+
+	t.Run("disabled", func(t *testing.T) {
+		cfg := defaultConfig()
+		cfg.propagateTrace = false
+
+		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		req.Header.Set("traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+
+		type markerKey struct{}
+		ctx := context.WithValue(context.Background(), markerKey{}, "stay")
+		gotCtx, sc := ensureSpanContext(ctx, req, cfg)
+
+		if gotCtx != ctx {
+			t.Fatalf("expected original context when propagation disabled")
+		}
+		if sc.IsValid() {
+			t.Fatalf("span context should be invalid when propagation disabled, got %v", sc)
+		}
+	})
 }
 
 // TestEnsureSpanContextUsesLegacyHeader ensures legacy headers populate the context.

@@ -42,6 +42,7 @@ type config struct {
 	tracerProvider   trace.TracerProvider
 	propagators      propagation.TextMapPropagator
 	propagatorsSet   bool
+	propagateTrace   bool
 	publicEndpoint   bool
 	spanAttributes   []attribute.KeyValue
 	filters          []otelgrpc.Filter
@@ -55,10 +56,11 @@ type config struct {
 // defaultConfig returns the baseline configuration for slogcp gRPC helpers.
 func defaultConfig() *config {
 	return &config{
-		logger:       slog.Default(),
-		enableOTel:   true,
-		includePeer:  true,
-		includeSizes: true,
+		logger:         slog.Default(),
+		enableOTel:     true,
+		includePeer:    true,
+		includeSizes:   true,
+		propagateTrace: true,
 	}
 }
 
@@ -107,6 +109,14 @@ func WithPropagators(p propagation.TextMapPropagator) Option {
 func WithTracerProvider(tp trace.TracerProvider) Option {
 	return func(cfg *config) {
 		cfg.tracerProvider = tp
+	}
+}
+
+// WithTracePropagation toggles extraction and injection of trace context on
+// gRPC servers and clients. Enabled by default.
+func WithTracePropagation(enabled bool) Option {
+	return func(cfg *config) {
+		cfg.propagateTrace = enabled
 	}
 }
 

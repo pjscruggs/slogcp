@@ -109,6 +109,10 @@ func (t roundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error)
 
 // injectTrace injects OpenTelemetry and optional legacy trace headers onto the request.
 func (t roundTripper) injectTrace(ctx context.Context, req *stdhttp.Request) {
+	if t.cfg != nil && !t.cfg.propagateTrace {
+		return
+	}
+
 	propagator := t.cfg.propagators
 	if propagator == nil {
 		propagator = otel.GetTextMapPropagator()
