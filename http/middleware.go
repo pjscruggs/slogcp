@@ -456,6 +456,10 @@ func (rr *responseRecorder) CloseNotify() <-chan bool {
 
 // ensureSpanContext extracts existing span context or synthesizes one from incoming headers.
 func ensureSpanContext(ctx context.Context, r *stdhttp.Request, cfg *config) (context.Context, trace.SpanContext) {
+	if cfg != nil && !cfg.propagateTrace {
+		return ctx, trace.SpanContextFromContext(ctx)
+	}
+
 	sc := trace.SpanContextFromContext(ctx)
 	if sc.IsValid() {
 		return ctx, sc

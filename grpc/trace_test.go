@@ -211,7 +211,7 @@ func TestEnsureServerSpanContextPrefersExisting(t *testing.T) {
 	})
 	ctx := trace.ContextWithSpanContext(context.Background(), expected)
 
-	cfg := &config{}
+	cfg := defaultConfig()
 	gotCtx, sc := ensureServerSpanContext(ctx, metadata.New(nil), cfg)
 	if gotCtx != ctx {
 		t.Fatalf("ensureServerSpanContext returned new ctx when existing span present")
@@ -234,7 +234,7 @@ func TestEnsureServerSpanContextHandlesMissingMetadata(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			gotCtx, sc := ensureServerSpanContext(ctx, tt.md, &config{})
+			gotCtx, sc := ensureServerSpanContext(ctx, tt.md, defaultConfig())
 			if gotCtx != ctx {
 				t.Fatalf("expected ensureServerSpanContext to return original context when no metadata")
 			}
@@ -242,6 +242,26 @@ func TestEnsureServerSpanContextHandlesMissingMetadata(t *testing.T) {
 				t.Fatalf("expected invalid span context when metadata missing, got %v", sc)
 			}
 		})
+	}
+}
+
+// TestEnsureServerSpanContextRespectsDisabledPropagation skips extraction when disabled.
+func TestEnsureServerSpanContextRespectsDisabledPropagation(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	md := metadata.New(map[string]string{
+		"traceparent": "00-" + traceID.String() + "-" + spanID.String() + "-01",
+	})
+
+	ctx := context.Background()
+	cfg := &config{propagateTrace: false}
+
+	gotCtx, sc := ensureServerSpanContext(ctx, md, cfg)
+	if gotCtx != ctx {
+		t.Fatalf("expected original context when propagation disabled")
+	}
+	if sc.IsValid() {
+		t.Fatalf("expected invalid span context when propagation disabled, got %v", sc)
 	}
 }
 
@@ -257,7 +277,8 @@ func TestEnsureServerSpanContextExtractsMetadata(t *testing.T) {
 	})
 
 	t.Run("propagator", func(t *testing.T) {
-		cfg := &config{propagators: propagation.TraceContext{}}
+		cfg := defaultConfig()
+		cfg.propagators = propagation.TraceContext{}
 		md := metadata.New(nil)
 		ctxWithSpan := trace.ContextWithRemoteSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
 			TraceID:    traceID,
@@ -277,7 +298,7 @@ func TestEnsureServerSpanContextExtractsMetadata(t *testing.T) {
 		md := metadata.New(map[string]string{
 			"grpc-trace-bin": encodeTraceBin(traceID, spanID, trace.FlagsSampled),
 		})
-		_, sc := ensureServerSpanContext(context.Background(), md, &config{})
+		_, sc := ensureServerSpanContext(context.Background(), md, defaultConfig())
 		if sc.TraceID() != traceID || sc.SpanID() != spanID {
 			t.Fatalf("grpc-trace-bin extraction failed, got %v", sc)
 		}
@@ -287,7 +308,7 @@ func TestEnsureServerSpanContextExtractsMetadata(t *testing.T) {
 		md := metadata.New(map[string]string{
 			"traceparent": "00-" + traceID.String() + "-" + spanID.String() + "-01",
 		})
-		_, sc := ensureServerSpanContext(context.Background(), md, &config{})
+		_, sc := ensureServerSpanContext(context.Background(), md, defaultConfig())
 		if sc.TraceID() != traceID || sc.SpanID() != spanID {
 			t.Fatalf("traceparent extraction failed, got %v", sc)
 		}
@@ -296,7 +317,7 @@ func TestEnsureServerSpanContextExtractsMetadata(t *testing.T) {
 	t.Run("xcloud", func(t *testing.T) {
 		header := traceID.String() + "/10;o=1"
 		md := metadata.Pairs(strings.ToLower(XCloudTraceContextHeader), header)
-		_, sc := ensureServerSpanContext(context.Background(), md, &config{})
+		_, sc := ensureServerSpanContext(context.Background(), md, defaultConfig())
 		if sc.TraceID().String() != traceID.String() {
 			t.Fatalf("xcloud extraction failed, got %v", sc)
 		}
@@ -317,6 +338,7 @@ func TestInjectClientTraceHandlesLegacyHeaders(t *testing.T) {
 	cfg := &config{
 		injectLegacyXCTC: true,
 		propagators:      propagation.TraceContext{},
+		propagateTrace:   true,
 	}
 
 	injectClientTrace(ctx, md, cfg)
@@ -332,7 +354,7 @@ func TestInjectClientTraceHandlesLegacyHeaders(t *testing.T) {
 // TestInjectClientTraceSkipsWhenUnavailable ensures legacy headers are omitted without a valid span.
 func TestInjectClientTraceSkipsWhenUnavailable(t *testing.T) {
 	md := metadata.Pairs(strings.ToLower(XCloudTraceContextHeader), "existing")
-	cfg := &config{injectLegacyXCTC: true}
+	cfg := &config{injectLegacyXCTC: true, propagateTrace: true}
 
 	injectClientTrace(context.Background(), md, cfg)
 	if got := md.Get(XCloudTraceContextHeader); len(got) == 0 || got[0] != "existing" {
@@ -357,11 +379,34 @@ func TestInjectClientTraceRespectsExistingLegacyHeader(t *testing.T) {
 	}))
 
 	md := metadata.Pairs(strings.ToLower(XCloudTraceContextHeader), "existing")
-	cfg := &config{injectLegacyXCTC: true, propagators: propagation.TraceContext{}}
+	cfg := &config{injectLegacyXCTC: true, propagators: propagation.TraceContext{}, propagateTrace: true}
 
 	injectClientTrace(ctx, md, cfg)
 	if got := md.Get(XCloudTraceContextHeader); len(got) == 0 || got[0] != "existing" {
 		t.Fatalf("legacy header should remain untouched, got %v", got)
+	}
+}
+
+// TestInjectClientTraceRespectsPropagationToggle ensures injection is skipped when disabled.
+func TestInjectClientTraceRespectsPropagationToggle(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	md := metadata.New(nil)
+	cfg := &config{
+		propagateTrace:   false,
+		injectLegacyXCTC: true,
+		propagators:      propagation.TraceContext{},
+	}
+
+	injectClientTrace(ctx, md, cfg)
+	if got := md.Len(); got != 0 {
+		t.Fatalf("expected no headers injected when propagation disabled, got %d", got)
 	}
 }
 

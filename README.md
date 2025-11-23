@@ -21,7 +21,7 @@ go get github.com/pjscruggs/slogcp
 - {🪵}  **Structured JSON logging** for powerful filtering and analysis in Cloud Logging
 - ☁️ **Cloud Logging-compatible JSON formatting** automatically shapes every entry for Google Cloud ingestion
 - 🎚️ **Complete GCP severity level support** (DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY)
-- 🔗 **Automatic trace context extraction and propagation** (gRPC interceptors by default; optional HTTP client transport)
+- 🔗 **Automatic trace context extraction and propagation** (gRPC interceptors and HTTP middleware/transport)
 - 🚚 **Optional HTTP client transport** that injects W3C Trace Context (and optionally `X-Cloud-Trace-Context`) on outbound requests
 - 🧩 **Ready-to-use HTTP and gRPC middleware** with optimized GCP-friendly log structuring
 - 🎛️ **Dynamic log level control** without application restart

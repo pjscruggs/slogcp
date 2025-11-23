@@ -62,6 +62,10 @@ func (mc metadataCarrier) Keys() []string {
 
 // ensureServerSpanContext obtains a remote span context from request metadata or propagation.
 func ensureServerSpanContext(ctx context.Context, md metadata.MD, cfg *config) (context.Context, trace.SpanContext) {
+	if cfg != nil && !cfg.propagateTrace {
+		return ctx, trace.SpanContextFromContext(ctx)
+	}
+
 	sc := trace.SpanContextFromContext(ctx)
 	if sc.IsValid() {
 		return ctx, sc
@@ -106,6 +110,10 @@ func ensureServerSpanContext(ctx context.Context, md metadata.MD, cfg *config) (
 
 // injectClientTrace injects tracing metadata for outbound RPCs, including optional legacy headers.
 func injectClientTrace(ctx context.Context, md metadata.MD, cfg *config) {
+	if cfg != nil && !cfg.propagateTrace {
+		return
+	}
+
 	propagator := cfg.propagators
 	if propagator == nil {
 		propagator = otel.GetTextMapPropagator()

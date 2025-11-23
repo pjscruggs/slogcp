@@ -96,6 +96,7 @@ Important options:
 | `WithLogger(*slog.Logger)` | Sets the base logger used to derive request loggers. Defaults to `slog.Default()`. |
 | `WithProjectID(string)` | Overrides the project ID used for Cloud Trace correlation. |
 | `WithPropagators(propagation.TextMapPropagator)` | Customizes the propagator used to extract trace context when no span exists. |
+| `WithTracePropagation(bool)` | Enables or disables extraction of incoming trace headers. Defaults to `true`. |
 | `WithTracerProvider(trace.TracerProvider)` | Supplies the tracer provider passed to `otelhttp`. |
 | `WithPublicEndpoint(bool)` | Forwards the public-endpoint hint to `otelhttp`. |
 | `WithOTel(bool)` | Enables or disables wrapping with `otelhttp`. |
@@ -128,6 +129,7 @@ If you prefer more control, `slogcphttp.HTTPRequestAttr` accepts the explicit `s
 | `WithLogger(*slog.Logger)` | Sets the base logger for outbound requests. When omitted, the transport falls back to `slogcp.Logger(ctx)` or `slog.Default()`. |
 | `WithProjectID(string)` | Controls the project ID used when computing Cloud Trace correlation fields. |
 | `WithPropagators(propagation.TextMapPropagator)` | Overrides the propagator used for trace header injection. |
+| `WithTracePropagation(bool)` | Enables or disables outbound trace header injection. Defaults to `true`. |
 | `WithAttrEnricher` / `WithAttrTransformer` | Allow custom attribute enrichment or redaction for outbound requests. |
 | `WithClientIP(bool)` | Toggles inclusion of the resolved host address as `network.peer.ip`. Enabled by default. |
 | `WithIncludeQuery(bool)` / `WithUserAgent(bool)` | Control whether the query string and user agent are recorded on derived loggers. |
@@ -146,6 +148,7 @@ Important options:
 | `WithLogger(*slog.Logger)` | Sets the base logger for derived RPC loggers. Defaults to `slog.Default()`. |
 | `WithProjectID(string)` | Overrides the project used for trace correlation. |
 | `WithPropagators(propagation.TextMapPropagator)` | Custom propagator for metadata extraction (server) or injection (client). |
+| `WithTracePropagation(bool)` | Enables or disables trace extraction/injection on servers and clients. Defaults to `true`. |
 | `WithTracerProvider(trace.TracerProvider)` | Passed to the otelgrpc StatsHandler when OpenTelemetry instrumentation is enabled. |
 | `WithPublicEndpoint(bool)` | Marks the service as public for telemetry. |
 | `WithOTel(bool)` | Enables or disables otelgrpc StatsHandlers (enabled by default). |
