@@ -723,7 +723,9 @@ func TestWithRedirectToStdStreams(t *testing.T) {
 			if !restored {
 				restore()
 			}
-			reader.Close()
+			if err := reader.Close(); err != nil {
+				t.Fatalf("reader.Close() returned %v", err)
+			}
 		}()
 
 		h, err := slogcp.NewHandler(io.Discard, slogcp.WithRedirectToStdout(), slogcp.WithSeverityAliases(false))
@@ -754,7 +756,9 @@ func TestWithRedirectToStdStreams(t *testing.T) {
 			if !restored {
 				restore()
 			}
-			reader.Close()
+			if err := reader.Close(); err != nil {
+				t.Fatalf("reader.Close() returned %v", err)
+			}
 		}()
 
 		h, err := slogcp.NewHandler(io.Discard, slogcp.WithRedirectToStderr(), slogcp.WithSeverityAliases(false))
@@ -829,14 +833,18 @@ func captureStdStream(t *testing.T, target string) (*os.File, func()) {
 		prev := os.Stdout
 		os.Stdout = writer
 		return reader, func() {
-			writer.Close()
+			if err := writer.Close(); err != nil {
+				t.Fatalf("writer.Close() returned %v", err)
+			}
 			os.Stdout = prev
 		}
 	case "stderr":
 		prev := os.Stderr
 		os.Stderr = writer
 		return reader, func() {
-			writer.Close()
+			if err := writer.Close(); err != nil {
+				t.Fatalf("writer.Close() returned %v", err)
+			}
 			os.Stderr = prev
 		}
 	default:
