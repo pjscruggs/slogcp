@@ -55,7 +55,11 @@ func TestTransportRoundTripDerivesScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
 	}
-	defer gotResp.Body.Close()
+	defer func() {
+		if cerr := gotResp.Body.Close(); cerr != nil {
+			t.Fatalf("gotResp.Body.Close() returned %v", cerr)
+		}
+	}()
 
 	if stub.req == nil {
 		t.Fatalf("base RoundTripper not invoked")
@@ -141,7 +145,11 @@ func TestTransportRoundTripAppliesAttrHooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			t.Fatalf("resp.Body.Close() returned %v", cerr)
+		}
+	}()
 
 	if !sawEnricher {
 		t.Fatalf("attr enricher did not run")
@@ -184,7 +192,11 @@ func TestTransportSkipsNilHooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			t.Fatalf("resp.Body.Close() returned %v", cerr)
+		}
+	}()
 
 	if !sawEnricher {
 		t.Fatalf("expected enricher to run")
@@ -209,7 +221,11 @@ func TestTransportUsesContextLoggerFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			t.Fatalf("resp.Body.Close() returned %v", cerr)
+		}
+	}()
 
 	logger := slogcp.Logger(stub.req.Context())
 	handler, ok := logger.Handler().(*spyHandler)
@@ -288,7 +304,11 @@ func TestTransportSkipsTraceInjectionWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			t.Fatalf("resp.Body.Close() returned %v", cerr)
+		}
+	}()
 
 	if stub.req == nil {
 		t.Fatalf("base RoundTripper not invoked")

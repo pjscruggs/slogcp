@@ -328,7 +328,11 @@ func TestTraceContextPropagation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v", err)
 	}
-	t.Cleanup(func() { h.Close() })
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
 
 	baseLogger := slog.New(h)
 
@@ -394,7 +398,11 @@ func TestErrorReportingIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v", err)
 	}
-	t.Cleanup(func() { h.Close() })
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
 
 	logger := slog.New(h)
 	logger.Error("something went wrong")
@@ -441,7 +449,11 @@ func TestGRPCInterceptorIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v", err)
 	}
-	t.Cleanup(func() { h.Close() })
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
 
 	logger := slog.New(h)
 
