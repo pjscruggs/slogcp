@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package http
+package slogcphttp
 
 import (
 	"bufio"
@@ -32,7 +32,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const instrumentationName = "github.com/pjscruggs/slogcp/http"
+const instrumentationName = "github.com/pjscruggs/slogcp/slogcphttp"
 
 var xCloudTraceContextExtractor = contextWithXCloudTrace
 

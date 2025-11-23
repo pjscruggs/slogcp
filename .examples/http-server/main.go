@@ -26,7 +26,7 @@ import (
 	"os"
 
 	"github.com/pjscruggs/slogcp"
-	slogcphttp "github.com/pjscruggs/slogcp/http"
+	slogcphttp "github.com/pjscruggs/slogcp/slogcphttp"
 )
 
 func main() {

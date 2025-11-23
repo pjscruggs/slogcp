@@ -92,7 +92,10 @@ See [`.examples/basic/main.go`](.examples/basic/main.go) for a minimal bootstrap
 
 ## HTTP and gRPC Middleware
 
-slogcp provides ready-to-use middleware for HTTP servers and gRPC services.
+slogcp provides ready-to-use middleware for HTTP servers and gRPC services. The
+HTTP helpers live in the `slogcphttp` package
+(`github.com/pjscruggs/slogcp/slogcphttp`) and the gRPC interceptors live in the
+`slogcpgrpc` package (`github.com/pjscruggs/slogcp/slogcpgrpc`).
 
 ### HTTP Example (Server)
 

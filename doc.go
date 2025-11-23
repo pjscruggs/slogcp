@@ -50,16 +50,17 @@
 //
 // # Subpackages
 //
-//   - [github.com/pjscruggs/slogcp/http] offers net/http middleware and client
-//     transports that derive request-scoped loggers, propagate trace context,
-//     record latency/size metadata, and expose Cloud Logging friendly helpers
-//     such as [slogcp/http.HTTPRequestAttr] and [slogcp/http.ScopeFromContext].
-//     Legacy `X-Cloud-Trace-Context` handling is available when required.
-//   - [github.com/pjscruggs/slogcp/grpc] provides client and server
+//   - [github.com/pjscruggs/slogcp/slogcphttp] offers net/http middleware and
+//     client transports that derive request-scoped loggers, propagate trace
+//     context, record latency/size metadata, and expose Cloud Logging friendly
+//     helpers such as [slogcphttp.HTTPRequestAttr] and
+//     [slogcphttp.ScopeFromContext]. Legacy `X-Cloud-Trace-Context` handling is
+//     available when required.
+//   - [github.com/pjscruggs/slogcp/slogcpgrpc] provides client and server
 //     interceptors that capture RPC metadata, surface errors with stack traces,
 //     and propagate trace context. Helper functions such as
-//     [slogcp/grpc.ServerOptions], [slogcp/grpc.DialOptions], and
-//     [slogcp/grpc.InfoFromContext] simplify wiring in both directions.
+//     [slogcpgrpc.ServerOptions], [slogcpgrpc.DialOptions], and
+//     [slogcpgrpc.InfoFromContext] simplify wiring in both directions.
 //
 // # Quick Start
 //

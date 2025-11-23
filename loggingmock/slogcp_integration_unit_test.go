@@ -28,8 +28,8 @@ import (
 	"time"
 
 	"github.com/pjscruggs/slogcp"
-	slogcpgrpc "github.com/pjscruggs/slogcp/grpc"
-	slogcphttp "github.com/pjscruggs/slogcp/http"
+	slogcpgrpc "github.com/pjscruggs/slogcp/slogcpgrpc"
+	slogcphttp "github.com/pjscruggs/slogcp/slogcphttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )

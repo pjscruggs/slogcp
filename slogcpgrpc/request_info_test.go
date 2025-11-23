@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package grpc
+package slogcpgrpc
 
 import (
 	"testing"
@@ -123,5 +123,24 @@ func TestSplitFullMethodHandlesServiceOnly(t *testing.T) {
 	service, method := splitFullMethod("/pkg.Service")
 	if service != "pkg.Service" || method != "" {
 		t.Fatalf("splitFullMethod service-only parsed %q/%q", service, method)
+	}
+}
+
+// TestRequestInfoAccessors covers getter helpers for computed fields.
+func TestRequestInfoAccessors(t *testing.T) {
+	t.Parallel()
+
+	info := newRequestInfo("/pkg.Service/Unary", "unary", true, time.Now())
+	if info.Service() != "pkg.Service" {
+		t.Fatalf("Service() = %q, want pkg.Service", info.Service())
+	}
+	if info.Method() != "Unary" {
+		t.Fatalf("Method() = %q, want Unary", info.Method())
+	}
+	if info.FullMethod() != "/pkg.Service/Unary" {
+		t.Fatalf("FullMethod() = %q, want /pkg.Service/Unary", info.FullMethod())
+	}
+	if !info.IsClient() {
+		t.Fatalf("IsClient() = false, want true")
 	}
 }

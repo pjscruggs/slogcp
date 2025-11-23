@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package grpc provides gRPC interceptors that integrate slogcp with Google
+// Package slogcpgrpc provides gRPC interceptors that integrate slogcp with Google
 // Cloud Logging and OpenTelemetry.
 //
 // The package exposes unary and stream interceptors for both clients and
@@ -50,4 +50,4 @@
 //	    )...,
 //	)
 
-package grpc
+package slogcpgrpc

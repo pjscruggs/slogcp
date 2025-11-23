@@ -7,7 +7,7 @@
 `slogcp` resolves configuration in the following order:
 
 1. **Defaults** - internal sensible defaults baked into each constructor.
-2. **Environment variables** - evaluated when you call `slogcp.NewHandler`, `slogcphttp.Middleware`, or the gRPC helpers.
+2. **Environment variables** - evaluated when you call `slogcp.NewHandler`, `slogcphttp.Middleware`, or the `slogcpgrpc` helpers.
 3. **Programmatic options** - `With...` overrides take precedence over everything else.
 
 ## Boolean ENV VARS
@@ -70,7 +70,7 @@ Additional notes:
 All other severities retain their natural order relative to the standard slog levels: `DEBUG` < `INFO` < `NOTICE` < `WARNING` < `ERROR` < `CRITICAL` < `ALERT` < `EMERGENCY` < `DEFAULT`.
 
 
-## HTTP Integration (`github.com/pjscruggs/slogcp/http`)
+## HTTP Integration (`github.com/pjscruggs/slogcp/slogcphttp`)
 
 Use `http.Middleware` to wrap servers and `http.Transport` to instrument clients:
 
@@ -137,7 +137,7 @@ If you prefer more control, `slogcphttp.HTTPRequestAttr` accepts the explicit `s
 
 Client requests also populate a `RequestScope`, making latency, status, and payload sizes available via `ScopeFromContext`. `InjectTraceContextMiddleware` remains available for the rare case where you disable `otelhttp` and still need to recognize `X-Cloud-Trace-Context` manually.
 
-## gRPC Integration (`github.com/pjscruggs/slogcp/grpc`)
+## gRPC Integration (`github.com/pjscruggs/slogcp/slogcpgrpc`)
 
 `grpc.UnaryServerInterceptor`, `grpc.StreamServerInterceptor`, `grpc.UnaryClientInterceptor`, and `grpc.StreamClientInterceptor` derive per-RPC loggers, propagate trace context, and capture method/service/latency/status metadata. Each interceptor stores the logger in the context (so `slogcp.Logger(ctx)` works inside handlers) and records a `RequestInfo` structure that you can retrieve later with `slogcpgrpc.InfoFromContext`.
 

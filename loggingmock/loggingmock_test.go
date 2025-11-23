@@ -347,7 +347,7 @@ func normalizeFractionalComponent(main string) (string, bool) {
 	return main[:dotIndex+1] + frac, true
 }
 
-// normalizeOffset accepts colon-free or short offsets and rewrites them to ±HH:MM.
+// normalizeOffset accepts colon-free or short offsets and rewrites them to +/-HH:MM.
 func normalizeOffset(offset string) (string, bool) {
 	if len(offset) < 2 {
 		return "", false
