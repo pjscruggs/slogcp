@@ -27,7 +27,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	slogcphttp "github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/slogcphttp"
 )
 
 func main() {

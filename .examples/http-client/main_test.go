@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	slogcphttp "github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/slogcphttp"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )

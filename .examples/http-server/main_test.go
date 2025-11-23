@@ -23,7 +23,7 @@ import (
 	"testing"
 
 	"github.com/pjscruggs/slogcp"
-	slogcphttp "github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/slogcphttp"
 )
 
 // TestHTTPMiddlewareLogsRequest covers the HTTP server example by invoking the
