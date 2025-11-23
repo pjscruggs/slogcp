@@ -2,7 +2,7 @@ module github.com/pjscruggs/slogcp/examples/http-server
 
 go 1.25.4
 
-require github.com/pjscruggs/slogcp v0.1.6-alpha
+require github.com/pjscruggs/slogcp v0.0.0
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
@@ -18,4 +18,4 @@ require (
 	golang.org/x/sys v0.38.0 // indirect
 )
 
-replace github.com/pjscruggs/slogcp => ../..
+replace github.com/pjscruggs/slogcp => ..\..

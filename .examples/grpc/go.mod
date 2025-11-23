@@ -5,7 +5,7 @@ go 1.25.4
 require (
 	github.com/pjscruggs/slogcp v0.0.0
 	google.golang.org/grpc v1.77.0
-	google.golang.org/grpc/examples v0.0.0-20251031062749-363018c3d687
+	google.golang.org/grpc/examples v0.0.0-20251121223525-cdbafd304983
 )
 
 require (
@@ -25,4 +25,4 @@ require (
 	google.golang.org/protobuf v1.36.10 // indirect
 )
 
-replace github.com/pjscruggs/slogcp => ../..
+replace github.com/pjscruggs/slogcp => ..\..
