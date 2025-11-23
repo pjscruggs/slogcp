@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"github.com/pjscruggs/slogcp"
-	slogcpgrpc "github.com/pjscruggs/slogcp/grpc"
+	slogcpgrpc "github.com/pjscruggs/slogcp/slogcpgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	pb "google.golang.org/grpc/examples/helloworld/helloworld"

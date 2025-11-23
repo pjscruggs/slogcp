@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package http provides net/http integration for slogcp.
+// Package slogcphttp provides net/http integration for slogcp.
 //
 // The package keeps request-scoped logging, trace correlation, and
 // OpenTelemetry instrumentation aligned with Google Cloud Logging expectations.
@@ -64,4 +64,4 @@
 //	}
 //	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com", nil)
 //	httpClient.Do(req)
-package http
+package slogcphttp

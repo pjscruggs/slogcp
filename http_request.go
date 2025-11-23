@@ -140,7 +140,7 @@ func PrepareHTTPRequest(req *HTTPRequest) {
 // HTTPRequestFromRequest constructs an HTTPRequest from a standard library
 // *http.Request, normalizing it via PrepareHTTPRequest. It is useful when you
 // need to emit Cloud Logging-compatible httpRequest payloads without using the
-// slogcp/http middleware helpers.
+// slogcphttp middleware helpers.
 func HTTPRequestFromRequest(r *http.Request) *HTTPRequest {
 	if r == nil {
 		return nil

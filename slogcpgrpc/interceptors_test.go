@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package grpc
+package slogcpgrpc
 
 import (
 	"bytes"
@@ -1007,5 +1007,44 @@ func TestInfoFromContextHandlesNilInputs(t *testing.T) {
 	ctx := context.WithValue(context.Background(), requestInfoKey{}, (*RequestInfo)(nil))
 	if info, ok := InfoFromContext(ctx); info != nil || ok {
 		t.Fatalf("InfoFromContext(with nil value) = (%v,%v), want (nil,false)", info, ok)
+	}
+}
+
+// TestServerAndDialOptions exercises the helper builders and otelgrpc config wiring.
+func TestServerAndDialOptions(t *testing.T) {
+	t.Parallel()
+
+	tp := nooptrace.NewTracerProvider()
+	props := propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	)
+
+	opts := []Option{
+		WithTracerProvider(tp),
+		WithPropagators(props),
+	}
+
+	serverOpts := ServerOptions(opts...)
+	if got, want := len(serverOpts), 3; got != want {
+		t.Fatalf("ServerOptions length = %d, want %d", got, want)
+	}
+
+	dialOpts := DialOptions(opts...)
+	if got, want := len(dialOpts), 3; got != want {
+		t.Fatalf("DialOptions length = %d, want %d", got, want)
+	}
+
+	cfg := applyOptions(opts)
+	handlerOpts := statsHandlerOptions(cfg)
+	if got, want := len(handlerOpts), 2; got != want {
+		t.Fatalf("statsHandlerOptions length = %d, want %d", got, want)
+	}
+
+	if got, want := len(ServerOptions(WithOTel(false))), 2; got != want {
+		t.Fatalf("ServerOptions with OTel disabled length = %d, want %d", got, want)
+	}
+	if got, want := len(DialOptions(WithOTel(false))), 2; got != want {
+		t.Fatalf("DialOptions with OTel disabled length = %d, want %d", got, want)
 	}
 }

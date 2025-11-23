@@ -28,7 +28,7 @@ import (
 	"time"
 
 	slogcp "github.com/pjscruggs/slogcp"
-	slogcphttp "github.com/pjscruggs/slogcp/http"
+	slogcphttp "github.com/pjscruggs/slogcp/slogcphttp"
 )
 
 const maxConnectionsPerHost = 50
