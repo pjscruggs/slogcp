@@ -22,7 +22,7 @@ import "fmt"
 var Version = "v0.1.6-alpha"
 
 // UserAgent identifies this library when helper components need to report a
-// version string. It is initialised from Version and can be overridden at
+// version string. It is initialized from Version and can be overridden at
 // build time.
 var UserAgent string
 
