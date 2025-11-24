@@ -21,12 +21,6 @@ jobs:
   # VALIDATION (runs actual code)
   # -----------------------------
   validation:
-    if: |
-      github.event_name == 'pull_request' ||
-      github.event_name == 'pull_request_target' ||
-      github.event_name == 'merge_group' ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'workflow_call'
     name: Fix and Validate Code
     runs-on: ubuntu-latest
     env:
