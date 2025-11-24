@@ -322,26 +322,80 @@ jobs:
         id: wait_validation
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
+          github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const ref = context.payload.pull_request.head.sha;
             const targetCheckName = 'Fix and Validate Code';
+            const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
+            const checkRunId = Number("${{ steps.create_run_check.outputs.check_run_id }}") || 0;
             const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            const maxMinutes = 120;
+            const sleepMs = 60_000;
             let ok = false;
 
-            for (let i = 0; i < 80; i++) {
+            for (let minute = 0; minute < maxMinutes; minute++) {
               const { data } = await github.rest.checks.listForRef({ owner, repo, ref, filter: 'latest' });
               const cr = data.check_runs.find(r => r.name === targetCheckName);
-              if (!cr || cr.status === 'queued' || cr.status === 'in_progress') {
-                await sleep(15000);
+              const status = cr?.status ?? 'not_found';
+              const conclusion = cr?.conclusion ?? 'unknown';
+
+              if (!cr || status === 'queued' || status === 'in_progress') {
+                if (checkRunId) {
+                  await github.rest.checks.update({
+                    owner,
+                    repo,
+                    check_run_id: checkRunId,
+                    status: 'in_progress',
+                    output: {
+                      title: `E2E Tests (GCP) — ${runId}`,
+                      summary: `Waiting for validation to finish (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.`
+                    }
+                  });
+                }
+                await sleep(sleepMs);
                 continue;
               }
-              if (cr.status === 'completed' && cr.conclusion === 'success') { ok = true; break; }
-              core.setFailed(`Validation job conclusion: ${cr?.conclusion || 'unknown'}`);
+
+              if (status === 'completed' && conclusion === 'success') { ok = true; break; }
+
+              if (checkRunId) {
+                await github.rest.checks.update({
+                  owner,
+                  repo,
+                  check_run_id: checkRunId,
+                  status: 'completed',
+                  conclusion: 'failure',
+                  completed_at: new Date().toISOString(),
+                  output: {
+                    title: `E2E Tests (GCP) — ${runId}`,
+                    summary: `Validation job conclusion: ${conclusion}.`
+                  }
+                });
+              }
+              core.setFailed(`Validation job conclusion: ${conclusion}`);
               return;
             }
-            if (!ok) core.setFailed('Validation job did not complete in time');
+
+            if (!ok) {
+              if (checkRunId) {
+                await github.rest.checks.update({
+                  owner,
+                  repo,
+                  check_run_id: checkRunId,
+                  status: 'completed',
+                  conclusion: 'action_required',
+                  completed_at: new Date().toISOString(),
+                  output: {
+                    title: `E2E Tests (GCP) — ${runId}`,
+                    summary: `Validation job did not complete within ${maxMinutes} minutes.`
+                  }
+                });
+              }
+              core.setFailed(`Validation job did not complete within ${maxMinutes} minutes`);
+              return;
+            }
             core.setOutput('ok', ok ? 'true' : 'false');
 
       - name: Detect secret availability
@@ -408,4 +462,3 @@ jobs:
                 summary: `Secrets not available or validation not successful. A maintainer can run the "Manual E2E Test Trigger" workflow with PR #${{ github.event.pull_request.number }}.`
               }
             });
-
