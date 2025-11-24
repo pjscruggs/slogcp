@@ -18,4 +18,4 @@ require (
 	golang.org/x/sys v0.38.0 // indirect
 )
 
-replace github.com/pjscruggs/slogcp => ..\..
+replace github.com/pjscruggs/slogcp => ../..
