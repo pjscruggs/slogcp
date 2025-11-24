@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: write
-  pull-requests: read
+  pull-requests: write
   security-events: write
   checks: write
 
@@ -442,6 +442,48 @@ jobs:
               "check_run_id": "${{ steps.create_run_check.outputs.check_run_id }}",
               "e2e_run_id": "${{ steps.run_id.outputs.e2e_run_id }}"
             }
+
+      - name: Wait for E2E Check Result
+        if: steps.app_token.outputs.token != ''
+        id: wait_e2e
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const checkRunId = Number("${{ steps.create_run_check.outputs.check_run_id }}") || 0;
+            const maxMinutes = 120;
+            const sleepMs = 60_000;
+            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            for (let minute = 0; minute < maxMinutes; minute++) {
+              const { data: check } = await github.rest.checks.get({ owner, repo, check_run_id: checkRunId });
+              if (check.status !== 'completed') {
+                await sleep(sleepMs);
+                continue;
+              }
+              if (check.conclusion === 'success') {
+                core.setOutput('ok', 'true');
+                return;
+              }
+              core.setFailed(`E2E check conclusion: ${check.conclusion}`);
+              return;
+            }
+            core.setFailed(`E2E check did not complete within ${maxMinutes} minutes`);
+
+      - name: Merge PR after successful E2E
+        if: steps.wait_e2e.outputs.ok == 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
+            await github.rest.pulls.merge({
+              owner,
+              repo,
+              pull_number,
+              merge_method: 'squash'
+            });
 
       - name: Update run-scoped check when auto path cannot dispatch
         if: |
