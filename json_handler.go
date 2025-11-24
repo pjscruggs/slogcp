@@ -545,10 +545,10 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 		errType = fe.Type
 		errMsg = fe.Message
 		stackStr = origin
-		if stackStr == "" && h.cfg.StackTraceEnabled && r.Level >= h.cfg.StackTraceLevel {
+		if stackStr == "" && h.cfg.StackTraceEnabled && stackTraceComparisonLevel(r.Level) >= stackTraceComparisonLevel(h.cfg.StackTraceLevel) {
 			stackStr = captureAndFormatFallbackStack()
 		}
-	} else if h.cfg.StackTraceEnabled && r.Level >= h.cfg.StackTraceLevel {
+	} else if h.cfg.StackTraceEnabled && stackTraceComparisonLevel(r.Level) >= stackTraceComparisonLevel(h.cfg.StackTraceLevel) {
 		if stack, _ := CaptureStack(nil); stack != "" {
 			stackStr = stack
 		}
@@ -557,6 +557,15 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	state.groupStack = groupStack[:0]
 	pruneEmptyMaps(payload)
 	return payload, httpReq, errType, errMsg, stackStr, dynamicLabels
+}
+
+// stackTraceComparisonLevel normalizes levels for stack trace thresholds so
+// LevelDefault does not outrank error/critical levels.
+func stackTraceComparisonLevel(level slog.Level) slog.Level {
+	if level == slog.Level(LevelDefault) {
+		return slog.LevelInfo
+	}
+	return level
 }
 
 // emitJSON writes the fully constructed Cloud Logging payload to the handler
