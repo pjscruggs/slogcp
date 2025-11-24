@@ -2,11 +2,13 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
+    "config:semverAllWeekly",
+    ":noUnscheduledUpdates",
     ":automergeMinor",
     "helpers:pinGitHubActionDigests"
   ],
+  "timezone": "America/Chicago",
   "platformAutomerge": true,
-  "schedule": ["every weekend"],
   "packageRules": [
     {
       "matchManagers": ["gomod"],

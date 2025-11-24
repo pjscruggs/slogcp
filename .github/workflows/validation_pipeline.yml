@@ -218,6 +218,9 @@ jobs:
   e2e_gatekeeper:
     name: E2E Test Gatekeeper
     if: github.event_name == 'pull_request_target'
+    concurrency:
+      group: e2e-gate-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       checks: write
