@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,8 +33,6 @@ import (
 
 // TestJSONHandlerResolveSourceLocation exercises the enabled/disabled branches.
 func TestJSONHandlerResolveSourceLocation(t *testing.T) {
-	t.Parallel()
-
 	baseLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	disabled := newJSONHandler(&handlerConfig{
@@ -77,30 +76,30 @@ func TestJSONHandlerResolveSourceLocation(t *testing.T) {
 		t.Fatalf("expected nil source location when PC is zero, got %+v", loc)
 	}
 
-	origSourceFunc := recordSourceFunc
-	origFrameResolver := runtimeFrameResolver
+	origSourceFunc := getRecordSourceFunc()
+	origFrameResolver := getRuntimeFrameResolver()
 	t.Cleanup(func() {
-		recordSourceFunc = origSourceFunc
-		runtimeFrameResolver = origFrameResolver
+		setRecordSourceFunc(origSourceFunc)
+		setRuntimeFrameResolver(origFrameResolver)
 	})
 
-	recordSourceFunc = func(slog.Record) *slog.Source {
+	setRecordSourceFunc(func(slog.Record) *slog.Source {
 		return &slog.Source{}
-	}
-	runtimeFrameResolver = func(uintptr) runtime.Frame {
+	})
+	setRuntimeFrameResolver(func(uintptr) runtime.Frame {
 		return runtime.Frame{
 			File:     "fallback.go",
 			Line:     123,
 			Function: "fallback",
 		}
-	}
+	})
 	fallbackRecord := slog.NewRecord(time.Now(), slog.LevelInfo, "needs-fallback", pc)
 	if loc := enabled.resolveSourceLocation(fallbackRecord); loc == nil || loc.Function != "fallback" {
 		t.Fatalf("expected fallback data, got %+v", loc)
 	}
 
-	recordSourceFunc = func(slog.Record) *slog.Source { return &slog.Source{} }
-	runtimeFrameResolver = func(uintptr) runtime.Frame { return runtime.Frame{} }
+	setRecordSourceFunc(func(slog.Record) *slog.Source { return &slog.Source{} })
+	setRuntimeFrameResolver(func(uintptr) runtime.Frame { return runtime.Frame{} })
 	if loc := enabled.resolveSourceLocation(fallbackRecord); loc != nil {
 		t.Fatalf("expected nil when frame lacks metadata, got %+v", loc)
 	}
@@ -108,8 +107,6 @@ func TestJSONHandlerResolveSourceLocation(t *testing.T) {
 
 // TestJSONHandlerResolveSourceLocationUsesDefaultFrameResolver ensures the default runtimeFrameResolver is exercised.
 func TestJSONHandlerResolveSourceLocationUsesDefaultFrameResolver(t *testing.T) {
-	t.Parallel()
-
 	baseLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := newJSONHandler(&handlerConfig{
 		AddSource: true,
@@ -119,11 +116,11 @@ func TestJSONHandlerResolveSourceLocationUsesDefaultFrameResolver(t *testing.T) 
 	pc, _, _, _ := runtime.Caller(0)
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "default-frame", pc)
 
-	orig := recordSourceFunc
-	t.Cleanup(func() { recordSourceFunc = orig })
-	recordSourceFunc = func(slog.Record) *slog.Source {
+	orig := getRecordSourceFunc()
+	t.Cleanup(func() { setRecordSourceFunc(orig) })
+	setRecordSourceFunc(func(slog.Record) *slog.Source {
 		return nil
-	}
+	})
 
 	loc := handler.resolveSourceLocation(record)
 	if loc == nil {
@@ -134,6 +131,42 @@ func TestJSONHandlerResolveSourceLocationUsesDefaultFrameResolver(t *testing.T) 
 	}
 	if loc.Line == 0 || loc.File == "" {
 		t.Fatalf("expected populated file/line in fallback source location: %+v", loc)
+	}
+}
+
+// TestSourceAndFrameResolversDefaultPaths exercises fallback branches for resolver hooks.
+func TestSourceAndFrameResolversDefaultPaths(t *testing.T) {
+	origSource := getRecordSourceFunc()
+	origFrame := getRuntimeFrameResolver()
+	t.Cleanup(func() {
+		setRecordSourceFunc(origSource)
+		setRuntimeFrameResolver(origFrame)
+	})
+
+	setRecordSourceFunc(nil)
+	if fn := getRecordSourceFunc(); fn == nil {
+		t.Fatalf("getRecordSourceFunc returned nil after nil setter")
+	} else if fn(slog.Record{}) != nil {
+		t.Fatalf("expected nil source for empty record")
+	}
+
+	recordSourceFunc = atomic.Value{}
+	if fn := getRecordSourceFunc(); fn == nil {
+		t.Fatalf("getRecordSourceFunc returned nil after zeroing value")
+	}
+
+	setRuntimeFrameResolver(nil)
+	if fn := getRuntimeFrameResolver(); fn == nil {
+		t.Fatalf("getRuntimeFrameResolver returned nil after nil setter")
+	} else {
+		_ = fn(0)
+	}
+
+	runtimeFrameResolver = atomic.Value{}
+	if fn := getRuntimeFrameResolver(); fn == nil {
+		t.Fatalf("getRuntimeFrameResolver returned nil after zeroing value")
+	} else {
+		_ = fn(0)
 	}
 }
 

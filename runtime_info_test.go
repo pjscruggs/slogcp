@@ -22,14 +22,34 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
+// init disables runtime info caching during tests to avoid cross-test state.
+func init() {
+	runtimeInfoCacheDisabled.Store(true)
+}
+
 // resetRuntimeInfoCache clears cached runtime inspection state for isolated tests.
 func resetRuntimeInfoCache() {
+	runtimeInfoMu.Lock()
 	runtimeInfoOnce = sync.Once{}
 	runtimeInfo = RuntimeInfo{}
+	runtimeInfoPreset.Store(false)
+	runtimeInfoMu.Unlock()
 	resetHandlerConfigCache()
+}
+
+// stubRuntimeInfo seeds cached runtime info for tests that need deterministic values.
+func stubRuntimeInfo(info RuntimeInfo) {
+	runtimeInfoMu.Lock()
+	runtimeInfoOnce = sync.Once{}
+	runtimeInfoOnce.Do(func() {
+		runtimeInfo = info
+	})
+	runtimeInfoPreset.Store(true)
+	runtimeInfoMu.Unlock()
 }
 
 type stubMetadataClient struct {
@@ -52,13 +72,9 @@ func (s *stubMetadataClient) Get(path string) (string, error) {
 
 // withMetadataClient installs a temporary metadata client factory for the test scope.
 func withMetadataClient(t *testing.T, client metadataClient) {
-	original := metadataClientFactory
-	metadataClientFactory = func() metadataClient {
-		return client
-	}
-	t.Cleanup(func() {
-		metadataClientFactory = original
-	})
+	original := getMetadataClientFactory()
+	setMetadataClientFactory(func() metadataClient { return client })
+	t.Cleanup(func() { setMetadataClientFactory(original) })
 }
 
 type countingMetadataClient struct {
@@ -431,10 +447,10 @@ func TestDetectRuntimeInfoVariants(t *testing.T) {
 				t.Setenv("GAE_SERVICE", "default")
 				t.Setenv("GAE_VERSION", "20191111t111111")
 				t.Setenv("GAE_INSTANCE", "instance-1")
-				t.Setenv("GAE_APPLICATION", "proj")
+				t.Setenv("GAE_APPLICATION", "proj-123")
 			},
 			wantEnv:  RuntimeEnvAppEngineStandard,
-			wantProj: "proj",
+			wantProj: "proj-123",
 			wantSvc: map[string]string{
 				"service": "default",
 				"version": "20191111t111111",
@@ -530,7 +546,6 @@ func TestDetectRuntimeInfoVariants(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			resetRuntimeInfoCache()
 			if tc.setup != nil {
@@ -670,24 +685,24 @@ func TestCachedConfigFromEnvHandlesClearedCache(t *testing.T) {
 	t.Parallel()
 
 	resetHandlerConfigCache()
-	origLoader := loadConfigFromEnvFunc
-	origHook := cachedConfigRaceHook
+	origLoader := getLoadConfigFromEnv()
+	origHook := getCachedConfigRaceHook()
 	t.Cleanup(func() {
-		loadConfigFromEnvFunc = origLoader
-		cachedConfigRaceHook = origHook
+		setLoadConfigFromEnv(origLoader)
+		setCachedConfigRaceHook(origHook)
 		resetHandlerConfigCache()
 	})
 
 	start := make(chan struct{}, 2)
 	release := make(chan struct{})
-	loadConfigFromEnvFunc = func(logger *slog.Logger) (handlerConfig, error) {
+	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
 		start <- struct{}{}
 		<-release
 		return handlerConfig{Writer: io.Discard}, nil
-	}
-	cachedConfigRaceHook = func() {
+	})
+	setCachedConfigRaceHook(func() {
 		resetHandlerConfigCache()
-	}
+	})
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -822,13 +837,11 @@ func TestMetadataLookupAvailabilityGuard(t *testing.T) {
 
 // TestDefaultMetadataClientHooks verifies that the override points are exercised.
 func TestDefaultMetadataClientHooks(t *testing.T) {
-	t.Parallel()
-
-	origOnGCE := metadataOnGCEFunc
-	origGet := metadataGetFunc
+	origOnGCE := getMetadataOnGCEFunc()
+	origGet := getMetadataGetFunc()
 	t.Cleanup(func() {
-		metadataOnGCEFunc = origOnGCE
-		metadataGetFunc = origGet
+		setMetadataOnGCEFunc(origOnGCE)
+		setMetadataGetFunc(origGet)
 	})
 
 	var (
@@ -838,16 +851,16 @@ func TestDefaultMetadataClientHooks(t *testing.T) {
 		capturedPath string
 	)
 
-	metadataOnGCEFunc = func() bool {
+	setMetadataOnGCEFunc(func() bool {
 		onGCECalled = true
 		return true
-	}
-	metadataGetFunc = func(ctx context.Context, path string) (string, error) {
+	})
+	setMetadataGetFunc(func(ctx context.Context, path string) (string, error) {
 		getCalled = true
 		capturedCtx = ctx
 		capturedPath = path
 		return "stub-value", nil
-	}
+	})
 
 	client := defaultMetadataClient{}
 	if !client.OnGCE() {
@@ -876,8 +889,6 @@ func TestDefaultMetadataClientHooks(t *testing.T) {
 
 // TestDefaultMetadataClientUsesWrappers ensures the default wrapper paths are executed.
 func TestDefaultMetadataClientUsesWrappers(t *testing.T) {
-	t.Parallel()
-
 	origOnGCE := metadataOnGCEWrapper
 	origGet := metadataGetWithContextWrapper
 	t.Cleanup(func() {
@@ -921,5 +932,91 @@ func TestDefaultMetadataClientUsesWrappers(t *testing.T) {
 	}
 	if !getCalled {
 		t.Fatalf("wrapper for metadata.GetWithContext was not invoked")
+	}
+}
+
+// TestMetadataHookFallbacks exercises nil and zero-value paths for metadata hooks.
+func TestMetadataHookFallbacks(t *testing.T) {
+	origOnGCE := getMetadataOnGCEFunc()
+	origGet := getMetadataGetFunc()
+	origFactory := getMetadataClientFactory()
+	origOnGCEWrapper := metadataOnGCEWrapper
+	origGetWrapper := metadataGetWithContextWrapper
+	t.Cleanup(func() {
+		setMetadataOnGCEFunc(origOnGCE)
+		setMetadataGetFunc(origGet)
+		setMetadataClientFactory(origFactory)
+		metadataOnGCEWrapper = origOnGCEWrapper
+		metadataGetWithContextWrapper = origGetWrapper
+	})
+
+	metadataOnGCEWrapper = func() bool { return true }
+	metadataGetWithContextWrapper = func(ctx context.Context, path string) (string, error) {
+		return "wrapped", nil
+	}
+
+	setMetadataOnGCEFunc(nil)
+	if fn := getMetadataOnGCEFunc(); fn == nil {
+		t.Fatalf("getMetadataOnGCEFunc returned nil after nil setter")
+	} else {
+		_ = fn()
+	}
+
+	metadataOnGCEFunc = atomic.Value{}
+	_ = getMetadataOnGCEFunc()()
+
+	setMetadataGetFunc(nil)
+	if val, err := getMetadataGetFunc()(context.Background(), "project/project-id"); err != nil || val != "wrapped" {
+		t.Fatalf("getMetadataGetFunc default = %q, %v; want wrapped, nil", val, err)
+	}
+	metadataGetFunc = atomic.Value{}
+	if val, err := getMetadataGetFunc()(context.Background(), "project/project-id"); err != nil || val != "wrapped" {
+		t.Fatalf("getMetadataGetFunc fallback = %q, %v; want wrapped, nil", val, err)
+	}
+
+	metadataClientFactory = atomic.Value{}
+	if factory := getMetadataClientFactory(); factory == nil || factory() == nil {
+		t.Fatalf("metadata client factory zero value fallback returned nil")
+	}
+
+	metadataClientFactory = atomic.Value{}
+	setMetadataClientFactory(nil)
+	if factory := getMetadataClientFactory(); factory == nil || factory() == nil {
+		t.Fatalf("metadata client factory fallback returned nil")
+	}
+}
+
+// TestNormalizeProjectID exercises validation and prefix handling for project IDs.
+func TestNormalizeProjectID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "empty", input: "", want: ""},
+		{name: "valid", input: "alpha-123", want: "alpha-123"},
+		{name: "valid_min_length", input: "a23456", want: "a23456"},
+		{name: "valid_max_length", input: "a12345678901234567890123456789", want: "a12345678901234567890123456789"},
+		{name: "with_resource_prefix", input: "projects/my-project", want: "my-project"},
+		{name: "with_uppercase_prefix_and_spaces", input: "  PROJECTS/service-001  ", want: "service-001"},
+		{name: "reject_trailing_hyphen", input: "alpha-123-", want: ""},
+		{name: "reject_short", input: "short", want: ""},
+		{name: "reject_long", input: "abcdefghijklmnopqrstuvwxyz12345", want: ""},
+		{name: "reject_uppercase", input: "Alpha-123", want: ""},
+		{name: "reject_leading_digit", input: "1project", want: ""},
+		{name: "reject_slash", input: "my/project", want: ""},
+		{name: "reject_underscore", input: "project_id", want: ""},
+		{name: "reject_extra_path", input: "projects/proj/extra", want: ""},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeProjectID(tt.input); got != tt.want {
+				t.Fatalf("normalizeProjectID(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }

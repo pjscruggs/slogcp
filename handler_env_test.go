@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
@@ -451,29 +452,47 @@ func TestParseTraceDiagnosticsEnvCoversModes(t *testing.T) {
 	}
 }
 
+// TestLoadConfigFromEnvHelpersFallback exercises the helper accessors and defaulting paths.
+func TestLoadConfigFromEnvHelpersFallback(t *testing.T) {
+	originalLoader := getLoadConfigFromEnv()
+	defer setLoadConfigFromEnv(originalLoader)
+
+	setLoadConfigFromEnv(nil)
+	if fn := getLoadConfigFromEnv(); fn == nil {
+		t.Fatalf("getLoadConfigFromEnv returned nil after nil setter")
+	}
+
+	loadConfigFromEnvFunc = atomic.Value{}
+	if fn := getLoadConfigFromEnv(); fn == nil {
+		t.Fatalf("getLoadConfigFromEnv returned nil after zeroing atomic value")
+	}
+
+	setLoadConfigFromEnv(originalLoader)
+}
+
 // TestCachedConfigFromEnvInvokesRaceHook simulates a concurrent cache fill to ensure the hook fires.
 func TestCachedConfigFromEnvInvokesRaceHook(t *testing.T) {
 	clearHandlerEnv(t)
 	resetHandlerConfigCache()
 
-	originalLoader := loadConfigFromEnvFunc
-	originalHook := cachedConfigRaceHook
+	originalLoader := getLoadConfigFromEnv()
+	originalHook := getCachedConfigRaceHook()
 	t.Cleanup(func() {
-		loadConfigFromEnvFunc = originalLoader
-		cachedConfigRaceHook = originalHook
+		setLoadConfigFromEnv(originalLoader)
+		setCachedConfigRaceHook(originalHook)
 		resetHandlerConfigCache()
 	})
 
 	raceWinner := &handlerConfig{Level: slog.LevelWarn}
-	loadConfigFromEnvFunc = func(logger *slog.Logger) (handlerConfig, error) {
+	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
 		handlerEnvConfigCache.Store(raceWinner)
 		return handlerConfig{Level: slog.LevelInfo}, nil
-	}
+	})
 
 	hookCalled := false
-	cachedConfigRaceHook = func() {
+	setCachedConfigRaceHook(func() {
 		hookCalled = true
-	}
+	})
 
 	cfg, err := cachedConfigFromEnv(newDiscardLogger())
 	if err != nil {

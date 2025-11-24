@@ -17,7 +17,6 @@ package slogcp
 import (
 	"errors"
 	"slices"
-	"sync"
 	"testing"
 )
 
@@ -25,19 +24,13 @@ import (
 func TestErrorReportingAttrsUsesRuntimeContext(t *testing.T) {
 	t.Parallel()
 
-	t.Cleanup(func() {
-		runtimeInfoOnce = sync.Once{}
-		runtimeInfo = RuntimeInfo{}
-	})
+	t.Cleanup(resetRuntimeInfoCache)
 
-	runtimeInfoOnce = sync.Once{}
-	runtimeInfoOnce.Do(func() {
-		runtimeInfo = RuntimeInfo{
-			ServiceContext: map[string]string{
-				"service": "runtime-svc",
-				"version": "runtime-v2",
-			},
-		}
+	stubRuntimeInfo(RuntimeInfo{
+		ServiceContext: map[string]string{
+			"service": "runtime-svc",
+			"version": "runtime-v2",
+		},
 	})
 
 	attrs := ErrorReportingAttrs(errors.New("kaboom"))

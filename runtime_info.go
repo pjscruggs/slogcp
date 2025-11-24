@@ -17,8 +17,10 @@ package slogcp
 import (
 	"context"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"cloud.google.com/go/compute/metadata"
 )
@@ -46,8 +48,11 @@ const (
 )
 
 var (
-	runtimeInfo     RuntimeInfo
-	runtimeInfoOnce sync.Once
+	runtimeInfo              RuntimeInfo
+	runtimeInfoOnce          sync.Once
+	runtimeInfoMu            sync.Mutex
+	runtimeInfoCacheDisabled atomic.Bool
+	runtimeInfoPreset        atomic.Bool
 )
 
 var (
@@ -55,9 +60,91 @@ var (
 	metadataGetWithContextWrapper = metadata.GetWithContext
 )
 
+var (
+	metadataOnGCEFunc      atomic.Value // func() bool
+	metadataGetFunc        atomic.Value // func(context.Context, string) (string, error)
+	metadataClientFactory  atomic.Value // func() metadataClient
+	metadataFactoryDefault = func() metadataClient { return defaultMetadataClient{} }
+)
+
+// init seeds the metadata hooks used for runtime detection.
+func init() {
+	setMetadataOnGCEFunc(func() bool {
+		return metadataOnGCEWrapper()
+	})
+	setMetadataGetFunc(func(ctx context.Context, path string) (string, error) {
+		return metadataGetWithContextWrapper(ctx, path)
+	})
+	setMetadataClientFactory(metadataFactoryDefault)
+}
+
+// setMetadataOnGCEFunc overrides the metadata availability probe.
+func setMetadataOnGCEFunc(fn func() bool) {
+	if fn == nil {
+		fn = func() bool { return metadataOnGCEWrapper() }
+	}
+	metadataOnGCEFunc.Store(fn)
+}
+
+// getMetadataOnGCEFunc returns the current metadata availability probe.
+func getMetadataOnGCEFunc() func() bool {
+	if fn, ok := metadataOnGCEFunc.Load().(func() bool); ok && fn != nil {
+		return fn
+	}
+	return func() bool { return metadataOnGCEWrapper() }
+}
+
+// setMetadataGetFunc overrides the metadata fetch hook.
+func setMetadataGetFunc(fn func(context.Context, string) (string, error)) {
+	if fn == nil {
+		fn = func(ctx context.Context, path string) (string, error) {
+			return metadataGetWithContextWrapper(ctx, path)
+		}
+	}
+	metadataGetFunc.Store(fn)
+}
+
+// getMetadataGetFunc returns the current metadata fetch hook.
+func getMetadataGetFunc() func(context.Context, string) (string, error) {
+	if fn, ok := metadataGetFunc.Load().(func(context.Context, string) (string, error)); ok && fn != nil {
+		return fn
+	}
+	return func(ctx context.Context, path string) (string, error) {
+		return metadataGetWithContextWrapper(ctx, path)
+	}
+}
+
+// setMetadataClientFactory overrides the metadata client factory.
+func setMetadataClientFactory(fn func() metadataClient) {
+	if fn == nil {
+		fn = metadataFactoryDefault
+	}
+	metadataClientFactory.Store(fn)
+}
+
+// getMetadataClientFactory returns the current metadata client factory.
+func getMetadataClientFactory() func() metadataClient {
+	if fn, ok := metadataClientFactory.Load().(func() metadataClient); ok && fn != nil {
+		return fn
+	}
+	return metadataFactoryDefault
+}
+
 // DetectRuntimeInfo inspects well-known environment variables to infer
 // platform-specific labels and service context. Results are cached for reuse.
 func DetectRuntimeInfo() RuntimeInfo {
+	if runtimeInfoCacheDisabled.Load() {
+		if runtimeInfoPreset.Load() {
+			runtimeInfoMu.Lock()
+			defer runtimeInfoMu.Unlock()
+			return runtimeInfo
+		}
+		return detectRuntimeInfo()
+	}
+
+	runtimeInfoMu.Lock()
+	defer runtimeInfoMu.Unlock()
+
 	runtimeInfoOnce.Do(func() {
 		runtimeInfo = detectRuntimeInfo()
 	})
@@ -79,7 +166,7 @@ func detectRuntimeInfo() RuntimeInfo {
 	info := RuntimeInfo{}
 	info.ProjectID = normalizeProjectID(envProject)
 
-	md := newMetadataLookup(metadataClientFactory())
+	md := newMetadataLookup(getMetadataClientFactory()())
 
 	if detectCloudFunction(&info, md) {
 		ensureProjectID(&info, md)
@@ -370,12 +457,21 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// normalizeProjectID strips common prefixes and leading underscores from project IDs.
+var projectIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
+
+// normalizeProjectID trims whitespace, removes "projects/" resource prefixes, and validates against
+// documented GCP project ID rules (6-30 chars, lowercase letters, digits, hyphens, starts with a letter,
+// does not end with a hyphen). Invalid inputs return an empty string to avoid propagating bad IDs.
 func normalizeProjectID(id string) string {
 	id = strings.TrimSpace(id)
 	id = strings.TrimPrefix(id, "projects/")
 	id = strings.TrimPrefix(id, "PROJECTS/")
-	id = strings.TrimPrefix(id, "_")
+	if id == "" || strings.Contains(id, "/") {
+		return ""
+	}
+	if !projectIDPattern.MatchString(id) {
+		return ""
+	}
 	return id
 }
 
@@ -414,27 +510,14 @@ type metadataClient interface {
 
 type defaultMetadataClient struct{}
 
-var (
-	metadataOnGCEFunc = func() bool {
-		return metadataOnGCEWrapper()
-	}
-	metadataGetFunc = func(ctx context.Context, path string) (string, error) {
-		return metadataGetWithContextWrapper(ctx, path)
-	}
-)
-
 // OnGCE reports whether the GCE metadata server is reachable.
 func (defaultMetadataClient) OnGCE() bool {
-	return metadataOnGCEFunc()
+	return getMetadataOnGCEFunc()()
 }
 
 // Get retrieves a metadata value for the provided path.
 func (defaultMetadataClient) Get(path string) (string, error) {
-	return metadataGetFunc(context.Background(), path)
-}
-
-var metadataClientFactory = func() metadataClient {
-	return defaultMetadataClient{}
+	return getMetadataGetFunc()(context.Background(), path)
 }
 
 // newMetadataLookup constructs a metadata lookup with local caching.

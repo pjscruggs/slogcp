@@ -701,9 +701,43 @@ func defaultEmitTimeField() bool {
 }
 
 var (
-	loadConfigFromEnvFunc = loadConfigFromEnv
-	cachedConfigRaceHook  func()
+	loadConfigFromEnvFunc atomic.Value // func(*slog.Logger) (handlerConfig, error)
+	cachedConfigRaceHook  atomic.Value // func()
 )
+
+// init seeds the handler configuration loader defaults.
+func init() {
+	setLoadConfigFromEnv(loadConfigFromEnv)
+}
+
+// setLoadConfigFromEnv overrides the function used to load handler configuration from environment variables.
+func setLoadConfigFromEnv(fn func(*slog.Logger) (handlerConfig, error)) {
+	if fn == nil {
+		fn = loadConfigFromEnv
+	}
+	loadConfigFromEnvFunc.Store(fn)
+}
+
+// getLoadConfigFromEnv returns the current handler configuration loader, defaulting to the built-in implementation.
+func getLoadConfigFromEnv() func(*slog.Logger) (handlerConfig, error) {
+	if fn, ok := loadConfigFromEnvFunc.Load().(func(*slog.Logger) (handlerConfig, error)); ok && fn != nil {
+		return fn
+	}
+	return loadConfigFromEnv
+}
+
+// setCachedConfigRaceHook installs a hook invoked when cachedConfigFromEnv observes a concurrent cache fill.
+func setCachedConfigRaceHook(fn func()) {
+	cachedConfigRaceHook.Store(fn)
+}
+
+// getCachedConfigRaceHook returns the currently configured cache race hook, if any.
+func getCachedConfigRaceHook() func() {
+	if fn, ok := cachedConfigRaceHook.Load().(func()); ok {
+		return fn
+	}
+	return nil
+}
 
 // loadConfigFromEnv reads handler configuration overrides from environment
 // variables, logging validation issues to logger.
@@ -712,7 +746,7 @@ func cachedConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 		return *cached, nil
 	}
 
-	cfg, err := loadConfigFromEnvFunc(logger)
+	cfg, err := getLoadConfigFromEnv()(logger)
 	if err != nil {
 		return handlerConfig{}, err
 	}
@@ -722,8 +756,8 @@ func cachedConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 	if handlerEnvConfigCache.CompareAndSwap(nil, entry) {
 		return cfg, nil
 	}
-	if cachedConfigRaceHook != nil {
-		cachedConfigRaceHook()
+	if hook := getCachedConfigRaceHook(); hook != nil {
+		hook()
 	}
 	if cached := handlerEnvConfigCache.Load(); cached != nil {
 		return *cached, nil
