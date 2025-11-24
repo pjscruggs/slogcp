@@ -673,6 +673,37 @@ func TestHandlerStackTraceLevelEmitsStacks(t *testing.T) {
 	}
 }
 
+// TestHandlerDefaultSeverityDoesNotTriggerStack ensures LevelDefault does not
+// outrank error thresholds for stack trace capture.
+func TestHandlerDefaultSeverityDoesNotTriggerStack(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h, err := slogcp.NewHandler(&buf,
+		slogcp.WithStackTraceEnabled(true),
+		slogcp.WithStackTraceLevel(slog.LevelError),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	logger := slog.New(h)
+	logger.Log(context.Background(), slog.Level(slogcp.LevelDefault), "default-severity")
+
+	entries := decodeLogBuffer(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d (%v)", len(entries), entries)
+	}
+	if _, ok := entries[0]["stack_trace"]; ok {
+		t.Fatalf("stack_trace present for LevelDefault entry: %#v", entries[0])
+	}
+}
+
 // TestHandlerMiddlewareInvokesHooks ensures slogcp.WithMiddleware attaches middleware correctly.
 func TestHandlerMiddlewareInvokesHooks(t *testing.T) {
 	t.Parallel()
