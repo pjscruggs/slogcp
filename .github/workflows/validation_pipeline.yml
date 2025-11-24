@@ -27,7 +27,7 @@ jobs:
       GOTOOLCHAIN: auto
     steps:
       - name: 🛒 Checkout Code
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
@@ -58,13 +58,13 @@ jobs:
           GO_VERSION="$GO_VERSION" python3 .github/scripts/resolve_go_version.py
 
       - name: 🏗️ Set up Go
-        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
       
       - name: 🛠️ Install golangci-lint
-        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8
+        uses: golangci/golangci-lint-action@e7fa5ac41e1cf5b7d48e45e42232ce7ada589601 # v9
         with:
           version: v2.1.5
           install-mode: goinstall
@@ -96,14 +96,14 @@ jobs:
       
       - name: 📄🩹 Fix License Headers
         id: fix-license
-        uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
+        uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1 # v0.8.0
         with:
           mode: fix
           config: .licenserc.yaml
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ♻️ Restore Go toolchain (post-license-fix)
-        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
@@ -145,14 +145,14 @@ jobs:
         run: golangci-lint run ./...
       
       - name: 📄✅ Verify License Headers
-        uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
+        uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1 # v0.8.0
         with:
           mode: check
           config: .licenserc.yaml
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ♻️ Restore Go toolchain (pre-tests)
-        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
@@ -283,7 +283,7 @@ jobs:
       - name: Generate App Token for Check Run
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: check_run_token
-        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        uses: actions/create-github-app-token@7e473efe3cb98aa54f8d4bac15400b15fad77d94 # v2
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -414,7 +414,7 @@ jobs:
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: app_token
-        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        uses: actions/create-github-app-token@7e473efe3cb98aa54f8d4bac15400b15fad77d94 # v2
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -423,7 +423,7 @@ jobs:
 
       - name: Dispatch E2E Tests
         if: steps.app_token.outputs.token != ''
-        uses: peter-evans/repository-dispatch@5fc4efd1a4797ddb68ffd0714a238564e4cc0e6f # v4
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4
         with:
           token: ${{ steps.app_token.outputs.token }}
           repository: pjscruggs/slogcp-test
