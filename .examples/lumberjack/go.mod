@@ -2,7 +2,7 @@ module github.com/pjscruggs/slogcp/examples/lumberjack
 
 go 1.25.4
 
-replace github.com/pjscruggs/slogcp => ..\..
+replace github.com/pjscruggs/slogcp => ../..
 
 require (
 	github.com/pjscruggs/slogcp v0.0.0
