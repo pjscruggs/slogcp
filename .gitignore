@@ -12,6 +12,11 @@
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
+*.cover
+
+# Go pprof files
+*.pprof
+*.prof
 
 # Directories
 /vendor/
@@ -152,4 +157,7 @@ tags
 
 ### Workflow Generated Files ###
 /coverage.txt
+/coverage
+/coverage-func.txt
+/coverage-report.json
 **/*debug_log.txt

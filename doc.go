@@ -12,72 +12,78 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package slogcp provides a "batteries included" structured logging solution
-// tailored for Google Cloud Platform (GCP). It integrates seamlessly with
-// standard Go `log/slog` and offers enhanced features for cloud environments,
-// including automatic trace correlation, full GCP severity level support, and
-// robust error reporting.
+// Package slogcp provides a structured logging solution for Go applications
+// that need to integrate cleanly with Google Cloud Logging. It builds on the
+// standard library's [log/slog] package and emits JSON payloads that follow
+// Cloud Logging conventions while writing to any [io.Writer]. The default
+// destination is stdout, keeping the library container- and developer-friendly.
 //
-// ⚠️ This module is untested, and not recommended for any production use. ⚠️
+// The primary entry point is [NewHandler], which returns an [slog.Handler]
+// configured with sensible defaults:
+//   - Structured JSON output that emits Cloud Logging fields such as
+//     `severity`, `logging.googleapis.com/trace`, `httpRequest`, and runtime
+//     metadata discovered from Cloud Run, Cloud Functions, Cloud Run Jobs,
+//     App Engine, GKE, and Compute Engine environments.
+//   - Optional source locations, explicit RFC3339 timestamps, and automatic
+//     stack traces triggered at or above a configurable level.
+//   - Seamless trace correlation helpers that leverage the extended
+//     [Level] definitions (`DEBUG` through `EMERGENCY`) plus the ability to
+//     emit single-letter severity aliases when desired, defaulting to full names
+//     outside Cloud Run, Cloud Run Jobs, Cloud Functions, and App Engine.
+//   - Timestamp emission that mirrors Cloud Logging expectations: omit the field
+//     on those managed runtimes and otherwise leave log/slog's JSONHandler
+//     default `time` field (a time.RFC3339Nano value) untouched so local and
+//     on-premise logs keep the native precision unless you override it.
+//   - Middleware hooks that allow additional [slog.Handler] layers to enrich or
+//     filter records before they are encoded.
 //
-// The core of the package is the [Logger] type, which can be configured to
-// send structured JSON logs directly to the Cloud Logging API or to local
-// destinations like stdout, stderr, or a file. It intelligently detects
-// the environment, automatically falling back to local logging (e.g., stdout)
-// when GCP credentials or project information are unavailable, simplifying
-// local development.
-//
-// # Key Features
-//
-//   - Structured JSON Logging: Optimized for Cloud Logging, enabling powerful
-//     filtering and analysis.
-//   - GCP Integration: Direct API integration for reliable log delivery,
-//     automatic resource detection, and correlation with Cloud Trace and
-//     Cloud Error Reporting.
-//   - Full Severity Spectrum: Supports all GCP logging severity levels, from
-//     DEBUG to EMERGENCY, extending standard slog levels via the [Level] type.
-//   - Trace Correlation: Automatically extracts and injects trace context
-//     (Trace ID, Span ID) for seamless log correlation in Cloud Trace.
-//   - Dynamic Log Levels: Adjust logging verbosity at runtime without
-//     restarting the application using [Logger.SetLevel].
-//   - Enhanced Error Reporting: Includes options for automatic stack trace
-//     capture with errors.
-//   - Graceful Shutdown: Ensures buffered logs are flushed before application exit
-//     via [Logger.Close].
+// Handlers can be redirected to stderr, a file managed by slogcp, or a custom
+// writer. When slogcp opens the file it also provides [Handler.ReopenLogFile]
+// to cooperate with external rotation tools. The handler exposes [Handler.LevelVar]
+// and [Handler.SetLevel] for dynamic severity adjustments and honours many
+// environment variables (for example `SLOGCP_LEVEL`,
+// `SLOGCP_STACK_TRACE_ENABLED`, or `SLOGCP_TARGET`) so the same binary can
+// run locally and in
+// production without code changes. [ContextWithLogger] and [Logger] store and
+// retrieve request-scoped loggers so integrations can pass loggers through
+// call stacks.
 //
 // # Subpackages
 //
-//   - [github.com/pjscruggs/slogcp/http]: Provides net/http middleware for
-//     logging HTTP server requests and responses, including trace context injection,
-//     and an opt-in outbound RoundTripper (TracePropagationTransport) that injects
-//     both W3C `traceparent` and `X-Cloud-Trace-Context` headers on outgoing requests
-//     for cross-service log/trace correlation.
-//   - [github.com/pjscruggs/slogcp/grpc]: Offers gRPC client and server
-//     interceptors for comprehensive logging of RPC calls, with similar
-//     features for trace handling and payload/metadata logging options.
+//   - [github.com/pjscruggs/slogcp/slogcphttp] offers net/http middleware and
+//     client transports that derive request-scoped loggers, propagate trace
+//     context, record latency/size metadata, and expose Cloud Logging friendly
+//     helpers such as [slogcphttp.HTTPRequestAttr] and
+//     [slogcphttp.ScopeFromContext]. Legacy `X-Cloud-Trace-Context` handling is
+//     available when required.
+//   - [github.com/pjscruggs/slogcp/slogcpgrpc] provides client and server
+//     interceptors that capture RPC metadata, surface errors with stack traces,
+//     and propagate trace context. Helper functions such as
+//     [slogcpgrpc.ServerOptions], [slogcpgrpc.DialOptions], and
+//     [slogcpgrpc.InfoFromContext] simplify wiring in both directions.
 //
 // # Quick Start
 //
-// To get started, create a new logger:
+// A basic logger only needs a handler and slog:
 //
-//	// Create a logger with default settings.
-//	// Assumes GOOGLE_CLOUD_PROJECT is set or running on GCP.
-//	logger, err := slogcp.New()
+//	handler, err := slogcp.NewHandler(os.Stdout)
 //	if err != nil {
-//	    log.Fatalf("Failed to create logger: %v", err)
+//	    log.Fatalf("create slogcp handler: %v", err)
 //	}
-//	// Important: Always call Close to flush buffered logs, especially in GCP mode.
-//	defer logger.Close()
+//	defer handler.Close() // flushes buffered logs and owned writers
 //
-//	// Log a simple message.
-//	logger.Info("Application started successfully")
+//	logger := slog.New(handler)
+//	logger.Info("application started")
 //
 // # Configuration
 //
-// The [New] function accepts various [Option] functions to customize behavior,
-// such as setting the log level ([WithLevel]), enabling source location
-// ([WithSourceLocationEnabled]), or configuring GCP-specific parameters
-// (e.g., [WithGCPCommonLabel], [WithGCPEntryCountThreshold]).
-// Many settings can also be controlled via environment variables.
-// See the [Logger] type and specific option functions for more details.
+// Use functional options such as [WithLevel], [WithSourceLocationEnabled],
+// [WithStackTraceEnabled], [WithRedirectToFile], [WithRedirectWriter],
+// [WithSeverityAliases], and [WithTraceProjectID] to adjust behaviour
+// programmatically. Refer to the package documentation and configuration guide
+// in docs/CONFIGURATION.md for the complete list of options, environment
+// variables, and integration helpers. Importing slogcp automatically installs
+// a composite OpenTelemetry propagator; call [EnsurePropagation] explicitly if
+// you disable the automatic behaviour via the `SLOGCP_DISABLE_PROPAGATOR_AUTOSET`
+// environment variable.
 package slogcp

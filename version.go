@@ -19,12 +19,14 @@ import "fmt"
 // Version is the current version of the slogcp library.
 // Follows semantic versioning (https://semver.org/).
 // It can be overridden at build time via -ldflags.
-var Version = "v0.1.6-alpha"
+var Version = "v0.1.7-alpha"
 
-// UserAgent is the string sent with Cloud Logging API requests, identifying this library.
-// Initialized based on the Version variable.
+// UserAgent identifies this library when helper components need to report a
+// version string. It is initialized from Version and can be overridden at
+// build time.
 var UserAgent string
 
+// init seeds UserAgent with the current Version value.
 func init() {
 	// Initialize UserAgent using the (possibly injected) Version
 	UserAgent = fmt.Sprintf("slogcp/%s", Version)

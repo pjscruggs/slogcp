@@ -1,6 +1,3 @@
-//go:build unit
-// +build unit
-
 // Copyright 2025 Patrick J. Scruggs
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,154 +12,223 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package slogcp_test
+package slogcp
 
 import (
 	"context"
+	"log/slog"
+	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
-
-	"github.com/pjscruggs/slogcp/internal/gcp"
 )
 
-// mustTraceID converts a 32‑character hexadecimal string into a trace.TraceID.
-//
-// It calls t.Fatalf if the input is invalid, allowing callers to use literals
-// without cluttering the test body with error handling.
-func mustTraceID(t *testing.T, hexStr string) trace.TraceID {
-	t.Helper()
-	id, err := trace.TraceIDFromHex(hexStr)
-	if err != nil {
-		t.Fatalf("invalid TraceID hex %q: %v", hexStr, err)
+// TestSpanIDHexToDecimalCoversSuccessAndFailure ensures hex conversion succeeds and fails appropriately.
+func TestSpanIDHexToDecimalCoversSuccessAndFailure(t *testing.T) {
+	t.Parallel()
+
+	if dec, ok := SpanIDHexToDecimal("000000000000000a"); !ok || dec != "10" {
+		t.Fatalf("SpanIDHexToDecimal success = (%q,%v), want (\"10\",true)", dec, ok)
 	}
-	return id
+	if _, ok := SpanIDHexToDecimal("invalid-span"); ok {
+		t.Fatalf("expected invalid span ID to fail conversion")
+	}
 }
 
-// mustSpanID converts a 16‑character hexadecimal string into a trace.SpanID.
-//
-// Like mustTraceID, it terminates the test with a helpful message if the input
-// cannot be parsed.
-func mustSpanID(t *testing.T, hexStr string) trace.SpanID {
-	t.Helper()
-	id, err := trace.SpanIDFromHex(hexStr)
-	if err != nil {
-		t.Fatalf("invalid SpanID hex %q: %v", hexStr, err)
+// TestBuildXCloudTraceContextUnsampled ensures the unsampled branch is exercised.
+func TestBuildXCloudTraceContextUnsampled(t *testing.T) {
+	t.Parallel()
+
+	got := BuildXCloudTraceContext("105445aa7843bc8bf206b12000100000", "000000000000000a", false)
+	if got != "105445aa7843bc8bf206b12000100000/10;o=0" {
+		t.Fatalf("BuildXCloudTraceContext() = %q, want unsampled formatting", got)
 	}
-	return id
 }
 
-// TestExtractTraceSpan verifies that ExtractTraceSpan faithfully copies the
-// OpenTelemetry identifiers, applies the “projects/{id}/traces/” prefix when a
-// project ID is supplied, and correctly reports the sampling bit.
-//
-// The sub‑tests cover:
-//
-//  1. A sampled span with a project ID (happy‑path).
-//  2. A sampled span with an empty project ID.
-//  3. An unsampled span.
-//  4. A context with no span.
-//
-// No external services, mocks, or protobuf builds are required, keeping this
-// a fast “tier‑2” unit test.
-func TestExtractTraceSpan(t *testing.T) {
-	const (
-		projectID      = "my-proj"
-		rawTraceHex    = "70f5c2c7b3c0d8eead4837399ac5b327"
-		rawSpanHex     = "5fa1c6de0d1e3e11"
-		formattedTrace = "projects/my-proj/traces/" + rawTraceHex
-	)
+// TestDetectTraceProjectIDFromEnvPriority ensures higher-priority variables win.
+func TestDetectTraceProjectIDFromEnvPriority(t *testing.T) {
+	t.Setenv("SLOGCP_PROJECT_ID", "project-id")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "gcp-project")
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "trace-id")
 
-	validSampledSC := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    mustTraceID(t, rawTraceHex),
-		SpanID:     mustSpanID(t, rawSpanHex),
+	if got := detectTraceProjectIDFromEnv(); got != "trace-id" {
+		t.Fatalf("detectTraceProjectIDFromEnv() = %q, want %q", got, "trace-id")
+	}
+}
+
+// TestCachedTraceProjectIDCachesFirstValue verifies the cached helper does not reread env vars.
+func TestCachedTraceProjectIDCachesFirstValue(t *testing.T) {
+	resetTraceProjectEnvCache()
+	t.Cleanup(resetTraceProjectEnvCache)
+
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "initial-project")
+	if got := cachedTraceProjectID(); got != "initial-project" {
+		t.Fatalf("cachedTraceProjectID() = %q, want %q", got, "initial-project")
+	}
+
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "mutated")
+	if got := cachedTraceProjectID(); got != "initial-project" {
+		t.Fatalf("cachedTraceProjectID() after env change = %q, want cached %q", got, "initial-project")
+	}
+}
+
+// TestTraceAttributesFormatsCloudLoggingFields ensures attributes mirror Cloud Logging requirements.
+func TestTraceAttributesFormatsCloudLoggingFields(t *testing.T) {
+	t.Parallel()
+
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
 		TraceFlags: trace.FlagsSampled,
-	})
+	}))
 
-	validUnsampledSC := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID: mustTraceID(t, rawTraceHex),
-		SpanID:  mustSpanID(t, rawSpanHex),
-	})
-
-	tests := []struct {
-		name           string
-		ctx            context.Context
-		projectID      string
-		wantFmtTraceID string
-		wantRawTraceID string
-		wantRawSpanID  string
-		wantSampled    bool
-		wantValid      bool
-	}{
-		{
-			name:           "sampled_with_project",
-			ctx:            trace.ContextWithSpanContext(context.Background(), validSampledSC),
-			projectID:      projectID,
-			wantFmtTraceID: formattedTrace,
-			wantRawTraceID: rawTraceHex,
-			wantRawSpanID:  rawSpanHex,
-			wantSampled:    true,
-			wantValid:      true,
-		},
-		{
-			name:           "sampled_no_project",
-			ctx:            trace.ContextWithSpanContext(context.Background(), validSampledSC),
-			projectID:      "",
-			wantFmtTraceID: "",
-			wantRawTraceID: rawTraceHex,
-			wantRawSpanID:  rawSpanHex,
-			wantSampled:    true,
-			wantValid:      true,
-		},
-		{
-			name:           "unsampled_span",
-			ctx:            trace.ContextWithSpanContext(context.Background(), validUnsampledSC),
-			projectID:      projectID,
-			wantFmtTraceID: formattedTrace,
-			wantRawTraceID: rawTraceHex,
-			wantRawSpanID:  rawSpanHex,
-			wantSampled:    false,
-			wantValid:      true,
-		},
-		{
-			name:           "no_span_in_context",
-			ctx:            context.Background(),
-			projectID:      projectID,
-			wantFmtTraceID: "",
-			wantRawTraceID: "",
-			wantRawSpanID:  "",
-			wantSampled:    false,
-			wantValid:      false,
-		},
+	attrs, ok := TraceAttributes(ctx, "proj-123")
+	if !ok {
+		t.Fatalf("TraceAttributes() ok = false, want true")
+	}
+	if len(attrs) == 0 {
+		t.Fatalf("TraceAttributes() returned no attributes")
 	}
 
-	for _, tc := range tests {
-		tc := tc // capture loop variable
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	got := attrsToMap(attrs)
+	if got[TraceKey] != "projects/proj-123/traces/105445aa7843bc8bf206b12000100000" {
+		t.Fatalf("trace attr = %v", got[TraceKey])
+	}
+	if got[SpanKey] != "09158d8185d3c3af" {
+		t.Fatalf("spanId attr = %v, want span id", got[SpanKey])
+	}
+	if sampled, ok := got[SampledKey].(bool); !ok || !sampled {
+		t.Fatalf("trace_sampled attr = %v, want true", got[SampledKey])
+	}
+}
 
-			gotFmt, gotRawTrace, gotRawSpan, gotSampled, gotSC :=
-				gcp.ExtractTraceSpan(tc.ctx, tc.projectID)
+// TestTraceAttributesOmitsSpanForRemote ensures remote parents do not publish span IDs.
+func TestTraceAttributesOmitsSpanForRemote(t *testing.T) {
+	t.Parallel()
 
-			if gotFmt != tc.wantFmtTraceID {
-				t.Errorf("formattedTraceID = %q, want %q", gotFmt, tc.wantFmtTraceID)
-			}
-			if gotRawTrace != tc.wantRawTraceID {
-				t.Errorf("rawTraceID = %q, want %q", gotRawTrace, tc.wantRawTraceID)
-			}
-			if gotRawSpan != tc.wantRawSpanID {
-				t.Errorf("rawSpanID = %q, want %q", gotRawSpan, tc.wantRawSpanID)
-			}
-			if gotSampled != tc.wantSampled {
-				t.Errorf("sampled = %v, want %v", gotSampled, tc.wantSampled)
-			}
+	traceID, _ := trace.TraceIDFromHex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	spanID, _ := trace.SpanIDFromHex("bbbbbbbbbbbbbbbb")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+		Remote:     true,
+	}))
 
-			if gotSC.IsValid() != tc.wantValid {
-				t.Fatalf("SpanContext validity = %v, want %v", gotSC.IsValid(), tc.wantValid)
-			}
-			if tc.wantValid && !gotSC.Equal(validSampledSC) && !gotSC.Equal(validUnsampledSC) {
-				t.Errorf("SpanContext mismatch: got %+v", gotSC)
-			}
-		})
+	attrs, ok := TraceAttributes(ctx, "proj-remote")
+	if !ok {
+		t.Fatalf("TraceAttributes() ok = false, want true")
+	}
+	got := attrsToMap(attrs)
+	if got[TraceKey] != "projects/proj-remote/traces/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("trace attr = %v", got[TraceKey])
+	}
+	if _, exists := got[SpanKey]; exists {
+		t.Fatalf("spanId should be omitted for remote spans: %v", got)
+	}
+}
+
+// TestTraceAttributesFallsBackToEnvProjectID validates env-derived project IDs.
+func TestTraceAttributesFallsBackToEnvProjectID(t *testing.T) {
+	resetTraceProjectEnvCache()
+	t.Cleanup(resetTraceProjectEnvCache)
+
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "env-project")
+
+	traceID, _ := trace.TraceIDFromHex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	spanID, _ := trace.SpanIDFromHex("cccccccccccccccc")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	attrs, ok := TraceAttributes(ctx, "")
+	if !ok {
+		t.Fatalf("TraceAttributes() ok = false, want true")
+	}
+	got := attrsToMap(attrs)
+	if got[TraceKey] != "projects/env-project/traces/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("trace attr = %v, want env-derived id", got[TraceKey])
+	}
+}
+
+// TestTraceAttributesOtelFallback covers local dev scenarios with no project ID.
+func TestTraceAttributesOtelFallback(t *testing.T) {
+	t.Parallel()
+
+	resetTraceProjectEnvCache()
+	t.Cleanup(resetTraceProjectEnvCache)
+
+	traceID, _ := trace.TraceIDFromHex("cccccccccccccccccccccccccccccccc")
+	spanID, _ := trace.SpanIDFromHex("dddddddddddddddd")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: traceID,
+		SpanID:  spanID,
+	}))
+
+	attrs, ok := TraceAttributes(ctx, "")
+	if !ok {
+		t.Fatalf("TraceAttributes() ok = false, want true")
+	}
+	got := attrsToMap(attrs)
+	if _, exists := got[TraceKey]; exists {
+		t.Fatalf("Cloud Logging trace key should be absent: %v", got)
+	}
+	if got["otel.trace_id"] != "cccccccccccccccccccccccccccccccc" {
+		t.Fatalf("otel.trace_id = %v", got["otel.trace_id"])
+	}
+	if got["otel.span_id"] != "dddddddddddddddd" {
+		t.Fatalf("otel.span_id = %v", got["otel.span_id"])
+	}
+	if sampled, ok := got["otel.trace_sampled"].(bool); ok && sampled {
+		t.Fatalf("otel.trace_sampled = %v, want false", sampled)
+	}
+}
+
+// TestTraceAttributesReturnsNilWithoutSpan ensures contexts with no spans omit fields.
+func TestTraceAttributesReturnsNilWithoutSpan(t *testing.T) {
+	t.Parallel()
+
+	if attrs, ok := TraceAttributes(context.Background(), "proj"); ok || len(attrs) != 0 {
+		t.Fatalf("TraceAttributes() without span = (%v,%v), want (nil,false)", attrs, ok)
+	}
+}
+
+// TestTraceAttributesNilContext ensures nil contexts short circuit.
+func TestTraceAttributesNilContext(t *testing.T) {
+	var nilCtx context.Context
+	if attrs, ok := TraceAttributes(nilCtx, "proj"); ok || len(attrs) != 0 {
+		t.Fatalf("TraceAttributes(nil) = (%v,%v), want (nil,false)", attrs, ok)
+	}
+}
+
+// resetTraceProjectEnvCache clears the cached project ID for trace tests.
+func resetTraceProjectEnvCache() {
+	traceProjectEnvOnce = sync.Once{}
+	traceProjectEnvID = ""
+}
+
+// attrsToMap flattens attribute slices into a key/value map for assertions.
+func attrsToMap(attrs []slog.Attr) map[string]any {
+	m := make(map[string]any, len(attrs))
+	for _, attr := range attrs {
+		m[attr.Key] = attrValueAny(attr.Value)
+	}
+	return m
+}
+
+// attrValueAny resolves slog values into primitive Go types for comparison.
+func attrValueAny(v slog.Value) any {
+	rv := v.Resolve()
+	switch rv.Kind() {
+	case slog.KindString:
+		return rv.String()
+	case slog.KindBool:
+		return rv.Bool()
+	default:
+		return rv.Any()
 	}
 }

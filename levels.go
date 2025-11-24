@@ -75,49 +75,64 @@ const (
 	LevelEmergency Level = 20
 
 	// LevelDefault maps to GCP DEFAULT (0) severity. This is used for unspecified
-	// or unknown severity, and sorts below Debug in the severity hierarchy.
+	// or unknown severity and intentionally sorts above the other levels so that
+	// default-severity entries are never filtered out by minimum level settings.
 	LevelDefault Level = 30
 )
+
+type severityDescriptor struct {
+	threshold Level
+	levelName string
+	fullName  string
+	alias     string
+}
+
+var severityDescriptors = []severityDescriptor{
+	{threshold: LevelDebug, levelName: "DEBUG", fullName: "DEBUG", alias: "D"},
+	{threshold: LevelInfo, levelName: "INFO", fullName: "INFO", alias: "I"},
+	{threshold: LevelNotice, levelName: "NOTICE", fullName: "NOTICE", alias: "N"},
+	{threshold: LevelWarn, levelName: "WARN", fullName: "WARNING", alias: "W"},
+	{threshold: LevelError, levelName: "ERROR", fullName: "ERROR", alias: "E"},
+	{threshold: LevelCritical, levelName: "CRITICAL", fullName: "CRITICAL", alias: "C"},
+	{threshold: LevelAlert, levelName: "ALERT", fullName: "ALERT", alias: "A"},
+	{threshold: LevelEmergency, levelName: "EMERGENCY", fullName: "EMERGENCY", alias: "EMERG"},
+	{threshold: LevelDefault, levelName: "DEFAULT", fullName: "DEFAULT", alias: "DEFAULT"},
+}
+
+// descriptorForLevel returns the severity descriptor whose threshold is at or
+// below the provided level, falling back to the lowest descriptor if none
+// match.
+func descriptorForLevel(level Level) severityDescriptor {
+	desc := severityDescriptors[0]
+	for i := len(severityDescriptors) - 1; i >= 0; i-- {
+		if level >= severityDescriptors[i].threshold {
+			return severityDescriptors[i]
+		}
+	}
+	return desc
+}
+
+// formatWithOffset renders base and, when offset is non-zero, appends the
+// signed offset to capture intermediate severity values.
+func formatWithOffset(base string, offset int) string {
+	if offset == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s%+d", base, offset)
+}
 
 // String returns the canonical string representation of the Level, matching
 // Google Cloud Logging severity names where applicable (e.g., "DEBUG", "NOTICE", "ERROR").
 // For levels between defined constants, it returns the name of the nearest lower
 // defined level plus the offset (e.g., "DEFAULT+1", "INFO+1", "NOTICE+1").
 //
-// This representation is used by the fallback JSON handler for the "severity" field
+// This representation is used by the JSON handler for the "severity" field
 // and provides a human-readable form of the level for debugging and display.
 // Note that when logging to GCP, the String representation is not used directly;
 // the numeric value is mapped to the appropriate GCP severity.
 func (l Level) String() string {
-	// formatWithOffset is a helper to create the final string representation.
-	formatWithOffset := func(baseName string, offset Level) string {
-		if offset == 0 {
-			return baseName
-		}
-		return fmt.Sprintf("%s%+d", baseName, offset)
-	}
-
-	// Check level ranges from lowest to highest.
-	switch {
-	case l < LevelInfo:
-		return formatWithOffset("DEBUG", l-LevelDebug)
-	case l < LevelNotice:
-		return formatWithOffset("INFO", l-LevelInfo)
-	case l < LevelWarn:
-		return formatWithOffset("NOTICE", l-LevelNotice)
-	case l < LevelError:
-		return formatWithOffset("WARN", l-LevelWarn)
-	case l < LevelCritical:
-		return formatWithOffset("ERROR", l-LevelError)
-	case l < LevelAlert:
-		return formatWithOffset("CRITICAL", l-LevelCritical)
-	case l < LevelEmergency:
-		return formatWithOffset("ALERT", l-LevelAlert)
-	case l < LevelDefault:
-		return formatWithOffset("EMERGENCY", l-LevelEmergency)
-	default: // level >= LevelDefault
-		return formatWithOffset("DEFAULT", l-LevelDefault)
-	}
+	desc := descriptorForLevel(l)
+	return formatWithOffset(desc.levelName, int(l-desc.threshold))
 }
 
 // Level returns the underlying slog.Level value. This method allows slogcp.Level
@@ -134,4 +149,28 @@ func (l Level) String() string {
 //   - In comparison operations with standard slog levels
 func (l Level) Level() slog.Level {
 	return slog.Level(l)
+}
+
+// severityString returns either the short Cloud Logging severity alias or the
+// full severity name depending on useAliases.
+func severityString(level slog.Level, useAliases bool) string {
+	if useAliases {
+		return severityAliasString(level)
+	}
+	return severityFullString(level)
+}
+
+// severityAliasString maps slog levels to Cloud Logging severity aliases.
+// These shorter severity names are still recognized by Cloud Logging, and
+// are converted to the full names in the Cloud Logging UI.
+// Using these aliases saves about 1ns of JSON marshaling time per log entry.
+func severityAliasString(level slog.Level) string {
+	desc := descriptorForLevel(Level(level))
+	return formatWithOffset(desc.alias, int(level-slog.Level(desc.threshold)))
+}
+
+// severityFullString maps slog levels to the full Cloud Logging severity names.
+func severityFullString(level slog.Level) string {
+	desc := descriptorForLevel(Level(level))
+	return formatWithOffset(desc.fullName, int(level-slog.Level(desc.threshold)))
 }
