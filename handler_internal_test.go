@@ -22,7 +22,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -44,16 +43,12 @@ func TestNewHandlerStrictDiagnosticsRequiresProject(t *testing.T) {
 	t.Setenv("GCP_PROJECT", "")
 	t.Setenv("PROJECT_ID", "")
 
-	origFactory := metadataClientFactory
-	metadataClientFactory = func() metadataClient { return strictMetadataClient{} }
-	t.Cleanup(func() { metadataClientFactory = origFactory })
+	origFactory := getMetadataClientFactory()
+	setMetadataClientFactory(func() metadataClient { return strictMetadataClient{} })
+	t.Cleanup(func() { setMetadataClientFactory(origFactory) })
 
-	runtimeInfoOnce = sync.Once{}
-	runtimeInfo = RuntimeInfo{}
-	t.Cleanup(func() {
-		runtimeInfoOnce = sync.Once{}
-		runtimeInfo = RuntimeInfo{}
-	})
+	resetRuntimeInfoCache()
+	t.Cleanup(resetRuntimeInfoCache)
 
 	handler, err := NewHandler(io.Discard, WithTraceDiagnostics(TraceDiagnosticsStrict))
 	if err == nil {

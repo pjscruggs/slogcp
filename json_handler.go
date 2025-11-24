@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -125,16 +126,67 @@ var jsonBufferPool = sync.Pool{
 	},
 }
 
-var recordSourceFunc = func(r slog.Record) *slog.Source {
-	return r.Source()
+var (
+	recordSourceFunc     atomic.Value // func(slog.Record) *slog.Source
+	runtimeFrameResolver atomic.Value // func(uintptr) runtime.Frame
+)
+
+// init seeds hook defaults for record source and frame resolution.
+func init() {
+	setRecordSourceFunc(func(r slog.Record) *slog.Source {
+		return r.Source()
+	})
+	setRuntimeFrameResolver(func(pc uintptr) runtime.Frame {
+		var pcs [1]uintptr
+		pcs[0] = pc
+		frames := runtime.CallersFrames(pcs[:])
+		frame, _ := frames.Next()
+		return frame
+	})
 }
 
-var runtimeFrameResolver = func(pc uintptr) runtime.Frame {
-	var pcs [1]uintptr
-	pcs[0] = pc
-	frames := runtime.CallersFrames(pcs[:])
-	frame, _ := frames.Next()
-	return frame
+// setRecordSourceFunc installs the hook used to obtain source metadata from records.
+func setRecordSourceFunc(fn func(slog.Record) *slog.Source) {
+	if fn == nil {
+		fn = func(r slog.Record) *slog.Source { return r.Source() }
+	}
+	recordSourceFunc.Store(fn)
+}
+
+// getRecordSourceFunc returns the configured record source hook.
+func getRecordSourceFunc() func(slog.Record) *slog.Source {
+	if fn, ok := recordSourceFunc.Load().(func(slog.Record) *slog.Source); ok && fn != nil {
+		return fn
+	}
+	return func(r slog.Record) *slog.Source { return r.Source() }
+}
+
+// setRuntimeFrameResolver installs the hook used to resolve call frames.
+func setRuntimeFrameResolver(fn func(uintptr) runtime.Frame) {
+	if fn == nil {
+		fn = func(pc uintptr) runtime.Frame {
+			var pcs [1]uintptr
+			pcs[0] = pc
+			frames := runtime.CallersFrames(pcs[:])
+			frame, _ := frames.Next()
+			return frame
+		}
+	}
+	runtimeFrameResolver.Store(fn)
+}
+
+// getRuntimeFrameResolver returns the configured call frame resolver hook.
+func getRuntimeFrameResolver() func(uintptr) runtime.Frame {
+	if fn, ok := runtimeFrameResolver.Load().(func(uintptr) runtime.Frame); ok && fn != nil {
+		return fn
+	}
+	return func(pc uintptr) runtime.Frame {
+		var pcs [1]uintptr
+		pcs[0] = pc
+		frames := runtime.CallersFrames(pcs[:])
+		frame, _ := frames.Next()
+		return frame
+	}
 }
 
 type sourceLocation struct {
@@ -310,7 +362,7 @@ func (h *jsonHandler) resolveSourceLocation(r slog.Record) *sourceLocation {
 		return nil
 	}
 
-	if src := recordSourceFunc(r); src != nil {
+	if src := getRecordSourceFunc()(r); src != nil {
 		if src.Function != "" || src.File != "" {
 			return &sourceLocation{
 				File:     src.File,
@@ -324,7 +376,7 @@ func (h *jsonHandler) resolveSourceLocation(r slog.Record) *sourceLocation {
 		return nil
 	}
 
-	frame := runtimeFrameResolver(r.PC)
+	frame := getRuntimeFrameResolver()(r.PC)
 	if frame.Function == "" {
 		return nil
 	}
