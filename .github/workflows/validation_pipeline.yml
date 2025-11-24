@@ -1,4 +1,4 @@
-name: Validation Pipeline
+﻿name: Validation Pipeline
 on:
   pull_request:
     branches: [ main ]
@@ -41,11 +41,14 @@ jobs:
       
       - name: 🔍 Determine branch name
         id: get-branch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "BRANCH_NAME=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            echo "BRANCH_NAME=$PR_HEAD_REF" >> "$GITHUB_OUTPUT"
           else
-            echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+            echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 🔢 Determine Go version
@@ -158,30 +161,47 @@ jobs:
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
-      
-      - name: 💨 Run Local Smoke Tests (Tier 1)
-        id: go-smoke-tests
-        run: |
-          go test -v -race -tags=smoke -coverprofile=coverage-smoke.out ./...
 
-      - name: 🧪 Run Unit Tests (Tier 2)
+      - name: Install Go Test Tools
+        run: |
+          go install github.com/mfridman/tparse@ba2512e7be150bfcbd6f6220d517d3741f8f2f75
+
+      - name: Run Go Tests
         if: success()
-        id: go-unit-tests
+        id: go-tests
         run: |
-          go test -v -race -tags=unit -coverprofile=coverage-unit.out ./...
+          go test -json -race -coverprofile=coverage.out ./... | tparse -all -notests
 
-      - name: 📄 Print Coverage Report
+      - name: Verify Example Modules
+        if: success()
+        run: |
+          set -euo pipefail
+          if [ ! -d ".examples" ]; then
+            echo "No .examples directory found; skipping example verification."
+            exit 0
+          fi
+
+          examples_found=0
+          while IFS= read -r -d '' mod; do
+            examples_found=1
+            dir=$(dirname "$mod")
+            echo "::group::go test $dir"
+            (cd "$dir" && go test ./...)
+            echo "::endgroup::"
+          done < <(find .examples -name go.mod -print0)
+
+          if [ "$examples_found" -eq 0 ]; then
+            echo "No example go.mod files found under .examples; skipping."
+          fi
+
+      - name: Print Coverage Report
         if: always()
         run: |
           echo "--- Test Coverage ---"
-          if [ -f coverage-smoke.out ]; then
-            cat coverage-smoke.out
+          if [ -f coverage.out ]; then
+            cat coverage.out
           else
-            echo "Coverage file (coverage-smoke.out) not found."
-          fi
-          if [ -f coverage-unit.out ]; then
-            echo "--- Unit Test Coverage ---"
-            cat coverage-unit.out
+            echo "Coverage file (coverage.out) not found."
           fi
           echo "---------------------"
       
@@ -388,3 +408,4 @@ jobs:
                 summary: `Secrets not available or validation not successful. A maintainer can run the "Manual E2E Test Trigger" workflow with PR #${{ github.event.pull_request.number }}.`
               }
             });
+

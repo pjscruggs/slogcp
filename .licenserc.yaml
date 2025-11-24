@@ -1,13 +1,14 @@
+---
+# NOTE: validation_pipeline.yml reads and rewrites this file (year + header settings).
+# Keep the structure/paths stable unless you also update that workflow.
 header:
   license:
     spdx-id: Apache-2.0
     copyright-owner: "Patrick J. Scruggs"
-
     first-publication-year: &fp_year "2025"
-    copyright-year: *fp_year 
-
+    copyright-year: *fp_year
     software-name: "slogcp"
-  
+
   paths:
     - '**/*.go'
     - '**/*.js'
@@ -27,7 +28,7 @@ header:
     - 'go.mod'
     - 'go.sum'
     - '.gitignore'
-  
+
   comment: on-failure
 
-  license-location-threshold: 200
+  license-location-threshold: 1000
