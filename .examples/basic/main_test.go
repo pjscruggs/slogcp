@@ -47,6 +47,7 @@ func TestGoogleCloudLoggerEmitsInfo(t *testing.T) {
 	}
 }
 
+// decodeLatestEntry unmarshals the final JSON log line from buf.
 func decodeLatestEntry(t *testing.T, buf *bytes.Buffer) map[string]any {
 	t.Helper()
 

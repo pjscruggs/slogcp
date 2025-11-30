@@ -41,11 +41,13 @@ type greeterServer struct {
 	logger *slog.Logger
 }
 
+// SayHello implements the Greeter service and logs the request name.
 func (s *greeterServer) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb.HelloReply, error) {
 	s.logger.InfoContext(ctx, "say hello", slog.String("name", req.GetName()))
 	return &pb.HelloReply{Message: "Hello " + req.GetName()}, nil
 }
 
+// main starts a gRPC Greeter server and invokes it with slogcp logging.
 func main() {
 	handler, err := slogcp.NewHandler(os.Stdout)
 	if err != nil {

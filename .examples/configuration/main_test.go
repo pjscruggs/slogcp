@@ -55,6 +55,7 @@ func TestConfiguredLoggerIncludesStaticAttributes(t *testing.T) {
 	}
 }
 
+// decodeLatestEntry returns the last JSON log object from buf.
 func decodeLatestEntry(t *testing.T, buf *bytes.Buffer) map[string]any {
 	t.Helper()
 

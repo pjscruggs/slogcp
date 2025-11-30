@@ -143,6 +143,7 @@ type recordingExporter struct {
 	spans []sdktrace.ReadOnlySpan
 }
 
+// ExportSpans records spans emitted by the tracer provider.
 func (r *recordingExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -150,8 +151,10 @@ func (r *recordingExporter) ExportSpans(_ context.Context, spans []sdktrace.Read
 	return nil
 }
 
+// Shutdown satisfies the SpanExporter interface without cleanup.
 func (r *recordingExporter) Shutdown(context.Context) error { return nil }
 
+// Spans returns a copy of every exported span.
 func (r *recordingExporter) Spans() []sdktrace.ReadOnlySpan {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -166,6 +169,7 @@ type countingPropagator struct {
 	extract int
 }
 
+// newCountingPropagator wraps a propagator while counting Extract calls.
 func newCountingPropagator() *countingPropagator {
 	return &countingPropagator{
 		base: propagation.NewCompositeTextMapPropagator(
@@ -175,10 +179,12 @@ func newCountingPropagator() *countingPropagator {
 	}
 }
 
+// Inject delegates to the wrapped propagator.
 func (c *countingPropagator) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
 	c.base.Inject(ctx, carrier)
 }
 
+// Extract increments the counter then defers to the wrapped propagator.
 func (c *countingPropagator) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
 	c.mu.Lock()
 	c.extract++
@@ -186,10 +192,12 @@ func (c *countingPropagator) Extract(ctx context.Context, carrier propagation.Te
 	return c.base.Extract(ctx, carrier)
 }
 
+// Fields returns the fields supported by the wrapped propagator.
 func (c *countingPropagator) Fields() []string {
 	return c.base.Fields()
 }
 
+// ExtractCount reports how many times Extract has been invoked.
 func (c *countingPropagator) ExtractCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
