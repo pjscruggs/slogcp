@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -266,6 +267,102 @@ func TestDropOldestEvictsBufferedRecord(t *testing.T) {
 	}
 	if inner.state.records[0].Message != "second" {
 		t.Fatalf("handled message = %q, want %q", inner.state.records[0].Message, "second")
+	}
+}
+
+// TestDropOldestInvokesOnDropForEvictedRecord reports dropped entries via OnDrop.
+func TestDropOldestInvokesOnDropForEvictedRecord(t *testing.T) {
+	t.Parallel()
+
+	start := make(chan func(), 1)
+	inner := newRecordingHandler(nil)
+	var dropped []string
+
+	h := Wrap(inner,
+		WithQueueSize(1),
+		WithDropMode(DropModeDropOldest),
+		WithOnDrop(func(_ context.Context, rec slog.Record) {
+			dropped = append(dropped, rec.Message)
+		}),
+		withWorkerStarter(func(run func()) {
+			start <- run
+		}),
+	)
+
+	first := slog.NewRecord(time.Now(), slog.LevelInfo, "first", 0)
+	second := slog.NewRecord(time.Now(), slog.LevelInfo, "second", 0)
+
+	if err := h.Handle(context.Background(), first); err != nil {
+		t.Fatalf("Handle(first) returned %v, want nil", err)
+	}
+	if err := h.Handle(context.Background(), second); err != nil {
+		t.Fatalf("Handle(second) returned %v, want nil", err)
+	}
+
+	run := <-start
+	run()
+
+	waitForCalls(t, inner.state.calls, 1)
+
+	if err := h.(*Handler).Close(); err != nil {
+		t.Fatalf("Handler.Close() returned %v, want nil", err)
+	}
+
+	if got := len(inner.state.records); got != 1 {
+		t.Fatalf("inner handled %d records, want 1", got)
+	}
+	if inner.state.records[0].Message != "second" {
+		t.Fatalf("handled message = %q, want %q", inner.state.records[0].Message, "second")
+	}
+	if len(dropped) != 1 || dropped[0] != "first" {
+		t.Fatalf("dropped = %v, want [first]", dropped)
+	}
+}
+
+// TestHandleTracksDropsUnderBackpressure counts handled vs dropped when writers overwhelm the queue.
+func TestHandleTracksDropsUnderBackpressure(t *testing.T) {
+	t.Parallel()
+
+	var dropped atomic.Int64
+	block := make(chan struct{})
+	inner := newRecordingHandler(block)
+
+	handler := Wrap(inner,
+		WithQueueSize(8),
+		WithWorkerCount(1),
+		WithDropMode(DropModeDropNewest),
+		WithOnDrop(func(_ context.Context, rec slog.Record) {
+			dropped.Add(1)
+			_ = rec // ensure rec.Clone() exercised
+		}),
+	)
+
+	total := 200
+	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "flood", 0)
+
+	for i := 0; i < total; i++ {
+		if err := handler.Handle(context.Background(), rec); err != nil {
+			t.Fatalf("Handle returned %v", err)
+		}
+	}
+
+	close(block) // unblock worker so Close can drain what was queued
+
+	if err := handler.(*Handler).Close(); err != nil {
+		t.Fatalf("Close returned %v", err)
+	}
+
+	handled := len(inner.state.records)
+	droppedCount := int(dropped.Load())
+
+	if handled == total {
+		t.Fatalf("expected some drops under backpressure, handled all %d", handled)
+	}
+	if handled+droppedCount != total {
+		t.Fatalf("handled+dropped = %d, total = %d", handled+droppedCount, total)
+	}
+	if droppedCount == 0 {
+		t.Fatalf("expected dropped records under backpressure")
 	}
 }
 
