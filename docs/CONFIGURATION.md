@@ -62,6 +62,31 @@ Additional notes:
 - slogcp always validates trace correlation fields before emitting them. When no Cloud project ID can be resolved, the handler omits `logging.googleapis.com/trace` entirely (falling back to the `otel.*` keys) to avoid shipping malformed data. On managed runtimes where the Cloud Logging agent auto-prefixes trace IDs (Cloud Run services/jobs, Cloud Functions, App Engine) slogcp still emits the bare trace ID so existing deployments keep their correlation links. Use `WithTraceDiagnostics`/`SLOGCP_TRACE_DIAGNOSTICS` to upgrade these checks from "warn once" to `strict` or disable them with `off`.
 - `slogcp.ContextWithLogger` and `slogcp.Logger` stash and recover request-scoped loggers. The HTTP and gRPC integrations call these helpers automatically.
 
+## Async wrapper (`github.com/pjscruggs/slogcp/slogcpasync`)
+
+`slogcp` stays synchronous by default. When you want to buffer or drop under load, wrap the handler with `slogcpasync`:
+
+```go
+handler, _ := slogcp.NewHandler(os.Stdout)
+async := slogcpasync.Wrap(handler,
+	slogcpasync.WithQueueSize(4096),
+	slogcpasync.WithDropMode(slogcpasync.DropModeDropNewest),
+)
+logger := slog.New(async)
+```
+
+When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `WithEnv()` (for example via `slogcp.WithMiddleware(slogcpasync.Middleware(...))`). Supported knobs:
+
+| Option | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `WithEnabled(bool)` | `SLOGCP_ASYNC_ENABLED` | `true` once the wrapper is added | Enables or disables the async wrapper entirely. |
+| `WithQueueSize(int)` | `SLOGCP_ASYNC_QUEUE_SIZE` | `1024` | Channel capacity for queued records. `0` uses an unbuffered channel. |
+| `WithDropMode(slogcpasync.DropMode)` | `SLOGCP_ASYNC_DROP_MODE` | `block` | Overflow policy: `block`, `drop_newest`, or `drop_oldest`. |
+| `WithWorkerCount(int)` | `SLOGCP_ASYNC_WORKERS` | `1` | Number of goroutines draining the queue. |
+| `WithFlushTimeout(time.Duration)` | `SLOGCP_ASYNC_FLUSH_TIMEOUT` | (none) | Optional timeout for `Close`; returns `ErrFlushTimeout` if workers never finish. |
+| `WithOnDrop(func)` | (none) | (none) | Callback invoked when a record is dropped (useful for metrics). |
+| `WithEnv()` | reads all of the above | (none) | Overlays any `SLOGCP_ASYNC_*` values onto the provided config. |
+
 ### Severity Levels
 
 `slogcp` extends `log/slog` levels so they line up with [Google Cloud Logging's severities](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#LogSeverity) (`DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, `CRITICAL`, `ALERT`, `EMERGENCY`, and `DEFAULT`). The exported constants in [`levels.go`](../levels.go) (for example `slogcp.LevelNotice`, `slogcp.LevelAlert`) and helper functions such as `slogcp.DefaultContext`, `slogcp.NoticeContext`, and `slogcp.AlertContext` make it easy to emit those severities directly.
