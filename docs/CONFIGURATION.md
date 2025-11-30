@@ -45,15 +45,16 @@ Key options:
 | `WithTraceDiagnostics(slogcp.TraceDiagnosticsMode)` | `SLOGCP_TRACE_DIAGNOSTICS` | `warn` | Controls how slogcp surfaces trace correlation issues. Accepts `off`, `warn`/`warn_once`, or `strict` (which fails handler creation when no project can be detected). |
 | `WithSeverityAliases(bool)` | `SLOGCP_SEVERITY_ALIASES` | `true` on Cloud Run (services), Cloud Run Jobs, Cloud Functions, and App Engine; otherwise `false` | Emits single-letter Cloud Logging severity aliases ("I", "E", etc.). Using these aliases saves about 1ns of JSON marshaling time per log entry, and has no effect the final Cloud Logging LogEntry. |
 | `WithRedirectToStdout()` / `WithRedirectToStderr()` | `SLOGCP_TARGET` | `stdout` | Chooses the output destination. |
-| `WithRedirectToFile(path)` | `SLOGCP_TARGET` (`file:/absolute/path`) | (disabled) | Writes structured logs to a file (append mode). |
-| `WithRedirectWriter(io.Writer)` | (none) | constructor writer | Uses any writer you supply without taking ownership. |
+| `WithRedirectToFile(path)` | `SLOGCP_TARGET` (`file:<path>`) | (disabled) | Writes structured logs to a file (append mode); slogcp trims whitespace and uses the path verbatim. |
+| `WithRedirectWriter(io.Writer)` | (none) | constructor writer | Uses any writer you supply without taking ownership; path parsing is left to the writer. |
 | `WithReplaceAttr(func)` | (none) | (none) | Mutates or removes attributes before encoding. |
 | `WithMiddleware(slogcp.Middleware)` | (none) | (none) | Wraps the handler with custom middleware. |
 | `WithAttrs([]slog.Attr)` / `WithGroup(string)` | (none) | (none) | Adds fixed attributes or an initial group. |
 | `WithInternalLogger(*slog.Logger)` | (none) | discarding text logger | Receives configuration warnings. |
 
 Additional notes:
-- `SLOGCP_TARGET` accepts `stdout`, `stderr`, or `file:/absolute/path`. Invalid values trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
+- File targets: use `SLOGCP_TARGET=file:<path>` (for example, `file:/var/log/app.json` on Linux/macOS or `file:C:\\logs\\app.json` on Windows). slogcp trims surrounding whitespace and passes the remaining path directly to `os.OpenFile` in append mode; it does not create parent directories or rewrite the string. Invalid values still trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
+- When you choose `WithRedirectWriter`, slogcp does not look at file paths at all; configure any file destination on the writer itself (for example, `*os.File` or a rotation helper like lumberjack).
 - When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor after external tools move the file. Always call `Close` during shutdown to flush buffers and release writers.
 - `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust levels at runtime via `SetLevel` or share the var with other handlers.
 - `WithSeverityAliases` controls whether JSON carries the terse severity names; Cloud Logging still renders the full names in the console. slogcp enables the aliases by default only on Cloud Run (services/jobs), Cloud Functions, and App Engine deployments.
