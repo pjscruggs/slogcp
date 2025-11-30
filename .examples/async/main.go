@@ -59,6 +59,7 @@ func (d *dropTracker) observe(_ context.Context, rec slog.Record) {
 	d.mu.Unlock()
 }
 
+// count returns the number of observed drops.
 func (d *dropTracker) count() int {
 	return int(d.dropped.Load())
 }
@@ -129,6 +130,7 @@ func (a *asyncExample) Close() error {
 	return firstErr
 }
 
+// logBurst emits a pair of log entries to demonstrate async logging.
 func (a *asyncExample) logBurst(ctx context.Context) {
 	a.logger.InfoContext(ctx, "accepted background tasks",
 		slog.String("component", "scheduler"),

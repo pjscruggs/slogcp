@@ -26,6 +26,7 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
+// main runs the basic slogcp stdout example.
 func main() {
 	handler, err := slogcp.NewHandler(os.Stdout)
 	if err != nil {

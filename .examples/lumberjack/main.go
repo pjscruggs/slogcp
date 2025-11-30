@@ -28,6 +28,7 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
+// main runs the lumberjack rolling file example with slogcp output.
 func main() {
 	rolling := &lumberjack.Logger{
 		Filename:   "slogcp-rolling.log",

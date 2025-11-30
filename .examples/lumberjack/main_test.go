@@ -132,6 +132,7 @@ func TestLumberjackIntegration(t *testing.T) {
 	}
 }
 
+// findRotatedFile locates a rotated log file matching the base name.
 func findRotatedFile(t *testing.T, dir, baseName string) string {
 	t.Helper()
 
@@ -149,6 +150,7 @@ func findRotatedFile(t *testing.T, dir, baseName string) string {
 	return ""
 }
 
+// readMaybeGZIP reads a file and transparently decompresses gzip payloads.
 func readMaybeGZIP(t *testing.T, path string) []byte {
 	t.Helper()
 
@@ -170,6 +172,7 @@ func readMaybeGZIP(t *testing.T, path string) []byte {
 	return data
 }
 
+// decodeEntries unmarshals newline-delimited JSON log entries from data.
 func decodeEntries(t *testing.T, data []byte) []map[string]any {
 	t.Helper()
 
