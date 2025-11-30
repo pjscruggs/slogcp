@@ -175,13 +175,14 @@ func TestNewJSONHandlerInitialStateFromConfig(t *testing.T) {
 	t.Parallel()
 
 	cfg := &handlerConfig{
-		Writer:        io.Discard,
-		InitialGroups: []string{"service", "component"},
-		InitialAttrs: []slog.Attr{
-			slog.String("env", "prod"),
-			{},
-			{Key: "", Value: slog.IntValue(7)},
+		Writer: io.Discard,
+		InitialGroupedAttrs: []groupedAttr{
+			{groups: []string{"service", "component"}, attr: slog.String("env", "prod")},
+			{groups: []string{"service", "component"}, attr: slog.Attr{}},
+			{groups: []string{"service", "component"}, attr: slog.Attr{Key: "", Value: slog.AnyValue(nil)}},
+			{groups: []string{"service", "component"}, attr: slog.Attr{Key: "version", Value: slog.IntValue(7)}},
 		},
+		InitialGroups: []string{"service", "component"},
 	}
 	handler := newJSONHandler(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
@@ -203,13 +204,16 @@ func TestNewJSONHandlerInitialStateFromConfig(t *testing.T) {
 	if handler.groupedAttrs[0].attr.Key != "env" {
 		t.Fatalf("first initial attr = %v, want key env", handler.groupedAttrs[0].attr)
 	}
-	if handler.groupedAttrs[1].attr.Value.Int64() != 7 {
-		t.Fatalf("second initial attr value = %v, want 7", handler.groupedAttrs[1].attr.Value)
+	if handler.groupedAttrs[1].attr.Key != "version" || handler.groupedAttrs[1].attr.Value.Int64() != 7 {
+		t.Fatalf("second initial attr = %v, want version=7", handler.groupedAttrs[1].attr)
 	}
 
 	// Mutating the original config should not affect the handler's copies.
 	cfg.InitialGroups[0] = "mutated"
-	cfg.InitialAttrs[0] = slog.String("env", "stage")
+	cfg.InitialGroupedAttrs[0].attr = slog.String("env", "stage")
+	if len(cfg.InitialGroupedAttrs[0].groups) > 0 {
+		cfg.InitialGroupedAttrs[0].groups[0] = "mutated"
+	}
 
 	if handler.groups[0] != "service" {
 		t.Fatalf("groups mutated unexpectedly: %v", handler.groups)
@@ -219,6 +223,37 @@ func TestNewJSONHandlerInitialStateFromConfig(t *testing.T) {
 	}
 	if handler.groupedAttrs[0].groups[0] != "service" {
 		t.Fatalf("group association mutated, got %v", handler.groupedAttrs[0].groups)
+	}
+}
+
+// TestNewJSONHandlerFallbackInitialAttrs exercises the InitialAttrs path when grouped attrs are absent.
+func TestNewJSONHandlerFallbackInitialAttrs(t *testing.T) {
+	t.Parallel()
+
+	cfg := &handlerConfig{
+		Writer:        io.Discard,
+		InitialGroups: []string{"fallback"},
+		InitialAttrs: []slog.Attr{
+			{},
+			{Key: "", Value: slog.AnyValue(nil)},
+			slog.String("kept", "v"),
+		},
+	}
+	handler := newJSONHandler(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if len(handler.groups) != 1 || handler.groups[0] != "fallback" {
+		t.Fatalf("groups = %v, want [fallback]", handler.groups)
+	}
+	if len(handler.groupedAttrs) != 1 {
+		t.Fatalf("groupedAttrs len = %d, want 1", len(handler.groupedAttrs))
+	}
+	if handler.groupedAttrs[0].attr.Key != "kept" || handler.groupedAttrs[0].attr.Value.String() != "v" {
+		t.Fatalf("grouped attr = %v, want kept=v", handler.groupedAttrs[0].attr)
+	}
+	cfg.InitialAttrs[2] = slog.String("mutated", "x")
+	cfg.InitialGroups[0] = "mutated"
+	if handler.groupedAttrs[0].attr.Key != "kept" || handler.groups[0] != "fallback" {
+		t.Fatalf("handler state mutated by config changes: groups=%v attrs=%v", handler.groups, handler.groupedAttrs)
 	}
 }
 

@@ -214,6 +214,11 @@ func newJSONHandler(cfg *handlerConfig, leveler slog.Leveler, internalLogger *sl
 	if leveler == nil {
 		leveler = slog.LevelInfo
 	}
+	initialGrouped := cfg.InitialGroupedAttrs
+	groupedCapacity := len(initialGrouped)
+	if groupedCapacity == 0 {
+		groupedCapacity = len(cfg.InitialAttrs)
+	}
 	h := &jsonHandler{
 		mu:             &sync.Mutex{},
 		cfg:            cfg,
@@ -221,11 +226,23 @@ func newJSONHandler(cfg *handlerConfig, leveler slog.Leveler, internalLogger *sl
 		writer:         cfg.Writer,
 		internalLogger: internalLogger,
 		bufferPool:     &jsonBufferPool,
-		groupedAttrs:   make([]groupedAttr, 0, len(cfg.InitialAttrs)),
+		groupedAttrs:   make([]groupedAttr, 0, groupedCapacity),
 		groups:         make([]string, 0, len(cfg.InitialGroups)+1),
 	}
 	if len(cfg.InitialGroups) > 0 {
 		h.groups = append(h.groups, cfg.InitialGroups...)
+	}
+	if len(initialGrouped) > 0 {
+		for _, ga := range initialGrouped {
+			if ga.attr.Key == "" && ga.attr.Value.Any() == nil {
+				continue
+			}
+			h.groupedAttrs = append(h.groupedAttrs, groupedAttr{
+				groups: append([]string(nil), ga.groups...),
+				attr:   ga.attr,
+			})
+		}
+		return h
 	}
 	copyGroups := append([]string(nil), h.groups...)
 	for _, a := range cfg.InitialAttrs {

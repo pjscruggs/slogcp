@@ -232,3 +232,52 @@ func TestWithGroupClearsWhenBlank(t *testing.T) {
 		t.Fatalf("child attribute = %v, want %q", got, "value")
 	}
 }
+
+// TestWithGroupOrdersStaticAttrs ensures WithAttrs captures the group stack present
+// at the time it is invoked instead of being retroactively wrapped by later WithGroup
+// options.
+func TestWithGroupOrdersStaticAttrs(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	h, err := slogcp.NewHandler(io.Discard,
+		slogcp.WithRedirectWriter(&buf),
+		slogcp.WithGroup("service"),
+		slogcp.WithAttrs([]slog.Attr{slog.String("svc_attr", "v1")}),
+		slogcp.WithGroup("request"),
+		slogcp.WithAttrs([]slog.Attr{slog.String("req_attr", "v2")}),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v, want nil", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	slog.New(h).Info("ordered")
+
+	var payload map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() returned %v", err)
+	}
+
+	serviceGroup, ok := payload["service"].(map[string]any)
+	if !ok {
+		t.Fatalf("service group missing or wrong type: %T", payload["service"])
+	}
+	if got := serviceGroup["svc_attr"]; got != "v1" {
+		t.Fatalf("svc_attr = %v, want v1", got)
+	}
+	requestGroup, ok := serviceGroup["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("request subgroup missing or wrong type: %T", serviceGroup["request"])
+	}
+	if got := requestGroup["req_attr"]; got != "v2" {
+		t.Fatalf("req_attr = %v, want v2", got)
+	}
+	if _, wrapped := requestGroup["svc_attr"]; wrapped {
+		t.Fatalf("svc_attr should remain at service level, got wrapped inside request: %#v", requestGroup)
+	}
+}
