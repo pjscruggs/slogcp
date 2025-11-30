@@ -169,7 +169,7 @@ func newHandler(inner slog.Handler, cfg Config) *Handler {
 	start := func() {
 		workerCount := cfg.WorkerCount
 		state.wg.Add(workerCount)
-		for i := 0; i < workerCount; i++ {
+		for range workerCount {
 			go func() {
 				defer state.wg.Done()
 				for item := range state.queue {
