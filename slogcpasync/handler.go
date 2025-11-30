@@ -245,33 +245,40 @@ func (h *Handler) enqueue(item queuedRecord) (err error) {
 		}
 	}()
 
+	queue := h.state.queue
+	onDrop := h.onDrop
+
 	switch h.dropMode {
 	case DropModeDropNewest:
 		select {
-		case h.state.queue <- item:
+		case queue <- item:
 		default:
-			if h.onDrop != nil {
-				h.onDrop(item.ctx, item.rec)
+			if onDrop != nil {
+				onDrop(item.ctx, item.rec)
 			}
 		}
 	case DropModeDropOldest:
 		select {
-		case h.state.queue <- item:
+		case queue <- item:
 		default:
+			var dropped queuedRecord
 			select {
-			case <-h.state.queue:
+			case dropped = <-queue:
 			default:
 			}
+			if onDrop != nil && dropped.handler != nil {
+				onDrop(dropped.ctx, dropped.rec)
+			}
 			select {
-			case h.state.queue <- item:
+			case queue <- item:
 			default:
-				if h.onDrop != nil {
-					h.onDrop(item.ctx, item.rec)
+				if onDrop != nil {
+					onDrop(item.ctx, item.rec)
 				}
 			}
 		}
 	default:
-		h.state.queue <- item
+		queue <- item
 	}
 	return nil
 }
