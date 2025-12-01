@@ -1,4 +1,4 @@
-version: 2
+version: "2"
 
 linters:
   enable:
@@ -52,36 +52,33 @@ linters:
       min-occurrences: 4
     nestif:
       min-complexity: 10
-
-issues:
-  # Do not hide default excludes; can tweak later
-  exclude-use-default: false
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - cyclop
-        - funlen
-        - nestif
-        - goconst
-        - gocritic
-        - wrapcheck
-        - gosec
-        - paralleltest
-        - tparallel
-        - thelper
-        - unparam
-        - revive
-        - bodyclose
-    - path: ^loggingmock/
-      linters:
-        - cyclop
-        - funlen
-        - nestif
-        - goconst
-        - gocritic
-        - wrapcheck
-        - gosec
-        - unparam
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - cyclop
+          - funlen
+          - nestif
+          - goconst
+          - gocritic
+          - wrapcheck
+          - gosec
+          - paralleltest
+          - tparallel
+          - thelper
+          - unparam
+          - revive
+          - bodyclose
+      - path: ^loggingmock/
+        linters:
+          - cyclop
+          - funlen
+          - nestif
+          - goconst
+          - gocritic
+          - wrapcheck
+          - gosec
+          - unparam
 
 formatters:
   enable:
