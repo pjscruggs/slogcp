@@ -22,6 +22,8 @@ jobs:
   # -----------------------------
   validation:
     name: Fix and Validate Code
+    # Skip validation on pull_request_target to avoid running the full pipeline twice per PR update.
+    if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: auto
