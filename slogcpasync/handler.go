@@ -17,6 +17,8 @@ package slogcpasync
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strconv"
@@ -59,8 +61,10 @@ type Config struct {
 	Enabled      bool
 	QueueSize    int
 	WorkerCount  int
+	BatchSize    int
 	DropMode     DropMode
 	OnDrop       DropHandler
+	ErrorWriter  io.Writer
 	FlushTimeout time.Duration
 
 	workerStarter func(func())
@@ -90,6 +94,14 @@ func WithWorkerCount(count int) Option {
 	}
 }
 
+// WithBatchSize sets how many queued records a worker drains per wake-up.
+// Values less than 1 default to 1.
+func WithBatchSize(size int) Option {
+	return func(cfg *Config) {
+		cfg.BatchSize = size
+	}
+}
+
 // WithDropMode sets the queue overflow strategy.
 func WithDropMode(mode DropMode) Option {
 	return func(cfg *Config) {
@@ -101,6 +113,14 @@ func WithDropMode(mode DropMode) Option {
 func WithOnDrop(fn DropHandler) Option {
 	return func(cfg *Config) {
 		cfg.OnDrop = fn
+	}
+}
+
+// WithErrorWriter directs worker errors and panic reports to w. Use nil to
+// silence error reporting.
+func WithErrorWriter(w io.Writer) Option {
+	return func(cfg *Config) {
+		cfg.ErrorWriter = w
 	}
 }
 
@@ -141,6 +161,7 @@ type asyncState struct {
 	closeOnce    sync.Once
 	closeErr     error
 	closer       func() error
+	errWriter    io.Writer
 }
 
 type queuedRecord struct {
@@ -164,16 +185,48 @@ func newHandler(inner slog.Handler, cfg Config) *Handler {
 		queue:        make(chan queuedRecord, cfg.QueueSize),
 		flushTimeout: cfg.FlushTimeout,
 		closer:       closerFor(inner),
+		errWriter:    cfg.ErrorWriter,
 	}
 
 	start := func() {
 		workerCount := cfg.WorkerCount
+		batchSize := cfg.BatchSize
 		state.wg.Add(workerCount)
+		logError := func(format string, args ...any) {
+			if state.errWriter == nil {
+				return
+			}
+			_, _ = fmt.Fprintf(state.errWriter, format, args...)
+		}
+		handle := func(item queuedRecord) {
+			defer func() {
+				if r := recover(); r != nil {
+					logError("slogcpasync: recovered panic from handler: %v\n", r)
+				}
+			}()
+
+			if err := item.handler.Handle(item.ctx, item.rec); err != nil {
+				logError("slogcpasync: handler error: %v\n", err)
+			}
+		}
+
 		for range workerCount {
 			go func() {
 				defer state.wg.Done()
 				for item := range state.queue {
-					_ = item.handler.Handle(item.ctx, item.rec)
+					handle(item)
+					for n := 1; n < batchSize; n++ {
+						select {
+						case next, ok := <-state.queue:
+							if !ok {
+								return
+							}
+							handle(next)
+						default:
+							goto nextItem
+						}
+					}
+				nextItem:
 				}
 			}()
 		}
@@ -344,7 +397,9 @@ func buildConfig(opts []Option) Config {
 		Enabled:     true,
 		QueueSize:   defaultQueueSize,
 		WorkerCount: 1,
+		BatchSize:   1,
 		DropMode:    DropModeBlock,
+		ErrorWriter: os.Stderr,
 	}
 
 	for _, opt := range opts {
@@ -358,6 +413,9 @@ func buildConfig(opts []Option) Config {
 	}
 	if cfg.WorkerCount < 1 {
 		cfg.WorkerCount = 1
+	}
+	if cfg.BatchSize < 1 {
+		cfg.BatchSize = 1
 	}
 
 	return cfg

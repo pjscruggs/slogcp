@@ -15,9 +15,11 @@
 package slogcpasync
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -50,6 +52,30 @@ func newRecordingHandler(block <-chan struct{}) *recordingHandler {
 		},
 		block: block,
 	}
+}
+
+type erroringHandler struct {
+	*recordingHandler
+	err error
+}
+
+// Handle forwards to the recorder and returns a configured error for testing.
+func (h *erroringHandler) Handle(ctx context.Context, rec slog.Record) error {
+	_ = h.recordingHandler.Handle(ctx, rec)
+	return h.err
+}
+
+type panicOnceHandler struct {
+	*recordingHandler
+	panicked atomic.Bool
+}
+
+// Handle panics once then records subsequent calls.
+func (h *panicOnceHandler) Handle(ctx context.Context, rec slog.Record) error {
+	if !h.panicked.Swap(true) {
+		panic("boom")
+	}
+	return h.recordingHandler.Handle(ctx, rec)
 }
 
 // Enabled always reports records as loggable for testing.
@@ -366,6 +392,65 @@ func TestHandleTracksDropsUnderBackpressure(t *testing.T) {
 	}
 }
 
+// TestWorkerLogsErrorsAndContinues reports handler errors to the configured writer.
+func TestWorkerLogsErrorsAndContinues(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	inner := &erroringHandler{
+		recordingHandler: newRecordingHandler(nil),
+		err:              errors.New("boom"),
+	}
+	h := Wrap(inner, WithErrorWriter(&buf))
+
+	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle returned %v, want nil", err)
+	}
+	if err := h.(*Handler).Close(); err != nil {
+		t.Fatalf("Close returned %v, want nil", err)
+	}
+
+	if got := len(inner.state.records); got != 1 {
+		t.Fatalf("handled %d records, want 1", got)
+	}
+	if out := buf.String(); !strings.Contains(out, "boom") || !strings.Contains(out, "handler error") {
+		t.Fatalf("error output = %q, want contains handler error and boom", out)
+	}
+}
+
+// TestWorkerRecoversFromPanic ensures panics do not kill the worker goroutine.
+func TestWorkerRecoversFromPanic(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	inner := &panicOnceHandler{recordingHandler: newRecordingHandler(nil)}
+	h := Wrap(inner, WithQueueSize(2), WithErrorWriter(&buf))
+
+	first := slog.NewRecord(time.Now(), slog.LevelInfo, "first", 0)
+	second := slog.NewRecord(time.Now(), slog.LevelInfo, "second", 0)
+
+	if err := h.Handle(context.Background(), first); err != nil {
+		t.Fatalf("Handle(first) returned %v, want nil", err)
+	}
+	if err := h.Handle(context.Background(), second); err != nil {
+		t.Fatalf("Handle(second) returned %v, want nil", err)
+	}
+
+	if err := h.(*Handler).Close(); err != nil {
+		t.Fatalf("Close returned %v, want nil", err)
+	}
+
+	if got := len(inner.state.records); got != 1 {
+		t.Fatalf("handled %d records, want 1 post-panic", got)
+	}
+	if inner.state.records[0].Message != "second" {
+		t.Fatalf("handled message = %q, want %q", inner.state.records[0].Message, "second")
+	}
+	if out := buf.String(); !strings.Contains(out, "recovered panic") || !strings.Contains(out, "boom") {
+		t.Fatalf("panic output = %q, want recovered panic notice", out)
+	}
+}
+
 // TestWithAttrsAndGroupsShareQueue exercises derived handlers sharing the queue.
 func TestWithAttrsAndGroupsShareQueue(t *testing.T) {
 	t.Parallel()
@@ -556,6 +641,7 @@ func TestBuildConfigClampsInvalidValues(t *testing.T) {
 	cfg := buildConfig([]Option{
 		WithQueueSize(-1),
 		WithWorkerCount(0),
+		WithBatchSize(0),
 	})
 
 	if cfg.QueueSize != defaultQueueSize {
@@ -563,6 +649,9 @@ func TestBuildConfigClampsInvalidValues(t *testing.T) {
 	}
 	if cfg.WorkerCount != 1 {
 		t.Fatalf("WorkerCount = %d, want 1", cfg.WorkerCount)
+	}
+	if cfg.BatchSize != 1 {
+		t.Fatalf("BatchSize = %d, want 1", cfg.BatchSize)
 	}
 }
 
@@ -751,5 +840,101 @@ func TestCloseWhenAlreadyClosedFlagged(t *testing.T) {
 	h := &Handler{state: state}
 	if err := h.Close(); err != nil {
 		t.Fatalf("Close() returned %v, want nil", err)
+	}
+}
+
+// TestBatchDrainProcessesBurst exercises the batch drain inner loop including the default branch.
+func TestBatchDrainProcessesBurst(t *testing.T) {
+	t.Parallel()
+
+	inner := newRecordingHandler(nil)
+	h := Wrap(inner,
+		WithQueueSize(4),
+		WithWorkerCount(1),
+		WithBatchSize(3),
+	)
+
+	first := slog.NewRecord(time.Now(), slog.LevelInfo, "first", 0)
+	second := slog.NewRecord(time.Now(), slog.LevelInfo, "second", 0)
+
+	if err := h.Handle(context.Background(), first); err != nil {
+		t.Fatalf("Handle(first) returned %v", err)
+	}
+	if err := h.Handle(context.Background(), second); err != nil {
+		t.Fatalf("Handle(second) returned %v", err)
+	}
+
+	if err := h.(*Handler).Close(); err != nil {
+		t.Fatalf("Close returned %v", err)
+	}
+
+	if got := len(inner.state.records); got != 2 {
+		t.Fatalf("handled %d records, want 2", got)
+	}
+}
+
+// TestWithBatchSizeOptionAppliesValue covers the WithBatchSize option path.
+func TestWithBatchSizeOptionAppliesValue(t *testing.T) {
+	cfg := buildConfig([]Option{WithBatchSize(5)})
+	if cfg.BatchSize != 5 {
+		t.Fatalf("BatchSize = %d, want 5", cfg.BatchSize)
+	}
+}
+
+// TestErrorWriterNilSuppressesLogOutput hits the nil errWriter branch in workers.
+func TestErrorWriterNilSuppressesLogOutput(t *testing.T) {
+	t.Parallel()
+
+	inner := &erroringHandler{
+		recordingHandler: newRecordingHandler(nil),
+		err:              errors.New("fail"),
+	}
+
+	h := Wrap(inner,
+		WithQueueSize(1),
+		WithErrorWriter(nil),
+	)
+
+	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle returned %v", err)
+	}
+	if err := h.(*Handler).Close(); err != nil {
+		t.Fatalf("Close returned %v", err)
+	}
+	if got := len(inner.state.records); got != 1 {
+		t.Fatalf("handled %d records, want 1", got)
+	}
+}
+
+// TestBatchLoopDefaultBranch covers the empty-queue default branch in the batch drain loop.
+func TestBatchLoopDefaultBranch(t *testing.T) {
+	t.Parallel()
+
+	start := make(chan func(), 1)
+	inner := newRecordingHandler(nil)
+
+	h := Wrap(inner,
+		WithQueueSize(1),
+		WithWorkerCount(1),
+		WithBatchSize(2),
+		withWorkerStarter(func(run func()) {
+			start <- run
+		}),
+	)
+
+	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "only", 0)); err != nil {
+		t.Fatalf("Handle returned %v", err)
+	}
+
+	run := <-start
+	run()
+
+	waitForCalls(t, inner.state.calls, 1)
+
+	if err := h.(*Handler).Close(); err != nil {
+		t.Fatalf("Close returned %v", err)
+	}
+	if got := len(inner.state.records); got != 1 {
+		t.Fatalf("handled %d records, want 1", got)
 	}
 }
