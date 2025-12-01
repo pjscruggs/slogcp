@@ -74,7 +74,7 @@ jobs:
       - name: 🧰 Install format/modernize tools
         run: |
           go install golang.org/x/tools/cmd/goimports@869ced31773aa6009975882daa7005641f1364fc
-          go install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@869ced31773aa6009975882daa7005641f1364fc
+          go install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.20.0
 
       - name: ✨ Apply Go formatting
         run: gofmt -w ./...
