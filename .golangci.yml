@@ -1,5 +1,3 @@
-version: "2"
-
 linters:
   enable:
     # Core correctness / defaults
@@ -42,44 +40,49 @@ linters:
     - paralleltest
     - tparallel
     - thelper
-  settings:
-    cyclop:
-      max-complexity: 40
-    funlen:
-      lines: 200
-      statements: 160
-    goconst:
-      min-occurrences: 4
-    nestif:
-      min-complexity: 10
-  exclusions:
-    presets: [] # keep all default issues visible (v1 exclude-use-default: false)
-    rules:
-      - path: _test\.go
-        linters:
-          - cyclop
-          - funlen
-          - nestif
-          - goconst
-          - gocritic
-          - wrapcheck
-          - gosec
-          - paralleltest
-          - tparallel
-          - thelper
-          - unparam
-          - revive
-          - bodyclose
-      - path: ^loggingmock/
-        linters:
-          - cyclop
-          - funlen
-          - nestif
-          - goconst
-          - gocritic
-          - wrapcheck
-          - gosec
-          - unparam
+
+linters-settings:
+  cyclop:
+    max-complexity: 40
+    skip-tests: true
+  funlen:
+    lines: 200
+    statements: 160
+    ignore-tests: true
+  goconst:
+    min-occurrences: 4
+  nestif:
+    min-complexity: 10
+
+issues:
+  # Do not hide default excludes; can tweak later
+  exclude-use-default: false
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - cyclop
+        - funlen
+        - nestif
+        - goconst
+        - gocritic
+        - wrapcheck
+        - gosec
+        - paralleltest
+        - tparallel
+        - thelper
+        - unparam
+        - revive
+        - bodyclose
+    - path: ^loggingmock/
+      linters:
+        - cyclop
+        - funlen
+        - nestif
+        - goconst
+        - gocritic
+        - wrapcheck
+        - gosec
+        - unparam
 
 formatters:
   enable:
@@ -88,6 +91,6 @@ formatters:
 
 output:
   formats:
-    text:
+    - format: colored-line-number
       path: stdout
       colors: true
