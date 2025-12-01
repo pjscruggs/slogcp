@@ -30,6 +30,7 @@ import (
 	"github.com/pjscruggs/slogcp/slogcphttp"
 )
 
+// main issues an HTTP request using slogcp's transport to propagate trace headers.
 func main() {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := r.Header["Traceparent"]; ok {

@@ -35,6 +35,7 @@ import (
 	"github.com/pjscruggs/slogcp/slogcphttp"
 )
 
+// main runs the OpenTelemetry HTTP server/client example with slogcp logging.
 func main() {
 	ctx := context.Background()
 

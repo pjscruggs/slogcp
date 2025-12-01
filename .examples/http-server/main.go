@@ -29,6 +29,7 @@ import (
 	"github.com/pjscruggs/slogcp/slogcphttp"
 )
 
+// main starts the HTTP server example with slogcp logging middleware.
 func main() {
 	handler, err := slogcp.NewHandler(os.Stdout)
 	if err != nil {

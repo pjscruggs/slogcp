@@ -61,6 +61,7 @@ func TestDynamicLevelAdjustments(t *testing.T) {
 	}
 }
 
+// decodeEntries parses all JSON log lines from the buffer.
 func decodeEntries(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	t.Helper()
 
