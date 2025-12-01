@@ -747,7 +747,7 @@ func TestStatsHandlerOptionsHonorsConfig(t *testing.T) {
 func TestLoggerWithAttrsCoversBranches(t *testing.T) {
 	t.Parallel()
 
-	base := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	base := slog.New(slog.DiscardHandler)
 	if got := loggerWithAttrs(base, nil); got != base {
 		t.Fatalf("loggerWithAttrs should return base when attrs empty")
 	}
