@@ -75,14 +75,14 @@ func BenchmarkHandleAsyncThroughput(b *testing.B) {
 	}{
 		{name: "Queue64_Workers1", opts: []Option{WithQueueSize(64), WithWorkerCount(1)}},
 		{name: "Queue64_Workers2", opts: []Option{WithQueueSize(64), WithWorkerCount(2)}},
-		{name: "Queue64_Workers4", opts: []Option{WithQueueSize(64), WithWorkerCount(4)}},
-		{name: "Queue64_Workers8", opts: []Option{WithQueueSize(64), WithWorkerCount(8)}},
+		{name: "Queue64_Workers4_Batch4", opts: []Option{WithQueueSize(64), WithWorkerCount(4), WithBatchSize(4)}},
+		{name: "Queue64_Workers8_Batch4", opts: []Option{WithQueueSize(64), WithWorkerCount(8), WithBatchSize(4)}},
 		{name: "Queue1K_Workers1", opts: []Option{WithQueueSize(1024), WithWorkerCount(1)}},
 		{name: "Queue1K_Workers2", opts: []Option{WithQueueSize(1024), WithWorkerCount(2)}},
-		{name: "Queue1K_Workers4", opts: []Option{WithQueueSize(1024), WithWorkerCount(4)}},
-		{name: "Queue1K_Workers8", opts: []Option{WithQueueSize(1024), WithWorkerCount(8)}},
-		{name: "Queue8K_Workers4", opts: []Option{WithQueueSize(8192), WithWorkerCount(4)}},
-		{name: "Queue8K_Workers8", opts: []Option{WithQueueSize(8192), WithWorkerCount(8)}},
+		{name: "Queue1K_Workers4_Batch4", opts: []Option{WithQueueSize(1024), WithWorkerCount(4), WithBatchSize(4)}},
+		{name: "Queue1K_Workers8_Batch4", opts: []Option{WithQueueSize(1024), WithWorkerCount(8), WithBatchSize(4)}},
+		{name: "Queue8K_Workers4_Batch8", opts: []Option{WithQueueSize(8192), WithWorkerCount(4), WithBatchSize(8)}},
+		{name: "Queue8K_Workers8_Batch8", opts: []Option{WithQueueSize(8192), WithWorkerCount(8), WithBatchSize(8)}},
 	}
 
 	for _, tt := range tests {
