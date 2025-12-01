@@ -44,4 +44,7 @@
 //   - SLOGCP_ASYNC_DROP_MODE: block | drop_newest | drop_oldest
 //   - SLOGCP_ASYNC_WORKERS: number of worker goroutines
 //   - SLOGCP_ASYNC_FLUSH_TIMEOUT: duration string used by Close
+//
+// Worker errors and panics are reported to stderr by default to avoid silent
+// failure; configure [WithErrorWriter] to redirect or silence those messages.
 package slogcpasync
