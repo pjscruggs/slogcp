@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,12 +94,18 @@ func BenchmarkLogRateAsync(b *testing.B) {
 		if err != nil {
 			b.Fatalf("invalid SLOGCP_BENCH_BATCH: %v", err)
 		}
-		name := fmt.Sprintf("SZ%d_W%d_B%d", sz, w, batch)
+		mode, modeName, err := parseBenchDropMode(os.Getenv("SLOGCP_BENCH_DROP_MODE"))
+		if err != nil {
+			b.Fatalf("%v", err)
+		}
+
+		name := fmt.Sprintf("SZ%d_W%d_B%d_%s", sz, w, batch, modeName)
 		b.Run(name, func(b *testing.B) {
 			h := sinkHandler(b, true,
 				slogcpasync.WithQueueSize(sz),
 				slogcpasync.WithWorkerCount(w),
 				slogcpasync.WithBatchSize(batch),
+				slogcpasync.WithDropMode(mode),
 			)
 			benchmarkLogger(b, h)
 		})
@@ -123,5 +130,23 @@ func BenchmarkLogRateAsync(b *testing.B) {
 				})
 			}
 		}
+	}
+}
+
+// parseBenchDropMode converts the env-provided drop mode into the slogcpasync enum.
+func parseBenchDropMode(raw string) (slogcpasync.DropMode, string, error) {
+	if raw == "" {
+		return slogcpasync.DropModeBlock, "block", nil
+	}
+
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "block":
+		return slogcpasync.DropModeBlock, "block", nil
+	case "drop_newest", "drop-newest":
+		return slogcpasync.DropModeDropNewest, "drop_newest", nil
+	case "drop_oldest", "drop-oldest":
+		return slogcpasync.DropModeDropOldest, "drop_oldest", nil
+	default:
+		return slogcpasync.DropModeBlock, "", fmt.Errorf("invalid SLOGCP_BENCH_DROP_MODE: %q", raw)
 	}
 }
