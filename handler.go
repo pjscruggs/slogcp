@@ -26,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/pjscruggs/slogcp/slogcpasync"
 )
 
 const (
@@ -138,6 +140,7 @@ type handlerConfig struct {
 	ReplaceAttr           func([]string, slog.Attr) slog.Attr
 	Middlewares           []Middleware
 	InitialAttrs          []slog.Attr
+	InitialGroupedAttrs   []groupedAttr
 	InitialGroups         []string
 
 	runtimeLabels            map[string]string
@@ -163,9 +166,13 @@ type options struct {
 	replaceAttr           func([]string, slog.Attr) slog.Attr
 	middlewares           []Middleware
 	attrs                 [][]slog.Attr
+	initialGroupedAttrs   []groupedAttr
 	groups                []string
 	groupsSet             bool
 	internalLogger        *slog.Logger
+	asyncEnabled          bool
+	asyncOnFileTargets    bool
+	asyncOpts             []slogcpasync.Option
 }
 
 // NewHandler builds a Google Cloud aware slog [Handler]. It inspects the
@@ -254,6 +261,9 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	handler := slog.Handler(core)
 	for i := len(cfgPtr.Middlewares) - 1; i >= 0; i-- {
 		handler = cfgPtr.Middlewares[i](handler)
+	}
+	if builder.asyncEnabled && (!builder.asyncOnFileTargets || cfgPtr.FilePath != "") {
+		handler = slogcpasync.Wrap(handler, builder.asyncOpts...)
 	}
 	if cfgPtr.AddSource {
 		handler = sourceAwareHandler{Handler: handler}
@@ -609,7 +619,11 @@ func WithRedirectToStderr() Option {
 }
 
 // WithRedirectToFile directs handler output to the file at path, creating it
-// if necessary.
+// if necessary. The path is trimmed of surrounding whitespace and then passed
+// verbatim to os.OpenFile in append mode; parent directories must already
+// exist. When configuring the same behaviour via SLOGCP_TARGET use "file:<path>"
+// with an OS-specific path string (for example, "file:/var/log/app.log" or
+// "file:C:\\logs\\app.log").
 func WithRedirectToFile(path string) Option {
 	trimmed := strings.TrimSpace(path)
 	return func(o *options) {
@@ -620,7 +634,9 @@ func WithRedirectToFile(path string) Option {
 }
 
 // WithRedirectWriter uses writer for log output without taking ownership of
-// its lifecycle.
+// its lifecycle. Any file paths configured on the writer itself are interpreted
+// by that writer; slogcp does not parse "file:" targets when this option is
+// used.
 func WithRedirectWriter(writer io.Writer) Option {
 	return func(o *options) {
 		o.writer = writer
@@ -647,6 +663,26 @@ func WithMiddleware(mw Middleware) Option {
 	}
 }
 
+// WithAsync wraps the constructed handler in slogcpasync using tuned per-mode defaults.
+// Supply slogcpasync options to override queue, workers, drop mode, or batch size.
+func WithAsync(opts ...slogcpasync.Option) Option {
+	return func(o *options) {
+		o.asyncEnabled = true
+		o.asyncOnFileTargets = false
+		o.asyncOpts = append(o.asyncOpts, opts...)
+	}
+}
+
+// WithAsyncOnFileTargets wraps the handler in slogcpasync only when logging to a file.
+// This keeps stdout/stderr handlers synchronous while file targets gain async defaults.
+func WithAsyncOnFileTargets(opts ...slogcpasync.Option) Option {
+	return func(o *options) {
+		o.asyncEnabled = true
+		o.asyncOnFileTargets = true
+		o.asyncOpts = append(o.asyncOpts, opts...)
+	}
+}
+
 // WithAttrs preloads static attributes to be attached to every record emitted
 // by the handler.
 func WithAttrs(attrs []slog.Attr) Option {
@@ -656,6 +692,13 @@ func WithAttrs(attrs []slog.Attr) Option {
 		}
 		dup := make([]slog.Attr, len(attrs))
 		copy(dup, attrs)
+		currentGroups := append([]string(nil), o.groups...)
+		for _, attr := range dup {
+			o.initialGroupedAttrs = append(o.initialGroupedAttrs, groupedAttr{
+				groups: currentGroups,
+				attr:   attr,
+			})
+		}
 		o.attrs = append(o.attrs, dup)
 	}
 }
@@ -860,6 +903,14 @@ func applyOptions(cfg *handlerConfig, o *options) {
 	if len(o.attrs) > 0 {
 		for _, group := range o.attrs {
 			cfg.InitialAttrs = append(cfg.InitialAttrs, group...)
+		}
+	}
+	if len(o.initialGroupedAttrs) > 0 {
+		for _, ga := range o.initialGroupedAttrs {
+			cfg.InitialGroupedAttrs = append(cfg.InitialGroupedAttrs, groupedAttr{
+				groups: append([]string(nil), ga.groups...),
+				attr:   ga.attr,
+			})
 		}
 	}
 	if o.groupsSet {

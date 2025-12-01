@@ -45,21 +45,50 @@ Key options:
 | `WithTraceDiagnostics(slogcp.TraceDiagnosticsMode)` | `SLOGCP_TRACE_DIAGNOSTICS` | `warn` | Controls how slogcp surfaces trace correlation issues. Accepts `off`, `warn`/`warn_once`, or `strict` (which fails handler creation when no project can be detected). |
 | `WithSeverityAliases(bool)` | `SLOGCP_SEVERITY_ALIASES` | `true` on Cloud Run (services), Cloud Run Jobs, Cloud Functions, and App Engine; otherwise `false` | Emits single-letter Cloud Logging severity aliases ("I", "E", etc.). Using these aliases saves about 1ns of JSON marshaling time per log entry, and has no effect the final Cloud Logging LogEntry. |
 | `WithRedirectToStdout()` / `WithRedirectToStderr()` | `SLOGCP_TARGET` | `stdout` | Chooses the output destination. |
-| `WithRedirectToFile(path)` | `SLOGCP_TARGET` (`file:/absolute/path`) | (disabled) | Writes structured logs to a file (append mode). |
-| `WithRedirectWriter(io.Writer)` | (none) | constructor writer | Uses any writer you supply without taking ownership. |
+| `WithRedirectToFile(path)` | `SLOGCP_TARGET` (`file:<path>`) | (disabled) | Writes structured logs to a file (append mode); slogcp trims whitespace and uses the path verbatim. |
+| `WithRedirectWriter(io.Writer)` | (none) | constructor writer | Uses any writer you supply without taking ownership; path parsing is left to the writer. |
 | `WithReplaceAttr(func)` | (none) | (none) | Mutates or removes attributes before encoding. |
 | `WithMiddleware(slogcp.Middleware)` | (none) | (none) | Wraps the handler with custom middleware. |
 | `WithAttrs([]slog.Attr)` / `WithGroup(string)` | (none) | (none) | Adds fixed attributes or an initial group. |
 | `WithInternalLogger(*slog.Logger)` | (none) | discarding text logger | Receives configuration warnings. |
 
 Additional notes:
-- `SLOGCP_TARGET` accepts `stdout`, `stderr`, or `file:/absolute/path`. Invalid values trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
+- File targets: use `SLOGCP_TARGET=file:<path>` (for example, `file:/var/log/app.json` on Linux/macOS or `file:C:\\logs\\app.json` on Windows). slogcp trims surrounding whitespace and passes the remaining path directly to `os.OpenFile` in append mode; it does not create parent directories or rewrite the string. Invalid values still trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
+- When you choose `WithRedirectWriter`, slogcp does not look at file paths at all; configure any file destination on the writer itself (for example, `*os.File` or a rotation helper like lumberjack).
 - When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor after external tools move the file. Always call `Close` during shutdown to flush buffers and release writers.
 - `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust levels at runtime via `SetLevel` or share the var with other handlers.
 - `WithSeverityAliases` controls whether JSON carries the terse severity names; Cloud Logging still renders the full names in the console. slogcp enables the aliases by default only on Cloud Run (services/jobs), Cloud Functions, and App Engine deployments.
 - `WithTime` defaults mirror Cloud Logging expectations: timestamps are omitted on the same managed GCP runtimes (Cloud Run, Cloud Functions, App Engine) and included elsewhere. When slogcp emits a timestamp it preserves the nanosecond precision provided by `slog`.
 - slogcp always validates trace correlation fields before emitting them. When no Cloud project ID can be resolved, the handler omits `logging.googleapis.com/trace` entirely (falling back to the `otel.*` keys) to avoid shipping malformed data. On managed runtimes where the Cloud Logging agent auto-prefixes trace IDs (Cloud Run services/jobs, Cloud Functions, App Engine) slogcp still emits the bare trace ID so existing deployments keep their correlation links. Use `WithTraceDiagnostics`/`SLOGCP_TRACE_DIAGNOSTICS` to upgrade these checks from "warn once" to `strict` or disable them with `off`.
 - `slogcp.ContextWithLogger` and `slogcp.Logger` stash and recover request-scoped loggers. The HTTP and gRPC integrations call these helpers automatically.
+
+## Async wrapper (`github.com/pjscruggs/slogcp/slogcpasync`)
+
+`slogcp` stays synchronous by default. When you want to buffer or drop under load, wrap the handler with `slogcpasync`:
+
+```go
+handler, _ := slogcp.NewHandler(os.Stdout)
+async := slogcpasync.Wrap(handler,
+	slogcpasync.WithQueueSize(4096),
+	slogcpasync.WithDropMode(slogcpasync.DropModeDropNewest),
+)
+logger := slog.New(async)
+```
+
+When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `WithEnv()` (for example via `slogcp.WithMiddleware(slogcpasync.Middleware(...))`). Supported knobs:
+
+| Option | Environment variable | Default | Description |
+| --- | --- | --- | --- |
+| `WithEnabled(bool)` | `SLOGCP_ASYNC_ENABLED` | `true` once the wrapper is added | Enables or disables the async wrapper entirely. |
+| `WithQueueSize(int)` | `SLOGCP_ASYNC_QUEUE_SIZE` | `block: 2048`, `drop_newest: 512`, `drop_oldest: 1024` | Channel capacity for queued records. `0` uses an unbuffered channel. |
+| `WithDropMode(slogcpasync.DropMode)` | `SLOGCP_ASYNC_DROP_MODE` | `block` | Overflow policy: `block`, `drop_newest`, or `drop_oldest`. |
+| `WithWorkerCount(int)` | `SLOGCP_ASYNC_WORKERS` | `block: 1`, `drop_newest: 1`, `drop_oldest: 1` | Number of goroutines draining the queue. |
+| `WithBatchSize(int)` | (none) | `block: 1`, `drop_newest: 1`, `drop_oldest: 1` | Records a worker drains per wake-up; values less than `1` clamp to the mode default. |
+| `WithFlushTimeout(time.Duration)` | `SLOGCP_ASYNC_FLUSH_TIMEOUT` | (none) | Optional timeout for `Close`; returns `ErrFlushTimeout` if workers never finish. |
+| `WithOnDrop(func)` | (none) | (none) | Callback invoked when a record is dropped (useful for metrics). |
+| `slogcp.WithAsync(opts...)` | (none) | (disabled) | Convenience option that wraps handlers in slogcpasync using tuned per-mode defaults; supply slogcpasync options to override. |
+| `slogcp.WithAsyncOnFileTargets(opts...)` | (none) | (disabled) | Like `WithAsync`, but only wraps handlers that write to files, leaving stdout/stderr synchronous. |
+| `WithEnv()` | reads all of the above | (none) | Overlays any `SLOGCP_ASYNC_*` values onto the provided config. |
 
 ### Severity Levels
 

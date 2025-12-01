@@ -27,6 +27,7 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
+// main runs the configuration example demonstrating core options.
 func main() {
 	handler, err := slogcp.NewHandler(os.Stdout,
 		slogcp.WithLevel(slog.LevelDebug),

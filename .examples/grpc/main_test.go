@@ -116,6 +116,7 @@ func TestGRPCExampleLogsRequest(t *testing.T) {
 	}
 }
 
+// decodeEntries parses newline-delimited JSON entries from buf.
 func decodeEntries(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	t.Helper()
 
