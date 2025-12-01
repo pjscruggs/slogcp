@@ -116,6 +116,17 @@ async := slogcpasync.Wrap(handler,
 logger := slog.New(async)
 ```
 
+You can also let slogcp wrap for you with tuned defaults:
+
+```go
+handler, _ := slogcp.NewHandler(os.Stdout,
+    slogcp.WithAsync(), // wraps with slogcpasync defaults (per-drop-mode tuning)
+)
+logger := slog.New(handler)
+```
+
+When you only want async for file targets, use `slogcp.WithAsyncOnFileTargets()` to keep stdout/stderr synchronous while files buffer asynchronously.
+
 To control async settings via environment variables instead, combine `WithEnabled(false)` with `WithEnv()`:
 
 ```go
@@ -134,7 +145,7 @@ Supported variables:
 - `SLOGCP_ASYNC_ENABLED`: `true`/`false` to turn the wrapper on.
 - `SLOGCP_ASYNC_QUEUE_SIZE`: queue capacity (use `0` for an unbuffered queue).
 - `SLOGCP_ASYNC_DROP_MODE`: `block` (default), `drop_newest`, or `drop_oldest`.
-- `SLOGCP_ASYNC_WORKERS`: number of worker goroutines (defaults to `1`).
+- `SLOGCP_ASYNC_WORKERS`: number of worker goroutines (defaults are tuned per drop mode: block=`1`, drop_newest=`5`, drop_oldest=`5`).
 - `SLOGCP_ASYNC_FLUSH_TIMEOUT`: duration string for `Close` (for example, `5s`). 
 
 ### Core Configuration Options

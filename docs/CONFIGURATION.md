@@ -80,11 +80,14 @@ When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `Wi
 | Option | Environment variable | Default | Description |
 | --- | --- | --- | --- |
 | `WithEnabled(bool)` | `SLOGCP_ASYNC_ENABLED` | `true` once the wrapper is added | Enables or disables the async wrapper entirely. |
-| `WithQueueSize(int)` | `SLOGCP_ASYNC_QUEUE_SIZE` | `1024` | Channel capacity for queued records. `0` uses an unbuffered channel. |
+| `WithQueueSize(int)` | `SLOGCP_ASYNC_QUEUE_SIZE` | `block: 2048`, `drop_newest: 512`, `drop_oldest: 1024` | Channel capacity for queued records. `0` uses an unbuffered channel. |
 | `WithDropMode(slogcpasync.DropMode)` | `SLOGCP_ASYNC_DROP_MODE` | `block` | Overflow policy: `block`, `drop_newest`, or `drop_oldest`. |
-| `WithWorkerCount(int)` | `SLOGCP_ASYNC_WORKERS` | `1` | Number of goroutines draining the queue. |
+| `WithWorkerCount(int)` | `SLOGCP_ASYNC_WORKERS` | `block: 1`, `drop_newest: 1`, `drop_oldest: 1` | Number of goroutines draining the queue. |
+| `WithBatchSize(int)` | (none) | `block: 1`, `drop_newest: 1`, `drop_oldest: 1` | Records a worker drains per wake-up; values less than `1` clamp to the mode default. |
 | `WithFlushTimeout(time.Duration)` | `SLOGCP_ASYNC_FLUSH_TIMEOUT` | (none) | Optional timeout for `Close`; returns `ErrFlushTimeout` if workers never finish. |
 | `WithOnDrop(func)` | (none) | (none) | Callback invoked when a record is dropped (useful for metrics). |
+| `slogcp.WithAsync(opts...)` | (none) | (disabled) | Convenience option that wraps handlers in slogcpasync using tuned per-mode defaults; supply slogcpasync options to override. |
+| `slogcp.WithAsyncOnFileTargets(opts...)` | (none) | (disabled) | Like `WithAsync`, but only wraps handlers that write to files, leaving stdout/stderr synchronous. |
 | `WithEnv()` | reads all of the above | (none) | Overlays any `SLOGCP_ASYNC_*` values onto the provided config. |
 
 ### Severity Levels

@@ -647,11 +647,77 @@ func TestBuildConfigClampsInvalidValues(t *testing.T) {
 	if cfg.QueueSize != defaultQueueSize {
 		t.Fatalf("QueueSize = %d, want %d", cfg.QueueSize, defaultQueueSize)
 	}
-	if cfg.WorkerCount != 1 {
-		t.Fatalf("WorkerCount = %d, want 1", cfg.WorkerCount)
+	if cfg.WorkerCount != defaultWorkerCountBlock {
+		t.Fatalf("WorkerCount = %d, want %d", cfg.WorkerCount, defaultWorkerCountBlock)
 	}
-	if cfg.BatchSize != 1 {
-		t.Fatalf("BatchSize = %d, want 1", cfg.BatchSize)
+	if cfg.BatchSize != defaultBatchSizeBlock {
+		t.Fatalf("BatchSize = %d, want %d", cfg.BatchSize, defaultBatchSizeBlock)
+	}
+}
+
+// TestBuildConfigUsesModeDefaults ensures each drop mode picks its tuned baseline.
+func TestBuildConfigUsesModeDefaults(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        []Option
+		wantQueue   int
+		wantWorkers int
+		wantBatch   int
+	}{
+		{
+			name:        "block",
+			opts:        nil,
+			wantQueue:   defaultQueueSizeBlock,
+			wantWorkers: defaultWorkerCountBlock,
+			wantBatch:   defaultBatchSizeBlock,
+		},
+		{
+			name:        "drop_newest",
+			opts:        []Option{WithDropMode(DropModeDropNewest)},
+			wantQueue:   defaultQueueSizeDropNewest,
+			wantWorkers: defaultWorkerCountDropNewest,
+			wantBatch:   defaultBatchSizeDropNewest,
+		},
+		{
+			name:        "drop_oldest",
+			opts:        []Option{WithDropMode(DropModeDropOldest)},
+			wantQueue:   defaultQueueSizeDropOldest,
+			wantWorkers: defaultWorkerCountDropOldest,
+			wantBatch:   defaultBatchSizeDropOldest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := buildConfig(tt.opts)
+			if cfg.QueueSize != tt.wantQueue {
+				t.Fatalf("QueueSize = %d, want %d", cfg.QueueSize, tt.wantQueue)
+			}
+			if cfg.WorkerCount != tt.wantWorkers {
+				t.Fatalf("WorkerCount = %d, want %d", cfg.WorkerCount, tt.wantWorkers)
+			}
+			if cfg.BatchSize != tt.wantBatch {
+				t.Fatalf("BatchSize = %d, want %d", cfg.BatchSize, tt.wantBatch)
+			}
+		})
+	}
+}
+
+// TestBuildConfigUnknownModeFallsBack ensures unknown modes reuse block defaults.
+func TestBuildConfigUnknownModeFallsBack(t *testing.T) {
+	cfg := buildConfig([]Option{WithDropMode(DropMode(99))})
+
+	if cfg.DropMode != DropMode(99) {
+		t.Fatalf("DropMode = %v, want 99", cfg.DropMode)
+	}
+	if cfg.QueueSize != defaultQueueSizeBlock {
+		t.Fatalf("QueueSize = %d, want %d", cfg.QueueSize, defaultQueueSizeBlock)
+	}
+	if cfg.WorkerCount != defaultWorkerCountBlock {
+		t.Fatalf("WorkerCount = %d, want %d", cfg.WorkerCount, defaultWorkerCountBlock)
+	}
+	if cfg.BatchSize != defaultBatchSizeBlock {
+		t.Fatalf("BatchSize = %d, want %d", cfg.BatchSize, defaultBatchSizeBlock)
 	}
 }
 

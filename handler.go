@@ -26,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/pjscruggs/slogcp/slogcpasync"
 )
 
 const (
@@ -168,6 +170,9 @@ type options struct {
 	groups                []string
 	groupsSet             bool
 	internalLogger        *slog.Logger
+	asyncEnabled          bool
+	asyncOnFileTargets    bool
+	asyncOpts             []slogcpasync.Option
 }
 
 // NewHandler builds a Google Cloud aware slog [Handler]. It inspects the
@@ -256,6 +261,9 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	handler := slog.Handler(core)
 	for i := len(cfgPtr.Middlewares) - 1; i >= 0; i-- {
 		handler = cfgPtr.Middlewares[i](handler)
+	}
+	if builder.asyncEnabled && (!builder.asyncOnFileTargets || cfgPtr.FilePath != "") {
+		handler = slogcpasync.Wrap(handler, builder.asyncOpts...)
 	}
 	if cfgPtr.AddSource {
 		handler = sourceAwareHandler{Handler: handler}
@@ -652,6 +660,26 @@ func WithMiddleware(mw Middleware) Option {
 		if mw != nil {
 			o.middlewares = append(o.middlewares, mw)
 		}
+	}
+}
+
+// WithAsync wraps the constructed handler in slogcpasync using tuned per-mode defaults.
+// Supply slogcpasync options to override queue, workers, drop mode, or batch size.
+func WithAsync(opts ...slogcpasync.Option) Option {
+	return func(o *options) {
+		o.asyncEnabled = true
+		o.asyncOnFileTargets = false
+		o.asyncOpts = append(o.asyncOpts, opts...)
+	}
+}
+
+// WithAsyncOnFileTargets wraps the handler in slogcpasync only when logging to a file.
+// This keeps stdout/stderr handlers synchronous while file targets gain async defaults.
+func WithAsyncOnFileTargets(opts ...slogcpasync.Option) Option {
+	return func(o *options) {
+		o.asyncEnabled = true
+		o.asyncOnFileTargets = true
+		o.asyncOpts = append(o.asyncOpts, opts...)
 	}
 }
 
