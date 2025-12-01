@@ -95,6 +95,27 @@ func TestTransportRoundTripHandlesNilRequest(t *testing.T) {
 	if errStub.req != nil {
 		t.Fatalf("expected nil request forwarded to base transport")
 	}
+
+	respStub := &stubRoundTripper{
+		resp: &stdhttp.Response{
+			StatusCode:    stdhttp.StatusAccepted,
+			Body:          io.NopCloser(strings.NewReader("ok")),
+			ContentLength: 2,
+		},
+	}
+	rt = Transport(respStub)
+	resp, err := rt.RoundTrip(nil)
+	if err != nil {
+		t.Fatalf("RoundTrip nil request returned %v", err)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			t.Fatalf("resp.Body.Close() returned %v", cerr)
+		}
+	}()
+	if respStub.req != nil {
+		t.Fatalf("expected nil request forwarded to base transport for response stub")
+	}
 }
 
 // TestTransportRoundTripRecordsFailure ensures finalize runs when the base transport returns no response.
@@ -235,6 +256,40 @@ func TestTransportUsesContextLoggerFallback(t *testing.T) {
 	}
 	if handler.name != "ctx" {
 		t.Fatalf("handler name = %q, want ctx", handler.name)
+	}
+}
+
+// TestTransportRoundTripReturnsWrappedErrorWithResponse covers the branch where a response is returned alongside an error.
+func TestTransportRoundTripReturnsWrappedErrorWithResponse(t *testing.T) {
+	t.Parallel()
+
+	resp := &stdhttp.Response{
+		StatusCode:    stdhttp.StatusTeapot,
+		Body:          io.NopCloser(strings.NewReader("err")),
+		ContentLength: 3,
+	}
+	base := respErrRoundTripper{resp: resp, err: errors.New("base-fail")}
+	rt := Transport(base)
+
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/with-error", nil)
+	gotResp, err := rt.RoundTrip(req)
+	if gotResp == nil || gotResp.StatusCode != stdhttp.StatusTeapot {
+		t.Fatalf("RoundTrip response = %+v, want status %d", gotResp, stdhttp.StatusTeapot)
+	}
+	if err == nil || !errors.Is(err, base.err) {
+		t.Fatalf("RoundTrip err = %v, want wrapped base-fail", err)
+	}
+}
+
+// TestTransportRoundTripDetectsMissingResponse covers the no-response/no-error branch.
+func TestTransportRoundTripDetectsMissingResponse(t *testing.T) {
+	t.Parallel()
+
+	rt := Transport(respErrRoundTripper{})
+	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/missing", nil)
+
+	if _, err := rt.RoundTrip(req); err == nil || !strings.Contains(err.Error(), "received no response") {
+		t.Fatalf("RoundTrip err = %v, want missing response error", err)
 	}
 }
 
@@ -447,7 +502,6 @@ func TestOutboundHost(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if got := outboundHost(tc.req); got != tc.want {
 				t.Fatalf("outboundHost() = %q, want %q", got, tc.want)
@@ -481,6 +535,16 @@ func slogcpLogger(ctx context.Context) *slog.Logger {
 		return nil
 	}
 	return slogcp.Logger(ctx)
+}
+
+type respErrRoundTripper struct {
+	resp *stdhttp.Response
+	err  error
+}
+
+// RoundTrip returns the canned response/error for coverage of error branches.
+func (r respErrRoundTripper) RoundTrip(*stdhttp.Request) (*stdhttp.Response, error) {
+	return r.resp, r.err
 }
 
 type spyHandler struct {

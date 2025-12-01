@@ -16,6 +16,7 @@ package slogcphttp
 
 import (
 	"context"
+	"fmt"
 	"net"
 	stdhttp "net/http"
 	"strings"
@@ -57,7 +58,11 @@ type roundTripper struct {
 // RoundTrip instruments the outbound request, attaching context and forwarding to the base transport.
 func (t roundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	if req == nil {
-		return t.base.RoundTrip(req)
+		resp, err := t.base.RoundTrip(req)
+		if err != nil {
+			return nil, fmt.Errorf("round trip nil request: %w", err)
+		}
+		return resp, nil
 	}
 
 	cfg := t.cfg
@@ -101,11 +106,17 @@ func (t roundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error)
 
 	if resp != nil {
 		scope.finalize(resp.StatusCode, resp.ContentLength, elapsed)
-		return resp, err
+		if err != nil {
+			return resp, fmt.Errorf("round trip request: %w", err)
+		}
+		return resp, nil
 	}
 
 	scope.finalize(0, scope.ResponseSize(), elapsed)
-	return nil, err
+	if err != nil {
+		return nil, fmt.Errorf("round trip request: %w", err)
+	}
+	return nil, fmt.Errorf("round trip request: received no response and no error")
 }
 
 // injectTrace injects OpenTelemetry and optional legacy trace headers onto the request.

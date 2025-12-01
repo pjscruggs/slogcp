@@ -443,7 +443,6 @@ func TestParseTraceDiagnosticsEnvCoversModes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			if got := parseTraceDiagnosticsEnv(tt.value, tt.current, logger); got != tt.want {
 				t.Fatalf("parseTraceDiagnosticsEnv(%q) = %v, want %v", tt.value, got, tt.want)

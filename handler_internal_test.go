@@ -274,7 +274,7 @@ func TestHandlerCloseClosesOwnedResources(t *testing.T) {
 
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "app.log")
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR, 0o644)
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatalf("os.OpenFile(%q) = %v", logPath, err)
 	}

@@ -30,6 +30,7 @@ import (
 	"github.com/pjscruggs/slogcp"
 )
 
+// XCloudTraceContextHeader is the canonical header name for Cloud Trace context propagation.
 const XCloudTraceContextHeader = "X-Cloud-Trace-Context"
 
 var randReader = rand.Read
