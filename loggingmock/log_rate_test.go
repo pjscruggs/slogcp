@@ -1,3 +1,17 @@
+// Copyright 2025 Patrick J. Scruggs
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //go:build benchmarks
 // +build benchmarks
 
@@ -5,9 +19,11 @@ package loggingmock
 
 import (
 	"context"
-	"io"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -17,19 +33,18 @@ import (
 
 // sinkHandler discards output while exercising Handler.Handle.
 func sinkHandler(b *testing.B, async bool, opts ...slogcpasync.Option) slog.Handler {
-	// Discard output to avoid I/O skew in throughput results.
-	w := io.Discard
-	if envOut := os.Getenv("SLOGCP_BENCH_OUT"); envOut != "" {
-		// Allow overriding for debugging.
-		f, err := os.OpenFile(envOut, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if err != nil {
-			b.Fatalf("open output file: %v", err)
-		}
-		w = f
-		b.Cleanup(func() { _ = f.Close() })
+	// Write to a temp file to simulate real I/O without console spam.
+	tmp := filepath.Join(b.TempDir(), "lograte.log")
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		b.Fatalf("open output file: %v", err)
 	}
+	b.Cleanup(func() {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+	})
 
-	h, err := slogcp.NewHandler(w)
+	h, err := slogcp.NewHandler(f)
 	if err != nil {
 		b.Fatalf("NewHandler: %v", err)
 	}
@@ -39,6 +54,7 @@ func sinkHandler(b *testing.B, async bool, opts ...slogcpasync.Option) slog.Hand
 	return slogcpasync.Wrap(h, opts...)
 }
 
+// benchmarkLogger drives Handler.Handle in parallel for benchmarking.
 func benchmarkLogger(b *testing.B, handler slog.Handler) {
 	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "bench", 0)
 	ctx := context.Background()
@@ -55,24 +71,57 @@ func benchmarkLogger(b *testing.B, handler slog.Handler) {
 	}
 }
 
+// BenchmarkLogRateSync measures the synchronous handler baseline.
 func BenchmarkLogRateSync(b *testing.B) {
 	h := sinkHandler(b, false)
 	benchmarkLogger(b, h)
 }
 
+// BenchmarkLogRateAsync measures the async wrapper across queue/worker configs.
 func BenchmarkLogRateAsync(b *testing.B) {
-	cases := []struct {
-		name string
-		opts []slogcpasync.Option
-	}{
-		{name: "Queue1K_W1", opts: []slogcpasync.Option{slogcpasync.WithQueueSize(1024), slogcpasync.WithWorkerCount(1)}},
-		{name: "Queue1K_W4", opts: []slogcpasync.Option{slogcpasync.WithQueueSize(1024), slogcpasync.WithWorkerCount(4)}},
-		{name: "Queue8K_W8", opts: []slogcpasync.Option{slogcpasync.WithQueueSize(8192), slogcpasync.WithWorkerCount(8)}},
-	}
-	for _, tc := range cases {
-		b.Run(tc.name, func(b *testing.B) {
-			h := sinkHandler(b, true, tc.opts...)
+	// Allow single-combo benchmarking via env to make auto-tuning fast.
+	if szEnv, wEnv, bEnv := os.Getenv("SLOGCP_BENCH_QUEUE"), os.Getenv("SLOGCP_BENCH_WORKERS"), os.Getenv("SLOGCP_BENCH_BATCH"); szEnv != "" && wEnv != "" && bEnv != "" {
+		sz, err := strconv.Atoi(szEnv)
+		if err != nil {
+			b.Fatalf("invalid SLOGCP_BENCH_QUEUE: %v", err)
+		}
+		w, err := strconv.Atoi(wEnv)
+		if err != nil {
+			b.Fatalf("invalid SLOGCP_BENCH_WORKERS: %v", err)
+		}
+		batch, err := strconv.Atoi(bEnv)
+		if err != nil {
+			b.Fatalf("invalid SLOGCP_BENCH_BATCH: %v", err)
+		}
+		name := fmt.Sprintf("SZ%d_W%d_B%d", sz, w, batch)
+		b.Run(name, func(b *testing.B) {
+			h := sinkHandler(b, true,
+				slogcpasync.WithQueueSize(sz),
+				slogcpasync.WithWorkerCount(w),
+				slogcpasync.WithBatchSize(batch),
+			)
 			benchmarkLogger(b, h)
 		})
+		return
+	}
+
+	queueSizes := []int{64, 256, 1024, 4096, 8192}
+	workerCounts := []int{1, 2, 4, 8}
+	batchSizes := []int{1, 2, 4, 8}
+
+	for _, sz := range queueSizes {
+		for _, w := range workerCounts {
+			for _, batch := range batchSizes {
+				name := fmt.Sprintf("SZ%d_W%d_B%d", sz, w, batch)
+				b.Run(name, func(b *testing.B) {
+					h := sinkHandler(b, true,
+						slogcpasync.WithQueueSize(sz),
+						slogcpasync.WithWorkerCount(w),
+						slogcpasync.WithBatchSize(batch),
+					)
+					benchmarkLogger(b, h)
+				})
+			}
+		}
 	}
 }
