@@ -597,7 +597,7 @@ type closeErrorHandler struct {
 
 // Close returns the configured error.
 func (c *closeErrorHandler) Close() error {
-	c.recordingHandler.Close()
+	_ = c.recordingHandler.Close()
 	return c.err
 }
 
@@ -607,7 +607,7 @@ type noErrorCloser struct {
 
 // Close satisfies the Close() signature without returning an error.
 func (c *noErrorCloser) Close() {
-	c.recordingHandler.Close()
+	_ = c.recordingHandler.Close()
 }
 
 // TestClosePropagatesCloserError ensures closerFor picks the error-returning Close().
