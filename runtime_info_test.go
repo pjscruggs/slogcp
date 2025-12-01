@@ -111,7 +111,7 @@ func TestDetectKubernetesUsesMetadata(t *testing.T) {
 	t.Setenv("CONTAINER_NAME", "edge")
 
 	tmp := filepath.Join(t.TempDir(), "namespace")
-	if err := os.WriteFile(tmp, []byte("prod\n"), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte("prod\n"), 0o600); err != nil {
 		t.Fatalf("os.WriteFile(%q) = %v", tmp, err)
 	}
 	prevPath := kubernetesNamespacePath
@@ -249,7 +249,7 @@ func TestDetectKubernetesRequiresClusterName(t *testing.T) {
 // TestReadNamespaceUsesOverride ensures readNamespace honours the configurable path.
 func TestReadNamespaceUsesOverride(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "namespace")
-	if err := os.WriteFile(tmp, []byte("observability\n"), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte("observability\n"), 0o600); err != nil {
 		t.Fatalf("os.WriteFile(%q) = %v", tmp, err)
 	}
 	prev := kubernetesNamespacePath
@@ -635,7 +635,6 @@ func TestRuntimeDefaults(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			resetRuntimeInfoCache()
 			if tc.setup != nil {
@@ -1012,7 +1011,6 @@ func TestNormalizeProjectID(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			if got := normalizeProjectID(tt.input); got != tt.want {
 				t.Fatalf("normalizeProjectID(%q) = %q, want %q", tt.input, got, tt.want)

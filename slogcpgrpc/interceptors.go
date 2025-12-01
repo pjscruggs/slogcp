@@ -16,6 +16,7 @@ package slogcpgrpc
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -325,7 +326,8 @@ func (s *serverStream) RecvMsg(m any) error {
 	if err == nil && s.cfg.includeSizes {
 		s.info.recordRequest(m)
 	}
-	return err
+
+	return wrapStatusError(err, "server stream recv")
 }
 
 // SendMsg records outbound payload sizes before delegating to the underlying stream.
@@ -333,7 +335,8 @@ func (s *serverStream) SendMsg(m any) error {
 	if s.cfg.includeSizes {
 		s.info.recordResponse(m)
 	}
-	return s.ServerStream.SendMsg(m)
+	err := s.ServerStream.SendMsg(m)
+	return wrapStatusError(err, "server stream send")
 }
 
 type clientStreamWrapper struct {
@@ -358,7 +361,7 @@ func (c *clientStreamWrapper) SendMsg(m any) error {
 	if err != nil {
 		c.finish(status.Code(err))
 	}
-	return err
+	return wrapStatusError(err, "client stream send")
 }
 
 // RecvMsg records inbound payload sizes and finalizes the request when the stream ends.
@@ -370,12 +373,12 @@ func (c *clientStreamWrapper) RecvMsg(m any) error {
 		}
 		return nil
 	}
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		c.finish(codes.OK)
 	} else {
 		c.finish(status.Code(err))
 	}
-	return err
+	return wrapStatusError(err, "client stream recv")
 }
 
 // CloseSend closes the client stream and finalizes the request on error.
@@ -384,7 +387,7 @@ func (c *clientStreamWrapper) CloseSend() error {
 	if err != nil {
 		c.finish(status.Code(err))
 	}
-	return err
+	return wrapStatusError(err, "client stream close send")
 }
 
 // finish finalizes the RequestInfo exactly once with the provided gRPC status code.
@@ -392,6 +395,43 @@ func (c *clientStreamWrapper) finish(code codes.Code) {
 	c.once.Do(func() {
 		c.info.finalize(code, time.Since(c.start))
 	})
+}
+
+// statusErrorWrapper adds context while preserving the original gRPC status and unwrap chain.
+type statusErrorWrapper struct {
+	op     string
+	err    error
+	status *status.Status
+}
+
+// Error renders the wrapped error with optional operation context.
+func (w *statusErrorWrapper) Error() string {
+	if w.op == "" {
+		return w.err.Error()
+	}
+	return w.op + ": " + w.err.Error()
+}
+
+// Unwrap exposes the underlying error for errors.Is/errors.As compatibility.
+func (w *statusErrorWrapper) Unwrap() error {
+	return w.err
+}
+
+// GRPCStatus returns the original status to keep gRPC code and details intact.
+func (w *statusErrorWrapper) GRPCStatus() *status.Status {
+	return w.status
+}
+
+// wrapStatusError attaches context to an error while preserving its gRPC status.
+func wrapStatusError(err error, op string) error {
+	if err == nil {
+		return nil
+	}
+	return &statusErrorWrapper{
+		op:     op,
+		err:    err,
+		status: status.Convert(err),
+	}
 }
 
 // loggerWithAttrs returns a logger augmented with the supplied attributes.

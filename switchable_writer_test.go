@@ -118,6 +118,22 @@ func TestSwitchableWriterWriteHandlesNil(t *testing.T) {
 	}
 }
 
+// TestSwitchableWriterWriteWrapsError ensures write errors are wrapped and propagated.
+func TestSwitchableWriterWriteWrapsError(t *testing.T) {
+	t.Parallel()
+
+	writeErr := errors.New("write-fail")
+	sw := NewSwitchableWriter(errorWriter{err: writeErr})
+
+	n, err := sw.Write([]byte("payload"))
+	if n != 0 {
+		t.Fatalf("Write bytes = %d, want 0", n)
+	}
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("Write error = %v, want write-fail", err)
+	}
+}
+
 type closableBuffer struct {
 	bytes.Buffer
 	closed bool
@@ -127,4 +143,13 @@ type closableBuffer struct {
 func (c *closableBuffer) Close() error {
 	c.closed = true
 	return nil
+}
+
+type errorWriter struct {
+	err error
+}
+
+// Write returns the configured error to exercise error wrapping.
+func (e errorWriter) Write([]byte) (int, error) {
+	return 0, e.err
 }

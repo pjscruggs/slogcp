@@ -176,8 +176,7 @@ func TestHandlerDependencyInjectedLoggingCompatibility(t *testing.T) {
 	const workers = 8
 	var wg sync.WaitGroup
 	wg.Add(workers)
-	for i := 0; i < workers; i++ {
-		i := i
+	for i := range workers {
 		go func() {
 			defer wg.Done()
 			phaseLogger.Info("component run", slog.Int("iteration", i))
@@ -279,7 +278,6 @@ func TestHandlerContextualLoggingCompatibility(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(len(requests))
 	for _, req := range requests {
-		req := req
 		go func() {
 			defer wg.Done()
 			ctx := context.WithValue(context.Background(), loggerKey{}, baseLogger.With(

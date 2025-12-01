@@ -39,8 +39,6 @@ func TestContextHelpersNilLogger(t *testing.T) {
 	}
 
 	for name, fn := range helpers {
-		name := name
-		fn := fn
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			fn(ctx, nil, "msg")

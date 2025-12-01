@@ -17,6 +17,7 @@ package slogcp
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strconv"
 	"time"
@@ -204,9 +205,7 @@ func cloneStringMap(src map[string]string) map[string]string {
 		return nil
 	}
 	dup := make(map[string]string, len(src))
-	for k, v := range src {
-		dup[k] = v
-	}
+	maps.Copy(dup, src)
 	return dup
 }
 

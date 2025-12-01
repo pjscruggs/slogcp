@@ -299,10 +299,7 @@ func normalizeRFC3339String(str string) (string, bool) {
 	}
 	lastPlus := strings.LastIndex(str, "+")
 	lastMinus := strings.LastIndex(str, "-")
-	idx := lastPlus
-	if lastMinus > idx {
-		idx = lastMinus
-	}
+	idx := max(lastMinus, lastPlus)
 	if idx <= len("2006-01-02") {
 		return "", false
 	}
@@ -1139,7 +1136,6 @@ func TestSeverityNormalization(t *testing.T) {
 		{"NumericValue", `{"severity":400}`, "", false},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := TransformLogEntryJSON(tc.input, now)
 			if err != nil {
@@ -1607,7 +1603,6 @@ func TestTimestampPrecedence(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := TransformLogEntryJSON(tc.input, now)
 			if err != nil {
@@ -1642,7 +1637,6 @@ func TestPayloadTimeAlternateFormats(t *testing.T) {
 		{"LongFractionTruncated", "2025-11-03T14:07:12.123456789123Z", wantFrac},
 	}
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			payload := fmt.Sprintf(`{"jsonPayload":{"time":"%s","other":1}}`, tc.literal)
 			out, err := TransformLogEntryJSON(payload, now)
@@ -1709,7 +1703,6 @@ func TestPayloadTimeFractionNineDigitsPreserved(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			payload := fmt.Sprintf(`{"jsonPayload":{"time":"%s","note":2}}`, tc.literal)
 			out, err := TransformLogEntryJSON(payload, now)
@@ -2489,7 +2482,6 @@ func TestHttpRequestPromotionOutcomes(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			payload := map[string]any{"httpRequest": tc.httpRequest}
 			root := map[string]any{"jsonPayload": payload}
