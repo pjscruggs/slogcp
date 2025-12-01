@@ -33,7 +33,7 @@ import (
 
 // TestJSONHandlerResolveSourceLocation exercises the enabled/disabled branches.
 func TestJSONHandlerResolveSourceLocation(t *testing.T) {
-	baseLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	baseLogger := slog.New(slog.DiscardHandler)
 
 	disabled := newJSONHandler(&handlerConfig{
 		AddSource: false,
@@ -107,7 +107,7 @@ func TestJSONHandlerResolveSourceLocation(t *testing.T) {
 
 // TestJSONHandlerResolveSourceLocationUsesDefaultFrameResolver ensures the default runtimeFrameResolver is exercised.
 func TestJSONHandlerResolveSourceLocationUsesDefaultFrameResolver(t *testing.T) {
-	baseLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	baseLogger := slog.New(slog.DiscardHandler)
 	handler := newJSONHandler(&handlerConfig{
 		AddSource: true,
 		Writer:    io.Discard,
@@ -184,7 +184,7 @@ func TestNewJSONHandlerInitialStateFromConfig(t *testing.T) {
 		},
 		InitialGroups: []string{"service", "component"},
 	}
-	handler := newJSONHandler(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, nil, slog.New(slog.DiscardHandler))
 
 	if handler.leveler == nil {
 		t.Fatalf("expected default leveler when none provided")
@@ -239,7 +239,7 @@ func TestNewJSONHandlerFallbackInitialAttrs(t *testing.T) {
 			slog.String("kept", "v"),
 		},
 	}
-	handler := newJSONHandler(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, nil, slog.New(slog.DiscardHandler))
 
 	if len(handler.groups) != 1 || handler.groups[0] != "fallback" {
 		t.Fatalf("groups = %v, want [fallback]", handler.groups)
@@ -263,7 +263,7 @@ func TestJSONHandlerWithAttrsReturnsSelf(t *testing.T) {
 
 	base := newJSONHandler(&handlerConfig{
 		Writer: io.Discard,
-	}, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
 	if got := base.WithAttrs(nil); got != base {
 		t.Fatalf("WithAttrs(nil) should return same handler instance")
@@ -278,7 +278,7 @@ func TestJSONHandlerWithGroupAndAttrsExtendState(t *testing.T) {
 	t.Parallel()
 
 	cfg := &handlerConfig{Writer: io.Discard}
-	base := newJSONHandler(cfg, slog.LevelDebug, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	base := newJSONHandler(cfg, slog.LevelDebug, slog.New(slog.DiscardHandler))
 	base.groups = append(base.groups, "base")
 	base.groupedAttrs = append(base.groupedAttrs, groupedAttr{
 		groups: []string{"base"},
@@ -352,7 +352,7 @@ func TestJSONHandlerWarnsOnceWhenProjectUnknown(t *testing.T) {
 		Writer:                &buf,
 		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
 	}
-	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
 	traceID, _ := trace.TraceIDFromHex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	spanID, _ := trace.SpanIDFromHex("bbbbbbbbbbbbbbbb")
@@ -400,7 +400,7 @@ func TestJSONHandlerAutoformatTraceFallback(t *testing.T) {
 		traceAllowAutoformat:  true,
 		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
 	}
-	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
 	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
 	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
@@ -461,7 +461,7 @@ func TestJSONHandlerHandleSkipsDisabledLevels(t *testing.T) {
 	levelVar := new(slog.LevelVar)
 	levelVar.Set(slog.LevelWarn)
 
-	handler := newJSONHandler(cfg, levelVar, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, levelVar, slog.New(slog.DiscardHandler))
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "ignored", 0)
 	if err := handler.Handle(context.Background(), record); err != nil {
@@ -594,7 +594,7 @@ func TestJSONHandlerHandleMergesLabels(t *testing.T) {
 		},
 	}
 
-	internalLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	internalLogger := slog.New(slog.DiscardHandler)
 	levelVar := new(slog.LevelVar)
 	levelVar.Set(slog.LevelInfo)
 	handler := newJSONHandler(cfg, levelVar, internalLogger)
@@ -664,7 +664,7 @@ func TestJSONHandlerHandleUsesRuntimeLabelsWithoutRecordLabels(t *testing.T) {
 	}
 	levelVar := new(slog.LevelVar)
 	levelVar.Set(slog.LevelInfo)
-	handler := newJSONHandler(cfg, levelVar, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, levelVar, slog.New(slog.DiscardHandler))
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "billing started", 0)
 	record.AddAttrs(slog.String("component", "worker"))
@@ -694,7 +694,7 @@ func TestJSONHandlerBuildPayloadNestedGroups(t *testing.T) {
 	t.Parallel()
 
 	cfg := &handlerConfig{Writer: io.Discard}
-	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "nested", 0)
 	record.AddAttrs(
@@ -739,7 +739,7 @@ func TestJSONHandlerBuildPayloadInitialLabelsGroup(t *testing.T) {
 		Writer:        io.Discard,
 		InitialGroups: []string{LabelsGroup},
 	}
-	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "labels", 0)
 	record.AddAttrs(
@@ -773,7 +773,7 @@ func TestJSONHandlerBuildPayloadSkipsEmptyKeysAndNilValues(t *testing.T) {
 		Writer:        io.Discard,
 		InitialGroups: []string{""},
 	}
-	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "payload", 0)
 	record.AddAttrs(
@@ -809,7 +809,7 @@ func TestJSONHandlerCapturesErrorAttr(t *testing.T) {
 		StackTraceEnabled: true,
 		StackTraceLevel:   slog.LevelError,
 	}
-	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
 	record := slog.NewRecord(time.Now(), slog.LevelError, "boom", 0)
 	record.AddAttrs(slog.Any("failure", errors.New("kaboom")))
@@ -835,7 +835,7 @@ func TestJSONHandlerEmitJSONReturnsWriterError(t *testing.T) {
 
 	handler := newJSONHandler(&handlerConfig{
 		Writer: io.Discard,
-	}, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, slog.LevelInfo, slog.New(slog.DiscardHandler))
 	handler.writer = nil
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "missing writer", 0)
@@ -859,7 +859,7 @@ func TestJSONHandlerEmitJSONUsesServiceContextAny(t *testing.T) {
 			"service": "checkout",
 		},
 	}
-	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 	handler.bufferPool = nil
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "service context", 0)
@@ -945,7 +945,7 @@ func TestJSONHandler_ErrorValue_Attribute(t *testing.T) {
 	// We need an attribute that is an error.
 	err := errors.New("my error")
 	var buf bytes.Buffer
-	h := newJSONHandler(&handlerConfig{Writer: &buf}, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := newJSONHandler(&handlerConfig{Writer: &buf}, slog.LevelInfo, slog.New(slog.DiscardHandler))
 	logger := slog.New(h)
 
 	// This should trigger the error capture logic in walkAttr

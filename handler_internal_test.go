@@ -15,6 +15,7 @@
 package slogcp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -66,7 +67,7 @@ func TestNewHandlerStrictDiagnosticsRequiresProject(t *testing.T) {
 func TestSourceAwareHandlerPropagatesSourceMetadata(t *testing.T) {
 	t.Parallel()
 
-	base := slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{AddSource: true})
+	base := slog.NewJSONHandler(new(bytes.Buffer), &slog.HandlerOptions{AddSource: true})
 	wrapped := sourceAwareHandler{Handler: base}
 
 	if !wrapped.HasSource() {
@@ -283,8 +284,8 @@ func TestHandlerCloseClosesOwnedResources(t *testing.T) {
 	cfgCloser := &closerSpy{}
 
 	h := &Handler{
-		Handler:          slog.NewJSONHandler(io.Discard, nil),
-		internalLogger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Handler:          slog.NewJSONHandler(new(bytes.Buffer), nil),
+		internalLogger:   slog.New(slog.DiscardHandler),
 		switchableWriter: NewSwitchableWriter(switchWriter),
 		ownedFile:        file,
 		cfg:              &handlerConfig{ClosableWriter: cfgCloser},
@@ -314,7 +315,7 @@ func TestHandlerCloseReportsOwnedFileErrors(t *testing.T) {
 	t.Parallel()
 
 	h := &Handler{
-		internalLogger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		internalLogger: slog.New(slog.DiscardHandler),
 		ownedFile:      os.NewFile(^uintptr(0)>>1, "invalid"),
 	}
 	if err := h.Close(); err == nil {
@@ -334,7 +335,7 @@ func TestHandlerReopenLogFileWarnsOnCloseError(t *testing.T) {
 			FilePath: logPath,
 		},
 		switchableWriter: NewSwitchableWriter(io.Discard),
-		internalLogger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		internalLogger:   slog.New(slog.DiscardHandler),
 		ownedFile:        os.NewFile(^uintptr(0)>>1, "invalid"),
 	}
 
@@ -355,8 +356,8 @@ func TestHandlerCloseReturnsConfigCloserError(t *testing.T) {
 
 	cfgCloser := &closerSpy{err: errors.New("config-close")}
 	h := &Handler{
-		Handler:        slog.NewJSONHandler(io.Discard, nil),
-		internalLogger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Handler:        slog.NewJSONHandler(new(bytes.Buffer), nil),
+		internalLogger: slog.New(slog.DiscardHandler),
 		cfg:            &handlerConfig{ClosableWriter: cfgCloser},
 	}
 
@@ -384,7 +385,7 @@ func TestHandlerReopenLogFileSuccess(t *testing.T) {
 	h := &Handler{
 		cfg:              &handlerConfig{FilePath: logPath},
 		switchableWriter: NewSwitchableWriter(io.Discard),
-		internalLogger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		internalLogger:   slog.New(slog.DiscardHandler),
 		ownedFile:        oldFile,
 	}
 
@@ -473,7 +474,7 @@ func TestHandlerReopenLogFileReportsErrors(t *testing.T) {
 	h := &Handler{
 		cfg:              &handlerConfig{FilePath: missingPath},
 		switchableWriter: NewSwitchableWriter(io.Discard),
-		internalLogger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		internalLogger:   slog.New(slog.DiscardHandler),
 	}
 
 	err := h.ReopenLogFile()

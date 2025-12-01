@@ -703,7 +703,7 @@ func TestCachedConfigFromEnvHandlesClearedCache(t *testing.T) {
 		resetHandlerConfigCache()
 	})
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 
 	var wg sync.WaitGroup
 	results := make(chan error, 2)

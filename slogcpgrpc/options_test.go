@@ -16,7 +16,6 @@ package slogcpgrpc
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -32,7 +31,7 @@ import (
 func TestOptionsMutateConfig(t *testing.T) {
 	t.Parallel()
 
-	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	logger := slog.New(slog.DiscardHandler)
 	prop := propagation.TraceContext{}
 	tp := nooptrace.NewTracerProvider()
 	filterInvoked := false
@@ -121,7 +120,7 @@ func TestOptionsMutateConfig(t *testing.T) {
 func TestWithLoggerHandlesNil(t *testing.T) {
 	t.Parallel()
 
-	custom := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	custom := slog.New(slog.DiscardHandler)
 	cfg := &config{logger: custom}
 
 	WithLogger(nil)(cfg)
@@ -129,7 +128,7 @@ func TestWithLoggerHandlesNil(t *testing.T) {
 		t.Fatalf("WithLogger(nil) should fall back to slog.Default(), got %v", cfg.logger)
 	}
 
-	alt := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	alt := slog.New(slog.DiscardHandler)
 	WithLogger(alt)(cfg)
 	if cfg.logger != alt {
 		t.Fatalf("WithLogger(custom) = %v, want %v", cfg.logger, alt)

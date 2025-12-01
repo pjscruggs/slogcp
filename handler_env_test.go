@@ -28,7 +28,7 @@ import (
 
 // newDiscardLogger returns a test logger that discards all output.
 func newDiscardLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, nil))
+	return slog.New(slog.DiscardHandler)
 }
 
 // clearHandlerEnv resets the environment variables that influence handler configuration.

@@ -205,7 +205,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 
 	internalLogger := builder.internalLogger
 	if internalLogger == nil {
-		internalLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		internalLogger = slog.New(slog.DiscardHandler)
 	}
 
 	cfg, err := cachedConfigFromEnv(internalLogger)
