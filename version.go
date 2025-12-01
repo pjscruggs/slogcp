@@ -19,7 +19,7 @@ import "fmt"
 // Version is the current version of the slogcp library.
 // Follows semantic versioning (https://semver.org/).
 // It can be overridden at build time via -ldflags.
-var Version = "v0.1.7-alpha"
+var Version = "v0.1.7-beta"
 
 // UserAgent identifies this library when helper components need to report a
 // version string. It is initialized from Version and can be overridden at
