@@ -29,7 +29,20 @@ import (
 )
 
 const (
-	defaultQueueSize = 1024
+	defaultQueueSizeBlock      = 2048
+	defaultQueueSizeDropNewest = 512
+	defaultQueueSizeDropOldest = 1024
+
+	defaultWorkerCountBlock      = 1
+	defaultWorkerCountDropNewest = 1
+	defaultWorkerCountDropOldest = 1
+
+	defaultBatchSizeBlock      = 1
+	defaultBatchSizeDropNewest = 1
+	defaultBatchSizeDropOldest = 1
+
+	// Retain the block-mode queue size for backwards-compatible tests.
+	defaultQueueSize = defaultQueueSizeBlock
 
 	envAsyncEnabled      = "SLOGCP_ASYNC_ENABLED"
 	envAsyncQueueSize    = "SLOGCP_ASYNC_QUEUE_SIZE"
@@ -37,6 +50,30 @@ const (
 	envAsyncWorkers      = "SLOGCP_ASYNC_WORKERS"
 	envAsyncFlushTimeout = "SLOGCP_ASYNC_FLUSH_TIMEOUT"
 )
+
+type modeDefault struct {
+	queue   int
+	workers int
+	batch   int
+}
+
+var modeDefaults = map[DropMode]modeDefault{
+	DropModeBlock: {
+		queue:   defaultQueueSizeBlock,
+		workers: defaultWorkerCountBlock,
+		batch:   defaultBatchSizeBlock,
+	},
+	DropModeDropNewest: {
+		queue:   defaultQueueSizeDropNewest,
+		workers: defaultWorkerCountDropNewest,
+		batch:   defaultBatchSizeDropNewest,
+	},
+	DropModeDropOldest: {
+		queue:   defaultQueueSizeDropOldest,
+		workers: defaultWorkerCountDropOldest,
+		batch:   defaultBatchSizeDropOldest,
+	},
+}
 
 // DropMode controls how the handler behaves when the queue is full.
 type DropMode int
@@ -67,7 +104,10 @@ type Config struct {
 	ErrorWriter  io.Writer
 	FlushTimeout time.Duration
 
-	workerStarter func(func())
+	queueSet       bool
+	workerCountSet bool
+	batchSizeSet   bool
+	workerStarter  func(func())
 }
 
 // Option customizes async handler configuration.
@@ -84,6 +124,7 @@ func WithEnabled(enabled bool) Option {
 func WithQueueSize(size int) Option {
 	return func(cfg *Config) {
 		cfg.QueueSize = size
+		cfg.queueSet = true
 	}
 }
 
@@ -91,14 +132,16 @@ func WithQueueSize(size int) Option {
 func WithWorkerCount(count int) Option {
 	return func(cfg *Config) {
 		cfg.WorkerCount = count
+		cfg.workerCountSet = true
 	}
 }
 
 // WithBatchSize sets how many queued records a worker drains per wake-up.
-// Values less than 1 default to 1.
+// Values less than 1 fall back to the drop-mode baseline.
 func WithBatchSize(size int) Option {
 	return func(cfg *Config) {
 		cfg.BatchSize = size
+		cfg.batchSizeSet = true
 	}
 }
 
@@ -395,9 +438,6 @@ func closerFor(inner slog.Handler) func() error {
 func buildConfig(opts []Option) Config {
 	cfg := Config{
 		Enabled:     true,
-		QueueSize:   defaultQueueSize,
-		WorkerCount: 1,
-		BatchSize:   1,
 		DropMode:    DropModeBlock,
 		ErrorWriter: os.Stderr,
 	}
@@ -408,14 +448,30 @@ func buildConfig(opts []Option) Config {
 		}
 	}
 
+	defaults := modeDefaults[cfg.DropMode]
+	if defaults == (modeDefault{}) {
+		defaults = modeDefaults[DropModeBlock]
+	}
+
+	if !cfg.queueSet {
+		cfg.QueueSize = defaults.queue
+	}
 	if cfg.QueueSize < 0 {
-		cfg.QueueSize = defaultQueueSize
+		cfg.QueueSize = defaults.queue
+	}
+
+	if !cfg.workerCountSet {
+		cfg.WorkerCount = defaults.workers
 	}
 	if cfg.WorkerCount < 1 {
-		cfg.WorkerCount = 1
+		cfg.WorkerCount = defaults.workers
+	}
+
+	if !cfg.batchSizeSet {
+		cfg.BatchSize = defaults.batch
 	}
 	if cfg.BatchSize < 1 {
-		cfg.BatchSize = 1
+		cfg.BatchSize = defaults.batch
 	}
 
 	return cfg
@@ -432,12 +488,14 @@ func applyEnv(cfg *Config) {
 	if raw := strings.TrimSpace(os.Getenv(envAsyncQueueSize)); raw != "" {
 		if size, err := strconv.Atoi(raw); err == nil {
 			cfg.QueueSize = size
+			cfg.queueSet = true
 		}
 	}
 
 	if raw := strings.TrimSpace(os.Getenv(envAsyncWorkers)); raw != "" {
 		if workers, err := strconv.Atoi(raw); err == nil {
 			cfg.WorkerCount = workers
+			cfg.workerCountSet = true
 		}
 	}
 
