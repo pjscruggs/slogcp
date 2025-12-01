@@ -1,0 +1,97 @@
+linters:
+  enable:
+    # Core correctness / defaults
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - gosimple
+    - unused
+
+    # Modernizing & extra correctness
+    - nilerr
+    - nilnil
+    - nilnesserr
+    - errorlint
+    - wrapcheck
+    - noctx
+    - errchkjson
+
+    # Style / architecture
+    - revive
+    - gocritic
+    - ireturn
+    - predeclared
+    - sloglint
+
+    # Complexity / readability
+    - cyclop
+    - funlen
+    - nestif
+
+    # Security / resources
+    - gosec
+    - bodyclose
+
+    # Misc quality of life
+    - nolintlint
+    - misspell
+    - goconst
+    - unparam
+    - paralleltest
+    - tparallel
+    - thelper
+
+linters-settings:
+  cyclop:
+    max-complexity: 40
+    skip-tests: true
+  funlen:
+    lines: 200
+    statements: 160
+    ignore-tests: true
+  goconst:
+    min-occurrences: 4
+  nestif:
+    min-complexity: 10
+
+issues:
+  # Do not hide default excludes; can tweak later
+  exclude-use-default: false
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - cyclop
+        - funlen
+        - nestif
+        - goconst
+        - gocritic
+        - wrapcheck
+        - gosec
+        - paralleltest
+        - tparallel
+        - thelper
+        - unparam
+        - revive
+        - bodyclose
+    - path: ^loggingmock/
+      linters:
+        - cyclop
+        - funlen
+        - nestif
+        - goconst
+        - gocritic
+        - wrapcheck
+        - gosec
+        - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+output:
+  formats:
+    - format: colored-line-number
+      path: stdout
+      colors: true

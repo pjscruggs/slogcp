@@ -71,11 +71,16 @@ jobs:
           version: v2.1.5
           install-mode: goinstall
           
-      - name: ✨ Apply Go Formatting
+      - name: 🧰 Install format/modernize tools
         run: |
-          go install golang.org/x/tools/cmd/goimports@latest
-          gofmt -w .
-          goimports -local github.com/pjscruggs/slogcp -w .
+          go install golang.org/x/tools/cmd/goimports@869ced31773aa6009975882daa7005641f1364fc
+          go install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@869ced31773aa6009975882daa7005641f1364fc
+
+      - name: ✨ Apply Go formatting
+        run: gofmt -w ./...
+
+      - name: 🔧 Apply modernize fixes
+        run: modernize -fix -test ./...
 
       - name: 🧹 Ensure module metadata is tidy
         run: |
