@@ -1,3 +1,5 @@
+version: 2
+
 linters:
   enable:
     # Core correctness / defaults
@@ -40,19 +42,16 @@ linters:
     - paralleltest
     - tparallel
     - thelper
-
-linters-settings:
-  cyclop:
-    max-complexity: 40
-    skip-tests: true
-  funlen:
-    lines: 200
-    statements: 160
-    ignore-tests: true
-  goconst:
-    min-occurrences: 4
-  nestif:
-    min-complexity: 10
+  settings:
+    cyclop:
+      max-complexity: 40
+    funlen:
+      lines: 200
+      statements: 160
+    goconst:
+      min-occurrences: 4
+    nestif:
+      min-complexity: 10
 
 issues:
   # Do not hide default excludes; can tweak later
