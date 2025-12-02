@@ -917,6 +917,18 @@ func TestWrapStatusErrorPreservesStatus(t *testing.T) {
 	}
 }
 
+// TestStatusErrorWrapperErrorOmitsOpWhenEmpty ensures Error returns the underlying message when op is empty.
+func TestStatusErrorWrapperErrorOmitsOpWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	underlying := errors.New("plain error")
+	wrapper := &statusErrorWrapper{op: "", err: underlying}
+
+	if got := wrapper.Error(); got != underlying.Error() {
+		t.Fatalf("Error() = %q, want %q", got, underlying.Error())
+	}
+}
+
 // TestStreamWrappersCoverErrorBranches exercises send/recv paths with payload sizes disabled.
 func TestStreamWrappersCoverErrorBranches(t *testing.T) {
 	t.Parallel()
@@ -943,6 +955,25 @@ func TestStreamWrappersCoverErrorBranches(t *testing.T) {
 		}
 		if info.RequestBytes() != 0 || info.ResponseBytes() != 0 {
 			t.Fatalf("sizes should be disabled, got req=%d resp=%d", info.RequestBytes(), info.ResponseBytes())
+		}
+	})
+
+	t.Run("server stream EOF passthrough", func(t *testing.T) {
+		t.Parallel()
+
+		stream := &serverStream{
+			ServerStream: &fakeServerStream{
+				ctx: context.Background(),
+				// Empty queue forces the underlying RecvMsg to return io.EOF.
+				recvQueue: nil,
+			},
+			ctx:  context.Background(),
+			info: newRequestInfo("/svc/Server/EOF", "server_stream", false, time.Now()),
+			cfg:  &config{},
+		}
+
+		if err := stream.RecvMsg(&testSizedMessage{}); !errors.Is(err, io.EOF) {
+			t.Fatalf("RecvMsg error = %v, want io.EOF", err)
 		}
 	})
 
