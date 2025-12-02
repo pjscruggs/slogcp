@@ -159,7 +159,9 @@ func getRecordSourceFunc() func(slog.Record) *slog.Source {
 	if fn, ok := recordSourceFunc.Load().(func(slog.Record) *slog.Source); ok && fn != nil {
 		return fn
 	}
-	return func(r slog.Record) *slog.Source { return r.Source() }
+	fn := func(r slog.Record) *slog.Source { return r.Source() }
+	recordSourceFunc.Store(fn)
+	return fn
 }
 
 // setRuntimeFrameResolver installs the hook used to resolve call frames.
@@ -181,13 +183,15 @@ func getRuntimeFrameResolver() func(uintptr) runtime.Frame {
 	if fn, ok := runtimeFrameResolver.Load().(func(uintptr) runtime.Frame); ok && fn != nil {
 		return fn
 	}
-	return func(pc uintptr) runtime.Frame {
+	fn := func(pc uintptr) runtime.Frame {
 		var pcs [1]uintptr
 		pcs[0] = pc
 		frames := runtime.CallersFrames(pcs[:])
 		frame, _ := frames.Next()
 		return frame
 	}
+	runtimeFrameResolver.Store(fn)
+	return fn
 }
 
 type sourceLocation struct {
@@ -215,11 +219,6 @@ func newJSONHandler(cfg *handlerConfig, leveler slog.Leveler, internalLogger *sl
 	if leveler == nil {
 		leveler = slog.LevelInfo
 	}
-	initialGrouped := cfg.InitialGroupedAttrs
-	groupedCapacity := len(initialGrouped)
-	if groupedCapacity == 0 {
-		groupedCapacity = len(cfg.InitialAttrs)
-	}
 	h := &jsonHandler{
 		mu:             &sync.Mutex{},
 		cfg:            cfg,
@@ -227,32 +226,63 @@ func newJSONHandler(cfg *handlerConfig, leveler slog.Leveler, internalLogger *sl
 		writer:         cfg.Writer,
 		internalLogger: internalLogger,
 		bufferPool:     &jsonBufferPool,
-		groupedAttrs:   make([]groupedAttr, 0, groupedCapacity),
+		groupedAttrs:   make([]groupedAttr, 0, initialGroupedCapacity(cfg)),
 		groups:         make([]string, 0, len(cfg.InitialGroups)+1),
 	}
-	if len(cfg.InitialGroups) > 0 {
-		h.groups = append(h.groups, cfg.InitialGroups...)
+	h.appendInitialGroups(cfg.InitialGroups)
+	h.groupedAttrs = append(h.groupedAttrs, h.collectInitialAttrs(cfg)...)
+	return h
+}
+
+// initialGroupedCapacity estimates groupedAttr allocation capacity.
+func initialGroupedCapacity(cfg *handlerConfig) int {
+	if len(cfg.InitialGroupedAttrs) > 0 {
+		return len(cfg.InitialGroupedAttrs)
 	}
-	if len(initialGrouped) > 0 {
-		for _, ga := range initialGrouped {
-			if ga.attr.Key == "" && ga.attr.Value.Any() == nil {
-				continue
-			}
-			h.groupedAttrs = append(h.groupedAttrs, groupedAttr{
-				groups: append([]string(nil), ga.groups...),
-				attr:   ga.attr,
-			})
+	return len(cfg.InitialAttrs)
+}
+
+// appendInitialGroups seeds the handler with configured groups.
+func (h *jsonHandler) appendInitialGroups(groups []string) {
+	if len(groups) > 0 {
+		h.groups = append(h.groups, groups...)
+	}
+}
+
+// collectInitialAttrs clones initial attrs into groupedAttr form.
+func (h *jsonHandler) collectInitialAttrs(cfg *handlerConfig) []groupedAttr {
+	if len(cfg.InitialGroupedAttrs) > 0 {
+		return h.cloneGroupedAttrs(cfg.InitialGroupedAttrs)
+	}
+	return h.cloneUngroupedAttrs(cfg.InitialAttrs)
+}
+
+// cloneGroupedAttrs copies grouped attributes while skipping empty entries.
+func (h *jsonHandler) cloneGroupedAttrs(initial []groupedAttr) []groupedAttr {
+	var grouped []groupedAttr
+	for _, ga := range initial {
+		if ga.attr.Key == "" && ga.attr.Value.Any() == nil {
+			continue
 		}
-		return h
+		grouped = append(grouped, groupedAttr{
+			groups: append([]string(nil), ga.groups...),
+			attr:   ga.attr,
+		})
 	}
+	return grouped
+}
+
+// cloneUngroupedAttrs wraps ungrouped attrs with the current groups.
+func (h *jsonHandler) cloneUngroupedAttrs(initial []slog.Attr) []groupedAttr {
+	var grouped []groupedAttr
 	copyGroups := append([]string(nil), h.groups...)
-	for _, a := range cfg.InitialAttrs {
+	for _, a := range initial {
 		if a.Key == "" && a.Value.Any() == nil {
 			continue
 		}
-		h.groupedAttrs = append(h.groupedAttrs, groupedAttr{groups: copyGroups, attr: a})
+		grouped = append(grouped, groupedAttr{groups: copyGroups, attr: a})
 	}
-	return h
+	return grouped
 }
 
 // Enabled reports whether level is enabled for emission.
@@ -290,19 +320,9 @@ func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	payload, httpReq, errType, errMsg, stackStr, dynamicLabels := h.buildPayload(r, state)
 
-	if len(dynamicLabels) > 0 {
-		if len(h.cfg.runtimeLabels) > 0 {
-			for k, v := range h.cfg.runtimeLabels {
-				if _, exists := dynamicLabels[k]; !exists {
-					dynamicLabels[k] = v
-				}
-			}
-		}
-		if len(dynamicLabels) > 0 {
-			payload[labelsGroupKey] = dynamicLabels
-		}
-	} else if len(h.cfg.runtimeLabels) > 0 {
-		payload[labelsGroupKey] = h.cfg.runtimeLabels
+	labels := mergeLabels(dynamicLabels, h.cfg.runtimeLabels)
+	if len(labels) > 0 {
+		payload[labelsGroupKey] = labels
 	}
 
 	return h.emitJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, ownsSpan, sampled, errType, errMsg, stackStr)
@@ -413,165 +433,271 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	string, string, string,
 	map[string]string,
 ) {
+	baseAttrs, baseGroups := h.snapshotBaseState()
+	builder := newPayloadBuilder(h, state, r, baseAttrs, baseGroups)
+	return builder.build()
+}
+
+// mergeLabels combines dynamic and runtime labels without mutating runtime labels.
+func mergeLabels(dynamic map[string]string, runtime map[string]string) map[string]string {
+	if len(dynamic) == 0 {
+		if len(runtime) == 0 {
+			return nil
+		}
+		return runtime
+	}
+	if len(runtime) == 0 {
+		return dynamic
+	}
+	for k, v := range runtime {
+		if _, exists := dynamic[k]; !exists {
+			dynamic[k] = v
+		}
+	}
+	return dynamic
+}
+
+// snapshotBaseState captures grouped attributes and groups under lock.
+func (h *jsonHandler) snapshotBaseState() ([]groupedAttr, []string) {
 	h.mu.Lock()
 	baseAttrs := h.groupedAttrs
 	baseGroups := h.groups
 	h.mu.Unlock()
+	return baseAttrs, baseGroups
+}
 
-	estimatedFields := max(len(baseAttrs)+int(r.NumAttrs()), 4)
-	payload := state.prepare(estimatedFields)
+type payloadBuilder struct {
+	handler       *jsonHandler
+	state         *payloadState
+	record        slog.Record
+	baseAttrs     []groupedAttr
+	baseGroups    []string
+	payload       map[string]any
+	httpReq       *HTTPRequest
+	firstErr      error
+	stackStr      string
+	dynamicLabels map[string]string
+	groupStack    []string
+}
 
-	var httpReq *HTTPRequest
-	var firstErr error
-	var stackStr string
-	var dynamicLabels map[string]string
-
-	ensureLabels := func() map[string]string {
-		if dynamicLabels == nil {
-			dynamicLabels = state.obtainLabels()
-		}
-		return dynamicLabels
+// newPayloadBuilder constructs a builder for the current record.
+func newPayloadBuilder(h *jsonHandler, state *payloadState, r slog.Record, baseAttrs []groupedAttr, baseGroups []string) *payloadBuilder {
+	return &payloadBuilder{
+		handler:    h,
+		state:      state,
+		record:     r,
+		baseAttrs:  baseAttrs,
+		baseGroups: baseGroups,
+		groupStack: state.groupStack[:0],
 	}
+}
 
-	ensureGroupMap := func(parent map[string]any, key string, hint int) map[string]any {
-		if key == "" {
-			return parent
-		}
-		if existing, ok := parent[key]; ok {
-			if m, ok := existing.(map[string]any); ok {
-				return m
-			}
-		}
-		child := state.borrowMap(hint)
-		parent[key] = child
-		return child
-	}
+// build assembles the payload, HTTP request, and error metadata.
+func (pb *payloadBuilder) build() (map[string]any, *HTTPRequest, string, string, string, map[string]string) {
+	pb.preparePayload()
+	pb.applyBaseAttrs()
+	pb.applyRecordAttrs()
+	errType, errMsg := pb.resolveErrorAndStack()
+	pb.state.groupStack = pb.groupStack[:0]
+	pruneEmptyMaps(pb.payload)
+	return pb.payload, pb.httpReq, errType, errMsg, pb.stackStr, pb.dynamicLabels
+}
 
-	groupStack := state.groupStack[:0]
-	const labelsGroupName = LabelsGroup
+// preparePayload allocates the root payload map with a capacity hint.
+func (pb *payloadBuilder) preparePayload() {
+	estimatedFields := max(len(pb.baseAttrs)+int(pb.record.NumAttrs()), 4)
+	pb.payload = pb.state.prepare(estimatedFields)
+}
 
-	var walkAttr func(groupsLen int, currMap map[string]any, attr slog.Attr, inLabels bool)
-	walkAttr = func(groupsLen int, currMap map[string]any, attr slog.Attr, inLabels bool) {
-		rawValue := attr.Value
-		attr.Value = attr.Value.Resolve()
-		kind := attr.Value.Kind()
-		if kind != slog.KindGroup && h.cfg.ReplaceAttr != nil {
-			var groupsArg []string
-			if groupsLen > 0 {
-				groupsArg = groupStack[:groupsLen]
-			}
-			attr = h.cfg.ReplaceAttr(groupsArg, attr)
-			rawValue = attr.Value
-			attr.Value = attr.Value.Resolve()
-			kind = attr.Value.Kind()
-		}
-		if kind != slog.KindGroup && firstErr == nil {
-			if errVal := extractErrorFromValue(attr.Value); errVal != nil {
-				firstErr = errVal
-			}
-		}
-
-		if kind == slog.KindGroup {
-			children := attr.Value.Group()
-			nextGroupsLen := groupsLen
-			nextMap := currMap
-			appended := false
-			if attr.Key != "" {
-				groupStack = append(groupStack, attr.Key)
-				appended = true
-				nextGroupsLen++
-				if attr.Key != labelsGroupName {
-					nextMap = ensureGroupMap(currMap, attr.Key, len(children))
-				}
-			}
-			nextInLabels := inLabels || attr.Key == labelsGroupName
-			for i := range children {
-				walkAttr(nextGroupsLen, nextMap, children[i], nextInLabels)
-			}
-			if appended {
-				groupStack = groupStack[:groupsLen]
-			}
-			return
-		}
-
-		if attr.Key == "" {
-			return
-		}
-
-		if inLabels {
-			if s, ok := labelValueToString(attr.Value); ok {
-				ensureLabels()[attr.Key] = s
-			}
-			return
-		}
-
-		if attr.Key == httpRequestKey {
-			if req, ok := httpRequestFromValue(rawValue); ok && httpReq == nil {
-				PrepareHTTPRequest(req)
-				httpReq = req
-			}
-			return
-		}
-
-		val := resolveSlogValue(attr.Value)
-		if val == nil {
-			return
-		}
-		currMap[attr.Key] = val
-	}
-
-	for i := range baseAttrs {
-		ga := baseAttrs[i]
-		curr := payload
+// applyBaseAttrs walks initial grouped attributes into the payload.
+func (pb *payloadBuilder) applyBaseAttrs() {
+	for i := range pb.baseAttrs {
+		ga := pb.baseAttrs[i]
+		curr := pb.payload
 		inLabels := false
-		groupStack = groupStack[:0]
+		pb.groupStack = pb.groupStack[:0]
 		for _, g := range ga.groups {
-			groupStack = append(groupStack, g)
-			if g == labelsGroupName {
+			pb.groupStack = append(pb.groupStack, g)
+			if g == LabelsGroup {
 				inLabels = true
 				continue
 			}
-			curr = ensureGroupMap(curr, g, 4)
+			curr = pb.ensureGroupMap(curr, g, 4)
 		}
-		walkAttr(len(groupStack), curr, ga.attr, inLabels)
+		pb.walkAttr(len(pb.groupStack), curr, ga.attr, inLabels)
 	}
+}
 
-	groupStack = groupStack[:0]
-	baseMap := payload
+// applyRecordAttrs walks record attributes using any base group context.
+func (pb *payloadBuilder) applyRecordAttrs() {
+	pb.groupStack = pb.groupStack[:0]
+	baseMap := pb.payload
 	baseInLabels := false
-	for _, g := range baseGroups {
-		groupStack = append(groupStack, g)
-		if g == labelsGroupName {
+	for _, g := range pb.baseGroups {
+		pb.groupStack = append(pb.groupStack, g)
+		if g == LabelsGroup {
 			baseInLabels = true
 			continue
 		}
-		baseMap = ensureGroupMap(baseMap, g, 4)
+		baseMap = pb.ensureGroupMap(baseMap, g, 4)
 	}
-	baseGroupsLen := len(groupStack)
+	baseGroupsLen := len(pb.groupStack)
 
-	r.Attrs(func(attr slog.Attr) bool {
-		walkAttr(baseGroupsLen, baseMap, attr, baseInLabels)
+	pb.record.Attrs(func(attr slog.Attr) bool {
+		pb.walkAttr(baseGroupsLen, baseMap, attr, baseInLabels)
 		return true
 	})
+}
 
-	errType, errMsg := "", ""
-	if firstErr != nil {
-		fe, origin := formatErrorForReporting(firstErr)
-		errType = fe.Type
-		errMsg = fe.Message
-		stackStr = origin
-		if stackStr == "" && h.cfg.StackTraceEnabled && stackTraceComparisonLevel(r.Level) >= stackTraceComparisonLevel(h.cfg.StackTraceLevel) {
-			stackStr = captureAndFormatFallbackStack()
-		}
-	} else if h.cfg.StackTraceEnabled && stackTraceComparisonLevel(r.Level) >= stackTraceComparisonLevel(h.cfg.StackTraceLevel) {
-		if stack, _ := CaptureStack(nil); stack != "" {
-			stackStr = stack
-		}
+// walkAttr processes a single attribute, dispatching to group or leaf handlers.
+func (pb *payloadBuilder) walkAttr(groupsLen int, currMap map[string]any, attr slog.Attr, inLabels bool) {
+	attr, rawValue, kind := pb.normalizeAttr(groupsLen, attr)
+
+	if attr.Key == "" {
+		return
 	}
 
-	state.groupStack = groupStack[:0]
-	pruneEmptyMaps(payload)
-	return payload, httpReq, errType, errMsg, stackStr, dynamicLabels
+	if kind == slog.KindGroup {
+		pb.walkGroupAttr(groupsLen, currMap, attr, inLabels)
+		return
+	}
+
+	pb.handleLeafAttr(currMap, attr, rawValue, inLabels)
+}
+
+// normalizeAttr applies ReplaceAttr and resolves the attribute kind.
+func (pb *payloadBuilder) normalizeAttr(groupsLen int, attr slog.Attr) (slog.Attr, slog.Value, slog.Kind) {
+	rawValue := attr.Value
+	attr.Value = attr.Value.Resolve()
+	kind := attr.Value.Kind()
+	if kind != slog.KindGroup && pb.handler.cfg.ReplaceAttr != nil {
+		var groupsArg []string
+		if groupsLen > 0 {
+			groupsArg = pb.groupStack[:groupsLen]
+		}
+		attr = pb.handler.cfg.ReplaceAttr(groupsArg, attr)
+		rawValue = attr.Value
+		attr.Value = attr.Value.Resolve()
+		kind = attr.Value.Kind()
+	}
+	if kind != slog.KindGroup {
+		pb.captureFirstError(attr.Value)
+	}
+	return attr, rawValue, kind
+}
+
+// walkGroupAttr descends into grouped attributes while tracking labels and groups.
+func (pb *payloadBuilder) walkGroupAttr(groupsLen int, currMap map[string]any, attr slog.Attr, inLabels bool) {
+	children := attr.Value.Group()
+	nextGroupsLen := groupsLen
+	nextMap := currMap
+	appended := false
+	if attr.Key != "" {
+		pb.groupStack = append(pb.groupStack, attr.Key)
+		appended = true
+		nextGroupsLen++
+		if attr.Key != LabelsGroup {
+			nextMap = pb.ensureGroupMap(currMap, attr.Key, len(children))
+		}
+	}
+	nextInLabels := inLabels || attr.Key == LabelsGroup
+	for i := range children {
+		pb.walkAttr(nextGroupsLen, nextMap, children[i], nextInLabels)
+	}
+	if appended {
+		pb.groupStack = pb.groupStack[:groupsLen]
+	}
+}
+
+// handleLeafAttr writes non-group attributes to the payload or labels.
+func (pb *payloadBuilder) handleLeafAttr(currMap map[string]any, attr slog.Attr, rawValue slog.Value, inLabels bool) {
+	if inLabels {
+		pb.addLabel(attr)
+		return
+	}
+	if attr.Key == httpRequestKey && pb.handleHTTPRequestAttr(rawValue) {
+		return
+	}
+	if val := resolveSlogValue(attr.Value); val != nil {
+		currMap[attr.Key] = val
+	}
+}
+
+// addLabel inserts a label value when it converts successfully.
+func (pb *payloadBuilder) addLabel(attr slog.Attr) {
+	if s, ok := labelValueToString(attr.Value); ok {
+		pb.ensureLabels()[attr.Key] = s
+	}
+}
+
+// handleHTTPRequestAttr extracts HTTP request payloads from attribute values.
+func (pb *payloadBuilder) handleHTTPRequestAttr(rawValue slog.Value) bool {
+	if pb.httpReq != nil {
+		return false
+	}
+	if req, ok := httpRequestFromValue(rawValue); ok {
+		PrepareHTTPRequest(req)
+		pb.httpReq = req
+		return true
+	}
+	return false
+}
+
+// ensureLabels allocates the dynamic labels map when needed.
+func (pb *payloadBuilder) ensureLabels() map[string]string {
+	if pb.dynamicLabels == nil {
+		pb.dynamicLabels = pb.state.obtainLabels()
+	}
+	return pb.dynamicLabels
+}
+
+// ensureGroupMap creates or reuses nested maps for grouped attributes.
+func (pb *payloadBuilder) ensureGroupMap(parent map[string]any, key string, hint int) map[string]any {
+	if key == "" {
+		return parent
+	}
+	if existing, ok := parent[key]; ok {
+		if m, ok := existing.(map[string]any); ok {
+			return m
+		}
+	}
+	child := pb.state.borrowMap(hint)
+	parent[key] = child
+	return child
+}
+
+// captureFirstError records the first encountered error value.
+func (pb *payloadBuilder) captureFirstError(val slog.Value) {
+	if pb.firstErr != nil {
+		return
+	}
+	if errVal := extractErrorFromValue(val); errVal != nil {
+		pb.firstErr = errVal
+	}
+}
+
+// resolveErrorAndStack determines error metadata and stack traces.
+func (pb *payloadBuilder) resolveErrorAndStack() (string, string) {
+	if pb.firstErr != nil {
+		fe, origin := formatErrorForReporting(pb.firstErr)
+		pb.stackStr = origin
+		if pb.stackStr == "" && pb.shouldCaptureStack() {
+			pb.stackStr = captureAndFormatFallbackStack()
+		}
+		return fe.Type, fe.Message
+	}
+	if pb.shouldCaptureStack() {
+		if stack, _ := CaptureStack(nil); stack != "" {
+			pb.stackStr = stack
+		}
+	}
+	return "", ""
+}
+
+// shouldCaptureStack determines whether stack collection should occur.
+func (pb *payloadBuilder) shouldCaptureStack() bool {
+	return pb.handler.cfg.StackTraceEnabled &&
+		stackTraceComparisonLevel(pb.record.Level) >= stackTraceComparisonLevel(pb.handler.cfg.StackTraceLevel)
 }
 
 // stackTraceComparisonLevel normalizes levels for stack trace thresholds so
@@ -599,63 +725,102 @@ func (h *jsonHandler) emitJSON(
 		return errors.New("slogcp: no writer configured")
 	}
 
+	h.applySeverityAndTime(jsonPayload, r)
+	h.applySourceLocation(jsonPayload, sourceLoc)
+	h.applyTrace(jsonPayload, fmtTrace, rawTrace, spanID, ownsSpan, sampled)
+	message := h.applyErrorFields(jsonPayload, r.Message, errType, errMsg, stackStr)
+	jsonPayload[messageKey] = message
+	h.applyServiceContext(jsonPayload)
+	h.applyHTTPRequest(jsonPayload, httpReq)
+
+	return h.writeJSONPayload(jsonPayload)
+}
+
+// applySeverityAndTime sets severity and timestamp fields on the payload.
+func (h *jsonHandler) applySeverityAndTime(jsonPayload map[string]any, r slog.Record) {
 	jsonPayload["severity"] = severityString(r.Level, h.cfg.UseShortSeverityNames)
-	jsonPayload[messageKey] = r.Message
 	if h.cfg.EmitTimeField {
 		jsonPayload["time"] = r.Time.UTC().Format(time.RFC3339Nano)
 	}
+}
 
+// applySourceLocation attaches source metadata when available.
+func (h *jsonHandler) applySourceLocation(jsonPayload map[string]any, sourceLoc *sourceLocation) {
 	if sourceLoc != nil {
 		jsonPayload["logging.googleapis.com/sourceLocation"] = sourceLoc
 	}
+}
 
+// applyTrace writes trace identifiers based on formatting preferences.
+func (h *jsonHandler) applyTrace(jsonPayload map[string]any, fmtTrace, rawTrace, spanID string, ownsSpan bool, sampled bool) {
 	switch {
 	case fmtTrace != "":
-		jsonPayload[TraceKey] = fmtTrace
-		if ownsSpan && spanID != "" {
-			jsonPayload[SpanKey] = spanID
-		}
-		jsonPayload[SampledKey] = sampled
+		h.applyCloudTrace(jsonPayload, fmtTrace, spanID, ownsSpan, sampled)
 	case rawTrace != "" && h.cfg.traceAllowAutoformat:
-		jsonPayload[TraceKey] = rawTrace
-		if ownsSpan && spanID != "" {
-			jsonPayload[SpanKey] = spanID
-		}
-		jsonPayload[SampledKey] = sampled
+		h.applyCloudTrace(jsonPayload, rawTrace, spanID, ownsSpan, sampled)
 	case rawTrace != "":
-		if h.cfg.traceDiagnosticsState != nil {
-			h.cfg.traceDiagnosticsState.warnUnknownProject()
-		}
-		jsonPayload["otel.trace_id"] = rawTrace
-		jsonPayload["otel.span_id"] = spanID
-		jsonPayload["otel.trace_sampled"] = sampled
+		h.applyUnknownProjectTrace(jsonPayload, rawTrace, spanID, sampled)
 	}
+}
 
+// applyCloudTrace writes Cloud Trace correlation fields.
+func (h *jsonHandler) applyCloudTrace(jsonPayload map[string]any, traceID, spanID string, ownsSpan bool, sampled bool) {
+	jsonPayload[TraceKey] = traceID
+	if ownsSpan && spanID != "" {
+		jsonPayload[SpanKey] = spanID
+	}
+	jsonPayload[SampledKey] = sampled
+}
+
+// applyUnknownProjectTrace emits OpenTelemetry identifiers when project is unknown.
+func (h *jsonHandler) applyUnknownProjectTrace(jsonPayload map[string]any, rawTrace, spanID string, sampled bool) {
+	if h.cfg.traceDiagnosticsState != nil {
+		h.cfg.traceDiagnosticsState.warnUnknownProject()
+	}
+	jsonPayload["otel.trace_id"] = rawTrace
+	jsonPayload["otel.span_id"] = spanID
+	jsonPayload["otel.trace_sampled"] = sampled
+}
+
+// applyErrorFields adjusts message and stack outputs based on error metadata.
+func (h *jsonHandler) applyErrorFields(jsonPayload map[string]any, message string, errType, errMsg, stackStr string) string {
 	if errType != "" {
 		jsonPayload["error_type"] = errType
-		jsonPayload[messageKey] = r.Message + ": " + errMsg
+		message = message + ": " + errMsg
 	}
-
 	if stackStr != "" {
 		jsonPayload[stackTraceKey] = stackStr
 	}
+	return message
+}
 
-	if len(h.cfg.runtimeServiceContext) > 0 {
-		if _, exists := jsonPayload["serviceContext"]; !exists {
-			if h.cfg.runtimeServiceContextAny != nil {
-				jsonPayload["serviceContext"] = h.cfg.runtimeServiceContextAny
-			} else {
-				jsonPayload["serviceContext"] = stringMapToAny(h.cfg.runtimeServiceContext)
-			}
-		}
+// applyServiceContext attaches runtime service context when unset.
+func (h *jsonHandler) applyServiceContext(jsonPayload map[string]any) {
+	if len(h.cfg.runtimeServiceContext) == 0 {
+		return
 	}
-
-	if httpReq != nil {
-		if m := flattenHTTPRequestToMap(httpReq); m != nil {
-			jsonPayload[httpRequestKey] = m
-		}
+	if _, exists := jsonPayload["serviceContext"]; exists {
+		return
 	}
+	if h.cfg.runtimeServiceContextAny != nil {
+		jsonPayload["serviceContext"] = h.cfg.runtimeServiceContextAny
+		return
+	}
+	jsonPayload["serviceContext"] = stringMapToAny(h.cfg.runtimeServiceContext)
+}
 
+// applyHTTPRequest flattens HTTP requests into the payload when present.
+func (h *jsonHandler) applyHTTPRequest(jsonPayload map[string]any, httpReq *HTTPRequest) {
+	if httpReq == nil {
+		return
+	}
+	if m := flattenHTTPRequestToMap(httpReq); m != nil {
+		jsonPayload[httpRequestKey] = m
+	}
+}
+
+// writeJSONPayload encodes and writes the log entry to the configured writer.
+func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 	var (
 		buf    *bytes.Buffer
 		pooled bool
