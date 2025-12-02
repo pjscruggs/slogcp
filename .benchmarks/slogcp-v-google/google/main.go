@@ -231,14 +231,14 @@ func newLoggingHarness(ctx context.Context) (*loggingHarness, error) {
 		return listener.Dial()
 	}
 
-	conn, err := grpc.DialContext(ctx, "bufnet",
+	conn, err := grpc.NewClient("bufnet",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(dialer),
 	)
 	if err != nil {
 		listener.Close()
 		server.Stop()
-		return nil, fmt.Errorf("dial bufconn: %w", err)
+		return nil, fmt.Errorf("create bufconn client: %w", err)
 	}
 
 	client, err := logging.NewClient(ctx, loggingParent, option.WithGRPCConn(conn))
