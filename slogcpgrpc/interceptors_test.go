@@ -747,7 +747,7 @@ func TestStatsHandlerOptionsHonorsConfig(t *testing.T) {
 func TestLoggerWithAttrsCoversBranches(t *testing.T) {
 	t.Parallel()
 
-	base := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	base := slog.New(slog.DiscardHandler)
 	if got := loggerWithAttrs(base, nil); got != base {
 		t.Fatalf("loggerWithAttrs should return base when attrs empty")
 	}
@@ -824,7 +824,7 @@ func TestClientStreamWrapperRecvMsgFinalization(t *testing.T) {
 	}
 
 	stream.recvErr = io.EOF
-	if err := wrapper.RecvMsg(&testSizedMessage{}); err != io.EOF {
+	if err := wrapper.RecvMsg(&testSizedMessage{}); !errors.Is(err, io.EOF) {
 		t.Fatalf("expected io.EOF, got %v", err)
 	}
 	if info.Status() != codes.OK {
@@ -872,6 +872,268 @@ func TestClientStreamWrapperCloseSendFinalizes(t *testing.T) {
 	}
 }
 
+// TestWrapStatusErrorPreservesStatus ensures wrapped errors keep gRPC status and unwrap behavior.
+func TestWrapStatusErrorPreservesStatus(t *testing.T) {
+	t.Parallel()
+
+	baseErr := status.Error(codes.NotFound, "missing")
+	wrapped := wrapStatusError(baseErr, "recv")
+	if wrapped == nil {
+		t.Fatalf("wrapStatusError returned nil")
+	}
+	if status.Code(wrapped) != codes.NotFound {
+		t.Fatalf("status.Code(wrapped) = %v, want NotFound", status.Code(wrapped))
+	}
+	if !errors.Is(wrapped, baseErr) {
+		t.Fatalf("wrapped error does not unwrap to original: %v", wrapped)
+	}
+	if got := wrapped.Error(); !strings.Contains(got, "recv") || !strings.Contains(got, "missing") {
+		t.Fatalf("wrapped error message = %q, want context and original", got)
+	}
+	if !errors.Is(wrapped, baseErr) {
+		t.Fatalf("errors.Is failed for wrapped error")
+	}
+	var target *statusErrorWrapper
+	if !errors.As(wrapped, &target) || target.GRPCStatus().Code() != codes.NotFound {
+		t.Fatalf("GRPCStatus() = %v, wrapped type ok=%v", status.Code(wrapped), target != nil)
+	}
+
+	if wrapStatusError(nil, "noop") != nil {
+		t.Fatalf("wrapStatusError should return nil for nil input")
+	}
+
+	plain := wrapStatusError(io.EOF, "")
+	if plain == nil {
+		t.Fatalf("wrapStatusError(io.EOF) returned nil")
+	}
+	if plain.Error() != io.EOF.Error() {
+		t.Fatalf("plain Error() = %q, want %q", plain.Error(), io.EOF.Error())
+	}
+	if !errors.Is(plain, io.EOF) {
+		t.Fatalf("wrapped EOF should unwrap to io.EOF")
+	}
+	if status.Code(plain) != codes.Unknown {
+		t.Fatalf("status.Code(plain) = %v, want Unknown", status.Code(plain))
+	}
+}
+
+// TestStatusErrorWrapperErrorOmitsOpWhenEmpty ensures Error returns the underlying message when op is empty.
+func TestStatusErrorWrapperErrorOmitsOpWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	underlying := errors.New("plain error")
+	wrapper := &statusErrorWrapper{op: "", err: underlying}
+
+	if got := wrapper.Error(); got != underlying.Error() {
+		t.Fatalf("Error() = %q, want %q", got, underlying.Error())
+	}
+}
+
+// TestStreamWrappersCoverErrorBranches exercises send/recv paths with payload sizes disabled.
+func TestStreamWrappersCoverErrorBranches(t *testing.T) {
+	t.Parallel()
+
+	t.Run("server stream", func(t *testing.T) {
+		cfg := &config{includeSizes: false}
+		info := newRequestInfo("/svc/Server/Err", "server_stream", false, time.Now())
+		stream := &serverStream{
+			ServerStream: &fakeServerStream{
+				ctx:     context.Background(),
+				recvErr: status.Error(codes.DeadlineExceeded, "timeout"),
+				sendErr: status.Error(codes.PermissionDenied, "denied"),
+			},
+			ctx:  context.Background(),
+			info: info,
+			cfg:  cfg,
+		}
+
+		if err := stream.RecvMsg(&testSizedMessage{}); status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("RecvMsg error = %v, want DeadlineExceeded", err)
+		}
+		if err := stream.SendMsg(&testSizedMessage{}); status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("SendMsg error = %v, want PermissionDenied", err)
+		}
+		if info.RequestBytes() != 0 || info.ResponseBytes() != 0 {
+			t.Fatalf("sizes should be disabled, got req=%d resp=%d", info.RequestBytes(), info.ResponseBytes())
+		}
+	})
+
+	t.Run("server stream EOF passthrough", func(t *testing.T) {
+		t.Parallel()
+
+		stream := &serverStream{
+			ServerStream: &fakeServerStream{
+				ctx: context.Background(),
+				// Empty queue forces the underlying RecvMsg to return io.EOF.
+				recvQueue: nil,
+			},
+			ctx:  context.Background(),
+			info: newRequestInfo("/svc/Server/EOF", "server_stream", false, time.Now()),
+			cfg:  &config{},
+		}
+
+		if err := stream.RecvMsg(&testSizedMessage{}); !errors.Is(err, io.EOF) {
+			t.Fatalf("RecvMsg error = %v, want io.EOF", err)
+		}
+	})
+
+	t.Run("client stream", func(t *testing.T) {
+		cfg := &config{includeSizes: false}
+		info := newRequestInfo("/svc/Client/Err", "client_stream", true, time.Now())
+		stream := &clientStreamWrapper{
+			ClientStream: &fakeClientStream{
+				ctx:     context.Background(),
+				recvErr: status.Error(codes.FailedPrecondition, "fail"),
+			},
+			cfg:   cfg,
+			info:  info,
+			start: time.Now(),
+		}
+
+		if err := stream.SendMsg(&testSizedMessage{n: 10}); err != nil {
+			t.Fatalf("SendMsg returned %v, want nil", err)
+		}
+		if err := stream.RecvMsg(&testSizedMessage{}); status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("RecvMsg error = %v, want FailedPrecondition", err)
+		}
+		if info.RequestBytes() != 0 || info.ResponseBytes() != 0 {
+			t.Fatalf("sizes should be disabled, got req=%d resp=%d", info.RequestBytes(), info.ResponseBytes())
+		}
+	})
+}
+
+// TestStreamWrappersCoverSuccessBranches exercises size toggles for successful calls.
+func TestStreamWrappersCoverSuccessBranches(t *testing.T) {
+	t.Parallel()
+
+	t.Run("server send records sizes", func(t *testing.T) {
+		cfg := &config{includeSizes: true}
+		info := newRequestInfo("/svc/Server/Send", "server_stream", false, time.Now())
+		stream := &serverStream{
+			ServerStream: &fakeServerStream{ctx: context.Background()},
+			ctx:          context.Background(),
+			info:         info,
+			cfg:          cfg,
+		}
+
+		if err := stream.SendMsg(&testSizedMessage{n: 7}); err != nil {
+			t.Fatalf("SendMsg returned %v", err)
+		}
+		if info.ResponseBytes() != 7 || info.ResponseCount() != 1 {
+			t.Fatalf("response accounting mismatch: bytes=%d count=%d", info.ResponseBytes(), info.ResponseCount())
+		}
+	})
+
+	t.Run("server send without sizes", func(t *testing.T) {
+		cfg := &config{includeSizes: false}
+		info := newRequestInfo("/svc/Server/Send", "server_stream", false, time.Now())
+		stream := &serverStream{
+			ServerStream: &fakeServerStream{ctx: context.Background()},
+			ctx:          context.Background(),
+			info:         info,
+			cfg:          cfg,
+		}
+		if err := stream.SendMsg(&testSizedMessage{n: 3}); err != nil {
+			t.Fatalf("SendMsg returned %v", err)
+		}
+		if info.ResponseBytes() != 0 || info.ResponseCount() != 0 {
+			t.Fatalf("sizes should be disabled, got bytes=%d count=%d", info.ResponseBytes(), info.ResponseCount())
+		}
+	})
+
+	t.Run("client send toggles sizes", func(t *testing.T) {
+		info := newRequestInfo("/svc/Client/Send", "client_stream", true, time.Now())
+		stream := &clientStreamWrapper{
+			ClientStream: &fakeClientStream{ctx: context.Background()},
+			cfg:          &config{includeSizes: true},
+			info:         info,
+			start:        time.Now(),
+		}
+		if err := stream.SendMsg(&testSizedMessage{n: 5}); err != nil {
+			t.Fatalf("SendMsg returned %v", err)
+		}
+		if info.RequestBytes() != 5 || info.RequestCount() != 1 {
+			t.Fatalf("request accounting mismatch: bytes=%d count=%d", info.RequestBytes(), info.RequestCount())
+		}
+
+		streamNoSizes := &clientStreamWrapper{
+			ClientStream: &fakeClientStream{ctx: context.Background()},
+			cfg:          &config{includeSizes: false},
+			info:         newRequestInfo("/svc/Client/Send", "client_stream", true, time.Now()),
+			start:        time.Now(),
+		}
+		if err := streamNoSizes.SendMsg(&testSizedMessage{n: 8}); err != nil {
+			t.Fatalf("SendMsg without sizes returned %v", err)
+		}
+		if streamNoSizes.info.RequestBytes() != 0 || streamNoSizes.info.RequestCount() != 0 {
+			t.Fatalf("sizes should be disabled, got bytes=%d count=%d", streamNoSizes.info.RequestBytes(), streamNoSizes.info.RequestCount())
+		}
+	})
+
+	t.Run("client recv without sizes", func(t *testing.T) {
+		info := newRequestInfo("/svc/Client/Recv", "client_stream", true, time.Now())
+		stream := &clientStreamWrapper{
+			ClientStream: &fakeClientStream{
+				ctx:       context.Background(),
+				responses: []any{&testSizedMessage{n: 9}},
+			},
+			cfg:   &config{includeSizes: false},
+			info:  info,
+			start: time.Now(),
+		}
+
+		var msg testSizedMessage
+		if err := stream.RecvMsg(&msg); err != nil {
+			t.Fatalf("RecvMsg returned %v", err)
+		}
+		if msg.n != 9 {
+			t.Fatalf("RecvMsg copied message size = %d, want 9", msg.n)
+		}
+		if info.ResponseBytes() != 0 || info.ResponseCount() != 0 {
+			t.Fatalf("sizes should be disabled, got bytes=%d count=%d", info.ResponseBytes(), info.ResponseCount())
+		}
+		if info.Status() != codes.OK {
+			t.Fatalf("Status() = %v, want OK", info.Status())
+		}
+	})
+
+	t.Run("client close send without error", func(t *testing.T) {
+		info := newRequestInfo("/svc/Client/Close", "client_stream", true, time.Now())
+		stream := &clientStreamWrapper{
+			ClientStream: &fakeClientStream{ctx: context.Background()},
+			cfg:          &config{},
+			info:         info,
+			start:        time.Now(),
+		}
+		if err := stream.CloseSend(); err != nil {
+			t.Fatalf("CloseSend returned %v", err)
+		}
+		if info.Status() != codes.OK {
+			t.Fatalf("Status after CloseSend = %v, want OK", info.Status())
+		}
+	})
+}
+
+// TestClientStreamWrapperFinishIdempotent ensures repeated finish calls only finalize once.
+func TestClientStreamWrapperFinishIdempotent(t *testing.T) {
+	t.Parallel()
+
+	info := newRequestInfo("/svc/Client/Finish", "client_stream", true, time.Now())
+	stream := &clientStreamWrapper{
+		ClientStream: &fakeClientStream{ctx: context.Background()},
+		cfg:          &config{},
+		info:         info,
+		start:        time.Now(),
+	}
+
+	stream.finish(codes.InvalidArgument)
+	stream.finish(codes.PermissionDenied)
+
+	if info.Status() != codes.InvalidArgument {
+		t.Fatalf("finish should run once, status=%v", info.Status())
+	}
+}
+
 // decodeStreamEntries converts newline-delimited JSON into a slice of maps.
 func decodeStreamEntries(t *testing.T, raw string) []map[string]any {
 	t.Helper()
@@ -905,6 +1167,8 @@ func (m *testSizedMessage) Size() int { return m.n }
 type fakeServerStream struct {
 	ctx       context.Context
 	recvQueue []any
+	recvErr   error
+	sendErr   error
 }
 
 // SetHeader records response headers; no-op for tests.
@@ -920,10 +1184,18 @@ func (f *fakeServerStream) SetTrailer(metadata.MD) {}
 func (f *fakeServerStream) Context() context.Context { return f.ctx }
 
 // SendMsg writes outbound messages; no-op in tests.
-func (f *fakeServerStream) SendMsg(m any) error { return nil }
+func (f *fakeServerStream) SendMsg(m any) error {
+	if f.sendErr != nil {
+		return f.sendErr
+	}
+	return nil
+}
 
 // RecvMsg reads queued messages, mimicking client deliveries.
 func (f *fakeServerStream) RecvMsg(m any) error {
+	if f.recvErr != nil {
+		return f.recvErr
+	}
 	if len(f.recvQueue) == 0 {
 		return io.EOF
 	}

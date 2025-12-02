@@ -37,13 +37,21 @@ type RuntimeInfo struct {
 type RuntimeEnvironment int
 
 const (
+	// RuntimeEnvUnknown indicates slogcp could not detect a known hosting environment.
 	RuntimeEnvUnknown RuntimeEnvironment = iota
+	// RuntimeEnvCloudRunService indicates execution on Cloud Run fully managed.
 	RuntimeEnvCloudRunService
+	// RuntimeEnvCloudRunJob indicates execution on Cloud Run jobs.
 	RuntimeEnvCloudRunJob
+	// RuntimeEnvCloudFunctions indicates execution on Cloud Functions.
 	RuntimeEnvCloudFunctions
+	// RuntimeEnvAppEngineStandard indicates execution on App Engine standard.
 	RuntimeEnvAppEngineStandard
+	// RuntimeEnvAppEngineFlexible indicates execution on App Engine flexible.
 	RuntimeEnvAppEngineFlexible
+	// RuntimeEnvKubernetes indicates execution on Kubernetes.
 	RuntimeEnvKubernetes
+	// RuntimeEnvComputeEngine indicates execution on Compute Engine.
 	RuntimeEnvComputeEngine
 )
 

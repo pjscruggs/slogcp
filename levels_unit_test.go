@@ -66,7 +66,7 @@ func TestLevel_String(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc // Capture range variable.
+		// Capture range variable.
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel() // Subtests can run in parallel.
 			// Verify the String() method output.

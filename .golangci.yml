@@ -1,0 +1,86 @@
+version: "2"
+
+linters:
+  enable:
+    # Core correctness / defaults
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+
+    # Modernizing & extra correctness
+    - nilerr
+    - nilnil
+    - nilnesserr
+    - errorlint
+    - wrapcheck
+    - noctx
+    - errchkjson
+
+    # Style / architecture
+    - revive
+    - gocritic
+    - ireturn
+    - predeclared
+    - sloglint
+
+    # Complexity / readability
+    - cyclop
+    - funlen
+    - nestif
+
+    # Security / resources
+    - gosec
+    - bodyclose
+
+    # Misc quality of life
+    - nolintlint
+    - misspell
+    - goconst
+    - unparam
+    - paralleltest
+    - tparallel
+    - thelper
+  settings:
+    cyclop:
+      max-complexity: 40
+    funlen:
+      lines: 200
+      statements: 160
+    goconst:
+      min-occurrences: 4
+    nestif:
+      min-complexity: 10
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - cyclop
+          - funlen
+          - nestif
+          - goconst
+          - gocritic
+          - wrapcheck
+          - gosec
+          - paralleltest
+          - tparallel
+          - thelper
+          - unparam
+          - revive
+          - bodyclose
+      - path: ^loggingmock/
+        linters:
+          - cyclop
+          - funlen
+          - nestif
+          - goconst
+          - gocritic
+          - wrapcheck
+          - gosec
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

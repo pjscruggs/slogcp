@@ -858,6 +858,71 @@ func TestResponseRecorderStatusCoversDefaults(t *testing.T) {
 	}
 }
 
+// TestResponseRecorderReadFromWrapsError exercises the ReaderFrom error path.
+func TestResponseRecorderReadFromWrapsError(t *testing.T) {
+	t.Parallel()
+
+	failing := &failingReaderFromWriter{
+		header: make(stdhttp.Header),
+		err:    errors.New("readfrom-fail"),
+	}
+	rr := &responseRecorder{ResponseWriter: failing, scope: &RequestScope{}}
+
+	n, err := rr.ReadFrom(strings.NewReader("abc"))
+	if n == 0 {
+		t.Fatalf("ReadFrom bytes = %d, want >0", n)
+	}
+	if err == nil || !strings.Contains(err.Error(), "read from body") || !strings.Contains(err.Error(), "readfrom-fail") {
+		t.Fatalf("ReadFrom err = %v, want wrapped readfrom-fail", err)
+	}
+}
+
+// TestResponseRecorderCopyWrapsError exercises the io.Copy fallback error path.
+func TestResponseRecorderCopyWrapsError(t *testing.T) {
+	t.Parallel()
+
+	failing := &failingResponseWriter{header: make(stdhttp.Header)}
+	rr := &responseRecorder{ResponseWriter: failing, scope: &RequestScope{}}
+
+	if _, err := rr.ReadFrom(strings.NewReader("payload")); err == nil || !strings.Contains(err.Error(), "copy response body") {
+		t.Fatalf("ReadFrom err = %v, want copy response body wrap", err)
+	}
+}
+
+// TestResponseRecorderHijackWrapsError ensures hijack errors are wrapped.
+func TestResponseRecorderHijackWrapsError(t *testing.T) {
+	t.Parallel()
+
+	rr := &responseRecorder{
+		ResponseWriter: &errorHijackWriter{
+			header: make(stdhttp.Header),
+			err:    errors.New("hijack-fail"),
+		},
+		scope: &RequestScope{},
+	}
+
+	if _, _, err := rr.Hijack(); err == nil || !strings.Contains(err.Error(), "hijack-fail") {
+		t.Fatalf("Hijack err = %v, want hijack-fail", err)
+	}
+}
+
+// TestResponseRecorderPushWrapsError ensures push errors are wrapped.
+func TestResponseRecorderPushWrapsError(t *testing.T) {
+	t.Parallel()
+
+	rr := &responseRecorder{
+		ResponseWriter: &errorPushWriter{
+			header: make(stdhttp.Header),
+			err:    errors.New("push-fail"),
+		},
+		scope: &RequestScope{},
+	}
+
+	if err := rr.Push("/resource", nil); err == nil || !strings.Contains(err.Error(), "push-fail") {
+		t.Fatalf("Push err = %v, want push-fail", err)
+	}
+}
+
 // TestRequestScopeStatusDefaults verifies the atomic status fallback behavior.
 func TestRequestScopeStatusDefaults(t *testing.T) {
 	t.Parallel()
@@ -940,6 +1005,64 @@ func (f *failingResponseWriter) Write([]byte) (int, error) { return 0, errors.Ne
 
 // WriteHeader stores the status code for later verification.
 func (f *failingResponseWriter) WriteHeader(status int) { f.status = status }
+
+type failingReaderFromWriter struct {
+	header stdhttp.Header
+	err    error
+}
+
+// Header implements http.ResponseWriter.
+func (f *failingReaderFromWriter) Header() stdhttp.Header { return f.header }
+
+// Write reports the number of bytes provided.
+func (f *failingReaderFromWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// WriteHeader is a stub for interface compliance.
+func (f *failingReaderFromWriter) WriteHeader(int) {}
+
+// ReadFrom reports bytes read and returns the configured error.
+func (f *failingReaderFromWriter) ReadFrom(src io.Reader) (int64, error) {
+	n, _ := io.Copy(io.Discard, src)
+	return n, f.err
+}
+
+type errorHijackWriter struct {
+	header stdhttp.Header
+	err    error
+}
+
+// Header implements http.ResponseWriter.
+func (e *errorHijackWriter) Header() stdhttp.Header { return e.header }
+
+// Write writes len(p) bytes.
+func (e *errorHijackWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// WriteHeader is a no-op for testing.
+func (e *errorHijackWriter) WriteHeader(int) {}
+
+// Hijack returns a wrapped error for test coverage.
+func (e *errorHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, e.err
+}
+
+type errorPushWriter struct {
+	header stdhttp.Header
+	err    error
+}
+
+// Header implements http.ResponseWriter.
+func (e *errorPushWriter) Header() stdhttp.Header { return e.header }
+
+// Write writes len(p) bytes.
+func (e *errorPushWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// WriteHeader is a no-op for testing.
+func (e *errorPushWriter) WriteHeader(int) {}
+
+// Push returns the configured error for coverage.
+func (e *errorPushWriter) Push(string, *stdhttp.PushOptions) error {
+	return e.err
+}
 
 // nopConn is a minimal net.Conn implementation for hijack testing.
 type nopConn struct{}

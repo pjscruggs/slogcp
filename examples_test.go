@@ -32,7 +32,6 @@ func TestExamplesExercisesEveryExampleModule(t *testing.T) {
 	exampleDirs := discoverExampleModules(t, filepath.Join(root, ".examples"))
 
 	for _, moduleDir := range exampleDirs {
-		moduleDir := moduleDir
 		relPath, err := filepath.Rel(root, moduleDir)
 		if err != nil {
 			relPath = moduleDir

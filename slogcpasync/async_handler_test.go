@@ -141,7 +141,7 @@ func (h *recordingHandler) Close() error {
 func waitForCalls(t *testing.T, c <-chan struct{}, n int) {
 	t.Helper()
 	timeout := time.After(500 * time.Millisecond)
-	for i := 0; i < n; i++ {
+	for range n {
 		select {
 		case <-c:
 		case <-timeout:
@@ -366,7 +366,7 @@ func TestHandleTracksDropsUnderBackpressure(t *testing.T) {
 	total := 200
 	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "flood", 0)
 
-	for i := 0; i < total; i++ {
+	for range total {
 		if err := handler.Handle(context.Background(), rec); err != nil {
 			t.Fatalf("Handle returned %v", err)
 		}
