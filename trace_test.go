@@ -205,6 +205,37 @@ func TestTraceAttributesNilContext(t *testing.T) {
 	}
 }
 
+// TestTraceHelperBranches covers attribute builders and project resolution helpers.
+func TestTraceHelperBranches(t *testing.T) {
+	if got := resolveTraceProject("  direct "); got != "direct" {
+		t.Fatalf("resolveTraceProject trimmed = %q, want %q", got, "direct")
+	}
+
+	cloudAttrs := buildTraceAttrSet("projects/p/traces/t", "raw-trace", "raw-span", true, false)
+	attrMap := attrsToMap(cloudAttrs)
+	if attrMap[TraceKey] != "projects/p/traces/t" {
+		t.Fatalf("TraceKey = %v, want formatted trace", attrMap[TraceKey])
+	}
+	if _, exists := attrMap[SpanKey]; exists {
+		t.Fatalf("SpanKey should be omitted when span not owned")
+	}
+
+	otelAttrs := buildTraceAttrSet("", "raw-trace", "raw-span", true, false)
+	attrMap = attrsToMap(otelAttrs)
+	if attrMap["otel.trace_id"] != "raw-trace" {
+		t.Fatalf("otel.trace_id = %v, want raw-trace", attrMap["otel.trace_id"])
+	}
+	if _, exists := attrMap["otel.span_id"]; exists {
+		t.Fatalf("otel.span_id should be omitted when span not owned")
+	}
+
+	resetTraceProjectEnvCache()
+	t.Setenv("GCLOUD_PROJECT", "fallback-proj")
+	if got := cachedTraceProjectID(); got != "fallback-proj" {
+		t.Fatalf("cachedTraceProjectID fallback = %q, want fallback-proj", got)
+	}
+}
+
 // resetTraceProjectEnvCache clears the cached project ID for trace tests.
 func resetTraceProjectEnvCache() {
 	traceProjectEnvOnce = sync.Once{}

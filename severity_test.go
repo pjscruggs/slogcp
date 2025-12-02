@@ -17,12 +17,38 @@ package slogcp_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/pjscruggs/slogcp"
 )
+
+// decodeLogBuffer splits JSON log lines and converts them into maps for easier assertions.
+func decodeLogBuffer(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	content := strings.TrimSpace(buf.String())
+	if content == "" {
+		return nil
+	}
+
+	lines := strings.Split(content, "\n")
+	entries := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("json.Unmarshal(%q) returned %v", line, err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
 
 // TestSeverityMappingMatchesNativeAndGCPLevels ensures all native slog levels and
 // slogcp's extended GCP levels serialize with the expected severity string.
