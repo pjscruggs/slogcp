@@ -427,10 +427,14 @@ func wrapStatusError(err error, op string) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, io.EOF) {
+		return err
+	}
+	converted := status.Convert(err)
 	return &statusErrorWrapper{
 		op:     op,
 		err:    err,
-		status: status.Convert(err),
+		status: converted,
 	}
 }
 
