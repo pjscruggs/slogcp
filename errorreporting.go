@@ -17,6 +17,7 @@ package slogcp
 import (
 	"context"
 	"log/slog"
+	"runtime"
 	"strings"
 )
 
@@ -54,59 +55,14 @@ func ErrorReportingAttrs(err error, opts ...ErrorReportingOption) []slog.Attr {
 		return nil
 	}
 
-	cfg := errorReportingConfig{}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
-		}
-	}
-
-	if cfg.service == "" {
-		if info := DetectRuntimeInfo(); len(info.ServiceContext) > 0 {
-			if v, ok := info.ServiceContext["service"]; ok {
-				cfg.service = v
-			}
-			if cfg.version == "" {
-				if v, ok := info.ServiceContext["version"]; ok {
-					cfg.version = v
-				}
-			}
-		}
-	}
-
+	cfg := buildErrorReportingConfig(opts)
 	stack, firstFrame := CaptureStack(nil)
 
 	attrs := make([]slog.Attr, 0, 5)
-	if cfg.service != "" {
-		sc := map[string]any{"service": cfg.service}
-		if cfg.version != "" {
-			sc["version"] = cfg.version
-		}
-		attrs = append(attrs, slog.Any("serviceContext", sc))
-	}
-	if stack != "" {
-		attrs = append(attrs, slog.String("stack_trace", stack))
-	}
-	if firstFrame.Function != "" || firstFrame.File != "" || firstFrame.Line != 0 {
-		reportLocation := map[string]any{}
-		if firstFrame.File != "" {
-			reportLocation["filePath"] = firstFrame.File
-		}
-		if firstFrame.Line != 0 {
-			reportLocation["lineNumber"] = firstFrame.Line
-		}
-		if firstFrame.Function != "" {
-			reportLocation["functionName"] = firstFrame.Function
-		}
-		if len(reportLocation) > 0 {
-			attrs = append(attrs, slog.Any("context", map[string]any{
-				"reportLocation": reportLocation,
-			}))
-		}
-	}
-	if cfg.message != "" {
-		attrs = append(attrs, slog.String("message", cfg.message))
-	}
+	attrs = append(attrs, buildServiceContextAttrs(cfg)...)
+	attrs = append(attrs, buildStackAttrs(stack)...)
+	attrs = append(attrs, buildReportLocationAttrs(firstFrame)...)
+	attrs = append(attrs, buildErrorMessageAttr(cfg.message)...)
 	return attrs
 }
 
@@ -119,4 +75,81 @@ func ReportError(ctx context.Context, logger *slog.Logger, err error, msg string
 	attrs := ErrorReportingAttrs(err, opts...)
 	attrs = append([]slog.Attr{slog.Any("error", err)}, attrs...)
 	logger.LogAttrs(ctx, slog.LevelError, msg, attrs...)
+}
+
+// buildErrorReportingConfig applies options and runtime defaults for error reporting.
+func buildErrorReportingConfig(opts []ErrorReportingOption) errorReportingConfig {
+	cfg := errorReportingConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+
+	if cfg.service != "" && cfg.version != "" {
+		return cfg
+	}
+
+	info := DetectRuntimeInfo()
+	if len(info.ServiceContext) == 0 {
+		return cfg
+	}
+
+	if cfg.service == "" {
+		if v, ok := info.ServiceContext["service"]; ok {
+			cfg.service = v
+		}
+	}
+	if cfg.version == "" {
+		if v, ok := info.ServiceContext["version"]; ok {
+			cfg.version = v
+		}
+	}
+	return cfg
+}
+
+// buildServiceContextAttrs constructs the serviceContext attribute when available.
+func buildServiceContextAttrs(cfg errorReportingConfig) []slog.Attr {
+	if cfg.service == "" {
+		return nil
+	}
+	sc := map[string]any{"service": cfg.service}
+	if cfg.version != "" {
+		sc["version"] = cfg.version
+	}
+	return []slog.Attr{slog.Any("serviceContext", sc)}
+}
+
+// buildStackAttrs emits stack trace attributes when present.
+func buildStackAttrs(stack string) []slog.Attr {
+	if stack == "" {
+		return nil
+	}
+	return []slog.Attr{slog.String("stack_trace", stack)}
+}
+
+// buildReportLocationAttrs formats the reportLocation context attribute.
+func buildReportLocationAttrs(frame runtime.Frame) []slog.Attr {
+	if frame.Function == "" && frame.File == "" && frame.Line == 0 {
+		return nil
+	}
+	reportLocation := map[string]any{}
+	if frame.File != "" {
+		reportLocation["filePath"] = frame.File
+	}
+	if frame.Line != 0 {
+		reportLocation["lineNumber"] = frame.Line
+	}
+	if frame.Function != "" {
+		reportLocation["functionName"] = frame.Function
+	}
+	return []slog.Attr{slog.Any("context", map[string]any{"reportLocation": reportLocation})}
+}
+
+// buildErrorMessageAttr attaches a message when provided.
+func buildErrorMessageAttr(msg string) []slog.Attr {
+	if msg == "" {
+		return nil
+	}
+	return []slog.Attr{slog.String("message", msg)}
 }

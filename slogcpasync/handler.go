@@ -224,62 +224,8 @@ func Wrap(inner slog.Handler, opts ...Option) slog.Handler {
 
 // newHandler constructs a Handler and spins up workers according to cfg.
 func newHandler(inner slog.Handler, cfg Config) *Handler {
-	state := &asyncState{
-		queue:        make(chan queuedRecord, cfg.QueueSize),
-		flushTimeout: cfg.FlushTimeout,
-		closer:       closerFor(inner),
-		errWriter:    cfg.ErrorWriter,
-	}
-
-	start := func() {
-		workerCount := cfg.WorkerCount
-		batchSize := cfg.BatchSize
-		state.wg.Add(workerCount)
-		logError := func(format string, args ...any) {
-			if state.errWriter == nil {
-				return
-			}
-			_, _ = fmt.Fprintf(state.errWriter, format, args...)
-		}
-		handle := func(item queuedRecord) {
-			defer func() {
-				if r := recover(); r != nil {
-					logError("slogcpasync: recovered panic from handler: %v\n", r)
-				}
-			}()
-
-			if err := item.handler.Handle(item.ctx, item.rec); err != nil {
-				logError("slogcpasync: handler error: %v\n", err)
-			}
-		}
-
-		for range workerCount {
-			go func() {
-				defer state.wg.Done()
-				for item := range state.queue {
-					handle(item)
-					for n := 1; n < batchSize; n++ {
-						select {
-						case next, ok := <-state.queue:
-							if !ok {
-								return
-							}
-							handle(next)
-						default:
-							goto nextItem
-						}
-					}
-				nextItem:
-				}
-			}()
-		}
-	}
-
-	if cfg.workerStarter != nil {
-		cfg.workerStarter(start)
-	} else {
-		start()
-	}
+	state := newAsyncState(inner, cfg)
+	startAsyncWorkers(state, cfg)
 
 	return &Handler{
 		inner:    inner,
@@ -287,6 +233,77 @@ func newHandler(inner slog.Handler, cfg Config) *Handler {
 		onDrop:   cfg.OnDrop,
 		state:    state,
 	}
+}
+
+// newAsyncState initializes async queue state for the wrapper.
+func newAsyncState(inner slog.Handler, cfg Config) *asyncState {
+	return &asyncState{
+		queue:        make(chan queuedRecord, cfg.QueueSize),
+		flushTimeout: cfg.FlushTimeout,
+		closer:       closerFor(inner),
+		errWriter:    cfg.ErrorWriter,
+	}
+}
+
+// startAsyncWorkers launches worker goroutines via the optional starter hook.
+func startAsyncWorkers(state *asyncState, cfg Config) {
+	start := func() {
+		state.wg.Add(cfg.WorkerCount)
+		for range cfg.WorkerCount {
+			go state.worker(cfg.BatchSize)
+		}
+	}
+
+	if cfg.workerStarter != nil {
+		cfg.workerStarter(start)
+		return
+	}
+	start()
+}
+
+// worker drains the queue, handling items in batches.
+func (s *asyncState) worker(batchSize int) {
+	defer s.wg.Done()
+	for item := range s.queue {
+		s.handleItem(item)
+		s.drainBatch(batchSize)
+	}
+}
+
+// handleItem safely invokes the inner handler, logging panics and errors.
+func (s *asyncState) handleItem(item queuedRecord) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logError("slogcpasync: recovered panic from handler: %v\n", r)
+		}
+	}()
+
+	if err := item.handler.Handle(item.ctx, item.rec); err != nil {
+		s.logError("slogcpasync: handler error: %v\n", err)
+	}
+}
+
+// drainBatch processes up to batchSize-1 additional queued items.
+func (s *asyncState) drainBatch(batchSize int) {
+	for n := 1; n < batchSize; n++ {
+		select {
+		case next, ok := <-s.queue:
+			if !ok {
+				return
+			}
+			s.handleItem(next)
+		default:
+			return
+		}
+	}
+}
+
+// logError writes formatted errors to the configured error writer.
+func (s *asyncState) logError(format string, args ...any) {
+	if s.errWriter == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(s.errWriter, format, args...)
 }
 
 // Enabled defers to the inner handler.
@@ -341,42 +358,54 @@ func (h *Handler) enqueue(item queuedRecord) (err error) {
 		}
 	}()
 
-	queue := h.state.queue
-	onDrop := h.onDrop
-
 	switch h.dropMode {
 	case DropModeDropNewest:
-		select {
-		case queue <- item:
-		default:
-			if onDrop != nil {
-				onDrop(item.ctx, item.rec)
-			}
-		}
+		h.enqueueDropNewest(item)
 	case DropModeDropOldest:
-		select {
-		case queue <- item:
-		default:
-			var dropped queuedRecord
-			select {
-			case dropped = <-queue:
-			default:
-			}
-			if onDrop != nil && dropped.handler != nil {
-				onDrop(dropped.ctx, dropped.rec)
-			}
-			select {
-			case queue <- item:
-			default:
-				if onDrop != nil {
-					onDrop(item.ctx, item.rec)
-				}
-			}
-		}
+		h.enqueueDropOldest(item)
 	default:
-		queue <- item
+		h.state.queue <- item
 	}
 	return nil
+}
+
+// enqueueDropNewest drops the incoming item when the queue is full.
+func (h *Handler) enqueueDropNewest(item queuedRecord) {
+	select {
+	case h.state.queue <- item:
+	default:
+		h.drop(item)
+	}
+}
+
+// enqueueDropOldest evicts the oldest queued record before enqueuing item.
+func (h *Handler) enqueueDropOldest(item queuedRecord) {
+	select {
+	case h.state.queue <- item:
+		return
+	default:
+		h.dropOldest()
+		h.enqueueDropNewest(item)
+	}
+}
+
+// dropOldest removes and reports the oldest queued record when present.
+func (h *Handler) dropOldest() {
+	select {
+	case dropped := <-h.state.queue:
+		if h.onDrop != nil && dropped.handler != nil {
+			h.onDrop(dropped.ctx, dropped.rec)
+		}
+	default:
+	}
+}
+
+// drop invokes the onDrop callback if configured.
+func (h *Handler) drop(item queuedRecord) {
+	if h.onDrop == nil {
+		return
+	}
+	h.onDrop(item.ctx, item.rec)
 }
 
 // Close flushes the queue then closes the inner handler if it exposes Close.
@@ -479,41 +508,72 @@ func buildConfig(opts []Option) Config {
 
 // applyEnv overlays configuration from environment variables.
 func applyEnv(cfg *Config) {
-	if raw := strings.TrimSpace(os.Getenv(envAsyncEnabled)); raw != "" {
-		if enabled, ok := parseAsyncBool(raw); ok {
-			cfg.Enabled = enabled
-		}
-	}
+	applyAsyncEnabled(cfg)
+	applyAsyncQueueSize(cfg)
+	applyAsyncWorkers(cfg)
+	applyAsyncDropMode(cfg)
+	applyAsyncFlushTimeout(cfg)
+}
 
-	if raw := strings.TrimSpace(os.Getenv(envAsyncQueueSize)); raw != "" {
-		if size, err := strconv.Atoi(raw); err == nil {
-			cfg.QueueSize = size
-			cfg.queueSet = true
-		}
+// applyAsyncEnabled reads async enablement from env.
+func applyAsyncEnabled(cfg *Config) {
+	raw := strings.TrimSpace(os.Getenv(envAsyncEnabled))
+	if raw == "" {
+		return
 	}
-
-	if raw := strings.TrimSpace(os.Getenv(envAsyncWorkers)); raw != "" {
-		if workers, err := strconv.Atoi(raw); err == nil {
-			cfg.WorkerCount = workers
-			cfg.workerCountSet = true
-		}
+	if enabled, ok := parseAsyncBool(raw); ok {
+		cfg.Enabled = enabled
 	}
+}
 
-	if raw := strings.TrimSpace(os.Getenv(envAsyncDropMode)); raw != "" {
-		switch strings.ToLower(raw) {
-		case "block":
-			cfg.DropMode = DropModeBlock
-		case "drop_newest", "drop-newest":
-			cfg.DropMode = DropModeDropNewest
-		case "drop_oldest", "drop-oldest":
-			cfg.DropMode = DropModeDropOldest
-		}
+// applyAsyncQueueSize parses queue size from env.
+func applyAsyncQueueSize(cfg *Config) {
+	raw := strings.TrimSpace(os.Getenv(envAsyncQueueSize))
+	if raw == "" {
+		return
 	}
+	if size, err := strconv.Atoi(raw); err == nil {
+		cfg.QueueSize = size
+		cfg.queueSet = true
+	}
+}
 
-	if raw := strings.TrimSpace(os.Getenv(envAsyncFlushTimeout)); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil {
-			cfg.FlushTimeout = d
-		}
+// applyAsyncWorkers parses worker count from env.
+func applyAsyncWorkers(cfg *Config) {
+	raw := strings.TrimSpace(os.Getenv(envAsyncWorkers))
+	if raw == "" {
+		return
+	}
+	if workers, err := strconv.Atoi(raw); err == nil {
+		cfg.WorkerCount = workers
+		cfg.workerCountSet = true
+	}
+}
+
+// applyAsyncDropMode reads drop mode overrides from env.
+func applyAsyncDropMode(cfg *Config) {
+	raw := strings.TrimSpace(os.Getenv(envAsyncDropMode))
+	if raw == "" {
+		return
+	}
+	switch strings.ToLower(raw) {
+	case "block":
+		cfg.DropMode = DropModeBlock
+	case "drop_newest", "drop-newest":
+		cfg.DropMode = DropModeDropNewest
+	case "drop_oldest", "drop-oldest":
+		cfg.DropMode = DropModeDropOldest
+	}
+}
+
+// applyAsyncFlushTimeout parses flush timeout durations from env.
+func applyAsyncFlushTimeout(cfg *Config) {
+	raw := strings.TrimSpace(os.Getenv(envAsyncFlushTimeout))
+	if raw == "" {
+		return
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		cfg.FlushTimeout = d
 	}
 }
 

@@ -98,37 +98,66 @@ func PrepareHTTPRequest(req *HTTPRequest) {
 		return
 	}
 
-	if r := req.Request; r != nil {
-		if req.RequestMethod == "" {
-			req.RequestMethod = r.Method
-		}
-		if req.RequestURL == "" && r.URL != nil {
-			req.RequestURL = r.URL.String()
-		}
-		if req.UserAgent == "" {
-			req.UserAgent = r.UserAgent()
-		}
-		if req.Referer == "" {
-			req.Referer = r.Referer()
-		}
-		if req.Protocol == "" {
-			req.Protocol = r.Proto
-		}
-		if req.RequestSize == 0 && r.ContentLength > 0 {
-			req.RequestSize = r.ContentLength
-		}
-		if req.RemoteIP == "" {
-			req.RemoteIP = r.RemoteAddr
-		}
-		req.Request = nil
-	}
+	populateFromHTTPRequest(req)
+	normalizeRemoteIP(req)
+	normalizePayloadSizes(req)
+}
 
-	if req.RemoteIP != "" {
-		if host, _, err := net.SplitHostPort(req.RemoteIP); err == nil {
-			req.RemoteIP = host
-		}
+// populateFromHTTPRequest copies fields from the embedded http.Request when present.
+func populateFromHTTPRequest(req *HTTPRequest) {
+	if req.Request == nil {
+		return
 	}
+	r := req.Request
+	populateRequestStrings(req, r)
+	populateRequestSizes(req, r)
+	populateRemoteIP(req, r.RemoteAddr)
+	req.Request = nil
+}
 
+// populateRequestStrings fills request metadata fields when unset.
+func populateRequestStrings(req *HTTPRequest, r *http.Request) {
+	copyStringIfEmpty(&req.RequestMethod, r.Method)
+	if r.URL != nil {
+		copyStringIfEmpty(&req.RequestURL, r.URL.String())
+	}
+	copyStringIfEmpty(&req.UserAgent, r.UserAgent())
+	copyStringIfEmpty(&req.Referer, r.Referer())
+	copyStringIfEmpty(&req.Protocol, r.Proto)
+}
+
+// populateRequestSizes copies size information when available.
+func populateRequestSizes(req *HTTPRequest, r *http.Request) {
+	if req.RequestSize == 0 && r.ContentLength > 0 {
+		req.RequestSize = r.ContentLength
+	}
+}
+
+// populateRemoteIP sets the remote IP from the request when missing.
+func populateRemoteIP(req *HTTPRequest, remoteAddr string) {
+	copyStringIfEmpty(&req.RemoteIP, remoteAddr)
+}
+
+// copyStringIfEmpty assigns value to target when target is blank.
+func copyStringIfEmpty(target *string, value string) {
+	if target == nil || *target != "" || value == "" {
+		return
+	}
+	*target = value
+}
+
+// normalizeRemoteIP strips ports from RemoteIP when possible.
+func normalizeRemoteIP(req *HTTPRequest) {
+	if req.RemoteIP == "" {
+		return
+	}
+	if host, _, err := net.SplitHostPort(req.RemoteIP); err == nil {
+		req.RemoteIP = host
+	}
+}
+
+// normalizePayloadSizes standardizes negative size values to -1.
+func normalizePayloadSizes(req *HTTPRequest) {
 	if req.RequestSize < 0 {
 		req.RequestSize = -1
 	}

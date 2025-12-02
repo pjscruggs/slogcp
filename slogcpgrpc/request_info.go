@@ -143,7 +143,16 @@ func (ri *RequestInfo) loggerAttrs(cfg *config, traceAttrs []slog.Attr) []slog.A
 	if len(traceAttrs) > 0 {
 		attrs = append(attrs, traceAttrs...)
 	}
-	attrs = append(attrs, slog.String("rpc.system", "grpc"))
+	attrs = append(attrs, ri.baseRPCAttrs()...)
+	attrs = append(attrs, ri.statusAttr(), ri.durationAttr())
+	attrs = ri.appendSizeAttrs(attrs, cfg)
+	attrs = ri.appendPeerAttr(attrs, cfg)
+	return attrs
+}
+
+// baseRPCAttrs returns the core RPC attributes for the request.
+func (ri *RequestInfo) baseRPCAttrs() []slog.Attr {
+	attrs := []slog.Attr{slog.String("rpc.system", "grpc")}
 	if ri.service != "" {
 		attrs = append(attrs, slog.String("rpc.service", ri.service))
 	}
@@ -153,52 +162,71 @@ func (ri *RequestInfo) loggerAttrs(cfg *config, traceAttrs []slog.Attr) []slog.A
 	if ri.kind != "" {
 		attrs = append(attrs, slog.String("grpc.type", ri.kind))
 	}
-	attrs = append(attrs, slog.Attr{
+	return attrs
+}
+
+// statusAttr lazily renders the status code attribute.
+func (ri *RequestInfo) statusAttr() slog.Attr {
+	return slog.Attr{
 		Key: "grpc.status_code",
 		Value: slog.AnyValue(logValueFunc(func() slog.Value {
 			return slog.StringValue(ri.Status().String())
 		})),
-	})
-	attrs = append(attrs, slog.Attr{
+	}
+}
+
+// durationAttr lazily renders the RPC duration attribute.
+func (ri *RequestInfo) durationAttr() slog.Attr {
+	return slog.Attr{
 		Key: "rpc.duration",
 		Value: slog.AnyValue(logValueFunc(func() slog.Value {
 			return slog.DurationValue(ri.Latency())
 		})),
-	})
+	}
+}
 
-	if cfg.includeSizes {
-		attrs = append(attrs, slog.Attr{
+// appendSizeAttrs appends size and message count attributes when enabled.
+func (ri *RequestInfo) appendSizeAttrs(attrs []slog.Attr, cfg *config) []slog.Attr {
+	if !cfg.includeSizes {
+		return attrs
+	}
+
+	return append(attrs,
+		slog.Attr{
 			Key: "rpc.request_size",
 			Value: slog.AnyValue(logValueFunc(func() slog.Value {
 				return slog.Int64Value(ri.RequestBytes())
 			})),
-		})
-		attrs = append(attrs, slog.Attr{
+		},
+		slog.Attr{
 			Key: "rpc.response_size",
 			Value: slog.AnyValue(logValueFunc(func() slog.Value {
 				return slog.Int64Value(ri.ResponseBytes())
 			})),
-		})
-		attrs = append(attrs, slog.Attr{
+		},
+		slog.Attr{
 			Key: "rpc.request_count",
 			Value: slog.AnyValue(logValueFunc(func() slog.Value {
 				return slog.Int64Value(ri.RequestCount())
 			})),
-		})
-		attrs = append(attrs, slog.Attr{
+		},
+		slog.Attr{
 			Key: "rpc.response_count",
 			Value: slog.AnyValue(logValueFunc(func() slog.Value {
 				return slog.Int64Value(ri.ResponseCount())
 			})),
-		})
-	}
+		},
+	)
+}
 
-	if cfg.includePeer {
-		if peer := ri.Peer(); peer != "" {
-			attrs = append(attrs, slog.String("net.peer.ip", peer))
-		}
+// appendPeerAttr attaches peer IP information when requested.
+func (ri *RequestInfo) appendPeerAttr(attrs []slog.Attr, cfg *config) []slog.Attr {
+	if !cfg.includePeer {
+		return attrs
 	}
-
+	if peer := ri.Peer(); peer != "" {
+		return append(attrs, slog.String("net.peer.ip", peer))
+	}
 	return attrs
 }
 
