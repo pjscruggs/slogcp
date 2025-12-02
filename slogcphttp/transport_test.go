@@ -377,6 +377,31 @@ func TestTransportSkipsTraceInjectionWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestTransportBranches covers default transport selection and project ID fallback.
+func TestTransportBranches(t *testing.T) {
+	t.Parallel()
+
+	rt := Transport(nil, WithProjectID(" proj "), WithTracePropagation(false))
+	typed := rt.(roundTripper)
+	if typed.base == nil {
+		t.Fatalf("expected default transport when base is nil")
+	}
+	if typed.projectID != "proj" {
+		t.Fatalf("projectID trimming failed, got %q", typed.projectID)
+	}
+
+	rec := &recordingRoundTripper{}
+	rt = Transport(rec, WithProjectID(""), WithLegacyXCloudInjection(true))
+	typed = rt.(roundTripper)
+	req := httptest.NewRequest(stdhttp.MethodGet, "http://example.com", nil).WithContext(context.Background())
+	if _, err := typed.RoundTrip(req); err != nil {
+		t.Fatalf("RoundTrip returned error: %v", err)
+	}
+	if rec.req == nil {
+		t.Fatalf("base RoundTrip not invoked")
+	}
+}
+
 // TestTransportInjectsTraceAndLogger ensures the transport adds trace headers and a logger.
 func TestTransportInjectsTraceAndLogger(t *testing.T) {
 	var buf bytes.Buffer
@@ -508,6 +533,16 @@ func TestOutboundHost(t *testing.T) {
 			}
 		})
 	}
+}
+
+type recordingRoundTripper struct {
+	req *stdhttp.Request
+}
+
+// RoundTrip records the last request for assertions.
+func (r *recordingRoundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	r.req = req
+	return &stdhttp.Response{StatusCode: stdhttp.StatusOK, Body: stdhttp.NoBody, Request: req}, nil
 }
 
 type stubRoundTripper struct {

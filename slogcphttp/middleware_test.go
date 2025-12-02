@@ -126,6 +126,18 @@ func TestMiddlewareNilNextUsesNotFound(t *testing.T) {
 	}
 }
 
+// TestPopulateURLFieldsHandlesNilURL exercises the early return when no URL is present.
+func TestPopulateURLFieldsHandlesNilURL(t *testing.T) {
+	t.Parallel()
+
+	scope := &RequestScope{}
+	scope.populateURLFields(&stdhttp.Request{URL: nil})
+
+	if scope.target != "" || scope.scheme != "" || scope.host != "" {
+		t.Fatalf("expected zero-valued scope fields")
+	}
+}
+
 // TestMiddlewareSkipsNilAttrHooks verifies attr hooks tolerate nil entries.
 func TestMiddlewareSkipsNilAttrHooks(t *testing.T) {
 	t.Parallel()

@@ -834,6 +834,33 @@ func TestMetadataLookupAvailabilityGuard(t *testing.T) {
 	}
 }
 
+// TestResolveClusterAndProjectFallbacks covers nil metadata lookups and current project preservation.
+func TestResolveClusterAndProjectFallbacks(t *testing.T) {
+	t.Parallel()
+
+	if name := resolveClusterName(nil); name != "" {
+		t.Fatalf("resolveClusterName(nil) = %q, want empty", name)
+	}
+	if proj := resolveKubernetesProject("", nil); proj != "" {
+		t.Fatalf("resolveKubernetesProject(nil) = %q, want empty", proj)
+	}
+
+	lookup := newMetadataLookup(&stubMetadataClient{
+		onGCE: true,
+		values: map[string]string{
+			"instance/attributes/cluster-name": "test-cluster",
+			"project/project-id":               "meta-project",
+		},
+	})
+
+	if name := resolveClusterName(lookup); name != "test-cluster" {
+		t.Fatalf("resolveClusterName() = %q, want %q", name, "test-cluster")
+	}
+	if proj := resolveKubernetesProject("keep-current", lookup); proj != "keep-current" {
+		t.Fatalf("resolveKubernetesProject(current) = %q, want keep-current", proj)
+	}
+}
+
 // TestDefaultMetadataClientHooks verifies that the override points are exercised.
 func TestDefaultMetadataClientHooks(t *testing.T) {
 	origOnGCE := getMetadataOnGCEFunc()

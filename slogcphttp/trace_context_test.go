@@ -143,6 +143,60 @@ func TestParseXCloudTraceRejectsBadTraceID(t *testing.T) {
 	}
 }
 
+// TestInjectTraceContextMiddlewareCoversBranches exercises valid, missing, and pre-existing span cases.
+func TestInjectTraceContextMiddlewareCoversBranches(t *testing.T) {
+	t.Parallel()
+
+	mw := InjectTraceContextMiddleware()
+
+	existingCtx := trace.ContextWithSpanContext(
+		context.Background(),
+		trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    [16]byte{1},
+			SpanID:     [8]byte{2},
+			Remote:     true,
+			TraceFlags: trace.FlagsSampled,
+		}),
+	)
+
+	t.Run("existing-span", func(t *testing.T) {
+		var called bool
+		handler := mw(stdhttp.HandlerFunc(func(stdhttp.ResponseWriter, *stdhttp.Request) {
+			called = true
+		}))
+		req := httptest.NewRequest(stdhttp.MethodGet, "http://example.com", nil).WithContext(existingCtx)
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+		if !called {
+			t.Fatalf("handler not invoked when span already present")
+		}
+	})
+
+	t.Run("header-parsed", func(t *testing.T) {
+		var spanCtx trace.SpanContext
+		handler := mw(stdhttp.HandlerFunc(func(_ stdhttp.ResponseWriter, r *stdhttp.Request) {
+			spanCtx = trace.SpanContextFromContext(r.Context())
+		}))
+		req := httptest.NewRequest(stdhttp.MethodGet, "http://example.com", nil)
+		req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/1;o=1")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+		if !spanCtx.IsValid() {
+			t.Fatalf("span context not injected from header")
+		}
+	})
+
+	t.Run("missing-header", func(t *testing.T) {
+		var invoked bool
+		handler := mw(stdhttp.HandlerFunc(func(stdhttp.ResponseWriter, *stdhttp.Request) {
+			invoked = true
+		}))
+		req := httptest.NewRequest(stdhttp.MethodGet, "http://example.com", nil)
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+		if !invoked {
+			t.Fatalf("handler not invoked when header missing")
+		}
+	})
+}
+
 // TestInjectTraceContextMiddlewareExtractsHeader ensures middleware attaches spans.
 func TestInjectTraceContextMiddlewareExtractsHeader(t *testing.T) {
 	t.Parallel()
