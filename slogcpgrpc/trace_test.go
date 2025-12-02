@@ -70,7 +70,6 @@ func TestParseGRPCTraceBin(t *testing.T) {
 	}
 
 	for _, tt := range invalidCases {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			if _, ok := parseGRPCTraceBin(tt.val); ok {
 				t.Fatalf("parseGRPCTraceBin(%s) unexpectedly succeeded", tt.name)
@@ -233,7 +232,6 @@ func TestEnsureServerSpanContextHandlesMissingMetadata(t *testing.T) {
 		{name: "nil", md: nil},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			gotCtx, sc := ensureServerSpanContext(ctx, tt.md, defaultConfig())
 			if gotCtx != ctx {

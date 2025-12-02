@@ -50,10 +50,7 @@ func captureProgramCounters(t *testing.T) []uintptr {
 func repeatPCs(pcs []uintptr, want int) []uintptr {
 	out := make([]uintptr, 0, want)
 	for len(out) < want {
-		remaining := want - len(out)
-		if remaining > len(pcs) {
-			remaining = len(pcs)
-		}
+		remaining := min(want-len(out), len(pcs))
 		out = append(out, pcs[:remaining]...)
 	}
 	return out

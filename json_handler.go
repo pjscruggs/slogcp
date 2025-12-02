@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"runtime"
@@ -256,11 +257,11 @@ func newJSONHandler(cfg *handlerConfig, leveler slog.Leveler, internalLogger *sl
 
 // Enabled reports whether level is enabled for emission.
 func (h *jsonHandler) Enabled(_ context.Context, level slog.Level) bool {
-	min := slog.LevelInfo
+	minLevel := slog.LevelInfo
 	if h.leveler != nil {
-		min = h.leveler.Level()
+		minLevel = h.leveler.Level()
 	}
-	return level >= min
+	return level >= minLevel
 }
 
 // Handle serializes r into the Cloud Logging wire format, enriching it with
@@ -417,10 +418,7 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	baseGroups := h.groups
 	h.mu.Unlock()
 
-	estimatedFields := len(baseAttrs) + int(r.NumAttrs())
-	if estimatedFields < 4 {
-		estimatedFields = 4
-	}
+	estimatedFields := max(len(baseAttrs)+int(r.NumAttrs()), 4)
 	payload := state.prepare(estimatedFields)
 
 	var httpReq *HTTPRequest
@@ -680,7 +678,7 @@ func (h *jsonHandler) emitJSON(
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(jsonPayload); err != nil {
 		h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", err))
-		return err
+		return fmt.Errorf("encode JSON payload: %w", err)
 	}
 
 	h.mu.Lock()
@@ -688,7 +686,7 @@ func (h *jsonHandler) emitJSON(
 	h.mu.Unlock()
 	if err != nil {
 		h.internalLogger.Error("failed to write JSON log entry", slog.Any("error", err))
-		return err
+		return fmt.Errorf("write JSON payload: %w", err)
 	}
 	return nil
 }

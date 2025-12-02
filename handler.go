@@ -31,6 +31,7 @@ import (
 )
 
 const (
+	// LabelsGroup is the Cloud Logging attribute group used for structured labels.
 	LabelsGroup = "logging.googleapis.com/labels"
 
 	envLogLevel         = "SLOGCP_LEVEL"
@@ -51,12 +52,16 @@ const (
 type TraceDiagnosticsMode int
 
 const (
+	// TraceDiagnosticsOff disables trace correlation diagnostics.
 	TraceDiagnosticsOff TraceDiagnosticsMode = iota
+	// TraceDiagnosticsWarnOnce emits a single warning when trace correlation cannot be established.
 	TraceDiagnosticsWarnOnce
+	// TraceDiagnosticsStrict fails handler construction when trace correlation cannot be established.
 	TraceDiagnosticsStrict
 )
 
 var (
+	// ErrInvalidRedirectTarget indicates an unsupported value for SLOGCP_TARGET or redirect options.
 	ErrInvalidRedirectTarget = errors.New("slogcp: invalid redirect target")
 
 	handlerEnvConfigCache atomic.Pointer[handlerConfig]
@@ -200,7 +205,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 
 	internalLogger := builder.internalLogger
 	if internalLogger == nil {
-		internalLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		internalLogger = slog.New(slog.DiscardHandler)
 	}
 
 	cfg, err := cachedConfigFromEnv(internalLogger)
@@ -218,7 +223,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	)
 
 	if cfg.FilePath != "" {
-		file, err := os.OpenFile(cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		file, err := os.OpenFile(cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return nil, fmt.Errorf("slogcp: open log file %q: %w", cfg.FilePath, err)
 		}
@@ -359,7 +364,7 @@ func (h *Handler) ReopenLogFile() error {
 		}
 	}
 
-	file, err := os.OpenFile(h.cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(h.cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("slogcp: reopen log file %q: %w", h.cfg.FilePath, err)
 	}

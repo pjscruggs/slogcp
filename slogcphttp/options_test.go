@@ -15,7 +15,6 @@
 package slogcphttp
 
 import (
-	"io"
 	"log/slog"
 	"testing"
 )
@@ -29,7 +28,7 @@ func TestWithLoggerHandlesNil(t *testing.T) {
 		t.Fatalf("WithLogger(nil) did not restore slog.Default()")
 	}
 
-	custom := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	custom := slog.New(slog.DiscardHandler)
 	cfg = applyOptions([]Option{WithLogger(custom)})
 	if cfg.logger != custom {
 		t.Fatalf("WithLogger custom logger mismatch")

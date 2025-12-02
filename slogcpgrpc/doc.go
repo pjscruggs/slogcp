@@ -49,5 +49,4 @@
 //	        slogcpgrpc.DialOptions()...,
 //	    )...,
 //	)
-
 package slogcpgrpc

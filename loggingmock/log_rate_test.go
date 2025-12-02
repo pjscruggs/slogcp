@@ -13,7 +13,6 @@
 // limitations under the License.
 
 //go:build benchmarks
-// +build benchmarks
 
 package loggingmock
 

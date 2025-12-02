@@ -53,7 +53,7 @@ func BenchmarkJSONHandlerHandle(b *testing.B) {
 		Writer:        io.Discard,
 		EmitTimeField: true,
 	}
-	h := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
 	ctx := context.Background()
 

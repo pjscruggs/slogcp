@@ -15,6 +15,7 @@
 package slogcp
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -56,7 +57,11 @@ func (sw *SwitchableWriter) Write(p []byte) (n int, err error) {
 	if currentWriter == nil {
 		return 0, os.ErrClosed
 	}
-	return currentWriter.Write(p)
+	n, err = currentWriter.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("write via switchable writer: %w", err)
+	}
+	return n, nil
 }
 
 // SetWriter atomically updates the underlying writer for this SwitchableWriter.
@@ -94,7 +99,9 @@ func (sw *SwitchableWriter) Close() error {
 	sw.mu.Unlock()
 
 	if c, ok := writerToClose.(io.Closer); ok {
-		return c.Close()
+		if err := c.Close(); err != nil {
+			return fmt.Errorf("close current writer: %w", err)
+		}
 	}
 	return nil
 }

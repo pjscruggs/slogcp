@@ -16,7 +16,6 @@ package slogcp_test
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"testing"
 
@@ -33,13 +32,13 @@ func TestContextWithLoggerStoresAndRetrievesLogger(t *testing.T) {
 		t.Fatalf("Logger(context.Background()) = %v, want default logger %v", got, defaultLogger)
 	}
 
-	custom := slog.New(slog.NewTextHandler(io.Discard, nil))
+	custom := slog.New(slog.DiscardHandler)
 	ctx := slogcp.ContextWithLogger(context.Background(), custom)
 	if got := slogcp.Logger(ctx); got != custom {
 		t.Fatalf("Logger(ctx) = %v, want %v", got, custom)
 	}
 
-	overridden := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	overridden := slog.New(slog.DiscardHandler)
 	ctx = slogcp.ContextWithLogger(ctx, overridden)
 	if got := slogcp.Logger(ctx); got != overridden {
 		t.Fatalf("Logger(ctx after override) = %v, want %v", got, overridden)
@@ -52,7 +51,7 @@ func TestContextWithLoggerHandlesNilInputs(t *testing.T) {
 	t.Parallel()
 
 	var nilCtx context.Context
-	custom := slog.New(slog.NewTextHandler(io.Discard, nil))
+	custom := slog.New(slog.DiscardHandler)
 	if got := slogcp.ContextWithLogger(nilCtx, custom); got != nilCtx {
 		t.Fatalf("ContextWithLogger(nil, custom) = %v, want nil", got)
 	}

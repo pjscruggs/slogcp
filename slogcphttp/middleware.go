@@ -17,6 +17,7 @@ package slogcphttp
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -373,7 +374,10 @@ func (rr *responseRecorder) Write(p []byte) (int, error) {
 		rr.bytesWritten += int64(n)
 		rr.scope.addResponseBytes(int64(n))
 	}
-	return n, err
+	if err != nil {
+		return n, fmt.Errorf("write response body: %w", err)
+	}
+	return n, nil
 }
 
 // ReadFrom streams data from src while tracking bytes for logging.
@@ -387,7 +391,10 @@ func (rr *responseRecorder) ReadFrom(src io.Reader) (int64, error) {
 			rr.bytesWritten += n
 			rr.scope.addResponseBytes(n)
 		}
-		return n, err
+		if err != nil {
+			return n, fmt.Errorf("read from body: %w", err)
+		}
+		return n, nil
 	}
 	if !rr.wroteHeader {
 		rr.WriteHeader(stdhttp.StatusOK)
@@ -397,7 +404,10 @@ func (rr *responseRecorder) ReadFrom(src io.Reader) (int64, error) {
 		rr.bytesWritten += n
 		rr.scope.addResponseBytes(n)
 	}
-	return n, err
+	if err != nil {
+		return n, fmt.Errorf("copy response body: %w", err)
+	}
+	return n, nil
 }
 
 // Status returns the HTTP status code that was written to the client.
@@ -434,7 +444,11 @@ func (rr *responseRecorder) Flush() {
 // Hijack delegates to the wrapped Hijacker when supported, otherwise returns http.ErrNotSupported.
 func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if hijacker, ok := rr.ResponseWriter.(stdhttp.Hijacker); ok {
-		return hijacker.Hijack()
+		conn, rw, err := hijacker.Hijack()
+		if err != nil {
+			return nil, nil, fmt.Errorf("hijack connection: %w", err)
+		}
+		return conn, rw, nil
 	}
 	return nil, nil, stdhttp.ErrNotSupported
 }
@@ -442,7 +456,10 @@ func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // Push forwards HTTP/2 push requests when the underlying writer supports http.Pusher.
 func (rr *responseRecorder) Push(target string, opts *stdhttp.PushOptions) error {
 	if pusher, ok := rr.ResponseWriter.(stdhttp.Pusher); ok {
-		return pusher.Push(target, opts)
+		if err := pusher.Push(target, opts); err != nil {
+			return fmt.Errorf("http/2 push: %w", err)
+		}
+		return nil
 	}
 	return stdhttp.ErrNotSupported
 }

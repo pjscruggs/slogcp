@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// RequestInfo captures per-RPC metadata such as method, sizes, latency, and status.
 type RequestInfo struct {
 	fullMethod string
 	service    string
@@ -31,7 +32,7 @@ type RequestInfo struct {
 	kind       string
 	client     bool
 	start      time.Time
-	status     atomic.Int64
+	status     atomic.Uint32
 	latencyNS  atomic.Int64
 	reqBytes   atomic.Int64
 	respBytes  atomic.Int64
@@ -51,7 +52,7 @@ func newRequestInfo(fullMethod, kind string, client bool, start time.Time) *Requ
 		client:     client,
 		start:      start,
 	}
-	info.status.Store(int64(codes.OK))
+	info.status.Store(uint32(codes.OK))
 	info.latencyNS.Store(-1)
 	return info
 }
@@ -98,7 +99,7 @@ func (ri *RequestInfo) finalize(code codes.Code, duration time.Duration) {
 	if duration < 0 {
 		duration = 0
 	}
-	ri.status.Store(int64(code))
+	ri.status.Store(uint32(code))
 	ri.latencyNS.Store(duration.Nanoseconds())
 }
 
