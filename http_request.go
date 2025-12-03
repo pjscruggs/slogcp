@@ -229,6 +229,37 @@ func httpRequestFromValue(v slog.Value) (*HTTPRequest, bool) {
 
 // httpRequestFromLogValuer unwraps HTTPRequest pointers stored as slog.LogValuer values.
 func httpRequestFromLogValuer(v slog.LogValuer) (*HTTPRequest, bool) {
-	req, ok := v.(*HTTPRequest)
-	return req, ok
+	switch hv := v.(type) {
+	case *HTTPRequest:
+		return hv, true
+	case httpRequestLogValuer:
+		if hv.build == nil {
+			return nil, false
+		}
+		return hv.build(), true
+	default:
+		return nil, false
+	}
+}
+
+// httpRequestLogValuer adapts a builder so httpRequest values can be resolved lazily.
+type httpRequestLogValuer struct {
+	build func() *HTTPRequest
+}
+
+// LogValue implements slog.LogValuer.
+func (v httpRequestLogValuer) LogValue() slog.Value {
+	if v.build == nil {
+		return slog.Value{}
+	}
+	req := v.build()
+	if req == nil {
+		return slog.Value{}
+	}
+	return req.LogValue()
+}
+
+// HTTPRequestValue constructs a slog.Value that lazily builds an HTTPRequest.
+func HTTPRequestValue(builder func() *HTTPRequest) slog.Value {
+	return slog.AnyValue(httpRequestLogValuer{build: builder})
 }

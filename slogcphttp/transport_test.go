@@ -21,7 +21,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	stdhttp "net/http"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -40,8 +40,8 @@ func TestTransportRoundTripDerivesScope(t *testing.T) {
 	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false})
 	baseLogger := slog.New(handler)
 
-	resp := &stdhttp.Response{
-		StatusCode:    stdhttp.StatusAccepted,
+	resp := &http.Response{
+		StatusCode:    http.StatusAccepted,
 		Body:          io.NopCloser(strings.NewReader("ok")),
 		ContentLength: 2,
 	}
@@ -49,7 +49,7 @@ func TestTransportRoundTripDerivesScope(t *testing.T) {
 
 	rt := Transport(stub, WithLogger(baseLogger), WithProjectID("proj-123"))
 
-	req := httptest.NewRequest(stdhttp.MethodPost, "https://example.com/api", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/api", strings.NewReader("body"))
 	req.Header.Set("User-Agent", "test-client")
 
 	gotResp, err := rt.RoundTrip(req)
@@ -70,8 +70,8 @@ func TestTransportRoundTripDerivesScope(t *testing.T) {
 	if !ok {
 		t.Fatalf("request scope missing from context")
 	}
-	if scope.Status() != stdhttp.StatusAccepted {
-		t.Fatalf("scope.Status = %d, want %d", scope.Status(), stdhttp.StatusAccepted)
+	if scope.Status() != http.StatusAccepted {
+		t.Fatalf("scope.Status = %d, want %d", scope.Status(), http.StatusAccepted)
 	}
 	if scope.ResponseSize() != resp.ContentLength {
 		t.Fatalf("scope.ResponseSize = %d, want %d", scope.ResponseSize(), resp.ContentLength)
@@ -97,8 +97,8 @@ func TestTransportRoundTripHandlesNilRequest(t *testing.T) {
 	}
 
 	respStub := &stubRoundTripper{
-		resp: &stdhttp.Response{
-			StatusCode:    stdhttp.StatusAccepted,
+		resp: &http.Response{
+			StatusCode:    http.StatusAccepted,
 			Body:          io.NopCloser(strings.NewReader("ok")),
 			ContentLength: 2,
 		},
@@ -125,7 +125,7 @@ func TestTransportRoundTripRecordsFailure(t *testing.T) {
 	errStub := &stubRoundTripper{err: errors.New("boom")}
 	rt := Transport(errStub)
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 
 	if _, err := rt.RoundTrip(req); !errors.Is(err, errStub.err) {
 		t.Fatalf("RoundTrip error = %v, want boom", err)
@@ -137,11 +137,11 @@ func TestTransportRoundTripRecordsFailure(t *testing.T) {
 	if !ok {
 		t.Fatalf("request scope missing after failed RoundTrip")
 	}
-	if scope.Status() != stdhttp.StatusOK {
-		t.Fatalf("scope.Status = %d, want %d", scope.Status(), stdhttp.StatusOK)
+	if scope.Status() != http.StatusOK {
+		t.Fatalf("scope.Status = %d, want %d", scope.Status(), http.StatusOK)
 	}
-	if scope.Latency() < 0 {
-		t.Fatalf("scope.Latency = %v, want >= 0", scope.Latency())
+	if lat, _ := scope.Latency(); lat < 0 {
+		t.Fatalf("scope.Latency = %v, want >= 0", lat)
 	}
 }
 
@@ -154,15 +154,15 @@ func TestTransportRoundTripAppliesAttrHooks(t *testing.T) {
 		sawTransformer bool
 	)
 
-	rt := Transport(&stubRoundTripper{}, WithAttrEnricher(func(r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+	rt := Transport(&stubRoundTripper{}, WithAttrEnricher(func(r *http.Request, scope *RequestScope) []slog.Attr {
 		sawEnricher = true
 		return []slog.Attr{slog.String("extra", "value")}
-	}), WithAttrTransformer(func(attrs []slog.Attr, r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+	}), WithAttrTransformer(func(attrs []slog.Attr, r *http.Request, scope *RequestScope) []slog.Attr {
 		sawTransformer = true
 		return attrs[:0]
 	}))
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/widgets", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/widgets", nil)
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
@@ -194,7 +194,7 @@ func TestTransportSkipsNilHooks(t *testing.T) {
 		[]AttrEnricher{
 			nil,
 			// observeEnricher sets a flag so the test knows the enricher hook executed.
-			func(r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+			func(r *http.Request, scope *RequestScope) []slog.Attr {
 				sawEnricher = true
 				return nil
 			},
@@ -202,14 +202,14 @@ func TestTransportSkipsNilHooks(t *testing.T) {
 		[]AttrTransformer{
 			nil,
 			// observeTransformer toggles a flag when the transformer hook is invoked.
-			func(attrs []slog.Attr, r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+			func(attrs []slog.Attr, r *http.Request, scope *RequestScope) []slog.Attr {
 				sawTransformer = true
 				return attrs
 			},
 		},
 	))
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/nil-hooks", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/nil-hooks", nil)
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
@@ -236,7 +236,7 @@ func TestTransportUsesContextLoggerFallback(t *testing.T) {
 	stub := &stubRoundTripper{}
 	rt := Transport(stub, func(cfg *config) { cfg.logger = nil })
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/logger", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/logger", nil)
 	req = req.WithContext(slogcp.ContextWithLogger(req.Context(), ctxLogger))
 
 	resp, err := rt.RoundTrip(req)
@@ -263,18 +263,18 @@ func TestTransportUsesContextLoggerFallback(t *testing.T) {
 func TestTransportRoundTripReturnsWrappedErrorWithResponse(t *testing.T) {
 	t.Parallel()
 
-	resp := &stdhttp.Response{
-		StatusCode:    stdhttp.StatusTeapot,
+	resp := &http.Response{
+		StatusCode:    http.StatusTeapot,
 		Body:          io.NopCloser(strings.NewReader("err")),
 		ContentLength: 3,
 	}
 	base := respErrRoundTripper{resp: resp, err: errors.New("base-fail")}
 	rt := Transport(base)
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/with-error", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/with-error", nil)
 	gotResp, err := rt.RoundTrip(req)
-	if gotResp == nil || gotResp.StatusCode != stdhttp.StatusTeapot {
-		t.Fatalf("RoundTrip response = %+v, want status %d", gotResp, stdhttp.StatusTeapot)
+	if gotResp == nil || gotResp.StatusCode != http.StatusTeapot {
+		t.Fatalf("RoundTrip response = %+v, want status %d", gotResp, http.StatusTeapot)
 	}
 	if err == nil || !errors.Is(err, base.err) {
 		t.Fatalf("RoundTrip err = %v, want wrapped base-fail", err)
@@ -286,7 +286,7 @@ func TestTransportRoundTripDetectsMissingResponse(t *testing.T) {
 	t.Parallel()
 
 	rt := Transport(respErrRoundTripper{})
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/missing", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/missing", nil)
 
 	if _, err := rt.RoundTrip(req); err == nil || !strings.Contains(err.Error(), "received no response") {
 		t.Fatalf("RoundTrip err = %v, want missing response error", err)
@@ -311,7 +311,7 @@ func TestRoundTripperInjectTraceLegacy(t *testing.T) {
 	ctx := trace.ContextWithSpanContext(context.Background(), spanCtx)
 
 	t.Run("injects_when_missing", func(t *testing.T) {
-		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 		rt.injectTrace(ctx, req)
 		if req.Header.Get(XCloudTraceContextHeader) == "" {
 			t.Fatalf("legacy header not injected")
@@ -319,7 +319,7 @@ func TestRoundTripperInjectTraceLegacy(t *testing.T) {
 	})
 
 	t.Run("skips_when_existing", func(t *testing.T) {
-		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 		req.Header.Set(XCloudTraceContextHeader, "existing")
 		rt.injectTrace(ctx, req)
 		if req.Header.Get(XCloudTraceContextHeader) != "existing" {
@@ -328,7 +328,7 @@ func TestRoundTripperInjectTraceLegacy(t *testing.T) {
 	})
 
 	t.Run("skips_without_span", func(t *testing.T) {
-		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 		rt.injectTrace(context.Background(), req)
 		if req.Header.Get(XCloudTraceContextHeader) != "" {
 			t.Fatalf("header should not be injected without span context")
@@ -355,7 +355,7 @@ func TestTransportSkipsTraceInjectionWhenDisabled(t *testing.T) {
 		TraceFlags: trace.FlagsSampled,
 	})
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/api", nil).WithContext(trace.ContextWithSpanContext(context.Background(), spanCtx))
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/api", nil).WithContext(trace.ContextWithSpanContext(context.Background(), spanCtx))
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
@@ -393,7 +393,7 @@ func TestTransportBranches(t *testing.T) {
 	rec := &recordingRoundTripper{}
 	rt = Transport(rec, WithProjectID(""), WithLegacyXCloudInjection(true))
 	typed = rt.(roundTripper)
-	req := httptest.NewRequest(stdhttp.MethodGet, "http://example.com", nil).WithContext(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil).WithContext(context.Background())
 	if _, err := typed.RoundTrip(req); err != nil {
 		t.Fatalf("RoundTrip returned error: %v", err)
 	}
@@ -408,8 +408,8 @@ func TestTransportInjectsTraceAndLogger(t *testing.T) {
 	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
 
 	stub := &stubRoundTripper{
-		resp: &stdhttp.Response{
-			StatusCode: stdhttp.StatusAccepted,
+		resp: &http.Response{
+			StatusCode: http.StatusAccepted,
 			Body:       io.NopCloser(strings.NewReader("ok")),
 		},
 	}
@@ -430,7 +430,7 @@ func TestTransportInjectsTraceAndLogger(t *testing.T) {
 
 	ctx := trace.ContextWithSpanContext(context.Background(), spanCtx)
 
-	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, "https://api.example.com/v1/resource", stdhttp.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.example.com/v1/resource", http.NoBody)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestTransportInjectsTraceAndLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("round trip: %v", err)
 	}
-	if resp.StatusCode != stdhttp.StatusAccepted {
+	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("response code = %d", resp.StatusCode)
 	}
 
@@ -488,18 +488,18 @@ func TestOutboundHost(t *testing.T) {
 
 	cases := []struct {
 		name string
-		req  *stdhttp.Request
+		req  *http.Request
 		want string
 	}{
 		{
 			name: "url_host_with_port",
-			req:  httptest.NewRequest(stdhttp.MethodGet, "https://example.com:443/data", nil),
+			req:  httptest.NewRequest(http.MethodGet, "https://example.com:443/data", nil),
 			want: "example.com",
 		},
 		{
 			name: "host_header_only",
-			req: func() *stdhttp.Request {
-				req := new(stdhttp.Request)
+			req: func() *http.Request {
+				req := new(http.Request)
 				req.Host = "widgets.internal:8080"
 				return req
 			}(),
@@ -507,8 +507,8 @@ func TestOutboundHost(t *testing.T) {
 		},
 		{
 			name: "host_header_no_port",
-			req: func() *stdhttp.Request {
-				req := new(stdhttp.Request)
+			req: func() *http.Request {
+				req := new(http.Request)
 				req.Host = "api.internal"
 				return req
 			}(),
@@ -521,7 +521,7 @@ func TestOutboundHost(t *testing.T) {
 		},
 		{
 			name: "no_host_information",
-			req:  &stdhttp.Request{URL: &url.URL{Path: "/only-path"}},
+			req:  &http.Request{URL: &url.URL{Path: "/only-path"}},
 			want: "",
 		},
 	}
@@ -536,29 +536,29 @@ func TestOutboundHost(t *testing.T) {
 }
 
 type recordingRoundTripper struct {
-	req *stdhttp.Request
+	req *http.Request
 }
 
 // RoundTrip records the last request for assertions.
-func (r *recordingRoundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+func (r *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	r.req = req
-	return &stdhttp.Response{StatusCode: stdhttp.StatusOK, Body: stdhttp.NoBody, Request: req}, nil
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
 }
 
 type stubRoundTripper struct {
-	req  *stdhttp.Request
-	resp *stdhttp.Response
+	req  *http.Request
+	resp *http.Response
 	err  error
 }
 
 // RoundTrip captures the request and returns the canned response.
-func (s *stubRoundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+func (s *stubRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	s.req = req
 	if s.err != nil {
 		return nil, s.err
 	}
 	if s.resp == nil {
-		return &stdhttp.Response{StatusCode: stdhttp.StatusOK, Body: io.NopCloser(strings.NewReader("ok")), ContentLength: 2}, nil
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok")), ContentLength: 2}, nil
 	}
 	s.resp.Request = req
 	return s.resp, nil
@@ -573,12 +573,12 @@ func slogcpLogger(ctx context.Context) *slog.Logger {
 }
 
 type respErrRoundTripper struct {
-	resp *stdhttp.Response
+	resp *http.Response
 	err  error
 }
 
 // RoundTrip returns the canned response/error for coverage of error branches.
-func (r respErrRoundTripper) RoundTrip(*stdhttp.Request) (*stdhttp.Response, error) {
+func (r respErrRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	return r.resp, r.err
 }
 

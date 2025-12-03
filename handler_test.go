@@ -1383,6 +1383,42 @@ func TestCachedConfigFromEnvCachesResults(t *testing.T) {
 	}
 }
 
+// TestCachedConfigFromEnvReturnsLocalCfgWhenCacheClearedAfterCAS verifies the fallback return when CAS fails and the cache is cleared.
+func TestCachedConfigFromEnvReturnsLocalCfgWhenCacheClearedAfterCAS(t *testing.T) {
+	clearHandlerEnv(t)
+	resetHandlerConfigCache()
+
+	origLoader := getLoadConfigFromEnv()
+	origHook := getCachedConfigRaceHook()
+	t.Cleanup(func() {
+		setLoadConfigFromEnv(origLoader)
+		setCachedConfigRaceHook(origHook)
+		resetHandlerConfigCache()
+	})
+
+	// Loader simulates a concurrent cache population before CompareAndSwap runs.
+	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
+		handlerEnvConfigCache.Store(&handlerConfig{Level: slog.LevelWarn})
+		return handlerConfig{Level: slog.LevelDebug}, nil
+	})
+
+	// Hook clears the cache so the function must return the locally loaded cfg.
+	setCachedConfigRaceHook(func() {
+		resetHandlerConfigCache()
+	})
+
+	cfg, err := cachedConfigFromEnv(newDiscardLogger())
+	if err != nil {
+		t.Fatalf("cachedConfigFromEnv() returned %v", err)
+	}
+	if cfg.Level != slog.LevelDebug {
+		t.Fatalf("cfg.Level = %v, want %v (local cfg)", cfg.Level, slog.LevelDebug)
+	}
+	if cached := handlerEnvConfigCache.Load(); cached != nil {
+		t.Fatalf("handlerEnvConfigCache should be cleared, got %+v", cached)
+	}
+}
+
 // TestIsStdStream ensures stdout/stderr detection works and rejects other writers.
 func TestIsStdStream(t *testing.T) {
 	t.Parallel()

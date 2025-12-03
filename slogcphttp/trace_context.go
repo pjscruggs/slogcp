@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	stdhttp "net/http"
+	"net/http"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -34,9 +34,9 @@ var randRead = rand.Read
 // InjectTraceContextMiddleware extracts legacy X-Cloud-Trace-Context headers
 // when no OpenTelemetry span is present in the incoming context. The extracted
 // span context becomes the active context for downstream handlers.
-func InjectTraceContextMiddleware() func(stdhttp.Handler) stdhttp.Handler {
-	return func(next stdhttp.Handler) stdhttp.Handler {
-		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+func InjectTraceContextMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 			if trace.SpanContextFromContext(ctx).IsValid() {
 				next.ServeHTTP(w, r)

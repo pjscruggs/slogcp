@@ -178,11 +178,16 @@ func flattenHTTPRequestToMap(req *HTTPRequest) *httpRequestPayload {
 		CacheLookup:                    req.CacheLookup,
 	}
 
-	if req.Latency > 0 {
-		payload.Latency = fmt.Sprintf("%.9fs", req.Latency.Seconds())
+	if req.Latency >= 0 {
+		payload.Latency = formatLatency(req.Latency)
 	}
 
 	return &payload
+}
+
+// formatLatency renders a duration as a Cloud Logging-compatible string.
+func formatLatency(d time.Duration) string {
+	return fmt.Sprintf("%.9fs", d.Seconds())
 }
 
 // labelValueToString converts a slog.Value into its string form suitable for label emission.

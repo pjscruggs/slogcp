@@ -17,7 +17,7 @@ package slogcphttp
 import (
 	"context"
 	"log/slog"
-	stdhttp "net/http"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -29,7 +29,7 @@ import (
 func TestPrepareHTTPRequestNormalizesFields(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(stdhttp.MethodPost, "https://example.com/widgets/42", nil)
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/widgets/42", nil)
 	req.RemoteAddr = "198.51.100.5:4321"
 	req.Header.Set("User-Agent", "tester/1.0")
 	req.ContentLength = 256
@@ -43,8 +43,8 @@ func TestPrepareHTTPRequestNormalizesFields(t *testing.T) {
 
 	slogcp.PrepareHTTPRequest(payload)
 
-	if got := payload.RequestMethod; got != stdhttp.MethodPost {
-		t.Fatalf("RequestMethod = %q, want %q", got, stdhttp.MethodPost)
+	if got := payload.RequestMethod; got != http.MethodPost {
+		t.Fatalf("RequestMethod = %q, want %q", got, http.MethodPost)
 	}
 	if got := payload.RequestURL; got != "https://example.com/widgets/42" {
 		t.Fatalf("RequestURL = %q, want https://example.com/widgets/42", got)
@@ -67,11 +67,11 @@ func TestPrepareHTTPRequestNormalizesFields(t *testing.T) {
 func TestHTTPRequestAttrIncorporatesScope(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(stdhttp.MethodPut, "https://api.example.com/things?id=99", nil)
+	req := httptest.NewRequest(http.MethodPut, "https://api.example.com/things?id=99", nil)
 	req.RemoteAddr = "203.0.113.17:80"
 
 	scope := &RequestScope{
-		method:      stdhttp.MethodPut,
+		method:      http.MethodPut,
 		route:       "/things/:id",
 		requestSize: 512,
 		clientIP:    "203.0.113.17",
@@ -82,34 +82,35 @@ func TestHTTPRequestAttrIncorporatesScope(t *testing.T) {
 	scope.respBytes.Store(2048)
 
 	attr := HTTPRequestAttr(req, scope)
-	value, ok := attr.Value.Any().(*slogcp.HTTPRequest)
+	resolved := attr.Value.Resolve()
+	payload, ok := resolved.Any().(map[string]any)
 	if !ok {
-		t.Fatalf("attr value = %T, want *slogcp.HTTPRequest", attr.Value.Any())
+		t.Fatalf("resolved value = %T, want map[string]any", resolved.Any())
 	}
 
-	if value.Status != 418 {
-		t.Fatalf("Status = %d, want 418", value.Status)
+	if status, ok := payload["status"].(int); !ok || status != 418 {
+		t.Fatalf("status = %#v, want 418", payload["status"])
 	}
-	if value.Latency != time.Second {
-		t.Fatalf("Latency = %v, want 1s", value.Latency)
+	if latency, ok := payload["latency"].(string); !ok || latency != "1.000000000s" {
+		t.Fatalf("latency = %#v, want 1.000000000s", payload["latency"])
 	}
-	if value.RemoteIP != "203.0.113.17" {
-		t.Fatalf("RemoteIP = %s, want 203.0.113.17", value.RemoteIP)
+	if payload["remoteIp"] != "203.0.113.17" {
+		t.Fatalf("remoteIp = %#v, want 203.0.113.17", payload["remoteIp"])
 	}
-	if value.RequestSize != 512 {
-		t.Fatalf("RequestSize = %d, want 512", value.RequestSize)
+	if payload["requestSize"] != "512" {
+		t.Fatalf("requestSize = %#v, want 512", payload["requestSize"])
 	}
-	if value.ResponseSize != 2048 {
-		t.Fatalf("ResponseSize = %d, want 2048", value.ResponseSize)
+	if payload["responseSize"] != "2048" {
+		t.Fatalf("responseSize = %#v, want 2048", payload["responseSize"])
 	}
-	if value.UserAgent != "integration/1.2" {
-		t.Fatalf("UserAgent = %q, want integration/1.2", value.UserAgent)
+	if payload["userAgent"] != "integration/1.2" {
+		t.Fatalf("userAgent = %#v, want integration/1.2", payload["userAgent"])
 	}
-	if value.RequestMethod != stdhttp.MethodPut {
-		t.Fatalf("RequestMethod = %q, want PUT", value.RequestMethod)
+	if payload["requestMethod"] != http.MethodPut {
+		t.Fatalf("requestMethod = %#v, want PUT", payload["requestMethod"])
 	}
-	if value.RequestURL != "https://api.example.com/things?id=99" {
-		t.Fatalf("RequestURL = %q, want original URL", value.RequestURL)
+	if payload["requestUrl"] != "https://api.example.com/things?id=99" {
+		t.Fatalf("requestUrl = %#v, want original URL", payload["requestUrl"])
 	}
 }
 
@@ -127,7 +128,7 @@ func TestHTTPRequestAttrHandlesNilInputs(t *testing.T) {
 func TestPrepareHTTPRequestDerivesDefaults(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://derived.example.com/parts", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://derived.example.com/parts", nil)
 	req.RemoteAddr = "198.51.100.99:9000"
 	req.ContentLength = 123
 
@@ -140,7 +141,7 @@ func TestPrepareHTTPRequestDerivesDefaults(t *testing.T) {
 	if payload.RemoteIP != "198.51.100.99" {
 		t.Fatalf("RemoteIP = %q, want 198.51.100.99", payload.RemoteIP)
 	}
-	if payload.RequestMethod != stdhttp.MethodGet {
+	if payload.RequestMethod != http.MethodGet {
 		t.Fatalf("RequestMethod = %q, want GET", payload.RequestMethod)
 	}
 	if payload.RequestURL != req.URL.String() {
@@ -155,7 +156,7 @@ func TestPrepareHTTPRequestDerivesDefaults(t *testing.T) {
 func TestHTTPRequestAttrFromContext(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://ctx.example.com/widgets", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://ctx.example.com/widgets", nil)
 	scope := &RequestScope{}
 	ctx := context.WithValue(context.Background(), requestScopeKey{}, scope)
 
@@ -165,11 +166,126 @@ func TestHTTPRequestAttrFromContext(t *testing.T) {
 	}
 
 	baseline := HTTPRequestAttr(req, scope)
-	if attr.Value.Any() == nil || baseline.Value.Any() == nil {
+	resolvedCtx := attr.Value.Resolve()
+	resolvedBase := baseline.Value.Resolve()
+	if resolvedCtx.Any() == nil || resolvedBase.Any() == nil {
 		t.Fatalf("attrs should contain payloads")
 	}
-	if attr.Value.Any().(*slogcp.HTTPRequest).RequestURL != baseline.Value.Any().(*slogcp.HTTPRequest).RequestURL {
+	if resolvedCtx.Any().(map[string]any)["requestUrl"] != resolvedBase.Any().(map[string]any)["requestUrl"] {
 		t.Fatalf("RequestURL mismatch between helpers")
+	}
+}
+
+// TestHTTPRequestAttrUsesRequestWhenScopeMissing ensures request data flows without scope.
+func TestHTTPRequestAttrUsesRequestWhenScopeMissing(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "https://noscope.example.com/widgets?q=1", nil)
+	req.RemoteAddr = "198.51.100.1:1234"
+
+	attr := HTTPRequestAttr(req, nil)
+	resolved := attr.Value.Resolve()
+	payload, ok := resolved.Any().(map[string]any)
+	if !ok {
+		t.Fatalf("resolved payload type = %T, want map[string]any", resolved.Any())
+	}
+	if payload["requestMethod"] != http.MethodGet {
+		t.Fatalf("requestMethod = %#v, want GET", payload["requestMethod"])
+	}
+	if payload["requestUrl"] != req.URL.String() {
+		t.Fatalf("requestUrl = %#v, want %q", payload["requestUrl"], req.URL.String())
+	}
+	if payload["remoteIp"] != "198.51.100.1" {
+		t.Fatalf("remoteIp = %#v, want 198.51.100.1", payload["remoteIp"])
+	}
+}
+
+// TestHTTPRequestFromScopeBuildsSnapshot verifies snapshot helper emits final values.
+func TestHTTPRequestFromScopeBuildsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	scope := &RequestScope{
+		method:      http.MethodPost,
+		target:      "/items/1",
+		query:       "q=ok",
+		scheme:      "https",
+		host:        "api.example.com",
+		requestSize: 128,
+		clientIP:    "198.51.100.5",
+		userAgent:   "tester/2.0",
+	}
+	scope.status.Store(201)
+	scope.respBytes.Store(512)
+	scope.latencyNS.Store(750 * time.Millisecond.Nanoseconds())
+
+	req := HTTPRequestFromScope(scope)
+	if req == nil {
+		t.Fatal("HTTPRequestFromScope returned nil")
+	}
+	if req.RequestURL != "https://api.example.com/items/1?q=ok" {
+		t.Fatalf("RequestURL = %q, want https://api.example.com/items/1?q=ok", req.RequestURL)
+	}
+	if req.Status != 201 || req.ResponseSize != 512 || req.RequestSize != 128 {
+		t.Fatalf("sizes/status mismatch: %+v", req)
+	}
+	if req.RemoteIP != "198.51.100.5" || req.UserAgent != "tester/2.0" {
+		t.Fatalf("metadata mismatch: %+v", req)
+	}
+	if req.Latency != 750*time.Millisecond {
+		t.Fatalf("Latency = %v, want 750ms", req.Latency)
+	}
+
+	// In-flight: latency should be omitted.
+	scope.latencyNS.Store(unsetLatencySentinel)
+	req = HTTPRequestFromScope(scope)
+	if req.Latency != -1 && req.Latency >= 0 {
+		t.Fatalf("Latency should be omitted when unset, got %v", req.Latency)
+	}
+}
+
+// TestHTTPRequestAttrMidRequestOmitsLatency ensures mid-request helper uses sentinel latency.
+func TestHTTPRequestAttrMidRequestOmitsLatency(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/inflight", nil)
+	scope := newRequestScope(req, time.Now(), defaultConfig())
+	attr := HTTPRequestAttr(nil, scope)
+	payload := attr.Value.Resolve().Any().(map[string]any)
+	if _, ok := payload["latency"]; ok {
+		t.Fatalf("latency should be omitted for mid-request logs, got %#v", payload["latency"])
+	}
+}
+
+// TestHTTPRequestAttrRequestOnlyUsesZeroLatency ensures nil scope yields zero latency.
+func TestHTTPRequestAttrRequestOnlyUsesZeroLatency(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/no-scope", nil)
+	attr := HTTPRequestAttr(req, nil)
+	payload := attr.Value.Resolve().Any().(map[string]any)
+	if payload["latency"] != "0.000000000s" {
+		t.Fatalf("latency = %#v, want 0.000000000s", payload["latency"])
+	}
+}
+
+// TestLatencyForLoggingNilScope covers the nil scope branch.
+func TestLatencyForLoggingNilScope(t *testing.T) {
+	t.Parallel()
+
+	if got := latencyForLogging(nil); got != 0 {
+		t.Fatalf("latencyForLogging(nil) = %v, want 0", got)
+	}
+}
+
+// TestHTTPRequestFromScopeHandlesNil ensures nil inputs are safe.
+func TestHTTPRequestFromScopeHandlesNil(t *testing.T) {
+	t.Parallel()
+
+	if req := HTTPRequestFromScope(nil); req != nil {
+		t.Fatalf("HTTPRequestFromScope(nil) = %#v, want nil", req)
+	}
+	if url := buildRequestURLFromScope(nil); url != "" {
+		t.Fatalf("buildRequestURLFromScope(nil) = %q, want empty string", url)
 	}
 }
 
@@ -177,7 +293,7 @@ func TestHTTPRequestAttrFromContext(t *testing.T) {
 func TestHTTPRequestEnricher(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(stdhttp.MethodPost, "https://enrich.example.com/api", nil)
+	req := httptest.NewRequest(http.MethodPost, "https://enrich.example.com/api", nil)
 	scope := &RequestScope{}
 	scope.status.Store(201)
 	scope.latencyNS.Store(250 * time.Millisecond.Nanoseconds())
@@ -199,7 +315,7 @@ func TestHTTPRequestEnricher(t *testing.T) {
 func TestHTTPRequestFromRequest(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://derived.example.com/parts", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://derived.example.com/parts", nil)
 	req.RemoteAddr = "198.51.100.99:9000"
 	req.ContentLength = 123
 
