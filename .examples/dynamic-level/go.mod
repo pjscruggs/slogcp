@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/examples/dynamic-level
 
-go 1.25.4
+go 1.25.5
 
 require github.com/pjscruggs/slogcp v0.0.0
 
