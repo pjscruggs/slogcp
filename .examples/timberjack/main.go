@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command lumberjack demonstrates integrating slogcp with a rotating
-// lumberjack writer.
+// Command timberjack demonstrates integrating slogcp with a rotating
+// timberjack writer.
 //
 // This example is both documentation, and a test for `slogcp`.
 // Our Github workflow tests if any changes to `slogcp` break the example.
@@ -22,24 +22,26 @@ package main
 import (
 	"log"
 	"log/slog"
+	"time"
 
-	"gopkg.in/natefinch/lumberjack.v2"
+	"github.com/DeRuina/timberjack"
 
 	"github.com/pjscruggs/slogcp"
 )
 
-// main runs the lumberjack rolling file example with slogcp output.
+// main runs the timberjack rolling file example with slogcp output.
 func main() {
-	rolling := &lumberjack.Logger{
-		Filename:   "slogcp-rolling.log",
-		MaxSize:    1,
-		MaxBackups: 3,
-		MaxAge:     7,
-		Compress:   true,
+	rolling := &timberjack.Logger{
+		Filename:         "slogcp-rolling.log",
+		MaxSize:          1,
+		MaxBackups:       3,
+		MaxAge:           7,
+		Compression:      "gzip",
+		RotationInterval: 24 * time.Hour,
 	}
 	defer func() {
 		if err := rolling.Close(); err != nil {
-			log.Printf("close lumberjack writer: %v", err)
+			log.Printf("close timberjack writer: %v", err)
 		}
 	}()
 
@@ -64,10 +66,10 @@ func main() {
 		logger.Info("processing event", slog.Int("index", i))
 	}
 
-	// Trigger a manual rotation to highlight lumberjack's API surface.
-	if err := rolling.Rotate(); err != nil {
+	// Trigger a manual rotation to highlight timberjack's API surface.
+	if err := rolling.RotateWithReason("manual"); err != nil {
 		logger.Error("rotate log file", slog.Any("error", err))
 	} else {
-		logger.Info("log rotation complete")
+		logger.Info("log rotation complete", slog.String("reason", "manual"))
 	}
 }
