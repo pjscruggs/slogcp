@@ -37,7 +37,7 @@ const (
 	envLogLevel         = "SLOGCP_LEVEL"
 	envLogSource        = "SLOGCP_SOURCE_LOCATION"
 	envLogTime          = "SLOGCP_TIME"
-	envLogStackEnabled  = "SLOGCP_STACK_TRACE_ENABLED"
+	envLogStackEnabled  = "SLOGCP_STACK_TRACES"
 	envLogStackLevel    = "SLOGCP_STACK_TRACE_LEVEL"
 	envSeverityAliases  = "SLOGCP_SEVERITY_ALIASES"
 	envTraceProjectID   = "SLOGCP_TRACE_PROJECT_ID"
