@@ -44,7 +44,7 @@ const (
 	// Retain the block-mode queue size for backwards-compatible tests.
 	defaultQueueSize = defaultQueueSizeBlock
 
-	envAsyncEnabled      = "SLOGCP_ASYNC_ENABLED"
+	envAsyncEnabled      = "SLOGCP_ASYNC"
 	envAsyncQueueSize    = "SLOGCP_ASYNC_QUEUE_SIZE"
 	envAsyncDropMode     = "SLOGCP_ASYNC_DROP_MODE"
 	envAsyncWorkers      = "SLOGCP_ASYNC_WORKERS"

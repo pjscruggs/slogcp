@@ -39,7 +39,7 @@ Key options:
 | `WithLevelVar(*slog.LevelVar)` | (none) | current value of the supplied var | Shares a caller-managed `slog.LevelVar` so external config can adjust levels. |
 | `WithSourceLocationEnabled(bool)` | `SLOGCP_SOURCE_LOCATION` | `false` | Populates `logging.googleapis.com/sourceLocation`. |
 | `WithTime(bool)` | `SLOGCP_TIME` | Enabled outside Cloud Run, Cloud Run Jobs, Cloud Functions, and App Engine; disabled on those runtimes | Emits a top-level `time` field so logs carry RFC3339 timestamps. |
-| `WithStackTraceEnabled(bool)` | `SLOGCP_STACK_TRACE_ENABLED` | `false` | Enables automatic stack capture at or above `StackTraceLevel`. |
+| `WithStackTraceEnabled(bool)` | `SLOGCP_STACK_TRACES` | `false` | Enables automatic stack capture at or above `StackTraceLevel`. |
 | `WithStackTraceLevel(slog.Level)` | `SLOGCP_STACK_TRACE_LEVEL` | `error` | Threshold for automatic stacks. |
 | `WithTraceProjectID(string)` | `SLOGCP_TRACE_PROJECT_ID`, `SLOGCP_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT` | detected at runtime | Supplies the project ID used when formatting trace fields. |
 | `WithTraceDiagnostics(slogcp.TraceDiagnosticsMode)` | `SLOGCP_TRACE_DIAGNOSTICS` | `warn` | Controls how slogcp surfaces trace correlation issues. Accepts `off`, `warn`/`warn_once`, or `strict` (which fails handler creation when no project can be detected). |
@@ -79,7 +79,7 @@ When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `Wi
 
 | Option | Environment variable | Default | Description |
 | --- | --- | --- | --- |
-| `WithEnabled(bool)` | `SLOGCP_ASYNC_ENABLED` | `true` once the wrapper is added | Enables or disables the async wrapper entirely. |
+| `WithEnabled(bool)` | `SLOGCP_ASYNC` | `true` once the wrapper is added | Enables or disables the async wrapper entirely. |
 | `WithQueueSize(int)` | `SLOGCP_ASYNC_QUEUE_SIZE` | `block: 2048`, `drop_newest: 512`, `drop_oldest: 1024` | Channel capacity for queued records. `0` uses an unbuffered channel. |
 | `WithDropMode(slogcpasync.DropMode)` | `SLOGCP_ASYNC_DROP_MODE` | `block` | Overflow policy: `block`, `drop_newest`, or `drop_oldest`. |
 | `WithWorkerCount(int)` | `SLOGCP_ASYNC_WORKERS` | `block: 1`, `drop_newest: 1`, `drop_oldest: 1` | Number of goroutines draining the queue. |
@@ -197,4 +197,4 @@ Helpers:
 
 ## Trace Propagation Defaults
 
-Importing `slogcp` installs a composite OpenTelemetry propagator that understands both W3C Trace Context and Google's legacy `X-Cloud-Trace-Context` header (read-only). Set `SLOGCP_DISABLE_PROPAGATOR_AUTOSET=true` before importing the package if you prefer to manage `otel.SetTextMapPropagator` yourself; call `slogcp.EnsurePropagation()` if you need to reapply the library's defaults later in process startup.
+Importing `slogcp` installs a composite OpenTelemetry propagator that understands both W3C Trace Context and Google's legacy `X-Cloud-Trace-Context` header (read-only). Set `SLOGCP_PROPAGATOR_AUTOSET=false` before importing the package if you prefer to manage `otel.SetTextMapPropagator` yourself; call `slogcp.EnsurePropagation()` if you need to reapply the library's defaults later in process startup.

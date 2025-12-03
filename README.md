@@ -70,7 +70,6 @@ If you're just logging to `stdout`, you'll never need to touch this feature. But
 ### Tested Out The Wazoo
 slogcp has 100% local test coverage. Our testing process includes making sure all of our [examples](.examples) build and that their own tests pass. We also run a series of E2E tests **in Google Cloud** that spin up real Cloud Run services wired together with slogcp’s HTTP and gRPC interceptors. Those tests drive traffic through unary and streaming RPCs, then query Cloud Logging and Cloud Trace to verify not just severities, resource labels/serviceContext, and log names (`run.googleapis.com/stdout`), but that trace IDs/span IDs are correctly propagated so logs and spans from downstream HTTP and gRPC services all correlate into a single end‑to‑end trace in Google Cloud’s UIs.
 
-
 > [!TIP]
 > When your handler writes to `stdout`/`stderr` enabling async logging usually adds overhead without improving throughput. Prefer synchronous slogcp handlers for `stdout`/`stderr`, and reserve `slogcpasync` for file-backed or on-prem logging where disk I/O is the real bottleneck.
 
@@ -146,7 +145,7 @@ handler, _ := slogcp.NewHandler(os.Stdout,
 
 Supported variables:
 
-- `SLOGCP_ASYNC_ENABLED`: `true`/`false` to turn the wrapper on.
+- `SLOGCP_ASYNC`: `true`/`false` to turn the wrapper on.
 - `SLOGCP_ASYNC_QUEUE_SIZE`: queue capacity (use `0` for an unbuffered queue).
 - `SLOGCP_ASYNC_DROP_MODE`: `block` (default), `drop_newest`, or `drop_oldest`.
 - `SLOGCP_ASYNC_WORKERS`: number of worker goroutines (defaults are tuned per drop mode: block=`1`, drop_newest=`5`, drop_oldest=`5`).
@@ -178,10 +177,10 @@ Core environment variables for configuring slogcp:
 | `SLOGCP_TARGET` | `stdout`, `stderr`, or `file:/path` | `stdout` |
 | `SLOGCP_LEVEL` | Minimum log level (`debug`, `info`, `warn`, `error`, etc.) | `info` |
 | `SLOGCP_SOURCE_LOCATION` | Include source file/line (`true`, `false`) | `false` |
-| `SLOGCP_STACK_TRACE_ENABLED` | Enable stack traces (`true`, `false`) | `false` |
+| `SLOGCP_STACK_TRACES` | Enable stack traces (`true`, `false`) | `false` |
 | `SLOGCP_TRACE_DIAGNOSTICS` | Controls trace-correlation diagnostics: `off`, `warn`/`warn_once`, or `strict` | `warn_once` |
 
-When the handler encounters attributes whose value is an `error`, it detects the first such attribute, records an `error_type`, and appends the error text to the log message so Error Reporting payloads remain informative. A `stack_trace` field is added when the error already carries a stack, or when stack traces are enabled via `SLOGCP_STACK_TRACE_ENABLED` or `slogcp.WithStackTraceEnabled` and the record's level meets the configured threshold.
+When the handler encounters attributes whose value is an `error`, it detects the first such attribute, records an `error_type`, and appends the error text to the log message so Error Reporting payloads remain informative. A `stack_trace` field is added when the error already carries a stack, or when stack traces are enabled via `SLOGCP_STACK_TRACES` or `slogcp.WithStackTraceEnabled` and the record's level meets the configured threshold.
 
 If slogcp determines at runtime that it is running in a GCP environment such as Cloud Run, Cloud Functions, or App Engine and discovers service metadata, it will automatically populate `serviceContext` when it is missing so Error Reporting can group errors correctly without additional configuration.
 
