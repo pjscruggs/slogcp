@@ -74,7 +74,7 @@ slogcp has 100% local test coverage. Our testing process includes making sure al
 > When your handler writes to `stdout`/`stderr` enabling async logging usually adds overhead without improving throughput. Prefer synchronous slogcp handlers for `stdout`/`stderr`, and reserve `slogcpasync` for file-backed or on-prem logging where disk I/O is the real bottleneck.
 
 ### Easy compatibility with other slog libraries
-Because slogcp is "just" a `slog.Handler` that writes JSON to an `io.Writer`, it slots into existing slog setups instead of replacing them. You still use `slog.New`, `slog.SetDefault`, `logger.With`, and request-scoped loggers, and you can compose slogcp with other slog-based tools like `masq` for redaction or `lumberjack` for file rotation without special adapters. When you do write logs to files, the built-in `SwitchableWriter` and `Handler.ReopenLogFile` helpers let you cooperate with external rotation tools without rebuilding handlers or changing how the rest of your code logs.
+Because slogcp is "just" a `slog.Handler` that writes JSON to an `io.Writer`, it slots into existing slog setups instead of replacing them. You still use `slog.New`, `slog.SetDefault`, `logger.With`, and request-scoped loggers, and you can compose slogcp with other slog-based tools like `masq` for redaction or `timberjack` (the maintained lumberjack fork) for file rotation without special adapters. When you do write logs to files, the built-in `SwitchableWriter` and `Handler.ReopenLogFile` helpers let you cooperate with external rotation tools without rebuilding handlers or changing how the rest of your code logs.
 
 ## Quick Start
 
@@ -240,9 +240,9 @@ Since slogcp is just a `slog.Handler`, it can easily be integrated with other po
 
 Run an HTTP server that redacts sensitive request fields with `github.com/m-mizutani/masq` before logging via slogcp. See [.examples/masq/main.go](.examples/masq/main.go).
 
-### lumberjack
+### timberjack
 
-Redirect slogcp output to a lumberjack rotating writer with `WithRedirectWriter` and optional reopen support. See [.examples/lumberjack/main.go](.examples/lumberjack/main.go).
+Redirect slogcp output to a timberjack rotating writer with `WithRedirectWriter` and optional reopen support. See [.examples/timberjack/main.go](.examples/timberjack/main.go).
 
 ## Advanced configuration
 
