@@ -116,8 +116,8 @@ func TestFlattenHTTPRequestToMapHandlesNil(t *testing.T) {
 	if payload.RequestSize != "42" || payload.ResponseSize != "84" {
 		t.Fatalf("size conversion failed: %#v", payload)
 	}
-	if payload.Latency != "" {
-		t.Fatalf("Latency field should be empty when zero, got %q", payload.Latency)
+	if payload.Latency != "0.000000000s" {
+		t.Fatalf("Latency field should format zero duration, got %q", payload.Latency)
 	}
 }
 

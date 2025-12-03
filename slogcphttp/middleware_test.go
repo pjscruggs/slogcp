@@ -24,7 +24,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	stdhttp "net/http"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -49,7 +49,7 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 
 	var capturedScope *RequestScope
 
-	handler := mw(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		scope, ok := ScopeFromContext(r.Context())
 		if !ok {
 			t.Fatalf("scope missing from context")
@@ -60,7 +60,7 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 		logger.Info("processing request")
 	}))
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/widgets?id=42", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/widgets?id=42", nil)
 	req.RemoteAddr = "198.51.100.10:12345"
 	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/10;o=1")
 
@@ -70,7 +70,7 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 	if capturedScope == nil {
 		t.Fatalf("scope not captured")
 	}
-	if got := capturedScope.Method(); got != stdhttp.MethodGet {
+	if got := capturedScope.Method(); got != http.MethodGet {
 		t.Fatalf("scope.Method = %q", got)
 	}
 	if got := capturedScope.Target(); got != "/widgets" {
@@ -79,7 +79,7 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 	if got := capturedScope.ClientIP(); got != "198.51.100.10" {
 		t.Fatalf("scope.ClientIP = %q", got)
 	}
-	if status := capturedScope.Status(); status != stdhttp.StatusOK {
+	if status := capturedScope.Status(); status != http.StatusOK {
 		t.Fatalf("scope.Status = %d", status)
 	}
 
@@ -108,8 +108,8 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 	if got := entry["logging.googleapis.com/trace"]; got != "projects/proj-123/traces/105445aa7843bc8bf206b12000100000" {
 		t.Errorf("trace = %v", got)
 	}
-	if _, ok := entry["http.latency"]; !ok {
-		t.Errorf("http.latency attribute missing")
+	if _, ok := entry["http.latency"]; ok {
+		t.Errorf("http.latency should be omitted for in-flight logs")
 	}
 }
 
@@ -118,11 +118,11 @@ func TestMiddlewareNilNextUsesNotFound(t *testing.T) {
 	t.Parallel()
 
 	handler := Middleware()(nil)
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/missing", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/missing", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
-	if rr.Code != stdhttp.StatusNotFound {
-		t.Fatalf("Status = %d, want %d", rr.Code, stdhttp.StatusNotFound)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("Status = %d, want %d", rr.Code, http.StatusNotFound)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestPopulateURLFieldsHandlesNilURL(t *testing.T) {
 	t.Parallel()
 
 	scope := &RequestScope{}
-	scope.populateURLFields(&stdhttp.Request{URL: nil})
+	scope.populateURLFields(&http.Request{URL: nil})
 
 	if scope.target != "" || scope.scheme != "" || scope.host != "" {
 		t.Fatalf("expected zero-valued scope fields")
@@ -151,29 +151,29 @@ func TestMiddlewareSkipsNilAttrHooks(t *testing.T) {
 			[]AttrEnricher{
 				nil,
 				// addPhaseAttr appends a marker attribute so the enricher execution is observable in tests.
-				func(r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+				func(r *http.Request, scope *RequestScope) []slog.Attr {
 					return []slog.Attr{slog.String("phase", "enriched")}
 				},
 			},
 			[]AttrTransformer{
 				nil,
 				// appendPhaseAttr ensures the transformer stage runs by appending a marker attribute.
-				func(attrs []slog.Attr, r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+				func(attrs []slog.Attr, r *http.Request, scope *RequestScope) []slog.Attr {
 					return append(attrs, slog.String("phase", "transformed"))
 				},
 			},
 		),
 	)
 
-	handler := mw(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		slogcp.Logger(r.Context()).Info("nil-friendly")
 	}))
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/hooks", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/hooks", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
-	if rr.Code != stdhttp.StatusOK {
-		t.Fatalf("Status = %d, want %d", rr.Code, stdhttp.StatusOK)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want %d", rr.Code, http.StatusOK)
 	}
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
@@ -198,13 +198,13 @@ func TestMiddlewareAttrEnricherAndTransformer(t *testing.T) {
 		WithLogger(baseLogger),
 		WithProjectID("proj-123"),
 		WithOTel(false),
-		WithAttrEnricher(func(r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+		WithAttrEnricher(func(r *http.Request, scope *RequestScope) []slog.Attr {
 			return []slog.Attr{
 				slog.String("tenant.id", "acme"),
 				slog.String("raw.query", scope.Query()),
 			}
 		}),
-		WithAttrTransformer(func(attrs []slog.Attr, r *stdhttp.Request, scope *RequestScope) []slog.Attr {
+		WithAttrTransformer(func(attrs []slog.Attr, r *http.Request, scope *RequestScope) []slog.Attr {
 			filtered := make([]slog.Attr, 0, len(attrs)+1)
 			for _, attr := range attrs {
 				if attr.Key == "raw.query" {
@@ -215,18 +215,18 @@ func TestMiddlewareAttrEnricherAndTransformer(t *testing.T) {
 			filtered = append(filtered, slog.String("transformed", scope.Route()))
 			return filtered
 		}),
-		WithRouteGetter(func(r *stdhttp.Request) string {
+		WithRouteGetter(func(r *http.Request) string {
 			return "/widgets/:id"
 		}),
 	)
 
-	handler := mw(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		logger := slogcp.Logger(r.Context())
 		logger.Info("custom attrs")
-		w.WriteHeader(stdhttp.StatusNoContent)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/widgets/42?color=blue", stdhttp.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/widgets/42?color=blue", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -262,11 +262,11 @@ func TestMiddlewareIncludesHTTPRequestAttr(t *testing.T) {
 		WithHTTPRequestAttr(true),
 	)
 
-	handler := mw(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		slogcp.Logger(r.Context()).Info("http attr enabled")
 	}))
 
-	req := httptest.NewRequest(stdhttp.MethodPost, "https://example.com/orders", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/orders", strings.NewReader("body"))
 	req.RemoteAddr = "203.0.113.10:8080"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -285,7 +285,7 @@ func TestMiddlewareIncludesHTTPRequestAttr(t *testing.T) {
 	if !ok {
 		t.Fatalf("httpRequest attribute missing or wrong type: %T", entry["httpRequest"])
 	}
-	if got := httpPayload["requestMethod"]; got != stdhttp.MethodPost {
+	if got := httpPayload["requestMethod"]; got != http.MethodPost {
 		t.Fatalf("requestMethod = %v, want POST", got)
 	}
 	if got := httpPayload["remoteIp"]; got != "203.0.113.10" {
@@ -299,24 +299,24 @@ func TestWrapResponseWriterPreservesOptionalInterfaces(t *testing.T) {
 	t.Parallel()
 
 	base := newOptionalResponseWriter()
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/stream", stdhttp.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/stream", http.NoBody)
 	cfg := defaultConfig()
 	scope := newRequestScope(req, time.Now(), cfg)
 
 	wrapped, recorder := wrapResponseWriter(base, scope)
 
-	flusher, ok := wrapped.(stdhttp.Flusher)
+	flusher, ok := wrapped.(http.Flusher)
 	if !ok {
-		t.Fatalf("wrapped writer missing stdhttp.Flusher")
+		t.Fatalf("wrapped writer missing http.Flusher")
 	}
 	flusher.Flush()
 	if base.flushCount != 1 {
 		t.Fatalf("Flush not forwarded, got %d calls", base.flushCount)
 	}
 
-	hijacker, ok := wrapped.(stdhttp.Hijacker)
+	hijacker, ok := wrapped.(http.Hijacker)
 	if !ok {
-		t.Fatalf("wrapped writer missing stdhttp.Hijacker")
+		t.Fatalf("wrapped writer missing http.Hijacker")
 	}
 	hConn, hBuf, err := hijacker.Hijack()
 	if err != nil {
@@ -329,11 +329,11 @@ func TestWrapResponseWriterPreservesOptionalInterfaces(t *testing.T) {
 		t.Fatalf("Hijack returned unexpected bufio.ReadWriter")
 	}
 
-	pusher, ok := wrapped.(stdhttp.Pusher)
+	pusher, ok := wrapped.(http.Pusher)
 	if !ok {
-		t.Fatalf("wrapped writer missing stdhttp.Pusher")
+		t.Fatalf("wrapped writer missing http.Pusher")
 	}
-	if err := pusher.Push("/events", &stdhttp.PushOptions{Method: stdhttp.MethodGet}); err != nil {
+	if err := pusher.Push("/events", &http.PushOptions{Method: http.MethodGet}); err != nil {
 		t.Fatalf("Push error: %v", err)
 	}
 	if len(base.pushedTargets) != 1 || base.pushedTargets[0] != "/events" {
@@ -358,8 +358,8 @@ func TestWrapResponseWriterPreservesOptionalInterfaces(t *testing.T) {
 func TestWrapResponseWriterReadFromAccounting(t *testing.T) {
 	t.Parallel()
 
-	base := &readerFromResponseWriter{header: make(stdhttp.Header)}
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/download", stdhttp.NoBody)
+	base := &readerFromResponseWriter{header: make(http.Header)}
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/download", http.NoBody)
 	scope := newRequestScope(req, time.Now(), defaultConfig())
 
 	wrapped, recorder := wrapResponseWriter(base, scope)
@@ -391,22 +391,22 @@ func TestRequestScopeFinalizeClampsValues(t *testing.T) {
 	t.Parallel()
 
 	cfg := defaultConfig()
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/items?id=42", strings.NewReader("body"))
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/items?id=42", strings.NewReader("body"))
 	req.RemoteAddr = "203.0.113.5:443"
 
 	scope := newRequestScope(req, time.Now().Add(-10*time.Millisecond), cfg)
-	if scope.Status() != stdhttp.StatusOK {
-		t.Fatalf("default status = %d, want %d", scope.Status(), stdhttp.StatusOK)
+	if scope.Status() != http.StatusOK {
+		t.Fatalf("default status = %d, want %d", scope.Status(), http.StatusOK)
 	}
 
 	scope.setStatus(0)
-	if scope.Status() != stdhttp.StatusOK {
-		t.Fatalf("zero status fallback = %d, want %d", scope.Status(), stdhttp.StatusOK)
+	if scope.Status() != http.StatusOK {
+		t.Fatalf("zero status fallback = %d, want %d", scope.Status(), http.StatusOK)
 	}
 
-	scope.setStatus(stdhttp.StatusAccepted)
-	if scope.Status() != stdhttp.StatusAccepted {
-		t.Fatalf("setStatus = %d, want %d", scope.Status(), stdhttp.StatusAccepted)
+	scope.setStatus(http.StatusAccepted)
+	if scope.Status() != http.StatusAccepted {
+		t.Fatalf("setStatus = %d, want %d", scope.Status(), http.StatusAccepted)
 	}
 
 	scope.addResponseBytes(-1)
@@ -418,26 +418,59 @@ func TestRequestScopeFinalizeClampsValues(t *testing.T) {
 		t.Fatalf("ResponseSize = %d, want 128", scope.ResponseSize())
 	}
 
-	scope.finalize(stdhttp.StatusGatewayTimeout, 256, 25*time.Millisecond)
-	if scope.Status() != stdhttp.StatusGatewayTimeout {
-		t.Fatalf("finalize status = %d, want %d", scope.Status(), stdhttp.StatusGatewayTimeout)
+	scope.finalize(http.StatusGatewayTimeout, 256, 25*time.Millisecond)
+	if scope.Status() != http.StatusGatewayTimeout {
+		t.Fatalf("finalize status = %d, want %d", scope.Status(), http.StatusGatewayTimeout)
 	}
 	if scope.ResponseSize() != 256 {
 		t.Fatalf("finalize ResponseSize = %d, want 256", scope.ResponseSize())
 	}
-	if got := scope.Latency(); got != 25*time.Millisecond {
+	if got, _ := scope.Latency(); got != 25*time.Millisecond {
 		t.Fatalf("Latency = %v, want 25ms", got)
 	}
 
+	lat, finalized := scope.Latency()
+	if !finalized || lat != 25*time.Millisecond {
+		t.Fatalf("Latency finalized=%v val=%v, want finalized true and 25ms", finalized, lat)
+	}
+
 	scope.finalize(0, -1, -time.Millisecond)
-	if scope.Status() != stdhttp.StatusOK {
-		t.Fatalf("finalize fallback status = %d, want %d", scope.Status(), stdhttp.StatusOK)
+	if scope.Status() != http.StatusOK {
+		t.Fatalf("finalize fallback status = %d, want %d", scope.Status(), http.StatusOK)
 	}
 	if scope.ResponseSize() != 256 {
 		t.Fatalf("ResponseSize should remain unchanged, got %d", scope.ResponseSize())
 	}
 	if got := scope.latencyNS.Load(); got != 0 {
 		t.Fatalf("expected latencyNS clamp to 0, got %d", got)
+	}
+}
+
+// TestMetricAttrsLatencyFinalization ensures latency metric appears only after finalize.
+func TestMetricAttrsLatencyFinalization(t *testing.T) {
+	t.Parallel()
+
+	scope := newRequestScope(nil, time.Now(), defaultConfig())
+	inFlight := scope.metricAttrs()
+	for _, attr := range inFlight {
+		if attr.Key == "http.latency" {
+			t.Fatalf("http.latency should be omitted for in-flight metrics: %+v", attr)
+		}
+	}
+
+	scope.finalize(http.StatusOK, 0, 15*time.Millisecond)
+	finalAttrs := scope.metricAttrs()
+	found := false
+	for _, attr := range finalAttrs {
+		if attr.Key == "http.latency" {
+			found = true
+			if attr.Value.Resolve().Duration() != 15*time.Millisecond {
+				t.Fatalf("http.latency = %v, want 15ms", attr.Value.Resolve().Duration())
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("http.latency missing after finalize")
 	}
 }
 
@@ -458,7 +491,7 @@ func TestScopeFromContextNil(t *testing.T) {
 func TestNewRequestScopeInfersTLSScheme(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "http://example.com/secure", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/secure", nil)
 	req.URL.Scheme = ""
 	req.TLS = &tls.ConnectionState{}
 
@@ -472,23 +505,23 @@ func TestNewRequestScopeInfersTLSScheme(t *testing.T) {
 func TestResponseRecorderWriteAndStatus(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", stdhttp.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com", http.NoBody)
 	scope := newRequestScope(req, time.Now(), defaultConfig())
 	base := httptest.NewRecorder()
 
 	wrapped, recorder := wrapResponseWriter(base, scope)
-	if recorder.Status() != stdhttp.StatusOK {
-		t.Fatalf("initial Status() = %d, want %d", recorder.Status(), stdhttp.StatusOK)
+	if recorder.Status() != http.StatusOK {
+		t.Fatalf("initial Status() = %d, want %d", recorder.Status(), http.StatusOK)
 	}
-	wrapped.WriteHeader(stdhttp.StatusTeapot)
-	if recorder.Status() != stdhttp.StatusTeapot {
-		t.Fatalf("Status after WriteHeader = %d, want %d", recorder.Status(), stdhttp.StatusTeapot)
+	wrapped.WriteHeader(http.StatusTeapot)
+	if recorder.Status() != http.StatusTeapot {
+		t.Fatalf("Status after WriteHeader = %d, want %d", recorder.Status(), http.StatusTeapot)
 	}
 	if _, err := wrapped.Write([]byte("payload")); err != nil {
 		t.Fatalf("Write returned %v", err)
 	}
-	if recorder.Status() != stdhttp.StatusTeapot {
-		t.Fatalf("Status after write = %d, want %d", recorder.Status(), stdhttp.StatusTeapot)
+	if recorder.Status() != http.StatusTeapot {
+		t.Fatalf("Status after write = %d, want %d", recorder.Status(), http.StatusTeapot)
 	}
 	if recorder.BytesWritten() != int64(len("payload")) {
 		t.Fatalf("BytesWritten = %d, want %d", recorder.BytesWritten(), len("payload"))
@@ -502,14 +535,14 @@ func TestResponseRecorderWriteAndStatus(t *testing.T) {
 func TestResponseRecorderWriteAutoHeader(t *testing.T) {
 	t.Parallel()
 
-	scope := newRequestScope(httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
-	writer := &statusTrackingResponseWriter{header: make(stdhttp.Header)}
+	scope := newRequestScope(httptest.NewRequest(http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	writer := &statusTrackingResponseWriter{header: make(http.Header)}
 	wrapped, _ := wrapResponseWriter(writer, scope)
 
 	if _, err := wrapped.Write([]byte("payload")); err != nil {
 		t.Fatalf("Write returned error: %v", err)
 	}
-	if len(writer.codes) != 1 || writer.codes[0] != stdhttp.StatusOK {
+	if len(writer.codes) != 1 || writer.codes[0] != http.StatusOK {
 		t.Fatalf("WriteHeader codes = %#v, want [StatusOK]", writer.codes)
 	}
 }
@@ -518,23 +551,23 @@ func TestResponseRecorderWriteAutoHeader(t *testing.T) {
 func TestResponseRecorderWriteHeaderIgnoresDuplicates(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", stdhttp.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com", http.NoBody)
 	scope := newRequestScope(req, time.Now(), defaultConfig())
 
-	writer := &statusTrackingResponseWriter{header: make(stdhttp.Header)}
+	writer := &statusTrackingResponseWriter{header: make(http.Header)}
 	wrapped, recorder := wrapResponseWriter(writer, scope)
 
-	wrapped.WriteHeader(stdhttp.StatusAccepted)
-	wrapped.WriteHeader(stdhttp.StatusBadGateway)
+	wrapped.WriteHeader(http.StatusAccepted)
+	wrapped.WriteHeader(http.StatusBadGateway)
 
-	if recorder.Status() != stdhttp.StatusAccepted {
-		t.Fatalf("Status after duplicate headers = %d, want %d", recorder.Status(), stdhttp.StatusAccepted)
+	if recorder.Status() != http.StatusAccepted {
+		t.Fatalf("Status after duplicate headers = %d, want %d", recorder.Status(), http.StatusAccepted)
 	}
 	if len(writer.codes) != 2 {
 		t.Fatalf("underlying writer saw %d WriteHeader calls, want 2", len(writer.codes))
 	}
-	if writer.codes[1] != stdhttp.StatusBadGateway {
-		t.Fatalf("second WriteHeader status = %d, want %d", writer.codes[1], stdhttp.StatusBadGateway)
+	if writer.codes[1] != http.StatusBadGateway {
+		t.Fatalf("second WriteHeader status = %d, want %d", writer.codes[1], http.StatusBadGateway)
 	}
 }
 
@@ -542,8 +575,8 @@ func TestResponseRecorderWriteHeaderIgnoresDuplicates(t *testing.T) {
 func TestResponseRecorderReadFromFallback(t *testing.T) {
 	t.Parallel()
 
-	scope := newRequestScope(httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
-	base := &minimalResponseWriter{header: make(stdhttp.Header)}
+	scope := newRequestScope(httptest.NewRequest(http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	base := &minimalResponseWriter{header: make(http.Header)}
 
 	wrapped, recorder := wrapResponseWriter(base, scope)
 	readerFrom, ok := wrapped.(io.ReaderFrom)
@@ -570,11 +603,11 @@ func TestResponseRecorderReadFromFallback(t *testing.T) {
 func TestResponseRecorderWriteHandlesZeroBytes(t *testing.T) {
 	t.Parallel()
 
-	scope := newRequestScope(httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
-	base := &failingResponseWriter{header: make(stdhttp.Header)}
+	scope := newRequestScope(httptest.NewRequest(http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	base := &failingResponseWriter{header: make(http.Header)}
 
 	writer, recorder := wrapResponseWriter(base, scope)
-	writer.WriteHeader(stdhttp.StatusAccepted)
+	writer.WriteHeader(http.StatusAccepted)
 
 	if _, err := writer.Write([]byte("payload")); err == nil {
 		t.Fatalf("expected write failure from failingResponseWriter")
@@ -585,8 +618,8 @@ func TestResponseRecorderWriteHandlesZeroBytes(t *testing.T) {
 	if scope.ResponseSize() != 0 {
 		t.Fatalf("scope.ResponseSize = %d, want 0", scope.ResponseSize())
 	}
-	if base.status != stdhttp.StatusAccepted {
-		t.Fatalf("base status = %d, want %d", base.status, stdhttp.StatusAccepted)
+	if base.status != http.StatusAccepted {
+		t.Fatalf("base status = %d, want %d", base.status, http.StatusAccepted)
 	}
 }
 
@@ -594,8 +627,8 @@ func TestResponseRecorderWriteHandlesZeroBytes(t *testing.T) {
 func TestResponseRecorderReadFromDelegates(t *testing.T) {
 	t.Parallel()
 
-	scope := newRequestScope(httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
-	base := &readerFromResponseWriter{header: make(stdhttp.Header)}
+	scope := newRequestScope(httptest.NewRequest(http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	base := &readerFromResponseWriter{header: make(http.Header)}
 
 	wrapped, recorder := wrapResponseWriter(base, scope)
 	readerFrom, ok := wrapped.(io.ReaderFrom)
@@ -623,14 +656,14 @@ func TestResponseRecorderOptionalInterfacesFallback(t *testing.T) {
 	t.Parallel()
 
 	scope := newRequestScope(nil, time.Now(), defaultConfig())
-	base := &minimalResponseWriter{header: make(stdhttp.Header)}
+	base := &minimalResponseWriter{header: make(http.Header)}
 	_, recorder := wrapResponseWriter(base, scope)
 
 	recorder.Flush()
-	if _, _, err := recorder.Hijack(); !errors.Is(err, stdhttp.ErrNotSupported) {
+	if _, _, err := recorder.Hijack(); !errors.Is(err, http.ErrNotSupported) {
 		t.Fatalf("Hijack error = %v, want ErrNotSupported", err)
 	}
-	if err := recorder.Push("/events", nil); !errors.Is(err, stdhttp.ErrNotSupported) {
+	if err := recorder.Push("/events", nil); !errors.Is(err, http.ErrNotSupported) {
 		t.Fatalf("Push error = %v, want ErrNotSupported", err)
 	}
 	if ch := recorder.CloseNotify(); ch != nil {
@@ -757,7 +790,7 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 			SpanID:     spanID,
 			TraceFlags: trace.FlagsSampled,
 		}))
-		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 
 		gotCtx, sc := ensureSpanContext(ctx, req, defaultConfig())
 		if gotCtx != ctx {
@@ -772,7 +805,7 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 		cfg := defaultConfig()
 		cfg.propagators = propagation.TraceContext{}
 
-		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 		carrier := propagation.HeaderCarrier(req.Header)
 
 		src := trace.ContextWithRemoteSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
@@ -790,7 +823,7 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 	})
 
 	t.Run("xcloud", func(t *testing.T) {
-		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 		req.Header.Set(XCloudTraceContextHeader, traceID.String()+"/33;o=1")
 
 		_, sc := ensureSpanContext(context.Background(), req, defaultConfig())
@@ -800,7 +833,7 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 	})
 
 	t.Run("absent", func(t *testing.T) {
-		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 		if _, sc := ensureSpanContext(context.Background(), req, defaultConfig()); sc.IsValid() {
 			t.Fatalf("unexpected span context detected: %v", sc)
 		}
@@ -810,7 +843,7 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 		cfg := defaultConfig()
 		cfg.propagateTrace = false
 
-		req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 		req.Header.Set("traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
 
 		type markerKey struct{}
@@ -832,7 +865,7 @@ func TestEnsureSpanContextUsesLegacyHeader(t *testing.T) {
 
 	cfg := defaultConfig()
 	cfg.propagators = noopPropagator{}
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/1;o=1")
 
 	origExtractor := xCloudTraceContextExtractor
@@ -861,12 +894,12 @@ func TestResponseRecorderStatusCoversDefaults(t *testing.T) {
 	t.Parallel()
 
 	var rr responseRecorder
-	if got := rr.Status(); got != stdhttp.StatusOK {
-		t.Fatalf("Status() = %d, want %d", got, stdhttp.StatusOK)
+	if got := rr.Status(); got != http.StatusOK {
+		t.Fatalf("Status() = %d, want %d", got, http.StatusOK)
 	}
-	rr.status = stdhttp.StatusCreated
-	if got := rr.Status(); got != stdhttp.StatusCreated {
-		t.Fatalf("Status() = %d, want %d", got, stdhttp.StatusCreated)
+	rr.status = http.StatusCreated
+	if got := rr.Status(); got != http.StatusCreated {
+		t.Fatalf("Status() = %d, want %d", got, http.StatusCreated)
 	}
 }
 
@@ -875,7 +908,7 @@ func TestResponseRecorderReadFromWrapsError(t *testing.T) {
 	t.Parallel()
 
 	failing := &failingReaderFromWriter{
-		header: make(stdhttp.Header),
+		header: make(http.Header),
 		err:    errors.New("readfrom-fail"),
 	}
 	rr := &responseRecorder{ResponseWriter: failing, scope: &RequestScope{}}
@@ -893,7 +926,7 @@ func TestResponseRecorderReadFromWrapsError(t *testing.T) {
 func TestResponseRecorderCopyWrapsError(t *testing.T) {
 	t.Parallel()
 
-	failing := &failingResponseWriter{header: make(stdhttp.Header)}
+	failing := &failingResponseWriter{header: make(http.Header)}
 	rr := &responseRecorder{ResponseWriter: failing, scope: &RequestScope{}}
 
 	if _, err := rr.ReadFrom(strings.NewReader("payload")); err == nil || !strings.Contains(err.Error(), "copy response body") {
@@ -907,7 +940,7 @@ func TestResponseRecorderHijackWrapsError(t *testing.T) {
 
 	rr := &responseRecorder{
 		ResponseWriter: &errorHijackWriter{
-			header: make(stdhttp.Header),
+			header: make(http.Header),
 			err:    errors.New("hijack-fail"),
 		},
 		scope: &RequestScope{},
@@ -924,7 +957,7 @@ func TestResponseRecorderPushWrapsError(t *testing.T) {
 
 	rr := &responseRecorder{
 		ResponseWriter: &errorPushWriter{
-			header: make(stdhttp.Header),
+			header: make(http.Header),
 			err:    errors.New("push-fail"),
 		},
 		scope: &RequestScope{},
@@ -940,18 +973,18 @@ func TestRequestScopeStatusDefaults(t *testing.T) {
 	t.Parallel()
 
 	var scope RequestScope
-	if got := scope.Status(); got != stdhttp.StatusOK {
-		t.Fatalf("Status() = %d, want %d", got, stdhttp.StatusOK)
+	if got := scope.Status(); got != http.StatusOK {
+		t.Fatalf("Status() = %d, want %d", got, http.StatusOK)
 	}
-	scope.setStatus(stdhttp.StatusBadRequest)
-	if got := scope.Status(); got != stdhttp.StatusBadRequest {
-		t.Fatalf("Status() = %d, want %d", got, stdhttp.StatusBadRequest)
+	scope.setStatus(http.StatusBadRequest)
+	if got := scope.Status(); got != http.StatusBadRequest {
+		t.Fatalf("Status() = %d, want %d", got, http.StatusBadRequest)
 	}
 }
 
 // optionalResponseWriter implements every optional http.ResponseWriter interface for testing.
 type optionalResponseWriter struct {
-	header        stdhttp.Header
+	header        http.Header
 	status        int
 	flushCount    int
 	pushedTargets []string
@@ -963,7 +996,7 @@ type optionalResponseWriter struct {
 // newOptionalResponseWriter constructs a ResponseWriter implementing every optional interface.
 func newOptionalResponseWriter() *optionalResponseWriter {
 	return &optionalResponseWriter{
-		header:     make(stdhttp.Header),
+		header:     make(http.Header),
 		closeCh:    make(chan bool, 1),
 		hijackConn: nopConn{},
 		hijackRW:   bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
@@ -971,7 +1004,7 @@ func newOptionalResponseWriter() *optionalResponseWriter {
 }
 
 // Header implements http.ResponseWriter.
-func (o *optionalResponseWriter) Header() stdhttp.Header { return o.header }
+func (o *optionalResponseWriter) Header() http.Header { return o.header }
 
 // Write reports that len(p) bytes were written.
 func (o *optionalResponseWriter) Write(p []byte) (int, error) {
@@ -994,7 +1027,7 @@ func (o *optionalResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 // Push records the HTTP/2 push target for assertions.
-func (o *optionalResponseWriter) Push(target string, _ *stdhttp.PushOptions) error {
+func (o *optionalResponseWriter) Push(target string, _ *http.PushOptions) error {
 	o.pushedTargets = append(o.pushedTargets, target)
 	return nil
 }
@@ -1005,12 +1038,12 @@ func (o *optionalResponseWriter) CloseNotify() <-chan bool {
 }
 
 type failingResponseWriter struct {
-	header stdhttp.Header
+	header http.Header
 	status int
 }
 
 // Header implements http.ResponseWriter.
-func (f *failingResponseWriter) Header() stdhttp.Header { return f.header }
+func (f *failingResponseWriter) Header() http.Header { return f.header }
 
 // Write always reports no bytes written.
 func (f *failingResponseWriter) Write([]byte) (int, error) { return 0, errors.New("failing writer") }
@@ -1019,12 +1052,12 @@ func (f *failingResponseWriter) Write([]byte) (int, error) { return 0, errors.Ne
 func (f *failingResponseWriter) WriteHeader(status int) { f.status = status }
 
 type failingReaderFromWriter struct {
-	header stdhttp.Header
+	header http.Header
 	err    error
 }
 
 // Header implements http.ResponseWriter.
-func (f *failingReaderFromWriter) Header() stdhttp.Header { return f.header }
+func (f *failingReaderFromWriter) Header() http.Header { return f.header }
 
 // Write reports the number of bytes provided.
 func (f *failingReaderFromWriter) Write(p []byte) (int, error) { return len(p), nil }
@@ -1039,12 +1072,12 @@ func (f *failingReaderFromWriter) ReadFrom(src io.Reader) (int64, error) {
 }
 
 type errorHijackWriter struct {
-	header stdhttp.Header
+	header http.Header
 	err    error
 }
 
 // Header implements http.ResponseWriter.
-func (e *errorHijackWriter) Header() stdhttp.Header { return e.header }
+func (e *errorHijackWriter) Header() http.Header { return e.header }
 
 // Write writes len(p) bytes.
 func (e *errorHijackWriter) Write(p []byte) (int, error) { return len(p), nil }
@@ -1058,12 +1091,12 @@ func (e *errorHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 type errorPushWriter struct {
-	header stdhttp.Header
+	header http.Header
 	err    error
 }
 
 // Header implements http.ResponseWriter.
-func (e *errorPushWriter) Header() stdhttp.Header { return e.header }
+func (e *errorPushWriter) Header() http.Header { return e.header }
 
 // Write writes len(p) bytes.
 func (e *errorPushWriter) Write(p []byte) (int, error) { return len(p), nil }
@@ -1072,7 +1105,7 @@ func (e *errorPushWriter) Write(p []byte) (int, error) { return len(p), nil }
 func (e *errorPushWriter) WriteHeader(int) {}
 
 // Push returns the configured error for coverage.
-func (e *errorPushWriter) Push(string, *stdhttp.PushOptions) error {
+func (e *errorPushWriter) Push(string, *http.PushOptions) error {
 	return e.err
 }
 
@@ -1112,12 +1145,12 @@ func (a nopAddr) Network() string { return "nop" }
 func (a nopAddr) String() string { return string(a) }
 
 type readerFromResponseWriter struct {
-	header        stdhttp.Header
+	header        http.Header
 	readFromBytes int64
 }
 
 // Header implements http.ResponseWriter.
-func (r *readerFromResponseWriter) Header() stdhttp.Header { return r.header }
+func (r *readerFromResponseWriter) Header() http.Header { return r.header }
 
 // Write reports the number of bytes provided.
 func (r *readerFromResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
@@ -1134,11 +1167,11 @@ func (r *readerFromResponseWriter) ReadFrom(src io.Reader) (int64, error) {
 
 // minimalResponseWriter implements only the base ResponseWriter for fallback tests.
 type minimalResponseWriter struct {
-	header stdhttp.Header
+	header http.Header
 }
 
 // Header implements http.ResponseWriter.
-func (m *minimalResponseWriter) Header() stdhttp.Header { return m.header }
+func (m *minimalResponseWriter) Header() http.Header { return m.header }
 
 // Write writes len(p) bytes without exposing optional interfaces.
 func (m *minimalResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
@@ -1148,12 +1181,12 @@ func (m *minimalResponseWriter) WriteHeader(int) {}
 
 // statusTrackingResponseWriter records each WriteHeader invocation for verification.
 type statusTrackingResponseWriter struct {
-	header stdhttp.Header
+	header http.Header
 	codes  []int
 }
 
 // Header implements http.ResponseWriter.
-func (s *statusTrackingResponseWriter) Header() stdhttp.Header { return s.header }
+func (s *statusTrackingResponseWriter) Header() http.Header { return s.header }
 
 // Write reports bytes to satisfy the interface.
 func (s *statusTrackingResponseWriter) Write(p []byte) (int, error) { return len(p), nil }

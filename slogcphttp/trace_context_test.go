@@ -17,7 +17,7 @@ package slogcphttp
 import (
 	"context"
 	"errors"
-	stdhttp "net/http"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -161,10 +161,10 @@ func TestInjectTraceContextMiddlewareCoversBranches(t *testing.T) {
 
 	t.Run("existing-span", func(t *testing.T) {
 		var called bool
-		handler := mw(stdhttp.HandlerFunc(func(stdhttp.ResponseWriter, *stdhttp.Request) {
+		handler := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			called = true
 		}))
-		req := httptest.NewRequest(stdhttp.MethodGet, "http://example.com", nil).WithContext(existingCtx)
+		req := httptest.NewRequest(http.MethodGet, "http://example.com", nil).WithContext(existingCtx)
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 		if !called {
 			t.Fatalf("handler not invoked when span already present")
@@ -173,10 +173,10 @@ func TestInjectTraceContextMiddlewareCoversBranches(t *testing.T) {
 
 	t.Run("header-parsed", func(t *testing.T) {
 		var spanCtx trace.SpanContext
-		handler := mw(stdhttp.HandlerFunc(func(_ stdhttp.ResponseWriter, r *stdhttp.Request) {
+		handler := mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			spanCtx = trace.SpanContextFromContext(r.Context())
 		}))
-		req := httptest.NewRequest(stdhttp.MethodGet, "http://example.com", nil)
+		req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
 		req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/1;o=1")
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 		if !spanCtx.IsValid() {
@@ -186,10 +186,10 @@ func TestInjectTraceContextMiddlewareCoversBranches(t *testing.T) {
 
 	t.Run("missing-header", func(t *testing.T) {
 		var invoked bool
-		handler := mw(stdhttp.HandlerFunc(func(stdhttp.ResponseWriter, *stdhttp.Request) {
+		handler := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			invoked = true
 		}))
-		req := httptest.NewRequest(stdhttp.MethodGet, "http://example.com", nil)
+		req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 		if !invoked {
 			t.Fatalf("handler not invoked when header missing")
@@ -202,12 +202,12 @@ func TestInjectTraceContextMiddlewareExtractsHeader(t *testing.T) {
 	t.Parallel()
 
 	var captured trace.SpanContext
-	handler := InjectTraceContextMiddleware()(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	handler := InjectTraceContextMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		captured = trace.SpanContextFromContext(r.Context())
-		w.WriteHeader(stdhttp.StatusNoContent)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/10;o=1")
 
 	rr := httptest.NewRecorder()
@@ -237,12 +237,12 @@ func TestInjectTraceContextMiddlewareHonorsExistingSpan(t *testing.T) {
 	})
 
 	var ctxAfter trace.SpanContext
-	handler := InjectTraceContextMiddleware()(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	handler := InjectTraceContextMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctxAfter = trace.SpanContextFromContext(r.Context())
-		w.WriteHeader(stdhttp.StatusNoContent)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
 	req = req.WithContext(trace.ContextWithSpanContext(req.Context(), spanCtx))
 	req.Header.Set(XCloudTraceContextHeader, "00000000000000000000000000000000/5;o=1")
 
