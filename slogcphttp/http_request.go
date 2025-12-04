@@ -41,11 +41,20 @@ func HTTPRequestAttr(r *http.Request, scope *RequestScope) slog.Attr {
 	builder := func() *slogcp.HTTPRequest {
 		req := &slogcp.HTTPRequest{Request: r}
 		if scope != nil {
+			latency, finalized := scope.Latency()
 			req.RequestMethod = scope.Method()
 			req.RequestSize = scope.RequestSize()
-			req.ResponseSize = scope.ResponseSize()
-			req.Status = scope.Status()
-			req.Latency = latencyForLogging(scope)
+			if finalized {
+				req.ResponseSize = scope.ResponseSize()
+				req.Status = scope.Status()
+				req.Latency = latency
+			} else {
+				// Suppress in-flight response metadata; latencyForLogging
+				// uses a sentinel so Cloud Logging omits latency.
+				req.ResponseSize = -1
+				req.Status = 0
+				req.Latency = latencyForLogging(scope)
+			}
 			req.RemoteIP = scope.ClientIP()
 			req.UserAgent = scope.UserAgent()
 			if req.RequestURL == "" {
@@ -64,15 +73,25 @@ func HTTPRequestFromScope(scope *RequestScope) *slogcp.HTTPRequest {
 	if scope == nil {
 		return nil
 	}
+	latency, finalized := scope.Latency()
+	if !finalized {
+		latency = -time.Second
+	}
 	req := &slogcp.HTTPRequest{
 		RequestMethod: scope.Method(),
 		RequestURL:    buildRequestURLFromScope(scope),
 		RequestSize:   scope.RequestSize(),
-		ResponseSize:  scope.ResponseSize(),
-		Status:        scope.Status(),
-		Latency:       latencyForLogging(scope),
+		Latency:       latency,
 		RemoteIP:      scope.ClientIP(),
 		UserAgent:     scope.UserAgent(),
+	}
+	if finalized {
+		req.ResponseSize = scope.ResponseSize()
+		req.Status = scope.Status()
+	} else {
+		// Mark sizes as unknown while the response is still in flight.
+		req.ResponseSize = -1
+		req.Status = 0
 	}
 	slogcp.PrepareHTTPRequest(req)
 	return req

@@ -168,14 +168,21 @@ func flattenHTTPRequestToMap(req *HTTPRequest) *httpRequestPayload {
 		Referer:                        req.Referer,
 		Protocol:                       req.Protocol,
 		RequestSize:                    strconv.FormatInt(req.RequestSize, 10),
-		Status:                         req.Status,
-		ResponseSize:                   strconv.FormatInt(req.ResponseSize, 10),
 		RemoteIP:                       req.RemoteIP,
 		ServerIP:                       req.LocalIP,
 		CacheHit:                       req.CacheHit,
 		CacheValidatedWithOriginServer: req.CacheValidatedWithOriginServer,
-		CacheFillBytes:                 strconv.FormatInt(req.CacheFillBytes, 10),
 		CacheLookup:                    req.CacheLookup,
+	}
+
+	if req.Status > 0 {
+		payload.Status = req.Status
+	}
+	if req.ResponseSize >= 0 {
+		payload.ResponseSize = strconv.FormatInt(req.ResponseSize, 10)
+	}
+	if req.CacheFillBytes >= 0 {
+		payload.CacheFillBytes = strconv.FormatInt(req.CacheFillBytes, 10)
 	}
 
 	if req.Latency >= 0 {

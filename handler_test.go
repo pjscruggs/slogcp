@@ -1223,6 +1223,120 @@ func TestLoadConfigFromEnvTimeDefaultCloudRun(t *testing.T) {
 	}
 }
 
+// TestFileTargetDefaultsToTimeOnManagedGCP ensures file targets keep timestamps even on managed runtimes.
+func TestFileTargetDefaultsToTimeOnManagedGCP(t *testing.T) {
+	clearHandlerEnv(t)
+	t.Setenv("K_SERVICE", "svc")
+	t.Setenv("K_REVISION", "rev")
+	t.Setenv("K_CONFIGURATION", "cfg")
+	logPath := filepath.Join(t.TempDir(), "file.json")
+
+	h, err := NewHandler(nil, WithRedirectToFile(logPath))
+	if err != nil {
+		t.Fatalf("NewHandler returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Close returned %v", cerr)
+		}
+	})
+	if !h.cfg.EmitTimeField {
+		t.Fatalf("EmitTimeField = false, want true for file target on managed GCP runtimes")
+	}
+}
+
+// TestRedirectWriterFileDefaultsToTime ensures externally provided file writers keep timestamps.
+func TestRedirectWriterFileDefaultsToTime(t *testing.T) {
+	clearHandlerEnv(t)
+	t.Setenv("K_SERVICE", "svc")
+	t.Setenv("K_REVISION", "rev")
+	t.Setenv("K_CONFIGURATION", "cfg")
+	logPath := filepath.Join(t.TempDir(), "file.json")
+	file, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("os.Create(%q) returned %v", logPath, err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+	})
+
+	h, err := NewHandler(nil, WithRedirectWriter(file))
+	if err != nil {
+		t.Fatalf("NewHandler returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Close returned %v", cerr)
+		}
+	})
+	if !h.cfg.EmitTimeField {
+		t.Fatalf("EmitTimeField = false, want true for explicit file writer targets")
+	}
+}
+
+// TestFileTargetHonorsExplicitTimeDisable ensures file targets respect explicit WithTime(false) overrides.
+func TestFileTargetHonorsExplicitTimeDisable(t *testing.T) {
+	clearHandlerEnv(t)
+	t.Setenv("K_SERVICE", "svc")
+	t.Setenv("K_REVISION", "rev")
+	t.Setenv("K_CONFIGURATION", "cfg")
+	logPath := filepath.Join(t.TempDir(), "file.json")
+
+	h, err := NewHandler(nil, WithRedirectToFile(logPath), WithTime(false))
+	if err != nil {
+		t.Fatalf("NewHandler returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Close returned %v", cerr)
+		}
+	})
+	if h.cfg.EmitTimeField {
+		t.Fatalf("EmitTimeField = true, want false when WithTime(false) is provided for file targets")
+	}
+}
+
+// TestHasFileTargetNilConfig ensures a nil handler config is treated as having no file target.
+func TestHasFileTargetNilConfig(t *testing.T) {
+	if hasFileTarget(nil) {
+		t.Fatalf("hasFileTarget(nil) = true, want false")
+	}
+}
+
+// TestWriterIsFileTarget exercises edge cases around nested SwitchableWriter plumbing.
+func TestWriterIsFileTarget(t *testing.T) {
+	t.Run("nilWriter", func(t *testing.T) {
+		if writerIsFileTarget(nil, 0) {
+			t.Fatalf("writerIsFileTarget(nil, 0) = true, want false")
+		}
+	})
+
+	t.Run("switchableWriterDelegatesToFile", func(t *testing.T) {
+		logPath := filepath.Join(t.TempDir(), "writer.json")
+		file, err := os.Create(logPath)
+		if err != nil {
+			t.Fatalf("os.Create(%q) returned %v", logPath, err)
+		}
+		t.Cleanup(func() {
+			_ = file.Close()
+		})
+
+		sw := NewSwitchableWriter(file)
+		if !writerIsFileTarget(sw, 0) {
+			t.Fatalf("writerIsFileTarget() = false, want true for switchable writer backed by file")
+		}
+	})
+
+	t.Run("switchableWriterCycle", func(t *testing.T) {
+		sw := NewSwitchableWriter(nil)
+		sw.SetWriter(sw)
+
+		if writerIsFileTarget(sw, 0) {
+			t.Fatalf("writerIsFileTarget() = true, want false when SwitchableWriter returns itself")
+		}
+	})
+}
+
 // TestLoadConfigFromEnvStackTraceLevel confirms the stack trace level override is applied.
 func TestLoadConfigFromEnvStackTraceLevel(t *testing.T) {
 	clearHandlerEnv(t)

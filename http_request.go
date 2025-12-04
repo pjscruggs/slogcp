@@ -203,14 +203,20 @@ func httpRequestPayloadValue(payload *httpRequestPayload) slog.Value {
 		"referer":                        payload.Referer,
 		"protocol":                       payload.Protocol,
 		"requestSize":                    payload.RequestSize,
-		"status":                         payload.Status,
-		"responseSize":                   payload.ResponseSize,
 		"remoteIp":                       payload.RemoteIP,
 		"serverIp":                       payload.ServerIP,
 		"cacheHit":                       payload.CacheHit,
 		"cacheValidatedWithOriginServer": payload.CacheValidatedWithOriginServer,
-		"cacheFillBytes":                 payload.CacheFillBytes,
 		"cacheLookup":                    payload.CacheLookup,
+	}
+	if payload.Status > 0 {
+		m["status"] = payload.Status
+	}
+	if payload.ResponseSize != "" {
+		m["responseSize"] = payload.ResponseSize
+	}
+	if payload.CacheFillBytes != "" {
+		m["cacheFillBytes"] = payload.CacheFillBytes
 	}
 	if payload.Latency != "" {
 		m["latency"] = payload.Latency

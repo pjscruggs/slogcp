@@ -241,6 +241,12 @@ func TestHTTPRequestFromScopeBuildsSnapshot(t *testing.T) {
 	if req.Latency != -1 && req.Latency >= 0 {
 		t.Fatalf("Latency should be omitted when unset, got %v", req.Latency)
 	}
+	if req.Status != 0 {
+		t.Fatalf("Status should be suppressed for in-flight requests, got %d", req.Status)
+	}
+	if req.ResponseSize != -1 {
+		t.Fatalf("ResponseSize should be suppressed for in-flight requests, got %d", req.ResponseSize)
+	}
 }
 
 // TestHTTPRequestAttrMidRequestOmitsLatency ensures mid-request helper uses sentinel latency.
@@ -253,6 +259,12 @@ func TestHTTPRequestAttrMidRequestOmitsLatency(t *testing.T) {
 	payload := attr.Value.Resolve().Any().(map[string]any)
 	if _, ok := payload["latency"]; ok {
 		t.Fatalf("latency should be omitted for mid-request logs, got %#v", payload["latency"])
+	}
+	if _, ok := payload["status"]; ok {
+		t.Fatalf("status should be omitted for mid-request logs, got %#v", payload["status"])
+	}
+	if _, ok := payload["responseSize"]; ok {
+		t.Fatalf("responseSize should be omitted for mid-request logs, got %#v", payload["responseSize"])
 	}
 }
 
@@ -274,6 +286,17 @@ func TestLatencyForLoggingNilScope(t *testing.T) {
 
 	if got := latencyForLogging(nil); got != 0 {
 		t.Fatalf("latencyForLogging(nil) = %v, want 0", got)
+	}
+}
+
+// TestLatencyForLoggingFinalizedScope ensures finalized latencies are returned directly.
+func TestLatencyForLoggingFinalizedScope(t *testing.T) {
+	t.Parallel()
+
+	scope := &RequestScope{}
+	scope.latencyNS.Store(time.Second.Nanoseconds())
+	if got := latencyForLogging(scope); got != time.Second {
+		t.Fatalf("latencyForLogging(finalized) = %v, want %v", got, time.Second)
 	}
 }
 

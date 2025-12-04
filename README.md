@@ -41,7 +41,7 @@ In a typical Go service, you'd otherwise need to hand-roll a custom `slog.Handle
 CPU time is money. When you use a Cloud Logging client library and let it send logs to the Cloud Logging API, **your** billable service is responsible for marshaling every record into protobuf, maintaining gRPC streams, retrying transient failures, and batching writes across worker goroutines. If you don't configure the client correctly, [this can kill your performance](https://dev.to/siddhantkcode/2x-faster-40-less-ram-the-cloud-run-stdout-logging-hack-1iig). When you log to stdout, GCP's backend logging ingester handles all of that for you, free of charge.
 
 If it determines that it is running in a GCP environment, slogcp further reduces the billable CPU cycles spent on JSON marshalling by:
- - **suppressing `log/slog`'s automatic timestamping** since the logging ingester will automatically timestamp logs anyway
+ - **suppressing `log/slog`'s automatic timestamping** for stdout/stderr handlers since the logging ingester will automatically timestamp those entries (file targets keep timestamps so rotated/shipped logs stay annotated)
  - **using shorter, single-letter aliases for `severity`**, which the logging ingester will recognize and convert to their standard values
 
 #### Why not just use `cloud.google.com/go/logging` with `logging.RedirectAsJSON(os.Stdout)`?
