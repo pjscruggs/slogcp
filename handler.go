@@ -130,23 +130,24 @@ func (td *traceDiagnostics) warnUnknownProject() {
 }
 
 type handlerConfig struct {
-	Level                 slog.Level
-	AddSource             bool
-	EmitTimeField         bool
-	StackTraceEnabled     bool
-	StackTraceLevel       slog.Level
-	TraceProjectID        string
-	TraceDiagnostics      TraceDiagnosticsMode
-	UseShortSeverityNames bool
-	Writer                io.Writer
-	ClosableWriter        io.Closer
-	writerExternallyOwned bool
-	FilePath              string
-	ReplaceAttr           func([]string, slog.Attr) slog.Attr
-	Middlewares           []Middleware
-	InitialAttrs          []slog.Attr
-	InitialGroupedAttrs   []groupedAttr
-	InitialGroups         []string
+	Level                   slog.Level
+	AddSource               bool
+	EmitTimeField           bool
+	emitTimeFieldConfigured bool
+	StackTraceEnabled       bool
+	StackTraceLevel         slog.Level
+	TraceProjectID          string
+	TraceDiagnostics        TraceDiagnosticsMode
+	UseShortSeverityNames   bool
+	Writer                  io.Writer
+	ClosableWriter          io.Closer
+	writerExternallyOwned   bool
+	FilePath                string
+	ReplaceAttr             func([]string, slog.Attr) slog.Attr
+	Middlewares             []Middleware
+	InitialAttrs            []slog.Attr
+	InitialGroupedAttrs     []groupedAttr
+	InitialGroups           []string
 
 	runtimeLabels            map[string]string
 	runtimeServiceContext    map[string]string
@@ -206,6 +207,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 
 	applyOptions(&cfg, builder)
 	ensureWriterDefaults(&cfg, defaultWriter)
+	applyFileTargetTimeDefault(&cfg)
 
 	ownedFile, switchWriter, err := prepareFileWriter(&cfg)
 	if err != nil {
@@ -333,6 +335,46 @@ func ensureWriterDefaults(cfg *handlerConfig, defaultWriter io.Writer) {
 		}
 		cfg.writerExternallyOwned = true
 	}
+}
+
+// applyFileTargetTimeDefault enables timestamp emission when logging to files unless the user
+// explicitly set WithTime/SLOGCP_TIME.
+func applyFileTargetTimeDefault(cfg *handlerConfig) {
+	if cfg.emitTimeFieldConfigured {
+		return
+	}
+	if hasFileTarget(cfg) {
+		cfg.EmitTimeField = true
+	}
+}
+
+// hasFileTarget reports whether the handler is configured to write to a file rather than stdout/stderr.
+func hasFileTarget(cfg *handlerConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.FilePath != "" {
+		return true
+	}
+	return writerIsFileTarget(cfg.Writer, 0)
+}
+
+// writerIsFileTarget inspects writer plumbing (including SwitchableWriter) to detect file handles.
+func writerIsFileTarget(w io.Writer, depth int) bool {
+	if w == nil || depth > 1 {
+		return false
+	}
+	if f, ok := w.(*os.File); ok && f != nil && !isStdStream(f) {
+		return true
+	}
+	if sw, ok := w.(*SwitchableWriter); ok {
+		next := sw.GetCurrentWriter()
+		if next == w {
+			return false
+		}
+		return writerIsFileTarget(next, depth+1)
+	}
+	return false
 }
 
 // ensureWriterFallback guarantees cfg.Writer is non-nil even when no writer
@@ -616,9 +658,11 @@ func WithSourceLocationEnabled(enabled bool) Option {
 }
 
 // WithTime toggles emission of the top-level "time" field. By default slogcp
-// omits timestamps on managed GCP runtimes such as Cloud Run or App Engine,
-// since Cloud Logging stamps entries automatically. Enabling this option stops
-// slogcp from suppressing `log/slog`'s default timestamp behavior.
+// omits timestamps on managed GCP runtimes such as Cloud Run or App Engine
+// when writing to stdout/stderr, since Cloud Logging stamps entries
+// automatically. File targets keep timestamps by default so rotated or shipped
+// logs retain them. Enabling this option stops slogcp from suppressing
+// `log/slog`'s default timestamp behavior.
 func WithTime(enabled bool) Option {
 	return func(o *options) {
 		o.emitTimeField = &enabled
@@ -896,7 +940,7 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 
 	cfg.Level = parseLevelEnv(os.Getenv(envLogLevel), cfg.Level, logger)
 	cfg.AddSource = parseBoolEnv(os.Getenv(envLogSource), cfg.AddSource, logger)
-	cfg.EmitTimeField = parseBoolEnv(os.Getenv(envLogTime), cfg.EmitTimeField, logger)
+	cfg.EmitTimeField, cfg.emitTimeFieldConfigured = parseBoolEnvWithPresence(os.Getenv(envLogTime), cfg.EmitTimeField, logger)
 	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv(envLogStackEnabled), cfg.StackTraceEnabled, logger)
 	cfg.StackTraceLevel = parseLevelEnv(os.Getenv(envLogStackLevel), cfg.StackTraceLevel, logger)
 	cfg.UseShortSeverityNames = parseBoolEnv(os.Getenv(envSeverityAliases), cfg.UseShortSeverityNames, logger)
@@ -940,6 +984,7 @@ func applyLevelAndTraceOptions(cfg *handlerConfig, o *options) {
 	}
 	if o.emitTimeField != nil {
 		cfg.EmitTimeField = *o.emitTimeField
+		cfg.emitTimeFieldConfigured = true
 	}
 	if o.stackTraceEnabled != nil {
 		cfg.StackTraceEnabled = *o.stackTraceEnabled
@@ -1047,15 +1092,21 @@ func applyTargetFromEnv(cfg *handlerConfig, logger *slog.Logger) error {
 // parseBoolEnv interprets truthy environment variable values with validation
 // diagnostics.
 func parseBoolEnv(value string, current bool, logger *slog.Logger) bool {
+	val, _ := parseBoolEnvWithPresence(value, current, logger)
+	return val
+}
+
+// parseBoolEnvWithPresence parses boolean environment variables and reports whether a value was present.
+func parseBoolEnvWithPresence(value string, current bool, logger *slog.Logger) (bool, bool) {
 	if strings.TrimSpace(value) == "" {
-		return current
+		return current, false
 	}
 	b, err := strconv.ParseBool(value)
 	if err != nil {
 		logDiagnostic(logger, slog.LevelWarn, "invalid boolean environment variable", slog.String("value", value), slog.Any("error", err))
-		return current
+		return current, false
 	}
-	return b
+	return b, true
 }
 
 var envLevelAliases = map[string]slog.Level{
