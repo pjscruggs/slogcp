@@ -231,10 +231,15 @@ See [`.examples/http-client/main.go`](.examples/http-client/main.go) to watch th
 - Client interceptors inject W3C `traceparent` (and optionally `X-Cloud-Trace-Context`) into outgoing metadata; server interceptors extract context for correlation.
 - `ServerOptions` bundles slogcp interceptors with OpenTelemetry instrumentation for streamlined server registration; client code can use the provided interceptors directly.
 - See [`.examples/grpc/main.go`](.examples/grpc/main.go) for a Greeter service that uses the interceptors end-to-end.
+- If you're already invested in the [gRPC Ecosystem](https://github.com/grpc-ecosystem) ecosystem framework, slogcp still fits: use the ready-made [`slogcp-grpc-adapter`](https://github.com/pjscruggs/slogcp-grpc-adapter) module to have its logging interceptors emit slogcp/Cloud Logging–friendly JSON.
 
 ## Integration with other libraries
 
 Since slogcp is just a `slog.Handler`, it can easily be integrated with other popular slog libraries.
+
+### go-grpc-middleware
+
+Using [`github.com/grpc-ecosystem/go-grpc-middleware`](https://github.com/grpc-ecosystem/go-grpc-middleware) for gRPC logging doesn’t block you from adopting slogcp. There’s a ready-made adapter, [`slogcp-grpc-adapter`](https://github.com/pjscruggs/slogcp-grpc-adapter), that plugs slogcp into its logging interceptors so you keep your existing interceptor chains while getting Cloud Logging–native JSON, trace correlation, and Error Reporting behavior.
 
 ### masq
 
@@ -246,7 +251,7 @@ Redirect slogcp output to a timberjack rotating writer with `WithRedirectWriter`
 
 ## Advanced configuration
 
-For gRPC interceptors and more advanced middleware options, see the [Configuration Documentation](docs/CONFIGURATION.md).
+For more advanced middleware options, see the [Configuration Documentation](docs/CONFIGURATION.md).
 
 ## License
 
