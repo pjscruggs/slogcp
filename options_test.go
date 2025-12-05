@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package slogcp_test
+package slogcp
 
 import (
 	"bytes"
@@ -21,8 +21,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-
-	"github.com/pjscruggs/slogcp"
 )
 
 // TestWithLevelControlsLogging ensures log level options filter lower-severity records.
@@ -30,9 +28,9 @@ func TestWithLevelControlsLogging(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithRedirectWriter(&buf),
-		slogcp.WithLevel(slog.LevelWarn),
+	h, err := NewHandler(io.Discard,
+		WithRedirectWriter(&buf),
+		WithLevel(slog.LevelWarn),
 	)
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v, want nil", err)
@@ -61,9 +59,9 @@ func TestWithAttrsAddsStaticAttributes(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithRedirectWriter(&buf),
-		slogcp.WithAttrs([]slog.Attr{slog.String("global", "yes")}),
+	h, err := NewHandler(io.Discard,
+		WithRedirectWriter(&buf),
+		WithAttrs([]slog.Attr{slog.String("global", "yes")}),
 	)
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v, want nil", err)
@@ -90,9 +88,9 @@ func TestWithGroupNestsAttributes(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithRedirectWriter(&buf),
-		slogcp.WithGroup("service"),
+	h, err := NewHandler(io.Discard,
+		WithRedirectWriter(&buf),
+		WithGroup("service"),
 	)
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v, want nil", err)
@@ -127,10 +125,10 @@ func TestWithGroupAccumulatesOptions(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithRedirectWriter(&buf),
-		slogcp.WithGroup("service"),
-		slogcp.WithGroup("auth"),
+	h, err := NewHandler(io.Discard,
+		WithRedirectWriter(&buf),
+		WithGroup("service"),
+		WithGroup("auth"),
 	)
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v, want nil", err)
@@ -173,9 +171,9 @@ func TestWithGroupTrimsWhitespace(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithRedirectWriter(&buf),
-		slogcp.WithGroup("  service  "),
+	h, err := NewHandler(io.Discard,
+		WithRedirectWriter(&buf),
+		WithGroup("  service  "),
 	)
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v, want nil", err)
@@ -205,10 +203,10 @@ func TestWithGroupClearsWhenBlank(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithRedirectWriter(&buf),
-		slogcp.WithGroup("parent"),
-		slogcp.WithGroup("   "), // clears groups
+	h, err := NewHandler(io.Discard,
+		WithRedirectWriter(&buf),
+		WithGroup("parent"),
+		WithGroup("   "), // clears groups
 	)
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v, want nil", err)
@@ -240,12 +238,12 @@ func TestWithGroupOrdersStaticAttrs(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
-	h, err := slogcp.NewHandler(io.Discard,
-		slogcp.WithRedirectWriter(&buf),
-		slogcp.WithGroup("service"),
-		slogcp.WithAttrs([]slog.Attr{slog.String("svc_attr", "v1")}),
-		slogcp.WithGroup("request"),
-		slogcp.WithAttrs([]slog.Attr{slog.String("req_attr", "v2")}),
+	h, err := NewHandler(io.Discard,
+		WithRedirectWriter(&buf),
+		WithGroup("service"),
+		WithAttrs([]slog.Attr{slog.String("svc_attr", "v1")}),
+		WithGroup("request"),
+		WithAttrs([]slog.Attr{slog.String("req_attr", "v2")}),
 	)
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v, want nil", err)
@@ -279,5 +277,41 @@ func TestWithGroupOrdersStaticAttrs(t *testing.T) {
 	}
 	if _, wrapped := requestGroup["svc_attr"]; wrapped {
 		t.Fatalf("svc_attr should remain at service level, got wrapped inside request: %#v", requestGroup)
+	}
+}
+
+// TestWithAttrsSkipsEmptySlices ensures empty slices do not mutate options state.
+func TestWithAttrsSkipsEmptySlices(t *testing.T) {
+	t.Parallel()
+
+	opt := WithAttrs(nil)
+	opts := &options{}
+	opt(opts)
+	if len(opts.attrs) != 0 {
+		t.Fatalf("opts.attrs length = %d, want 0", len(opts.attrs))
+	}
+
+	opt = WithAttrs([]slog.Attr{})
+	opt(opts)
+	if len(opts.attrs) != 0 {
+		t.Fatalf("opts.attrs should remain empty for blank slices")
+	}
+}
+
+// TestWithAttrsCopiesInput verifies the option stores its own copy of the provided attributes.
+func TestWithAttrsCopiesInput(t *testing.T) {
+	t.Parallel()
+
+	input := []slog.Attr{slog.String("mutable", "before")}
+	opts := &options{}
+	WithAttrs(input)(opts)
+
+	input[0] = slog.String("mutable", "after")
+
+	if len(opts.attrs) != 1 || len(opts.attrs[0]) != 1 {
+		t.Fatalf("opts.attrs not populated as expected: %#v", opts.attrs)
+	}
+	if got := opts.attrs[0][0].Value.String(); got != "before" {
+		t.Fatalf("copied attribute = %q, want %q", got, "before")
 	}
 }

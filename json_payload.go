@@ -61,26 +61,23 @@ func resolveSlogValue(v slog.Value) any {
 	}
 	rv := v.Resolve()
 
+	if val, handled := resolveGroupValue(rv); handled {
+		return val
+	}
+	return resolveResolvedValue(rv)
+}
+
+// resolveGroupValue handles slog.KindGroup values.
+func resolveGroupValue(rv slog.Value) (any, bool) {
+	if rv.Kind() != slog.KindGroup {
+		return nil, false
+	}
+	return resolveGroupAttrs(rv.Group()), true
+}
+
+// resolveResolvedValue converts resolved slog.Value kinds into Go values.
+func resolveResolvedValue(rv slog.Value) any {
 	switch rv.Kind() {
-	case slog.KindGroup:
-		groupAttrs := rv.Group()
-		if len(groupAttrs) == 0 {
-			return nil
-		}
-		groupMap := make(map[string]any, len(groupAttrs))
-		for _, ga := range groupAttrs {
-			if ga.Key == "" {
-				continue
-			}
-			resolvedGroupVal := resolveSlogValue(ga.Value)
-			if resolvedGroupVal != nil {
-				groupMap[ga.Key] = resolvedGroupVal
-			}
-		}
-		if len(groupMap) == 0 {
-			return nil
-		}
-		return groupMap
 	case slog.KindBool:
 		return rv.Bool()
 	case slog.KindDuration:
@@ -96,18 +93,42 @@ func resolveSlogValue(v slog.Value) any {
 	case slog.KindUint64:
 		return rv.Uint64()
 	case slog.KindAny:
-		fallthrough
+		return resolveAnyValue(rv.Any())
 	default:
-		val := rv.Any()
-		switch vt := val.(type) {
-		case error:
-			return vt.Error()
-		case *http.Request:
-			return nil
+		return nil
+	}
+}
+
+// resolveGroupAttrs converts slog group attributes into a map, omitting blanks.
+func resolveGroupAttrs(groupAttrs []slog.Attr) any {
+	if len(groupAttrs) == 0 {
+		return nil
+	}
+	groupMap := make(map[string]any, len(groupAttrs))
+	for _, ga := range groupAttrs {
+		if ga.Key == "" {
+			continue
 		}
-		if val == nil {
-			return nil
+		if resolvedGroupVal := resolveSlogValue(ga.Value); resolvedGroupVal != nil {
+			groupMap[ga.Key] = resolvedGroupVal
 		}
+	}
+	if len(groupMap) == 0 {
+		return nil
+	}
+	return groupMap
+}
+
+// resolveAnyValue unwraps common AnyValue types to JSON-friendly forms.
+func resolveAnyValue(val any) any {
+	switch vt := val.(type) {
+	case error:
+		return vt.Error()
+	case *http.Request:
+		return nil
+	case nil:
+		return nil
+	default:
 		return val
 	}
 }
@@ -147,21 +168,33 @@ func flattenHTTPRequestToMap(req *HTTPRequest) *httpRequestPayload {
 		Referer:                        req.Referer,
 		Protocol:                       req.Protocol,
 		RequestSize:                    strconv.FormatInt(req.RequestSize, 10),
-		Status:                         req.Status,
-		ResponseSize:                   strconv.FormatInt(req.ResponseSize, 10),
 		RemoteIP:                       req.RemoteIP,
 		ServerIP:                       req.LocalIP,
 		CacheHit:                       req.CacheHit,
 		CacheValidatedWithOriginServer: req.CacheValidatedWithOriginServer,
-		CacheFillBytes:                 strconv.FormatInt(req.CacheFillBytes, 10),
 		CacheLookup:                    req.CacheLookup,
 	}
 
-	if req.Latency > 0 {
-		payload.Latency = fmt.Sprintf("%.9fs", req.Latency.Seconds())
+	if req.Status > 0 {
+		payload.Status = req.Status
+	}
+	if req.ResponseSize >= 0 {
+		payload.ResponseSize = strconv.FormatInt(req.ResponseSize, 10)
+	}
+	if req.CacheFillBytes >= 0 {
+		payload.CacheFillBytes = strconv.FormatInt(req.CacheFillBytes, 10)
+	}
+
+	if req.Latency >= 0 {
+		payload.Latency = formatLatency(req.Latency)
 	}
 
 	return &payload
+}
+
+// formatLatency renders a duration as a Cloud Logging-compatible string.
+func formatLatency(d time.Duration) string {
+	return fmt.Sprintf("%.9fs", d.Seconds())
 }
 
 // labelValueToString converts a slog.Value into its string form suitable for label emission.
@@ -177,26 +210,35 @@ func labelValueToString(v slog.Value) (string, bool) {
 	case slog.KindFloat64:
 		return strconv.FormatFloat(rv.Float64(), 'g', -1, 64), true
 	case slog.KindBool:
-		if rv.Bool() {
-			return "true", true
-		}
-		return "false", true
+		return boolLabel(rv.Bool())
 	case slog.KindDuration:
 		return rv.Duration().String(), true
 	case slog.KindTime:
 		return rv.Time().Format(time.RFC3339), true
 	case slog.KindAny:
-		val := rv.Any()
-		if s, ok := val.(fmt.Stringer); ok {
-			return s.String(), true
-		}
-		if val == nil {
-			return "", false
-		}
-		return fmt.Sprintf("%v", val), true
+		return labelFromAny(rv.Any())
 	default:
 		return "", false
 	}
+}
+
+// boolLabel formats boolean values for labels.
+func boolLabel(value bool) (string, bool) {
+	if value {
+		return "true", true
+	}
+	return "false", true
+}
+
+// labelFromAny converts arbitrary values into label strings when possible.
+func labelFromAny(val any) (string, bool) {
+	if s, ok := val.(fmt.Stringer); ok {
+		return s.String(), true
+	}
+	if val == nil {
+		return "", false
+	}
+	return fmt.Sprintf("%v", val), true
 }
 
 // cloneStringMap clones a string map while preserving nil for empty inputs.

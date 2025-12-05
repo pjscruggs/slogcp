@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	stdhttp "net/http"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -228,7 +228,7 @@ func TestHTTPRequestAttrCoexistsWithHTTPAttributes(t *testing.T) {
 		slogcphttp.WithOTel(false),
 		slogcphttp.WithIncludeQuery(true),
 		slogcphttp.WithUserAgent(true),
-	)(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		scope, ok := slogcphttp.ScopeFromContext(r.Context())
 		if !ok {
 			t.Fatalf("ScopeFromContext missing")
@@ -236,13 +236,13 @@ func TestHTTPRequestAttrCoexistsWithHTTPAttributes(t *testing.T) {
 		capturedScope = scope
 		capturedLogger = slogcp.Logger(r.Context())
 
-		w.WriteHeader(stdhttp.StatusAccepted)
+		w.WriteHeader(http.StatusAccepted)
 		if _, err := w.Write([]byte("ok")); err != nil {
 			t.Fatalf("write response: %v", err)
 		}
 	}))
 
-	req := httptest.NewRequest(stdhttp.MethodGet, "https://example.com/widgets/42?q=blue", stdhttp.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/widgets/42?q=blue", http.NoBody)
 	req.RemoteAddr = "198.51.100.50:9000"
 	req.Header.Set("User-Agent", "middleware-test/1.0")
 
@@ -273,8 +273,8 @@ func TestHTTPRequestAttrCoexistsWithHTTPAttributes(t *testing.T) {
 	if got := httpReq["requestMethod"]; got != "GET" {
 		t.Fatalf("requestMethod = %v, want GET", got)
 	}
-	if got := httpReq["status"]; got != float64(stdhttp.StatusAccepted) {
-		t.Fatalf("status = %v, want %d", got, stdhttp.StatusAccepted)
+	if got := httpReq["status"]; got != float64(http.StatusAccepted) {
+		t.Fatalf("status = %v, want %d", got, http.StatusAccepted)
 	}
 	if got := httpReq["requestSize"]; got != "0" {
 		t.Fatalf("requestSize = %v, want 0", got)
@@ -342,7 +342,7 @@ func TestTraceContextPropagation(t *testing.T) {
 		slogcphttp.Middleware(
 			slogcphttp.WithLogger(baseLogger),
 			slogcphttp.WithProjectID("my-project"),
-		)(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			slogcp.Logger(r.Context()).InfoContext(r.Context(), "trace test")
 		})),
 	)

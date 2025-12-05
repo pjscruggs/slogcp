@@ -21,7 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	stdhttp "net/http"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -40,91 +40,20 @@ var xCloudTraceContextExtractor = contextWithXCloudTrace
 
 // Middleware returns an http.Handler middleware that derives a request-scoped
 // logger, extracts trace context, and leaves application logging to handlers.
-func Middleware(opts ...Option) func(stdhttp.Handler) stdhttp.Handler {
+func Middleware(opts ...Option) func(http.Handler) http.Handler {
 	cfg := applyOptions(opts)
 
-	projectID := strings.TrimSpace(cfg.projectID)
-	if projectID == "" {
-		projectID = strings.TrimSpace(slogcp.DetectRuntimeInfo().ProjectID)
-	}
+	projectID := resolveProjectID(cfg.projectID)
 
-	return func(next stdhttp.Handler) stdhttp.Handler {
+	return func(next http.Handler) http.Handler {
 		if next == nil {
-			next = stdhttp.NotFoundHandler()
+			next = http.NotFoundHandler()
 		}
 
-		loggingHandler := stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-			start := time.Now()
+		loggingHandler := buildLoggingHandler(cfg, projectID, next)
+		handlerChain := wrapWithOTel(cfg, loggingHandler)
 
-			ctx := r.Context()
-
-			scope := newRequestScope(r, start, cfg)
-
-			traceAttrs, _ := slogcp.TraceAttributes(ctx, projectID)
-
-			attrs := scope.loggerAttrs(cfg, traceAttrs)
-			for _, enricher := range cfg.attrEnrichers {
-				if enricher == nil {
-					continue
-				}
-				if extra := enricher(r, scope); len(extra) > 0 {
-					attrs = append(attrs, extra...)
-				}
-			}
-			if cfg.includeHTTPRequestAttr {
-				if attr := HTTPRequestAttr(r, scope); attr.Key != "" {
-					attrs = append(attrs, attr)
-				}
-			}
-			for _, transformer := range cfg.attrTransformers {
-				if transformer == nil {
-					continue
-				}
-				attrs = transformer(attrs, r, scope)
-			}
-
-			requestLogger := loggerWithAttrs(cfg.logger, attrs)
-
-			ctx = slogcp.ContextWithLogger(ctx, requestLogger)
-			ctx = context.WithValue(ctx, requestScopeKey{}, scope)
-			r = r.WithContext(ctx)
-
-			wrapped, recorder := wrapResponseWriter(w, scope)
-
-			defer func() {
-				scope.finalize(recorder.Status(), recorder.BytesWritten(), time.Since(start))
-			}()
-
-			next.ServeHTTP(wrapped, r)
-		})
-
-		handlerChain := stdhttp.Handler(loggingHandler)
-
-		if cfg.enableOTel {
-			otelOpts := []otelhttp.Option{}
-			if cfg.tracerProvider != nil {
-				otelOpts = append(otelOpts, otelhttp.WithTracerProvider(cfg.tracerProvider))
-			}
-			if cfg.propagatorsSet && cfg.propagators != nil {
-				otelOpts = append(otelOpts, otelhttp.WithPropagators(cfg.propagators))
-			}
-			if cfg.publicEndpoint {
-				otelOpts = append(otelOpts, otelhttp.WithPublicEndpoint())
-			}
-			if cfg.spanNameFormatter != nil {
-				otelOpts = append(otelOpts, otelhttp.WithSpanNameFormatter(cfg.spanNameFormatter))
-			}
-			for _, filter := range cfg.filters {
-				if filter != nil {
-					otelOpts = append(otelOpts, otelhttp.WithFilter(filter))
-				}
-			}
-
-			handlerChain = otelhttp.NewHandler(handlerChain, instrumentationName, otelOpts...)
-		}
-
-		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-			// Ensure remote trace context is present before otelhttp observes the request.
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 			if newCtx, _ := ensureSpanContext(ctx, r, cfg); newCtx != ctx {
 				r = r.WithContext(newCtx)
@@ -132,6 +61,107 @@ func Middleware(opts ...Option) func(stdhttp.Handler) stdhttp.Handler {
 			handlerChain.ServeHTTP(w, r)
 		})
 	}
+}
+
+// resolveProjectID derives a project ID from configuration or runtime detection.
+func resolveProjectID(configured string) string {
+	projectID := strings.TrimSpace(configured)
+	if projectID != "" {
+		return projectID
+	}
+	return strings.TrimSpace(slogcp.DetectRuntimeInfo().ProjectID)
+}
+
+// buildLoggingHandler constructs the logging middleware around the next handler.
+func buildLoggingHandler(cfg *config, projectID string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ctx := r.Context()
+		scope := newRequestScope(r, start, cfg)
+
+		attrs := buildRequestAttributes(cfg, projectID, r, scope)
+		requestLogger := loggerWithAttrs(cfg.logger, attrs)
+
+		ctx = slogcp.ContextWithLogger(ctx, requestLogger)
+		ctx = context.WithValue(ctx, requestScopeKey{}, scope)
+		r = r.WithContext(ctx)
+
+		wrapped, recorder := wrapResponseWriter(w, scope)
+		defer func() {
+			scope.finalize(recorder.Status(), recorder.BytesWritten(), time.Since(start))
+		}()
+
+		next.ServeHTTP(wrapped, r)
+	})
+}
+
+// buildRequestAttributes assembles request-scoped attributes including enrichers.
+func buildRequestAttributes(cfg *config, projectID string, r *http.Request, scope *RequestScope) []slog.Attr {
+	traceAttrs, _ := slogcp.TraceAttributes(r.Context(), projectID)
+	attrs := scope.loggerAttrs(cfg, traceAttrs)
+	attrs = applyRequestEnrichers(cfg, attrs, r, scope)
+	if cfg.includeHTTPRequestAttr {
+		if attr := HTTPRequestAttr(r, scope); attr.Key != "" {
+			attrs = append(attrs, attr)
+		}
+	}
+	return applyRequestTransformers(cfg, attrs, r, scope)
+}
+
+// applyRequestEnrichers appends attributes produced by attrEnrichers.
+func applyRequestEnrichers(cfg *config, attrs []slog.Attr, r *http.Request, scope *RequestScope) []slog.Attr {
+	for _, enricher := range cfg.attrEnrichers {
+		if enricher == nil {
+			continue
+		}
+		if extra := enricher(r, scope); len(extra) > 0 {
+			attrs = append(attrs, extra...)
+		}
+	}
+	return attrs
+}
+
+// applyRequestTransformers feeds attributes through configured transformers.
+func applyRequestTransformers(cfg *config, attrs []slog.Attr, r *http.Request, scope *RequestScope) []slog.Attr {
+	for _, transformer := range cfg.attrTransformers {
+		if transformer == nil {
+			continue
+		}
+		attrs = transformer(attrs, r, scope)
+	}
+	return attrs
+}
+
+// wrapWithOTel wraps handler with otelhttp middleware when enabled.
+func wrapWithOTel(cfg *config, handler http.Handler) http.Handler {
+	if !cfg.enableOTel {
+		return handler
+	}
+
+	return otelhttp.NewHandler(handler, instrumentationName, otelOptions(cfg)...)
+}
+
+// otelOptions builds OpenTelemetry handler options from configuration.
+func otelOptions(cfg *config) []otelhttp.Option {
+	var otelOpts []otelhttp.Option
+	if cfg.tracerProvider != nil {
+		otelOpts = append(otelOpts, otelhttp.WithTracerProvider(cfg.tracerProvider))
+	}
+	if cfg.propagatorsSet && cfg.propagators != nil {
+		otelOpts = append(otelOpts, otelhttp.WithPropagators(cfg.propagators))
+	}
+	if cfg.publicEndpoint {
+		otelOpts = append(otelOpts, otelhttp.WithPublicEndpoint())
+	}
+	if cfg.spanNameFormatter != nil {
+		otelOpts = append(otelOpts, otelhttp.WithSpanNameFormatter(cfg.spanNameFormatter))
+	}
+	for _, filter := range cfg.filters {
+		if filter != nil {
+			otelOpts = append(otelOpts, otelhttp.WithFilter(filter))
+		}
+	}
+	return otelOpts
 }
 
 // RequestScope captures request metadata surfaced to handlers via context.
@@ -152,48 +182,73 @@ type RequestScope struct {
 	latencyNS atomic.Int64
 }
 
+const unsetLatencySentinel = int64(-1)
+
 // newRequestScope builds a RequestScope capturing request metadata and defaults.
-func newRequestScope(r *stdhttp.Request, start time.Time, cfg *config) *RequestScope {
+func newRequestScope(r *http.Request, start time.Time, cfg *config) *RequestScope {
 	scope := &RequestScope{
 		start: start,
 	}
 
 	if r != nil {
-		scope.requestSize = r.ContentLength
-		scope.method = r.Method
-		if r.URL != nil {
-			scope.target = r.URL.Path
-			scope.query = r.URL.RawQuery
-			scope.scheme = r.URL.Scheme
-			if scope.scheme == "" {
-				if r.TLS != nil {
-					scope.scheme = "https"
-				} else {
-					scope.scheme = "http"
-				}
-			}
-			scope.host = r.Host
-		}
-		scope.userAgent = r.UserAgent()
-		if cfg.includeClientIP {
-			scope.clientIP = extractIP(r.RemoteAddr)
-		}
-		if cfg.routeGetter != nil {
-			scope.route = strings.TrimSpace(cfg.routeGetter(r))
-		}
+		scope.populateFromRequest(r, cfg)
 	}
 
-	scope.status.Store(stdhttp.StatusOK)
-	scope.latencyNS.Store(-1)
+	scope.status.Store(http.StatusOK)
+	scope.latencyNS.Store(unsetLatencySentinel)
 	return scope
+}
+
+// populateFromRequest copies request metadata into the scope.
+func (rs *RequestScope) populateFromRequest(r *http.Request, cfg *config) {
+	rs.requestSize = r.ContentLength
+	rs.method = r.Method
+	rs.populateURLFields(r)
+	rs.userAgent = r.UserAgent()
+	if cfg.includeClientIP {
+		rs.clientIP = extractIP(r.RemoteAddr)
+	}
+	if cfg.routeGetter != nil {
+		rs.route = strings.TrimSpace(cfg.routeGetter(r))
+	}
+}
+
+// populateURLFields fills URL-derived fields including scheme and host.
+func (rs *RequestScope) populateURLFields(r *http.Request) {
+	if r.URL == nil {
+		return
+	}
+	rs.target = r.URL.Path
+	rs.query = r.URL.RawQuery
+	rs.scheme = r.URL.Scheme
+	if rs.scheme == "" {
+		rs.scheme = inferScheme(r)
+	}
+	rs.host = r.Host
+}
+
+// inferScheme determines http/https scheme based on TLS presence.
+func inferScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 // loggerAttrs assembles the structured log attributes for the request scope.
 func (rs *RequestScope) loggerAttrs(cfg *config, traceAttrs []slog.Attr) []slog.Attr {
 	attrs := make([]slog.Attr, 0, len(traceAttrs)+10)
-	if len(traceAttrs) > 0 {
-		attrs = append(attrs, traceAttrs...)
-	}
+	attrs = append(attrs, traceAttrs...)
+	attrs = append(attrs, rs.requestCoreAttrs(cfg)...)
+	attrs = append(attrs, rs.metricAttrs()...)
+	attrs = append(attrs, rs.sizeAttrs()...)
+	attrs = append(attrs, rs.clientAttrs(cfg)...)
+	return attrs
+}
+
+// requestCoreAttrs returns method/target/route/scheme/host attributes.
+func (rs *RequestScope) requestCoreAttrs(cfg *config) []slog.Attr {
+	var attrs []slog.Attr
 	if rs.method != "" {
 		attrs = append(attrs, slog.String("http.method", rs.method))
 	}
@@ -212,27 +267,51 @@ func (rs *RequestScope) loggerAttrs(cfg *config, traceAttrs []slog.Attr) []slog.
 	if rs.host != "" {
 		attrs = append(attrs, slog.String("http.host", rs.host))
 	}
-	attrs = append(attrs, slog.Attr{
-		Key: "http.status_code",
-		Value: slog.AnyValue(logValueFunc(func() slog.Value {
-			return slog.IntValue(rs.Status())
-		})),
-	})
-	attrs = append(attrs, slog.Attr{
-		Key: "http.latency",
-		Value: slog.AnyValue(logValueFunc(func() slog.Value {
-			return slog.DurationValue(rs.Latency())
-		})),
-	})
-	attrs = append(attrs, slog.Attr{
-		Key: "http.response_size",
-		Value: slog.AnyValue(logValueFunc(func() slog.Value {
-			return slog.Int64Value(rs.ResponseSize())
-		})),
-	})
-	if rs.requestSize > 0 {
-		attrs = append(attrs, slog.Int64("http.request_size", rs.requestSize))
+	return attrs
+}
+
+// metricAttrs supplies status, latency, and response size attributes.
+func (rs *RequestScope) metricAttrs() []slog.Attr {
+	lat, finalized := rs.Latency()
+
+	attrs := []slog.Attr{
+		{
+			Key: "http.status_code",
+			Value: slog.AnyValue(logValueFunc(func() slog.Value {
+				return slog.IntValue(rs.Status())
+			})),
+		},
+		{
+			Key: "http.response_size",
+			Value: slog.AnyValue(logValueFunc(func() slog.Value {
+				return slog.Int64Value(rs.ResponseSize())
+			})),
+		},
 	}
+
+	if finalized {
+		attrs = append(attrs, slog.Attr{
+			Key: "http.latency",
+			Value: slog.AnyValue(logValueFunc(func() slog.Value {
+				return slog.DurationValue(lat)
+			})),
+		})
+	}
+
+	return attrs
+}
+
+// sizeAttrs reports request size when available.
+func (rs *RequestScope) sizeAttrs() []slog.Attr {
+	if rs.requestSize <= 0 {
+		return nil
+	}
+	return []slog.Attr{slog.Int64("http.request_size", rs.requestSize)}
+}
+
+// clientAttrs emits optional network and user agent attributes.
+func (rs *RequestScope) clientAttrs(cfg *config) []slog.Attr {
+	var attrs []slog.Attr
 	if cfg.includeClientIP && rs.clientIP != "" {
 		attrs = append(attrs, slog.String("network.peer.ip", rs.clientIP))
 	}
@@ -258,18 +337,18 @@ func (rs *RequestScope) Route() string { return rs.route }
 func (rs *RequestScope) Status() int {
 	code := rs.status.Load()
 	if code == 0 {
-		return stdhttp.StatusOK
+		return http.StatusOK
 	}
 	return int(code)
 }
 
-// Latency reports the elapsed time since the request started.
-func (rs *RequestScope) Latency() time.Duration {
+// Latency returns the latency and whether it is finalized (true after finalize).
+func (rs *RequestScope) Latency() (time.Duration, bool) {
 	ns := rs.latencyNS.Load()
-	if ns > 0 {
-		return time.Duration(ns)
+	if ns != unsetLatencySentinel {
+		return time.Duration(ns), true
 	}
-	return time.Since(rs.start)
+	return time.Since(rs.start), false
 }
 
 // ResponseSize returns the number of bytes written to the client.
@@ -281,6 +360,12 @@ func (rs *RequestScope) ResponseSize() int64 {
 func (rs *RequestScope) RequestSize() int64 {
 	return rs.requestSize
 }
+
+// Scheme returns the resolved request scheme.
+func (rs *RequestScope) Scheme() string { return rs.scheme }
+
+// Host returns the request host.
+func (rs *RequestScope) Host() string { return rs.host }
 
 // ClientIP returns the parsed remote address.
 func (rs *RequestScope) ClientIP() string {
@@ -300,7 +385,7 @@ func (rs *RequestScope) Start() time.Time {
 // setStatus records the response status, defaulting to 200 when unset.
 func (rs *RequestScope) setStatus(code int) {
 	if code <= 0 {
-		code = stdhttp.StatusOK
+		code = http.StatusOK
 	}
 	rs.status.Store(int64(code))
 }
@@ -345,7 +430,7 @@ func (f logValueFunc) LogValue() slog.Value {
 }
 
 type responseRecorder struct {
-	stdhttp.ResponseWriter
+	http.ResponseWriter
 	scope        *RequestScope
 	status       int
 	wroteHeader  bool
@@ -367,7 +452,7 @@ func (rr *responseRecorder) WriteHeader(status int) {
 // Write records bytes written and forwards the call to the underlying writer.
 func (rr *responseRecorder) Write(p []byte) (int, error) {
 	if !rr.wroteHeader {
-		rr.WriteHeader(stdhttp.StatusOK)
+		rr.WriteHeader(http.StatusOK)
 	}
 	n, err := rr.ResponseWriter.Write(p)
 	if n > 0 {
@@ -384,7 +469,7 @@ func (rr *responseRecorder) Write(p []byte) (int, error) {
 func (rr *responseRecorder) ReadFrom(src io.Reader) (int64, error) {
 	if rf, ok := rr.ResponseWriter.(io.ReaderFrom); ok {
 		if !rr.wroteHeader {
-			rr.WriteHeader(stdhttp.StatusOK)
+			rr.WriteHeader(http.StatusOK)
 		}
 		n, err := rf.ReadFrom(src)
 		if n > 0 {
@@ -397,7 +482,7 @@ func (rr *responseRecorder) ReadFrom(src io.Reader) (int64, error) {
 		return n, nil
 	}
 	if !rr.wroteHeader {
-		rr.WriteHeader(stdhttp.StatusOK)
+		rr.WriteHeader(http.StatusOK)
 	}
 	n, err := io.Copy(rr.ResponseWriter, src)
 	if n > 0 {
@@ -413,7 +498,7 @@ func (rr *responseRecorder) ReadFrom(src io.Reader) (int64, error) {
 // Status returns the HTTP status code that was written to the client.
 func (rr *responseRecorder) Status() int {
 	if rr.status == 0 {
-		return stdhttp.StatusOK
+		return http.StatusOK
 	}
 	return rr.status
 }
@@ -424,44 +509,44 @@ func (rr *responseRecorder) BytesWritten() int64 {
 }
 
 // wrapResponseWriter decorates the ResponseWriter to capture response metadata and optional interfaces.
-func wrapResponseWriter(w stdhttp.ResponseWriter, scope *RequestScope) (stdhttp.ResponseWriter, *responseRecorder) {
+func wrapResponseWriter(w http.ResponseWriter, scope *RequestScope) (http.ResponseWriter, *responseRecorder) {
 	rec := &responseRecorder{
 		ResponseWriter: w,
 		scope:          scope,
-		status:         stdhttp.StatusOK,
+		status:         http.StatusOK,
 	}
-	scope.setStatus(stdhttp.StatusOK)
+	scope.setStatus(http.StatusOK)
 	return rec, rec
 }
 
 // Flush forwards the flush request to the underlying ResponseWriter when supported.
 func (rr *responseRecorder) Flush() {
-	if flusher, ok := rr.ResponseWriter.(stdhttp.Flusher); ok {
+	if flusher, ok := rr.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
 }
 
 // Hijack delegates to the wrapped Hijacker when supported, otherwise returns http.ErrNotSupported.
 func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if hijacker, ok := rr.ResponseWriter.(stdhttp.Hijacker); ok {
+	if hijacker, ok := rr.ResponseWriter.(http.Hijacker); ok {
 		conn, rw, err := hijacker.Hijack()
 		if err != nil {
 			return nil, nil, fmt.Errorf("hijack connection: %w", err)
 		}
 		return conn, rw, nil
 	}
-	return nil, nil, stdhttp.ErrNotSupported
+	return nil, nil, http.ErrNotSupported
 }
 
 // Push forwards HTTP/2 push requests when the underlying writer supports http.Pusher.
-func (rr *responseRecorder) Push(target string, opts *stdhttp.PushOptions) error {
-	if pusher, ok := rr.ResponseWriter.(stdhttp.Pusher); ok {
+func (rr *responseRecorder) Push(target string, opts *http.PushOptions) error {
+	if pusher, ok := rr.ResponseWriter.(http.Pusher); ok {
 		if err := pusher.Push(target, opts); err != nil {
 			return fmt.Errorf("http/2 push: %w", err)
 		}
 		return nil
 	}
-	return stdhttp.ErrNotSupported
+	return http.ErrNotSupported
 }
 
 // CloseNotify exposes the wrapped CloseNotifier channel when available.
@@ -473,7 +558,7 @@ func (rr *responseRecorder) CloseNotify() <-chan bool {
 }
 
 // ensureSpanContext extracts existing span context or synthesizes one from incoming headers.
-func ensureSpanContext(ctx context.Context, r *stdhttp.Request, cfg *config) (context.Context, trace.SpanContext) {
+func ensureSpanContext(ctx context.Context, r *http.Request, cfg *config) (context.Context, trace.SpanContext) {
 	if cfg != nil && !cfg.propagateTrace {
 		return ctx, trace.SpanContextFromContext(ctx)
 	}
