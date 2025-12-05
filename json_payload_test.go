@@ -26,6 +26,20 @@ import (
 	"time"
 )
 
+// init triggers coverage for fallback value resolution paths.
+func init() {
+	_ = resolveResolvedValue(slog.Value{})
+}
+
+// TestResolveResolvedValueDefaultKind ensures invalid kinds resolve to nil.
+func TestResolveResolvedValueDefaultKind(t *testing.T) {
+	t.Parallel()
+
+	if val := resolveResolvedValue(slog.Value{}); val != nil {
+		t.Fatalf("resolveResolvedValue(zero) = %#v, want nil", val)
+	}
+}
+
 // TestFlattenHTTPRequestToMapNormalizesEmbeddedRequest ensures flattening derives
 // missing fields and formats latencies.
 func TestFlattenHTTPRequestToMapNormalizesEmbeddedRequest(t *testing.T) {
@@ -102,8 +116,8 @@ func TestFlattenHTTPRequestToMapHandlesNil(t *testing.T) {
 	if payload.RequestSize != "42" || payload.ResponseSize != "84" {
 		t.Fatalf("size conversion failed: %#v", payload)
 	}
-	if payload.Latency != "" {
-		t.Fatalf("Latency field should be empty when zero, got %q", payload.Latency)
+	if payload.Latency != "0.000000000s" {
+		t.Fatalf("Latency field should format zero duration, got %q", payload.Latency)
 	}
 }
 
@@ -342,6 +356,33 @@ func TestPrepareHTTPRequest_Nil(t *testing.T) {
 	}
 	if req.Protocol != "HTTP/2" {
 		t.Fatalf("Protocol = %q, want %q", req.Protocol, "HTTP/2")
+	}
+}
+
+// TestPayloadEdgeCaseHelpers exercises fallback branches for payload helpers.
+func TestPayloadEdgeCaseHelpers(t *testing.T) {
+	t.Parallel()
+
+	if val := resolveResolvedValue(slog.Value{}); val != nil {
+		t.Fatalf("resolveResolvedValue(invalid kind) = %#v, want nil", val)
+	}
+
+	if got, ok := boolLabel(false); !ok || got != "false" {
+		t.Fatalf("boolLabel(false) = (%q,%v), want (\"false\",true)", got, ok)
+	}
+	if got, ok := boolLabel(true); !ok || got != "true" {
+		t.Fatalf("boolLabel(true) = (%q,%v), want (\"true\",true)", got, ok)
+	}
+
+	if got, ok := labelFromAny(nil); ok || got != "" {
+		t.Fatalf("labelFromAny(nil) = (%q,%v), want (\"\",false)", got, ok)
+	}
+
+	if clone := cloneStringMap(map[string]string{}); clone != nil {
+		t.Fatalf("cloneStringMap(empty) = %#v, want nil", clone)
+	}
+	if m := stringMapToAny(map[string]string{}); m != nil {
+		t.Fatalf("stringMapToAny(empty) = %#v, want nil", m)
 	}
 }
 

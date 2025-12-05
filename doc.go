@@ -42,8 +42,7 @@
 // to cooperate with external rotation tools. The handler exposes [Handler.LevelVar]
 // and [Handler.SetLevel] for dynamic severity adjustments and honours many
 // environment variables (for example `SLOGCP_LEVEL`,
-// `SLOGCP_STACK_TRACE_ENABLED`, or `SLOGCP_TARGET`) so the same binary can
-// run locally and in
+// `SLOGCP_STACK_TRACES`, or `SLOGCP_TARGET`) so the same binary can run locally and in
 // production without code changes. [ContextWithLogger] and [Logger] store and
 // retrieve request-scoped loggers so integrations can pass loggers through
 // call stacks.
@@ -84,6 +83,6 @@
 // in docs/CONFIGURATION.md for the complete list of options, environment
 // variables, and integration helpers. Importing slogcp automatically installs
 // a composite OpenTelemetry propagator; call [EnsurePropagation] explicitly if
-// you disable the automatic behaviour via the `SLOGCP_DISABLE_PROPAGATOR_AUTOSET`
-// environment variable.
+// you disable the automatic behaviour by setting the `SLOGCP_PROPAGATOR_AUTOSET`
+// environment variable to a falsy value.
 package slogcp

@@ -38,8 +38,8 @@ Key options:
 | `WithLevel(slog.Level)` | `SLOGCP_LEVEL` | `info` | Minimum severity captured by the handler. |
 | `WithLevelVar(*slog.LevelVar)` | (none) | current value of the supplied var | Shares a caller-managed `slog.LevelVar` so external config can adjust levels. |
 | `WithSourceLocationEnabled(bool)` | `SLOGCP_SOURCE_LOCATION` | `false` | Populates `logging.googleapis.com/sourceLocation`. |
-| `WithTime(bool)` | `SLOGCP_TIME` | Enabled outside Cloud Run, Cloud Run Jobs, Cloud Functions, and App Engine; disabled on those runtimes | Emits a top-level `time` field so logs carry RFC3339 timestamps. |
-| `WithStackTraceEnabled(bool)` | `SLOGCP_STACK_TRACE_ENABLED` | `false` | Enables automatic stack capture at or above `StackTraceLevel`. |
+| `WithTime(bool)` | `SLOGCP_TIME` | Enabled outside Cloud Run, Cloud Run Jobs, Cloud Functions, and App Engine; also enabled for file targets on those runtimes; disabled on those runtimes when writing to stdout/stderr | Emits a top-level `time` field so logs carry RFC3339 timestamps. |
+| `WithStackTraceEnabled(bool)` | `SLOGCP_STACK_TRACES` | `false` | Enables automatic stack capture at or above `StackTraceLevel`. |
 | `WithStackTraceLevel(slog.Level)` | `SLOGCP_STACK_TRACE_LEVEL` | `error` | Threshold for automatic stacks. |
 | `WithTraceProjectID(string)` | `SLOGCP_TRACE_PROJECT_ID`, `SLOGCP_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT` | detected at runtime | Supplies the project ID used when formatting trace fields. |
 | `WithTraceDiagnostics(slogcp.TraceDiagnosticsMode)` | `SLOGCP_TRACE_DIAGNOSTICS` | `warn` | Controls how slogcp surfaces trace correlation issues. Accepts `off`, `warn`/`warn_once`, or `strict` (which fails handler creation when no project can be detected). |
@@ -54,11 +54,11 @@ Key options:
 
 Additional notes:
 - File targets: use `SLOGCP_TARGET=file:<path>` (for example, `file:/var/log/app.json` on Linux/macOS or `file:C:\\logs\\app.json` on Windows). slogcp trims surrounding whitespace and passes the remaining path directly to `os.OpenFile` in append mode; it does not create parent directories or rewrite the string. Invalid values still trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
-- When you choose `WithRedirectWriter`, slogcp does not look at file paths at all; configure any file destination on the writer itself (for example, `*os.File` or a rotation helper like lumberjack).
+- When you choose `WithRedirectWriter`, slogcp does not look at file paths at all; configure any file destination on the writer itself (for example, `*os.File` or a rotation helper like timberjack).
 - When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor after external tools move the file. Always call `Close` during shutdown to flush buffers and release writers.
 - `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust levels at runtime via `SetLevel` or share the var with other handlers.
 - `WithSeverityAliases` controls whether JSON carries the terse severity names; Cloud Logging still renders the full names in the console. slogcp enables the aliases by default only on Cloud Run (services/jobs), Cloud Functions, and App Engine deployments.
-- `WithTime` defaults mirror Cloud Logging expectations: timestamps are omitted on the same managed GCP runtimes (Cloud Run, Cloud Functions, App Engine) and included elsewhere. When slogcp emits a timestamp it preserves the nanosecond precision provided by `slog`.
+- `WithTime` defaults mirror Cloud Logging expectations: timestamps are omitted on the same managed GCP runtimes (Cloud Run, Cloud Functions, App Engine) when writing to stdout/stderr, but file targets keep timestamps even there so rotated/shipped logs stay annotated. When slogcp emits a timestamp it preserves the nanosecond precision provided by `slog`.
 - slogcp always validates trace correlation fields before emitting them. When no Cloud project ID can be resolved, the handler omits `logging.googleapis.com/trace` entirely (falling back to the `otel.*` keys) to avoid shipping malformed data. On managed runtimes where the Cloud Logging agent auto-prefixes trace IDs (Cloud Run services/jobs, Cloud Functions, App Engine) slogcp still emits the bare trace ID so existing deployments keep their correlation links. Use `WithTraceDiagnostics`/`SLOGCP_TRACE_DIAGNOSTICS` to upgrade these checks from "warn once" to `strict` or disable them with `off`.
 - `slogcp.ContextWithLogger` and `slogcp.Logger` stash and recover request-scoped loggers. The HTTP and gRPC integrations call these helpers automatically.
 
@@ -79,7 +79,7 @@ When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `Wi
 
 | Option | Environment variable | Default | Description |
 | --- | --- | --- | --- |
-| `WithEnabled(bool)` | `SLOGCP_ASYNC_ENABLED` | `true` once the wrapper is added | Enables or disables the async wrapper entirely. |
+| `WithEnabled(bool)` | `SLOGCP_ASYNC` | `true` once the wrapper is added | Enables or disables the async wrapper entirely. |
 | `WithQueueSize(int)` | `SLOGCP_ASYNC_QUEUE_SIZE` | `block: 2048`, `drop_newest: 512`, `drop_oldest: 1024` | Channel capacity for queued records. `0` uses an unbuffered channel. |
 | `WithDropMode(slogcpasync.DropMode)` | `SLOGCP_ASYNC_DROP_MODE` | `block` | Overflow policy: `block`, `drop_newest`, or `drop_oldest`. |
 | `WithWorkerCount(int)` | `SLOGCP_ASYNC_WORKERS` | `block: 1`, `drop_newest: 1`, `drop_oldest: 1` | Number of goroutines draining the queue. |
@@ -147,7 +147,11 @@ logger.InfoContext(ctx, "served",
 )
 ```
 
-If you prefer more control, `slogcphttp.HTTPRequestAttr` accepts the explicit `scope` value, and `slogcphttp.HTTPRequestEnricher` implements `AttrEnricher` for use with `WithAttrEnricher`. Outside of the middleware, `slogcp.HTTPRequestFromRequest(req)` creates a Cloud Logging payload from any standard library `*http.Request`.
+#### Do you really need to log httpRequest?
+
+- Managed runtimes already emit an automatic request log (with final status/size/latency) and also stamp `trace`/`spanId` onto every app log. The normal way to correlate is to pivot on `trace` so the app logs and the automatic request log show up together in the Cloud Logging UI/Trace viewer. Attaching `httpRequest` to application logs is therefore an opt-in, niche move for self-contained error/alert payloads or for services that *lack* an automatic request log.
+- Opt-in middleware attachment uses a **lazy LogValuer**: the `httpRequest` is built at log time from the live `RequestScope`. If the request has finished, latency is the final duration; if the request is still in flight, latency is omitted (Cloud Logging will still promote the `httpRequest`).
+- For one-shot “access log” style entries, call `slogcphttp.HTTPRequestFromScope(scope)` to snapshot the current state into a Cloud Logging payload. Outside of the middleware, `slogcp.HTTPRequestFromRequest(req)` creates a Cloud Logging payload from any standard library `*http.Request`.
 
 ### HTTP Client Transport
 
@@ -197,4 +201,4 @@ Helpers:
 
 ## Trace Propagation Defaults
 
-Importing `slogcp` installs a composite OpenTelemetry propagator that understands both W3C Trace Context and Google's legacy `X-Cloud-Trace-Context` header (read-only). Set `SLOGCP_DISABLE_PROPAGATOR_AUTOSET=true` before importing the package if you prefer to manage `otel.SetTextMapPropagator` yourself; call `slogcp.EnsurePropagation()` if you need to reapply the library's defaults later in process startup.
+Importing `slogcp` installs a composite OpenTelemetry propagator that understands both W3C Trace Context and Google's legacy `X-Cloud-Trace-Context` header (read-only). Set `SLOGCP_PROPAGATOR_AUTOSET=false` before importing the package if you prefer to manage `otel.SetTextMapPropagator` yourself; call `slogcp.EnsurePropagation()` if you need to reapply the library's defaults later in process startup.

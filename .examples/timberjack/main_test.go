@@ -23,27 +23,29 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
-	"gopkg.in/natefinch/lumberjack.v2"
+	"github.com/DeRuina/timberjack"
 
 	"github.com/pjscruggs/slogcp"
 )
 
-// TestLumberjackIntegration exercises the lumberjack example by writing
+// TestTimberjackIntegration exercises the timberjack example by writing
 // structured entries, rotating the log file, and verifying entries exist in
 // both the rotated and active files.
-func TestLumberjackIntegration(t *testing.T) {
+func TestTimberjackIntegration(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "slogcp-rolling.log")
 
-	rolling := &lumberjack.Logger{
-		Filename:   logPath,
-		MaxSize:    1,
-		MaxBackups: 3,
-		MaxAge:     7,
-		Compress:   true,
+	rolling := &timberjack.Logger{
+		Filename:         logPath,
+		MaxSize:          1,
+		MaxBackups:       3,
+		MaxAge:           7,
+		Compression:      "gzip",
+		RotationInterval: 24 * time.Hour,
 	}
 	rollingClosed := false
 	t.Cleanup(func() {
@@ -51,7 +53,7 @@ func TestLumberjackIntegration(t *testing.T) {
 			return
 		}
 		if err := rolling.Close(); err != nil {
-			t.Errorf("lumberjack close: %v", err)
+			t.Errorf("timberjack close: %v", err)
 		}
 	})
 
@@ -80,8 +82,8 @@ func TestLumberjackIntegration(t *testing.T) {
 		logger.Info("processing event", slog.Int("index", i))
 	}
 
-	if err := rolling.Rotate(); err != nil {
-		t.Fatalf("Rotate: %v", err)
+	if err := rolling.RotateWithReason("manual"); err != nil {
+		t.Fatalf("RotateWithReason: %v", err)
 	}
 	logger.Info("log rotation complete")
 
@@ -91,7 +93,7 @@ func TestLumberjackIntegration(t *testing.T) {
 	handlerClosed = true
 
 	if err := rolling.Close(); err != nil {
-		t.Fatalf("lumberjack close: %v", err)
+		t.Fatalf("timberjack close: %v", err)
 	}
 	rollingClosed = true
 

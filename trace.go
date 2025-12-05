@@ -141,28 +141,46 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 		return nil, false
 	}
 
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		projectID = cachedTraceProjectID()
-	}
+	projectID = resolveTraceProject(projectID)
 
 	fmtTrace, rawTrace, rawSpan, sampled, sc := ExtractTraceSpan(ctx, projectID)
 	if !sc.IsValid() {
 		return nil, false
 	}
 
-	attrs := make([]slog.Attr, 0, 3)
-	ownsSpan := sc.IsValid() && !sc.IsRemote()
+	attrs := buildTraceAttrSet(fmtTrace, rawTrace, rawSpan, sampled, !sc.IsRemote())
+	return attrs, true
+}
 
-	if fmtTrace != "" {
-		attrs = append(attrs, slog.String(TraceKey, fmtTrace))
-		if ownsSpan && rawSpan != "" {
-			attrs = append(attrs, slog.String(SpanKey, rawSpan))
-		}
-		attrs = append(attrs, slog.Bool(SampledKey, sampled))
-		return attrs, true
+// resolveTraceProject chooses a project ID from input or cached environment.
+func resolveTraceProject(projectID string) string {
+	projectID = strings.TrimSpace(projectID)
+	if projectID != "" {
+		return projectID
 	}
+	return cachedTraceProjectID()
+}
 
+// buildTraceAttrSet chooses Cloud Trace or OTel style attributes based on inputs.
+func buildTraceAttrSet(fmtTrace, rawTrace, rawSpan string, sampled bool, ownsSpan bool) []slog.Attr {
+	if fmtTrace != "" {
+		return buildCloudTraceAttrs(fmtTrace, rawSpan, sampled, ownsSpan)
+	}
+	return buildOTelTraceAttrs(rawTrace, rawSpan, sampled, ownsSpan)
+}
+
+// buildCloudTraceAttrs emits Cloud Logging trace correlation attributes.
+func buildCloudTraceAttrs(fmtTrace, rawSpan string, sampled bool, ownsSpan bool) []slog.Attr {
+	attrs := []slog.Attr{slog.String(TraceKey, fmtTrace), slog.Bool(SampledKey, sampled)}
+	if ownsSpan && rawSpan != "" {
+		attrs = append(attrs, slog.String(SpanKey, rawSpan))
+	}
+	return attrs
+}
+
+// buildOTelTraceAttrs emits OpenTelemetry trace identifiers when a project is unknown.
+func buildOTelTraceAttrs(rawTrace, rawSpan string, sampled bool, ownsSpan bool) []slog.Attr {
+	attrs := make([]slog.Attr, 0, 3)
 	if rawTrace != "" {
 		attrs = append(attrs, slog.String("otel.trace_id", rawTrace))
 	}
@@ -170,8 +188,7 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 		attrs = append(attrs, slog.String("otel.span_id", rawSpan))
 	}
 	attrs = append(attrs, slog.Bool("otel.trace_sampled", sampled))
-
-	return attrs, true
+	return attrs
 }
 
 // cachedTraceProjectID returns the Cloud project ID inferred from environment

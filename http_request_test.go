@@ -162,3 +162,51 @@ func TestHTTPRequestLogValueHandlesNil(t *testing.T) {
 		t.Fatalf("nil receiver LogValue = %+v, want zero value", value)
 	}
 }
+
+// TestHTTPRequestValueBuilderCoversLogValuer ensures HTTPRequestValue builds via the provided builder.
+func TestHTTPRequestValueBuilderCoversLogValuer(t *testing.T) {
+	t.Parallel()
+
+	built := 0
+	val := HTTPRequestValue(func() *HTTPRequest {
+		built++
+		return &HTTPRequest{RequestMethod: http.MethodPost}
+	})
+
+	req, ok := httpRequestFromValue(val)
+	if !ok || req.RequestMethod != http.MethodPost {
+		t.Fatalf("httpRequestFromValue(HTTPRequestValue) = (%+v, %v), want POST and true", req, ok)
+	}
+	if built != 1 {
+		t.Fatalf("builder called %d times, want 1", built)
+	}
+}
+
+// TestHTTPRequestValueBuilderNilHandlesGracefully ensures nil builders resolve to zero values.
+func TestHTTPRequestValueBuilderNilHandlesGracefully(t *testing.T) {
+	t.Parallel()
+
+	val := HTTPRequestValue(nil)
+	resolved := val.Resolve()
+	if resolved.Kind() != slog.KindAny || resolved.Any() != nil {
+		t.Fatalf("HTTPRequestValue(nil) resolved = %#v, want zero slog.Value", resolved)
+	}
+	if req, ok := httpRequestFromValue(val); ok || req != nil {
+		t.Fatalf("httpRequestFromValue(nil builder) = (%v, %v), want (nil, false)", req, ok)
+	}
+}
+
+// TestHTTPRequestLogValuerHandlesNilBuildResults exercises LogValue branches for nil builders.
+func TestHTTPRequestLogValuerHandlesNilBuildResults(t *testing.T) {
+	t.Parallel()
+
+	zeroBuilder := httpRequestLogValuer{}
+	if v := zeroBuilder.LogValue(); v.Kind() != slog.KindAny || v.Any() != nil {
+		t.Fatalf("zero builder LogValue = %#v, want zero slog.Value", v)
+	}
+
+	nilReturn := httpRequestLogValuer{build: func() *HTTPRequest { return nil }}
+	if v := nilReturn.LogValue(); v.Kind() != slog.KindAny || v.Any() != nil {
+		t.Fatalf("nil-return builder LogValue = %#v, want zero slog.Value", v)
+	}
+}

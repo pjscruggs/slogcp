@@ -385,46 +385,86 @@ func detectKubernetes(info *RuntimeInfo, md *metadataLookup) bool {
 
 	info.Environment = RuntimeEnvKubernetes
 
-	clusterName := md.clusterName()
-	if clusterName == "" {
-		clusterName = trimmedEnv("CLUSTER_NAME")
-	}
+	clusterName := resolveClusterName(md)
 	if clusterName == "" {
 		return false
 	}
 
+	info.Labels = kubernetesLabels(md, clusterName)
+	info.ProjectID = resolveKubernetesProject(info.ProjectID, md)
+	return true
+}
+
+// resolveClusterName derives the Kubernetes cluster name from metadata or env.
+func resolveClusterName(md *metadataLookup) string {
+	if md == nil {
+		return ""
+	}
+	if name := md.clusterName(); name != "" {
+		return name
+	}
+	return trimmedEnv("CLUSTER_NAME")
+}
+
+// kubernetesLabels builds base labels describing the cluster, namespace, and pod.
+func kubernetesLabels(md *metadataLookup, clusterName string) map[string]string {
 	labels := map[string]string{
 		"k8s.cluster.name": clusterName,
 	}
-	if location := md.clusterLocation(); location != "" {
+	if location := clusterLocation(md); location != "" {
 		labels["k8s.location"] = location
-	} else if loc := trimmedEnv("CLUSTER_LOCATION"); loc != "" {
-		labels["k8s.location"] = loc
 	}
-
-	if namespace := readNamespace(); namespace != "" {
+	if namespace := kubernetesNamespace(); namespace != "" {
 		labels["k8s.namespace.name"] = namespace
-	} else if ns := trimmedEnv("NAMESPACE_NAME"); ns != "" {
-		labels["k8s.namespace.name"] = ns
-	} else if ns := trimmedEnv("NAMESPACE"); ns != "" {
-		labels["k8s.namespace.name"] = ns
 	}
-
-	if pod := trimmedEnv("POD_NAME"); pod != "" {
+	if pod := kubernetesPodName(); pod != "" {
 		labels["k8s.pod.name"] = pod
-	} else if host := trimmedEnv("HOSTNAME"); host != "" {
-		labels["k8s.pod.name"] = host
 	}
 	if container := trimmedEnv("CONTAINER_NAME"); container != "" {
 		labels["k8s.container.name"] = container
 	}
-	info.Labels = labels
+	return labels
+}
 
-	info.ProjectID = normalizeProjectID(firstNonEmpty(info.ProjectID, trimmedEnv("SLOGCP_GCP_PROJECT"), trimmedEnv("GOOGLE_CLOUD_PROJECT"), trimmedEnv("GCLOUD_PROJECT"), trimmedEnv("GCP_PROJECT")))
-	if info.ProjectID == "" {
-		info.ProjectID = md.projectID()
+// clusterLocation returns the cluster location from metadata or environment.
+func clusterLocation(md *metadataLookup) string {
+	if md != nil {
+		if location := md.clusterLocation(); location != "" {
+			return location
+		}
 	}
-	return true
+	return trimmedEnv("CLUSTER_LOCATION")
+}
+
+// kubernetesNamespace resolves the namespace name from service account files or env.
+func kubernetesNamespace() string {
+	if namespace := readNamespace(); namespace != "" {
+		return namespace
+	}
+	if ns := trimmedEnv("NAMESPACE_NAME"); ns != "" {
+		return ns
+	}
+	return trimmedEnv("NAMESPACE")
+}
+
+// kubernetesPodName infers the pod name from env or hostname.
+func kubernetesPodName() string {
+	if pod := trimmedEnv("POD_NAME"); pod != "" {
+		return pod
+	}
+	return trimmedEnv("HOSTNAME")
+}
+
+// resolveKubernetesProject determines the project ID for Kubernetes environments.
+func resolveKubernetesProject(current string, md *metadataLookup) string {
+	project := normalizeProjectID(firstNonEmpty(current, trimmedEnv("SLOGCP_GCP_PROJECT"), trimmedEnv("GOOGLE_CLOUD_PROJECT"), trimmedEnv("GCLOUD_PROJECT"), trimmedEnv("GCP_PROJECT")))
+	if project != "" {
+		return project
+	}
+	if md == nil {
+		return ""
+	}
+	return md.projectID()
 }
 
 // detectComputeEngine populates metadata when running on Google Compute Engine.

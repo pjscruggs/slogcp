@@ -1004,3 +1004,14 @@ func TestBatchLoopDefaultBranch(t *testing.T) {
 		t.Fatalf("handled %d records, want 1", got)
 	}
 }
+
+// TestDropNoCallbackIsNoop covers the drop helper when no onDrop callback is configured.
+func TestDropNoCallbackIsNoop(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{}
+	h.drop(queuedRecord{
+		ctx: context.Background(),
+		rec: slog.NewRecord(time.Now(), slog.LevelInfo, "noop", 0),
+	})
+}

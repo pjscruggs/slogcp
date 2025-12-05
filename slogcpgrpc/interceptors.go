@@ -36,6 +36,13 @@ import (
 
 type requestInfoKey struct{}
 
+const (
+	kindUnary        = "unary"
+	kindBidiStream   = "bidi_stream"
+	kindClientStream = "client_stream"
+	kindServerStream = "server_stream"
+)
+
 // InfoFromContext retrieves the RequestInfo attached by slogcp interceptors.
 func InfoFromContext(ctx context.Context) (*RequestInfo, bool) {
 	if ctx == nil {
@@ -284,13 +291,13 @@ func peerAddress(ctx context.Context) (string, bool) {
 func streamKind(info *grpc.StreamServerInfo) string {
 	switch {
 	case info.IsClientStream && info.IsServerStream:
-		return "bidi_stream"
+		return kindBidiStream
 	case info.IsClientStream:
-		return "client_stream"
+		return kindClientStream
 	case info.IsServerStream:
-		return "server_stream"
+		return kindServerStream
 	default:
-		return "unary"
+		return kindUnary
 	}
 }
 
@@ -298,13 +305,13 @@ func streamKind(info *grpc.StreamServerInfo) string {
 func clientStreamKind(desc *grpc.StreamDesc) string {
 	switch {
 	case desc.ClientStreams && desc.ServerStreams:
-		return "bidi_stream"
+		return kindBidiStream
 	case desc.ClientStreams:
-		return "client_stream"
+		return kindClientStream
 	case desc.ServerStreams:
-		return "server_stream"
+		return kindServerStream
 	default:
-		return "unary"
+		return kindUnary
 	}
 }
 

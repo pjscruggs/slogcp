@@ -79,9 +79,9 @@ func TestGRPCExampleLogsRequest(t *testing.T) {
 		slogcpgrpc.DialOptions(slogcpgrpc.WithLogger(logger))...,
 	)
 
-	conn, err := grpc.DialContext(ctx, lis.Addr().String(), dialOpts...)
+	conn, err := grpc.NewClient(lis.Addr().String(), dialOpts...)
 	if err != nil {
-		t.Fatalf("DialContext: %v", err)
+		t.Fatalf("NewClient: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 

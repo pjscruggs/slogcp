@@ -15,10 +15,12 @@
 package slogcpgrpc
 
 import (
+	"log/slog"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // TestRequestInfoKindAndClient ensures helpers expose the stored kind/client flags.
@@ -142,5 +144,52 @@ func TestRequestInfoAccessors(t *testing.T) {
 	}
 	if !info.IsClient() {
 		t.Fatalf("IsClient() = false, want true")
+	}
+}
+
+// TestRequestInfoAttributeBuilders exercises size, peer, and deferred value helpers.
+func TestRequestInfoAttributeBuilders(t *testing.T) {
+	t.Parallel()
+
+	start := time.Now()
+	info := newRequestInfo("/svc.Method/Bidi", "bidi", false, start)
+	info.setPeer("10.0.0.5")
+	info.recordRequest(&emptypb.Empty{})
+	info.recordResponse(fakeSizer(3))
+	info.finalize(codes.PermissionDenied, 7*time.Millisecond)
+
+	cfg := &config{includeSizes: true, includePeer: true}
+	traceAttrs := []slog.Attr{slog.String("trace", "abc123")}
+
+	attrs := info.loggerAttrs(cfg, traceAttrs)
+	attrMap := make(map[string]any, len(attrs))
+	for _, attr := range attrs {
+		attrMap[attr.Key] = attr.Value.Any()
+	}
+
+	if attrMap["rpc.request_size"] == nil || attrMap["rpc.response_size"] == nil {
+		t.Fatalf("expected size attributes in %+v", attrMap)
+	}
+	if attrMap["rpc.request_count"] == nil || attrMap["rpc.response_count"] == nil {
+		t.Fatalf("expected count attributes in %+v", attrMap)
+	}
+	if attrMap["net.peer.ip"] != "10.0.0.5" {
+		t.Fatalf("peer attribute = %v, want 10.0.0.5", attrMap["net.peer.ip"])
+	}
+	if attrMap["grpc.status_code"] == nil || attrMap["rpc.duration"] == nil {
+		t.Fatalf("lazy attributes missing: %+v", attrMap)
+	}
+	if attrMap["trace"] != "abc123" {
+		t.Fatalf("trace attribute missing from loggerAttrs output")
+	}
+
+	if value := logValueFunc(func() slog.Value { return slog.StringValue("lazy") }).LogValue(); value.String() != "lazy" {
+		t.Fatalf("logValueFunc.LogValue = %v, want lazy", value)
+	}
+
+	cfg.includeSizes = false
+	cfg.includePeer = false
+	if trimmed := info.loggerAttrs(cfg, nil); len(trimmed) >= len(attrs) {
+		t.Fatalf("expected attrs to shrink when size and peer disabled, got %d vs %d", len(trimmed), len(attrs))
 	}
 }

@@ -48,7 +48,7 @@ func resetPropagatorForTest(tb testing.TB, prop propagation.TextMapPropagator) {
 // TestEnsurePropagationInstallsCompositePropagator verifies EnsurePropagation
 // replaces the global propagator when auto-set is enabled.
 func TestEnsurePropagationInstallsCompositePropagator(t *testing.T) {
-	t.Setenv("SLOGCP_DISABLE_PROPAGATOR_AUTOSET", "")
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "")
 
 	stub := stubPropagator{}
 	resetPropagatorForTest(t, stub)
@@ -61,7 +61,7 @@ func TestEnsurePropagationInstallsCompositePropagator(t *testing.T) {
 
 // TestEnsurePropagationHonorsDisableFlag ensures the disable env var prevents mutation.
 func TestEnsurePropagationHonorsDisableFlag(t *testing.T) {
-	t.Setenv("SLOGCP_DISABLE_PROPAGATOR_AUTOSET", "true")
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "false")
 
 	stub := stubPropagator{}
 	resetPropagatorForTest(t, stub)
@@ -72,20 +72,20 @@ func TestEnsurePropagationHonorsDisableFlag(t *testing.T) {
 	}
 }
 
-// TestDisableAutoSetParsesValues exercises parsing of environment overrides without mutating the propagator.
-func TestDisableAutoSetParsesValues(t *testing.T) {
-	t.Setenv("SLOGCP_DISABLE_PROPAGATOR_AUTOSET", "TRUE")
-	if !disableAutoSet() {
-		t.Fatalf("disableAutoSet() = false, want true for TRUE")
+// TestPropagatorAutoSetParsesValues exercises parsing of environment overrides without mutating the propagator.
+func TestPropagatorAutoSetParsesValues(t *testing.T) {
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "TRUE")
+	if !propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = false, want true for TRUE")
 	}
 
-	t.Setenv("SLOGCP_DISABLE_PROPAGATOR_AUTOSET", "false")
-	if disableAutoSet() {
-		t.Fatalf("disableAutoSet() = true, want false for false")
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "false")
+	if propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = true, want false for false")
 	}
 
-	t.Setenv("SLOGCP_DISABLE_PROPAGATOR_AUTOSET", "not-a-bool")
-	if disableAutoSet() {
-		t.Fatalf("disableAutoSet() = true, want false for invalid values")
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "not-a-bool")
+	if !propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = false, want true for invalid values")
 	}
 }
