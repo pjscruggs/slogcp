@@ -226,7 +226,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       checks: write
-      contents: read
+      contents: write
+      pull-requests: write
     
     steps:
       - name: Determine E2E Trigger Type
