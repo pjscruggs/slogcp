@@ -37,7 +37,7 @@ const (
 	envLogLevel         = "SLOGCP_LEVEL"
 	envLogSource        = "SLOGCP_SOURCE_LOCATION"
 	envLogTime          = "SLOGCP_TIME"
-	envLogStackEnabled  = "SLOGCP_STACK_TRACE_ENABLED"
+	envLogStackEnabled  = "SLOGCP_STACK_TRACES"
 	envLogStackLevel    = "SLOGCP_STACK_TRACE_LEVEL"
 	envSeverityAliases  = "SLOGCP_SEVERITY_ALIASES"
 	envTraceProjectID   = "SLOGCP_TRACE_PROJECT_ID"
@@ -130,23 +130,24 @@ func (td *traceDiagnostics) warnUnknownProject() {
 }
 
 type handlerConfig struct {
-	Level                 slog.Level
-	AddSource             bool
-	EmitTimeField         bool
-	StackTraceEnabled     bool
-	StackTraceLevel       slog.Level
-	TraceProjectID        string
-	TraceDiagnostics      TraceDiagnosticsMode
-	UseShortSeverityNames bool
-	Writer                io.Writer
-	ClosableWriter        io.Closer
-	writerExternallyOwned bool
-	FilePath              string
-	ReplaceAttr           func([]string, slog.Attr) slog.Attr
-	Middlewares           []Middleware
-	InitialAttrs          []slog.Attr
-	InitialGroupedAttrs   []groupedAttr
-	InitialGroups         []string
+	Level                   slog.Level
+	AddSource               bool
+	EmitTimeField           bool
+	emitTimeFieldConfigured bool
+	StackTraceEnabled       bool
+	StackTraceLevel         slog.Level
+	TraceProjectID          string
+	TraceDiagnostics        TraceDiagnosticsMode
+	UseShortSeverityNames   bool
+	Writer                  io.Writer
+	ClosableWriter          io.Closer
+	writerExternallyOwned   bool
+	FilePath                string
+	ReplaceAttr             func([]string, slog.Attr) slog.Attr
+	Middlewares             []Middleware
+	InitialAttrs            []slog.Attr
+	InitialGroupedAttrs     []groupedAttr
+	InitialGroups           []string
 
 	runtimeLabels            map[string]string
 	runtimeServiceContext    map[string]string
@@ -196,17 +197,8 @@ type options struct {
 //	logger := slog.New(h)
 //	logger.Info("ready")
 func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
-	builder := &options{}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(builder)
-		}
-	}
-
-	internalLogger := builder.internalLogger
-	if internalLogger == nil {
-		internalLogger = slog.New(slog.DiscardHandler)
-	}
+	builder := collectOptions(opts)
+	internalLogger := ensureInternalLogger(builder.internalLogger)
 
 	cfg, err := cachedConfigFromEnv(internalLogger)
 	if err != nil {
@@ -214,40 +206,92 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	}
 
 	applyOptions(&cfg, builder)
-
 	ensureWriterDefaults(&cfg, defaultWriter)
+	applyFileTargetTimeDefault(&cfg)
 
-	var (
-		ownedFile    *os.File
-		switchWriter *SwitchableWriter
-	)
-
-	if cfg.FilePath != "" {
-		file, err := os.OpenFile(cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-		if err != nil {
-			return nil, fmt.Errorf("slogcp: open log file %q: %w", cfg.FilePath, err)
-		}
-		ownedFile = file
-		switchWriter = NewSwitchableWriter(file)
-		cfg.Writer = switchWriter
-		cfg.ClosableWriter = nil
-		cfg.writerExternallyOwned = false
+	ownedFile, switchWriter, err := prepareFileWriter(&cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	ensureWriterFallback(&cfg)
+	ensureClosableWriter(&cfg)
 
-	if cfg.ClosableWriter == nil && !cfg.writerExternallyOwned {
-		if c, ok := cfg.Writer.(io.Closer); ok && !isStdStream(cfg.Writer) {
-			cfg.ClosableWriter = c
-		}
+	levelVar := resolveLevelVar(builder.levelVar, cfg.Level)
+
+	if err := prepareRuntimeConfig(&cfg); err != nil {
+		return nil, err
 	}
 
-	levelVar := builder.levelVar
+	cfgPtr := &cfg
+	handler := buildPipeline(cfgPtr, levelVar, internalLogger, builder)
+
+	return &Handler{
+		Handler:          handler,
+		cfg:              cfgPtr,
+		internalLogger:   internalLogger,
+		switchableWriter: switchWriter,
+		ownedFile:        ownedFile,
+		levelVar:         levelVar,
+	}, nil
+}
+
+// collectOptions applies provided Option values to a new options struct.
+func collectOptions(opts []Option) *options {
+	builder := &options{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(builder)
+		}
+	}
+	return builder
+}
+
+// ensureInternalLogger selects logger or defaults to a discard logger.
+func ensureInternalLogger(logger *slog.Logger) *slog.Logger {
+	if logger != nil {
+		return logger
+	}
+	return slog.New(slog.DiscardHandler)
+}
+
+// prepareFileWriter opens file targets and wires them into the handler config.
+func prepareFileWriter(cfg *handlerConfig) (*os.File, *SwitchableWriter, error) {
+	if cfg.FilePath == "" {
+		return nil, nil, nil
+	}
+	file, err := os.OpenFile(cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("slogcp: open log file %q: %w", cfg.FilePath, err)
+	}
+	switchWriter := NewSwitchableWriter(file)
+	cfg.Writer = switchWriter
+	cfg.ClosableWriter = nil
+	cfg.writerExternallyOwned = false
+	return file, switchWriter, nil
+}
+
+// ensureClosableWriter records a closer when the writer supports closing.
+func ensureClosableWriter(cfg *handlerConfig) {
+	if cfg.ClosableWriter != nil || cfg.writerExternallyOwned {
+		return
+	}
+	if c, ok := cfg.Writer.(io.Closer); ok && !isStdStream(cfg.Writer) {
+		cfg.ClosableWriter = c
+	}
+}
+
+// resolveLevelVar builds or updates a slog.LevelVar with the provided level.
+func resolveLevelVar(levelVar *slog.LevelVar, level slog.Level) *slog.LevelVar {
 	if levelVar == nil {
 		levelVar = new(slog.LevelVar)
 	}
-	levelVar.Set(cfg.Level)
+	levelVar.Set(level)
+	return levelVar
+}
 
+// prepareRuntimeConfig populates runtime-derived fields and validates tracing.
+func prepareRuntimeConfig(cfg *handlerConfig) error {
 	runtimeInfo := DetectRuntimeInfo()
 	cfg.runtimeLabels = cloneStringMap(runtimeInfo.Labels)
 	cfg.runtimeServiceContext = cloneStringMap(runtimeInfo.ServiceContext)
@@ -258,32 +302,25 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	cfg.traceAllowAutoformat = cfg.TraceProjectID == "" && prefersManagedGCPDefaults(runtimeInfo)
 	cfg.traceDiagnosticsState = newTraceDiagnostics(cfg.TraceDiagnostics)
 	if cfg.TraceDiagnostics == TraceDiagnosticsStrict && cfg.TraceProjectID == "" && !cfg.traceAllowAutoformat {
-		return nil, errors.New("slogcp: trace diagnostics strict mode requires a Cloud project ID; set SLOGCP_TRACE_PROJECT_ID or provide slogcp.WithTraceProjectID")
+		return errors.New("slogcp: trace diagnostics strict mode requires a Cloud project ID; set SLOGCP_TRACE_PROJECT_ID or provide slogcp.WithTraceProjectID")
 	}
+	return nil
+}
 
-	cfgPtr := &cfg
-	core := newJSONHandler(cfgPtr, levelVar, internalLogger)
+// buildPipeline assembles the handler stack with middlewares and async wrapper.
+func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *slog.Logger, builder *options) slog.Handler {
+	core := newJSONHandler(cfg, levelVar, internalLogger)
 	handler := slog.Handler(core)
-	for i := len(cfgPtr.Middlewares) - 1; i >= 0; i-- {
-		handler = cfgPtr.Middlewares[i](handler)
+	for i := len(cfg.Middlewares) - 1; i >= 0; i-- {
+		handler = cfg.Middlewares[i](handler)
 	}
-	if builder.asyncEnabled && (!builder.asyncOnFileTargets || cfgPtr.FilePath != "") {
+	if builder.asyncEnabled && (!builder.asyncOnFileTargets || cfg.FilePath != "") {
 		handler = slogcpasync.Wrap(handler, builder.asyncOpts...)
 	}
-	if cfgPtr.AddSource {
+	if cfg.AddSource {
 		handler = sourceAwareHandler{Handler: handler}
 	}
-
-	h := &Handler{
-		Handler:          handler,
-		cfg:              cfgPtr,
-		internalLogger:   internalLogger,
-		switchableWriter: switchWriter,
-		ownedFile:        ownedFile,
-		levelVar:         levelVar,
-	}
-
-	return h, nil
+	return handler
 }
 
 // ensureWriterDefaults assigns cfg.Writer when unset by falling back to either
@@ -298,6 +335,46 @@ func ensureWriterDefaults(cfg *handlerConfig, defaultWriter io.Writer) {
 		}
 		cfg.writerExternallyOwned = true
 	}
+}
+
+// applyFileTargetTimeDefault enables timestamp emission when logging to files unless the user
+// explicitly set WithTime/SLOGCP_TIME.
+func applyFileTargetTimeDefault(cfg *handlerConfig) {
+	if cfg.emitTimeFieldConfigured {
+		return
+	}
+	if hasFileTarget(cfg) {
+		cfg.EmitTimeField = true
+	}
+}
+
+// hasFileTarget reports whether the handler is configured to write to a file rather than stdout/stderr.
+func hasFileTarget(cfg *handlerConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.FilePath != "" {
+		return true
+	}
+	return writerIsFileTarget(cfg.Writer, 0)
+}
+
+// writerIsFileTarget inspects writer plumbing (including SwitchableWriter) to detect file handles.
+func writerIsFileTarget(w io.Writer, depth int) bool {
+	if w == nil || depth > 1 {
+		return false
+	}
+	if f, ok := w.(*os.File); ok && f != nil && !isStdStream(f) {
+		return true
+	}
+	if sw, ok := w.(*SwitchableWriter); ok {
+		next := sw.GetCurrentWriter()
+		if next == w {
+			return false
+		}
+		return writerIsFileTarget(next, depth+1)
+	}
+	return false
 }
 
 // ensureWriterFallback guarantees cfg.Writer is non-nil even when no writer
@@ -316,36 +393,65 @@ func ensureWriterFallback(cfg *handlerConfig) {
 func (h *Handler) Close() error {
 	var firstErr error
 	h.closeOnce.Do(func() {
-		h.mu.Lock()
-		closeOwnedFile := h.ownedFile != nil
-		if h.switchableWriter != nil {
-			if err := h.switchableWriter.Close(); err != nil {
-				if firstErr == nil {
-					firstErr = err
-					h.internalLogger.Error("failed to close switchable writer", slog.Any("error", err))
-				}
-			} else {
-				closeOwnedFile = false
-			}
-			h.switchableWriter = nil
-		}
-		if closeOwnedFile && h.ownedFile != nil {
-			if err := h.ownedFile.Close(); err != nil && firstErr == nil {
-				firstErr = err
-				h.internalLogger.Error("failed to close log file", slog.Any("error", err))
-			}
-		}
-		h.ownedFile = nil
-		h.mu.Unlock()
-
-		if h.cfg != nil && h.cfg.ClosableWriter != nil {
-			if err := h.cfg.ClosableWriter.Close(); err != nil && firstErr == nil {
-				firstErr = err
-				h.internalLogger.Error("failed to close writer", slog.Any("error", err))
-			}
-		}
+		firstErr = h.closeResources()
 	})
 	return firstErr
+}
+
+// closeResources tears down owned writers and closers.
+func (h *Handler) closeResources() error {
+	h.mu.Lock()
+	closeOwnedFile := h.ownedFile != nil
+	firstErr := error(nil)
+
+	closeOwnedFile, firstErr = h.closeSwitchableWriter(closeOwnedFile, firstErr)
+	firstErr = h.closeOwnedFile(closeOwnedFile, firstErr)
+	h.ownedFile = nil
+	h.mu.Unlock()
+
+	if err := h.closeConfiguredWriter(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// closeSwitchableWriter closes the switchable writer and determines if the file should be closed.
+func (h *Handler) closeSwitchableWriter(closeOwnedFile bool, firstErr error) (bool, error) {
+	if h.switchableWriter == nil {
+		return closeOwnedFile, firstErr
+	}
+	if err := h.switchableWriter.Close(); err != nil && firstErr == nil {
+		firstErr = err
+		h.internalLogger.Error("failed to close switchable writer", slog.Any("error", err))
+	} else if err == nil {
+		closeOwnedFile = false
+	}
+	h.switchableWriter = nil
+	return closeOwnedFile, firstErr
+}
+
+// closeOwnedFile closes the owned file when it still needs closing.
+func (h *Handler) closeOwnedFile(closeOwnedFile bool, firstErr error) error {
+	if !closeOwnedFile || h.ownedFile == nil {
+		return firstErr
+	}
+	if err := h.ownedFile.Close(); err != nil && firstErr == nil {
+		firstErr = err
+		h.internalLogger.Error("failed to close log file", slog.Any("error", err))
+	}
+	return firstErr
+}
+
+// closeConfiguredWriter closes any ClosableWriter configured on the handler.
+func (h *Handler) closeConfiguredWriter() error {
+	if h.cfg == nil || h.cfg.ClosableWriter == nil {
+		return nil
+	}
+	if err := h.cfg.ClosableWriter.Close(); err != nil {
+		h.internalLogger.Error("failed to close writer", slog.Any("error", err))
+		return fmt.Errorf("close writer: %w", err)
+	}
+	return nil
 }
 
 // ReopenLogFile rotates the handler's file writer when logging to a file.
@@ -552,9 +658,11 @@ func WithSourceLocationEnabled(enabled bool) Option {
 }
 
 // WithTime toggles emission of the top-level "time" field. By default slogcp
-// omits timestamps on managed GCP runtimes such as Cloud Run or App Engine,
-// since Cloud Logging stamps entries automatically. Enabling this option stops
-// slogcp from suppressing `log/slog`'s default timestamp behavior.
+// omits timestamps on managed GCP runtimes such as Cloud Run or App Engine
+// when writing to stdout/stderr, since Cloud Logging stamps entries
+// automatically. File targets keep timestamps by default so rotated or shipped
+// logs retain them. Enabling this option stops slogcp from suppressing
+// `log/slog`'s default timestamp behavior.
 func WithTime(enabled bool) Option {
 	return func(o *options) {
 		o.emitTimeField = &enabled
@@ -832,7 +940,7 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 
 	cfg.Level = parseLevelEnv(os.Getenv(envLogLevel), cfg.Level, logger)
 	cfg.AddSource = parseBoolEnv(os.Getenv(envLogSource), cfg.AddSource, logger)
-	cfg.EmitTimeField = parseBoolEnv(os.Getenv(envLogTime), cfg.EmitTimeField, logger)
+	cfg.EmitTimeField, cfg.emitTimeFieldConfigured = parseBoolEnvWithPresence(os.Getenv(envLogTime), cfg.EmitTimeField, logger)
 	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv(envLogStackEnabled), cfg.StackTraceEnabled, logger)
 	cfg.StackTraceLevel = parseLevelEnv(os.Getenv(envLogStackLevel), cfg.StackTraceLevel, logger)
 	cfg.UseShortSeverityNames = parseBoolEnv(os.Getenv(envSeverityAliases), cfg.UseShortSeverityNames, logger)
@@ -860,6 +968,14 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 // applyOptions merges user-supplied options into the derived handler
 // configuration.
 func applyOptions(cfg *handlerConfig, o *options) {
+	applyLevelAndTraceOptions(cfg, o)
+	applyWriterOptions(cfg, o)
+	applyAttrOptions(cfg, o)
+	applyGroupOptions(cfg, o)
+}
+
+// applyLevelAndTraceOptions overlays level and tracing options onto cfg.
+func applyLevelAndTraceOptions(cfg *handlerConfig, o *options) {
 	if o.level != nil {
 		cfg.Level = *o.level
 	}
@@ -868,6 +984,7 @@ func applyOptions(cfg *handlerConfig, o *options) {
 	}
 	if o.emitTimeField != nil {
 		cfg.EmitTimeField = *o.emitTimeField
+		cfg.emitTimeFieldConfigured = true
 	}
 	if o.stackTraceEnabled != nil {
 		cfg.StackTraceEnabled = *o.stackTraceEnabled
@@ -887,6 +1004,10 @@ func applyOptions(cfg *handlerConfig, o *options) {
 	if o.useShortSeverity != nil {
 		cfg.UseShortSeverityNames = *o.useShortSeverity
 	}
+}
+
+// applyWriterOptions configures writer targets from options.
+func applyWriterOptions(cfg *handlerConfig, o *options) {
 	if o.writerFilePath != nil {
 		cfg.FilePath = strings.TrimSpace(*o.writerFilePath)
 		cfg.Writer = nil
@@ -899,6 +1020,10 @@ func applyOptions(cfg *handlerConfig, o *options) {
 		cfg.ClosableWriter = nil
 		cfg.writerExternallyOwned = o.writerExternallyOwned
 	}
+}
+
+// applyAttrOptions merges middleware and initial attribute options.
+func applyAttrOptions(cfg *handlerConfig, o *options) {
 	if o.replaceAttr != nil {
 		cfg.ReplaceAttr = o.replaceAttr
 	}
@@ -918,6 +1043,10 @@ func applyOptions(cfg *handlerConfig, o *options) {
 			})
 		}
 	}
+}
+
+// applyGroupOptions carries initial groups from options.
+func applyGroupOptions(cfg *handlerConfig, o *options) {
 	if o.groupsSet {
 		cfg.InitialGroups = append([]string(nil), o.groups...)
 	}
@@ -963,15 +1092,34 @@ func applyTargetFromEnv(cfg *handlerConfig, logger *slog.Logger) error {
 // parseBoolEnv interprets truthy environment variable values with validation
 // diagnostics.
 func parseBoolEnv(value string, current bool, logger *slog.Logger) bool {
+	val, _ := parseBoolEnvWithPresence(value, current, logger)
+	return val
+}
+
+// parseBoolEnvWithPresence parses boolean environment variables and reports whether a value was present.
+func parseBoolEnvWithPresence(value string, current bool, logger *slog.Logger) (bool, bool) {
 	if strings.TrimSpace(value) == "" {
-		return current
+		return current, false
 	}
 	b, err := strconv.ParseBool(value)
 	if err != nil {
 		logDiagnostic(logger, slog.LevelWarn, "invalid boolean environment variable", slog.String("value", value), slog.Any("error", err))
-		return current
+		return current, false
 	}
-	return b
+	return b, true
+}
+
+var envLevelAliases = map[string]slog.Level{
+	"debug":     slog.LevelDebug,
+	"info":      slog.LevelInfo,
+	"warn":      slog.LevelWarn,
+	"warning":   slog.LevelWarn,
+	"error":     slog.LevelError,
+	"default":   slog.Level(LevelDefault),
+	"notice":    slog.Level(LevelNotice),
+	"critical":  slog.Level(LevelCritical),
+	"alert":     slog.Level(LevelAlert),
+	"emergency": slog.Level(LevelEmergency),
 }
 
 // parseLevelEnv parses slog levels from environment variables, retaining the
@@ -982,29 +1130,11 @@ func parseLevelEnv(value string, current slog.Level, logger *slog.Logger) slog.L
 		return current
 	}
 
-	switch trimmed {
-	case "debug":
-		return slog.LevelDebug
-	case "info":
-		return slog.LevelInfo
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	case "default":
-		return slog.Level(LevelDefault)
-	case "notice":
-		return slog.Level(LevelNotice)
-	case "critical":
-		return slog.Level(LevelCritical)
-	case "alert":
-		return slog.Level(LevelAlert)
-	case "emergency":
-		return slog.Level(LevelEmergency)
-	default:
-		if lv, err := strconv.Atoi(trimmed); err == nil {
-			return slog.Level(lv)
-		}
+	if lv, ok := envLevelAliases[trimmed]; ok {
+		return lv
+	}
+	if lv, err := strconv.Atoi(trimmed); err == nil {
+		return slog.Level(lv)
 	}
 
 	logDiagnostic(logger, slog.LevelWarn, "invalid log level environment variable", slog.String("value", value))

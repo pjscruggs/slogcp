@@ -48,4 +48,8 @@
 //	        slogcpgrpc.DialOptions()...,
 //	    )...,
 //	)
+//	if err != nil {
+//	    // handle error
+//	}
+//	conn.Connect() // optional: start dialing immediately, otherwise RPCs will trigger it
 package slogcpgrpc

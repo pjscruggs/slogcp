@@ -12,31 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package slogcp_test
+package slogcp
 
 import (
 	"context"
 	"errors"
 	"log/slog"
+	"runtime"
 	"testing"
-
-	"github.com/pjscruggs/slogcp"
 )
 
 // TestErrorReportingAttrsOptions ensures ErrorReportingAttrs honors overrides.
 func TestErrorReportingAttrsOptions(t *testing.T) {
 	t.Parallel()
 
-	attrs := slogcp.ErrorReportingAttrs(
+	attrs := ErrorReportingAttrs(
 		errors.New("boom"),
-		slogcp.WithErrorMessage("override"),
-		slogcp.WithErrorServiceContext("svc", "v1"),
+		WithErrorMessage("override"),
+		WithErrorServiceContext("svc", "v1"),
 	)
 	if len(attrs) == 0 {
 		t.Fatal("expected attrs")
 	}
 
-	attrMap := attrsToMap(attrs)
+	attrMap := attrsToMapReporting(attrs)
 	serviceCtx, ok := attrMap["serviceContext"].(map[string]any)
 	if !ok {
 		t.Fatalf("serviceContext attr missing or wrong type: %T", attrMap["serviceContext"])
@@ -59,12 +58,12 @@ func TestReportErrorEmitsStructuredRecord(t *testing.T) {
 	recorder := &recordingHandler{}
 	logger := slog.New(recorder)
 
-	slogcp.ReportError(
+	ReportError(
 		context.Background(),
 		logger,
 		errors.New("explode"),
 		"failed",
-		slogcp.WithErrorMessage("epic fail"),
+		WithErrorMessage("epic fail"),
 	)
 
 	if recorder.lastRecord == nil {
@@ -77,7 +76,7 @@ func TestReportErrorEmitsStructuredRecord(t *testing.T) {
 		t.Fatalf("level = %v, want error", recorder.lastRecord.Level)
 	}
 
-	attrMap := attrsToMap(recorder.attrs)
+	attrMap := attrsToMapReporting(recorder.attrs)
 	if got := attrMap["error"]; got == nil || got.(error).Error() != "explode" {
 		t.Fatalf("error attr = %v, want explode", attrMap["error"])
 	}
@@ -90,7 +89,7 @@ func TestReportErrorEmitsStructuredRecord(t *testing.T) {
 func TestErrorReportingAttrsNilError(t *testing.T) {
 	t.Parallel()
 
-	if attrs := slogcp.ErrorReportingAttrs(nil); attrs != nil {
+	if attrs := ErrorReportingAttrs(nil); attrs != nil {
 		t.Fatalf("ErrorReportingAttrs(nil) = %v, want nil", attrs)
 	}
 }
@@ -102,8 +101,8 @@ func TestReportErrorNilArguments(t *testing.T) {
 	recorder := &recordingHandler{}
 	logger := slog.New(recorder)
 
-	slogcp.ReportError(context.Background(), nil, errors.New("boom"), "ignored")
-	slogcp.ReportError(context.Background(), logger, nil, "ignored")
+	ReportError(context.Background(), nil, errors.New("boom"), "ignored")
+	ReportError(context.Background(), logger, nil, "ignored")
 
 	if recorder.lastRecord != nil {
 		t.Fatalf("expected no log entries for nil inputs, got %+v", recorder.lastRecord)
@@ -111,7 +110,7 @@ func TestReportErrorNilArguments(t *testing.T) {
 }
 
 // attrsToMap converts attributes into a simple map for assertions.
-func attrsToMap(attrs []slog.Attr) map[string]any {
+func attrsToMapReporting(attrs []slog.Attr) map[string]any {
 	out := make(map[string]any, len(attrs))
 	for _, attr := range attrs {
 		if attr.Key == "" {
@@ -149,3 +148,92 @@ func (h *recordingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 // WithGroup returns the handler unchanged because grouping is unused here.
 func (h *recordingHandler) WithGroup(string) slog.Handler { return h }
+
+// TestErrorReportingAttrsUsesRuntimeContext verifies runtime service context data is applied.
+func TestErrorReportingAttrsUsesRuntimeContext(t *testing.T) {
+	t.Parallel()
+
+	t.Cleanup(resetRuntimeInfoCache)
+
+	stubRuntimeInfo(RuntimeInfo{
+		ServiceContext: map[string]string{
+			"service": "runtime-svc",
+			"version": "runtime-v2",
+		},
+	})
+
+	attrs := ErrorReportingAttrs(errors.New("kaboom"))
+	if len(attrs) == 0 {
+		t.Fatalf("ErrorReportingAttrs returned no attributes")
+	}
+
+	attrMap := make(map[string]any, len(attrs))
+	for _, attr := range attrs {
+		if attr.Key == "" {
+			continue
+		}
+		attrMap[attr.Key] = attr.Value.Any()
+	}
+
+	serviceValue := attrMap["serviceContext"]
+	ctx, ok := serviceValue.(map[string]any)
+	if !ok {
+		t.Fatalf("serviceContext type = %T, want map[string]any", serviceValue)
+	}
+	if ctx["service"] != "runtime-svc" || ctx["version"] != "runtime-v2" {
+		t.Fatalf("serviceContext = %#v, want runtime service metadata", ctx)
+	}
+
+	if _, hasMessage := attrMap["message"]; hasMessage {
+		t.Fatalf("unexpected message attribute when override not provided")
+	}
+
+	keys := make([]string, 0, len(attrMap))
+	for k := range attrMap {
+		keys = append(keys, k)
+	}
+	if _, ok := attrMap["stack_trace"]; !ok {
+		t.Fatalf("stack_trace missing from attrs: %v", keys)
+	}
+}
+
+// TestErrorReportingHelpersHandleEmptyInput covers helper fallbacks when optional data is absent.
+func TestErrorReportingHelpersHandleEmptyInput(t *testing.T) {
+	t.Parallel()
+
+	if attrs := buildServiceContextAttrs(errorReportingConfig{}); attrs != nil {
+		t.Fatalf("buildServiceContextAttrs(empty) = %#v, want nil", attrs)
+	}
+	if attrs := buildStackAttrs(""); attrs != nil {
+		t.Fatalf("buildStackAttrs(empty) = %#v, want nil", attrs)
+	}
+	if attrs := buildReportLocationAttrs(runtime.Frame{}); attrs != nil {
+		t.Fatalf("buildReportLocationAttrs(zero frame) = %#v, want nil", attrs)
+	}
+	if attrs := buildErrorMessageAttr(""); attrs != nil {
+		t.Fatalf("buildErrorMessageAttr(empty) = %#v, want nil", attrs)
+	}
+}
+
+// TestBuildErrorMessageAttrCoversNonEmpty verifies the non-empty branch.
+func TestBuildErrorMessageAttrCoversNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	attrs := buildErrorMessageAttr("boom")
+	if len(attrs) != 1 || attrs[0].Value.String() != "boom" {
+		t.Fatalf("buildErrorMessageAttr returned %#v, want message attr with boom", attrs)
+	}
+}
+
+// TestBuildErrorReportingConfigSkipsEmptyRuntimeContext ensures runtime info without service context leaves config untouched.
+func TestBuildErrorReportingConfigSkipsEmptyRuntimeContext(t *testing.T) {
+	t.Parallel()
+	t.Cleanup(resetRuntimeInfoCache)
+
+	stubRuntimeInfo(RuntimeInfo{ServiceContext: nil})
+
+	cfg := buildErrorReportingConfig(nil)
+	if cfg.service != "" || cfg.version != "" {
+		t.Fatalf("expected empty config when runtime service context missing, got %+v", cfg)
+	}
+}

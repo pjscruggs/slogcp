@@ -2284,6 +2284,18 @@ func TestHttpRequestPromotionOutcomes(t *testing.T) {
 		expectedLatency  string // empty if dropped or not promoted
 		expectedCacheHit any    // nil if dropped
 	}{
+		// Latency Absent (still promotes)
+		{
+			name: "LatencyMissing_Promotes",
+			httpRequest: map[string]any{
+				"requestMethod": "GET",
+				"requestUrl":    "https://example.com/items",
+				"status":        200,
+				"userAgent":     "ua",
+			},
+			shouldPromote: true,
+		},
+
 		// Latency Valid
 		{
 			name:            "LatencyValid_0.321s",

@@ -15,11 +15,100 @@
 package slogcp
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+// TestCaptureStackProducesGoFormat ensures CaptureStack emits Go runtime-style stacks and frame metadata.
+func TestCaptureStackProducesGoFormat(t *testing.T) {
+	t.Parallel()
+
+	stack, frame := CaptureStack(nil)
+	if stack == "" {
+		t.Fatal("CaptureStack returned an empty stack trace")
+	}
+	if frame.Function == "" {
+		t.Fatal("CaptureStack returned an empty frame function name")
+	}
+
+	lines := strings.Split(stack, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("stack trace has insufficient lines: %q", stack)
+	}
+
+	header := lines[0]
+	if !strings.HasPrefix(header, "goroutine ") || !strings.HasSuffix(header, "]:") {
+		t.Fatalf("stack trace header %q is not in Go runtime format", header)
+	}
+
+	firstLoc := lines[2]
+	if !strings.HasPrefix(firstLoc, "\t") {
+		t.Fatalf("expected location line to start with a tab, got %q", firstLoc)
+	}
+	if !strings.Contains(firstLoc, ":") {
+		t.Fatalf("expected location line to contain file:line information, got %q", firstLoc)
+	}
+
+	if !strings.Contains(stack, frame.Function) {
+		t.Fatalf("stack trace does not contain returned frame function %q", frame.Function)
+	}
+}
+
+// TestHandlerEmitsStackTraceForErrors verifies handlers include stack traces when enabled.
+func TestHandlerEmitsStackTraceForErrors(t *testing.T) {
+	ResetHandlerConfigCacheForTest()
+	ResetRuntimeInfoCacheForTest()
+	t.Setenv("SLOGCP_TARGET", "")
+
+	var buf bytes.Buffer
+	handler, err := NewHandler(&buf, WithStackTraceEnabled(true))
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := handler.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v", cerr)
+		}
+	})
+
+	logger := slog.New(handler)
+	testErr := errors.New("boom")
+
+	logger.ErrorContext(context.Background(), "failed to do thing", slog.Any("error", testErr))
+
+	content := strings.TrimSpace(buf.String())
+	if content == "" {
+		t.Fatal("log output empty")
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(content), &entry); err != nil {
+		t.Fatalf("json.Unmarshal() returned %v", err)
+	}
+
+	sev, ok := entry["severity"].(string)
+	if !ok || sev == "" {
+		t.Fatalf("severity missing or wrong type: %v (%T)", entry["severity"], entry["severity"])
+	}
+
+	stackVal, ok := entry["stack_trace"].(string)
+	if !ok || stackVal == "" {
+		t.Fatalf("expected stack_trace string in log entry, got %v", entry["stack_trace"])
+	}
+
+	if !strings.HasPrefix(stackVal, "goroutine ") {
+		t.Fatalf("stack_trace does not include goroutine header: %q", stackVal)
+	}
+	if !strings.Contains(stackVal, "\n\t") {
+		t.Fatalf("stack_trace does not contain Go frame separators: %q", stackVal)
+	}
+}
 
 // fakeStackError exposes a canned stack trace for exercising stackTracer logic.
 type fakeStackError struct {
@@ -294,6 +383,53 @@ func TestDefaultGoroutineHeaderTrimsWhitespace(t *testing.T) {
 
 	if header := currentGoroutineHeader(); header != "goroutine 0 [running]:" {
 		t.Fatalf("header = %q, want fallback", header)
+	}
+}
+
+// TestStackHelpersEdgeCases exercises small helper branches that are easy to miss.
+func TestStackHelpersEdgeCases(t *testing.T) {
+	if !frameShouldStop(runtime.Frame{}) {
+		t.Fatalf("frameShouldStop on zero frame should return true")
+	}
+	if skip, stop := frameSkipState(runtime.Frame{Function: "runtime.goexit"}, false); !skip || !stop {
+		t.Fatalf("frameSkipState for goexit = (%v,%v), want (true,true)", skip, stop)
+	}
+	if skip, stop := frameSkipState(runtime.Frame{Function: ""}, true); !skip || stop {
+		t.Fatalf("frameSkipState for blank func with more frames = (%v,%v), want (true,false)", skip, stop)
+	}
+	if skip, stop := frameSkipState(runtime.Frame{Function: "main.main"}, false); skip || stop {
+		t.Fatalf("frameSkipState for user frame = (%v,%v), want (false,false)", skip, stop)
+	}
+
+	var intBuf [20]byte
+	var sb strings.Builder
+	appendOffset(&sb, runtime.Frame{PC: 0, Entry: 0}, &intBuf)
+	if sb.Len() != 0 {
+		t.Fatalf("appendOffset with zero PC should not write, len=%d", sb.Len())
+	}
+	appendOffset(&sb, runtime.Frame{PC: 5, Entry: 5}, &intBuf)
+	if sb.Len() != 0 {
+		t.Fatalf("appendOffset with zero offset should not write, len=%d", sb.Len())
+	}
+	appendOffset(&sb, runtime.Frame{PC: 20, Entry: 5}, &intBuf)
+	if !strings.Contains(sb.String(), "+0x") {
+		t.Fatalf("appendOffset should include hex offset, got %q", sb.String())
+	}
+
+	sb.Reset()
+	appendFrame(&sb, runtime.Frame{Function: "f", File: "file.go", Line: 12, PC: 20, Entry: 5}, &intBuf)
+	if !strings.Contains(sb.String(), "file.go:12") {
+		t.Fatalf("appendFrame output = %q, want file and line", sb.String())
+	}
+
+	pcs := []uintptr{1, 2}
+	trimmed := trimStackPCs(pcs, nil)
+	if len(trimmed) != len(pcs) {
+		t.Fatalf("trimStackPCs without skip should preserve slice, got %d", len(trimmed))
+	}
+	allTrimmed := trimStackPCs(pcs, func(string) bool { return true })
+	if allTrimmed != nil {
+		t.Fatalf("trimStackPCs should return nil when every frame skipped, got %v", allTrimmed)
 	}
 }
 

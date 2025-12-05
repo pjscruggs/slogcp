@@ -16,7 +16,7 @@ package slogcphttp
 
 import (
 	"log/slog"
-	stdhttp "net/http"
+	"net/http"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/propagation"
@@ -26,12 +26,12 @@ import (
 // AttrEnricher can append additional attributes to the request-scoped logger.
 // Implementations may inspect the incoming request or the mutable *RequestScope
 // to add custom fields. Returned attributes are appended in call order.
-type AttrEnricher func(*stdhttp.Request, *RequestScope) []slog.Attr
+type AttrEnricher func(*http.Request, *RequestScope) []slog.Attr
 
 // AttrTransformer can modify or redact the attribute slice produced by the
 // middleware before it is applied to the derived logger. Transformers run after
 // AttrEnrichers and see the accumulated slice.
-type AttrTransformer func([]slog.Attr, *stdhttp.Request, *RequestScope) []slog.Attr
+type AttrTransformer func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr
 
 // Option configures HTTP middleware or transport behaviour.
 type Option func(*config)
@@ -45,11 +45,11 @@ type config struct {
 	propagatorsSet         bool
 	propagateTrace         bool
 	publicEndpoint         bool
-	spanNameFormatter      func(string, *stdhttp.Request) string
+	spanNameFormatter      func(string, *http.Request) string
 	filters                []otelhttp.Filter
 	attrEnrichers          []AttrEnricher
 	attrTransformers       []AttrTransformer
-	routeGetter            func(*stdhttp.Request) string
+	routeGetter            func(*http.Request) string
 	includeClientIP        bool
 	includeQuery           bool
 	includeUserAgent       bool
@@ -141,7 +141,7 @@ func WithOTel(enabled bool) Option {
 }
 
 // WithSpanNameFormatter customizes otelhttp span naming.
-func WithSpanNameFormatter(formatter func(string, *stdhttp.Request) string) Option {
+func WithSpanNameFormatter(formatter func(string, *http.Request) string) Option {
 	return func(cfg *config) {
 		cfg.spanNameFormatter = formatter
 	}
@@ -179,7 +179,7 @@ func WithAttrTransformer(transformer AttrTransformer) Option {
 
 // WithRouteGetter overrides how the middleware resolves the route template for
 // a request (e.g., mux-specific variables).
-func WithRouteGetter(fn func(*stdhttp.Request) string) Option {
+func WithRouteGetter(fn func(*http.Request) string) Option {
 	return func(cfg *config) {
 		cfg.routeGetter = fn
 	}

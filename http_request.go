@@ -98,37 +98,66 @@ func PrepareHTTPRequest(req *HTTPRequest) {
 		return
 	}
 
-	if r := req.Request; r != nil {
-		if req.RequestMethod == "" {
-			req.RequestMethod = r.Method
-		}
-		if req.RequestURL == "" && r.URL != nil {
-			req.RequestURL = r.URL.String()
-		}
-		if req.UserAgent == "" {
-			req.UserAgent = r.UserAgent()
-		}
-		if req.Referer == "" {
-			req.Referer = r.Referer()
-		}
-		if req.Protocol == "" {
-			req.Protocol = r.Proto
-		}
-		if req.RequestSize == 0 && r.ContentLength > 0 {
-			req.RequestSize = r.ContentLength
-		}
-		if req.RemoteIP == "" {
-			req.RemoteIP = r.RemoteAddr
-		}
-		req.Request = nil
-	}
+	populateFromHTTPRequest(req)
+	normalizeRemoteIP(req)
+	normalizePayloadSizes(req)
+}
 
-	if req.RemoteIP != "" {
-		if host, _, err := net.SplitHostPort(req.RemoteIP); err == nil {
-			req.RemoteIP = host
-		}
+// populateFromHTTPRequest copies fields from the embedded http.Request when present.
+func populateFromHTTPRequest(req *HTTPRequest) {
+	if req.Request == nil {
+		return
 	}
+	r := req.Request
+	populateRequestStrings(req, r)
+	populateRequestSizes(req, r)
+	populateRemoteIP(req, r.RemoteAddr)
+	req.Request = nil
+}
 
+// populateRequestStrings fills request metadata fields when unset.
+func populateRequestStrings(req *HTTPRequest, r *http.Request) {
+	copyStringIfEmpty(&req.RequestMethod, r.Method)
+	if r.URL != nil {
+		copyStringIfEmpty(&req.RequestURL, r.URL.String())
+	}
+	copyStringIfEmpty(&req.UserAgent, r.UserAgent())
+	copyStringIfEmpty(&req.Referer, r.Referer())
+	copyStringIfEmpty(&req.Protocol, r.Proto)
+}
+
+// populateRequestSizes copies size information when available.
+func populateRequestSizes(req *HTTPRequest, r *http.Request) {
+	if req.RequestSize == 0 && r.ContentLength > 0 {
+		req.RequestSize = r.ContentLength
+	}
+}
+
+// populateRemoteIP sets the remote IP from the request when missing.
+func populateRemoteIP(req *HTTPRequest, remoteAddr string) {
+	copyStringIfEmpty(&req.RemoteIP, remoteAddr)
+}
+
+// copyStringIfEmpty assigns value to target when target is blank.
+func copyStringIfEmpty(target *string, value string) {
+	if target == nil || *target != "" || value == "" {
+		return
+	}
+	*target = value
+}
+
+// normalizeRemoteIP strips ports from RemoteIP when possible.
+func normalizeRemoteIP(req *HTTPRequest) {
+	if req.RemoteIP == "" {
+		return
+	}
+	if host, _, err := net.SplitHostPort(req.RemoteIP); err == nil {
+		req.RemoteIP = host
+	}
+}
+
+// normalizePayloadSizes standardizes negative size values to -1.
+func normalizePayloadSizes(req *HTTPRequest) {
 	if req.RequestSize < 0 {
 		req.RequestSize = -1
 	}
@@ -174,14 +203,20 @@ func httpRequestPayloadValue(payload *httpRequestPayload) slog.Value {
 		"referer":                        payload.Referer,
 		"protocol":                       payload.Protocol,
 		"requestSize":                    payload.RequestSize,
-		"status":                         payload.Status,
-		"responseSize":                   payload.ResponseSize,
 		"remoteIp":                       payload.RemoteIP,
 		"serverIp":                       payload.ServerIP,
 		"cacheHit":                       payload.CacheHit,
 		"cacheValidatedWithOriginServer": payload.CacheValidatedWithOriginServer,
-		"cacheFillBytes":                 payload.CacheFillBytes,
 		"cacheLookup":                    payload.CacheLookup,
+	}
+	if payload.Status > 0 {
+		m["status"] = payload.Status
+	}
+	if payload.ResponseSize != "" {
+		m["responseSize"] = payload.ResponseSize
+	}
+	if payload.CacheFillBytes != "" {
+		m["cacheFillBytes"] = payload.CacheFillBytes
 	}
 	if payload.Latency != "" {
 		m["latency"] = payload.Latency
@@ -200,6 +235,37 @@ func httpRequestFromValue(v slog.Value) (*HTTPRequest, bool) {
 
 // httpRequestFromLogValuer unwraps HTTPRequest pointers stored as slog.LogValuer values.
 func httpRequestFromLogValuer(v slog.LogValuer) (*HTTPRequest, bool) {
-	req, ok := v.(*HTTPRequest)
-	return req, ok
+	switch hv := v.(type) {
+	case *HTTPRequest:
+		return hv, true
+	case httpRequestLogValuer:
+		if hv.build == nil {
+			return nil, false
+		}
+		return hv.build(), true
+	default:
+		return nil, false
+	}
+}
+
+// httpRequestLogValuer adapts a builder so httpRequest values can be resolved lazily.
+type httpRequestLogValuer struct {
+	build func() *HTTPRequest
+}
+
+// LogValue implements slog.LogValuer.
+func (v httpRequestLogValuer) LogValue() slog.Value {
+	if v.build == nil {
+		return slog.Value{}
+	}
+	req := v.build()
+	if req == nil {
+		return slog.Value{}
+	}
+	return req.LogValue()
+}
+
+// HTTPRequestValue constructs a slog.Value that lazily builds an HTTPRequest.
+func HTTPRequestValue(builder func() *HTTPRequest) slog.Value {
+	return slog.AnyValue(httpRequestLogValuer{build: builder})
 }

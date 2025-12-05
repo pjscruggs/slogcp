@@ -35,8 +35,8 @@ func init() {
 // EnsurePropagation configures a composite OpenTelemetry text map propagator that
 // prefers the W3C Trace Context headers while accepting Google Cloud's legacy
 // X-Cloud-Trace-Context header on ingress. The configuration is applied exactly
-// once per process unless the SLOGCP_DISABLE_PROPAGATOR_AUTOSET environment
-// variable is set to a truthy value.
+// once per process unless the SLOGCP_PROPAGATOR_AUTOSET environment variable is
+// explicitly set to a falsy value.
 //
 // The installed propagator order is:
 //  1. CloudTraceOneWayPropagator (extracts X-Cloud-Trace-Context only)
@@ -47,7 +47,7 @@ func init() {
 // calling otel.SetTextMapPropagator with their own implementation.
 func EnsurePropagation() {
 	installPropagatorOnce.Do(func() {
-		if disableAutoSet() {
+		if !propagatorAutoSetEnabled() {
 			return
 		}
 
@@ -59,16 +59,16 @@ func EnsurePropagation() {
 	})
 }
 
-// disableAutoSet reports whether automatic propagator installation is disabled
-// via the SLOGCP_DISABLE_PROPAGATOR_AUTOSET environment variable.
-func disableAutoSet() bool {
-	raw := strings.TrimSpace(os.Getenv("SLOGCP_DISABLE_PROPAGATOR_AUTOSET"))
+// propagatorAutoSetEnabled reports whether automatic propagator installation is enabled
+// via the SLOGCP_PROPAGATOR_AUTOSET environment variable.
+func propagatorAutoSetEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("SLOGCP_PROPAGATOR_AUTOSET"))
 	if raw == "" {
-		return false
+		return true
 	}
 	b, err := strconv.ParseBool(raw)
 	if err != nil {
-		return false
+		return true
 	}
 	return b
 }

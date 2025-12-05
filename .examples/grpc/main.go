@@ -80,9 +80,9 @@ func main() {
 		slogcpgrpc.DialOptions(slogcpgrpc.WithLogger(logger))...,
 	)
 
-	conn, err := grpc.DialContext(ctx, lis.Addr().String(), dialOptions...)
+	conn, err := grpc.NewClient(lis.Addr().String(), dialOptions...)
 	if err != nil {
-		log.Fatalf("dial error: %v", err)
+		log.Fatalf("new client error: %v", err)
 	}
 	defer conn.Close()
 
