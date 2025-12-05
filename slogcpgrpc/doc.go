@@ -41,8 +41,7 @@
 //	    )...,
 //	)
 //
-//	conn, err := grpc.DialContext(
-//	    ctx,
+//	conn, err := grpc.NewClient(
 //	    target,
 //	    append(
 //	        []grpc.DialOption{grpc.WithTransportCredentials(creds)},
