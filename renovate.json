@@ -3,13 +3,22 @@
   "extends": [
     "config:recommended",
     "config:semverAllWeekly",
+    ":gomod",
     ":noUnscheduledUpdates",
     ":automergeMinor",
     "helpers:pinGitHubActionDigests"
   ],
   "timezone": "America/Chicago",
   "platformAutomerge": true,
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
   "packageRules": [
+    {
+      "description": "Keep go directive current",
+      "matchDatasources": ["golang-version"],
+      "rangeStrategy": "bump"
+    },
     {
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["minor", "patch"],
@@ -19,6 +28,7 @@
     {
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "GitHub Actions",
       "automerge": true,
       "platformAutomerge": true
     },
