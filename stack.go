@@ -82,15 +82,7 @@ func formatPCsToStackString(pcs []uintptr) string {
 	}
 
 	header := currentGoroutineHeader()
-
-	var sb strings.Builder
-	if header != "" {
-		sb.Grow(len(header) + len(pcs)*64)
-		sb.WriteString(header)
-		sb.WriteByte('\n')
-	} else {
-		sb.Grow(len(pcs) * 64)
-	}
+	sb := initStackBuilder(header, len(pcs))
 
 	var intBuf [20]byte
 	frames := callersFramesFunc(pcs)
@@ -99,46 +91,17 @@ func formatPCsToStackString(pcs []uintptr) string {
 	for {
 		frame, more := frames.Next()
 
-		if frame.PC == 0 {
+		if frameShouldStop(frame) {
 			break
 		}
 
-		if frame.Function == "runtime.goexit" {
-			if !more {
-				break
-			}
+		if skip, stop := frameSkipState(frame, more); stop {
+			break
+		} else if skip {
 			continue
 		}
 
-		if frame.Function == "" {
-			if !more {
-				break
-			}
-			continue
-		}
-
-		sb.WriteString(frame.Function)
-		sb.WriteByte('\n')
-		sb.WriteByte('\t')
-		sb.WriteString(frame.File)
-		sb.WriteByte(':')
-
-		lineBytes := strconv.AppendInt(intBuf[:0], int64(frame.Line), 10)
-		sb.Write(lineBytes)
-
-		if frame.PC != 0 && frame.Entry != 0 {
-			var offset uintptr
-			if frame.PC >= frame.Entry {
-				offset = frame.PC - frame.Entry
-			}
-			if offset > 0 {
-				sb.WriteString(" +0x")
-				hexBytes := strconv.AppendUint(intBuf[:0], uint64(offset), 16)
-				sb.Write(hexBytes)
-			}
-		}
-
-		sb.WriteByte('\n')
+		appendFrame(sb, frame, &intBuf)
 
 		frameCount++
 		if !more || frameCount >= maxStackFrames {
@@ -147,6 +110,65 @@ func formatPCsToStackString(pcs []uintptr) string {
 	}
 
 	return sb.String()
+}
+
+// initStackBuilder prepares a strings.Builder sized for the expected stack output.
+func initStackBuilder(header string, pcsLen int) *strings.Builder {
+	sb := &strings.Builder{}
+	if header != "" {
+		sb.Grow(len(header) + pcsLen*64)
+		sb.WriteString(header)
+		sb.WriteByte('\n')
+		return sb
+	}
+	sb.Grow(pcsLen * 64)
+	return sb
+}
+
+// frameShouldStop reports whether stack iteration should halt for an empty frame.
+func frameShouldStop(frame runtime.Frame) bool {
+	return frame.PC == 0
+}
+
+// frameSkipState returns whether to skip the frame and whether iteration should end.
+func frameSkipState(frame runtime.Frame, more bool) (skip bool, stop bool) {
+	switch frame.Function {
+	case "runtime.goexit":
+		return true, !more
+	case "":
+		return true, !more
+	default:
+		return false, false
+	}
+}
+
+// appendFrame writes a single stack frame to the builder.
+func appendFrame(sb *strings.Builder, frame runtime.Frame, intBuf *[20]byte) {
+	sb.WriteString(frame.Function)
+	sb.WriteByte('\n')
+	sb.WriteByte('\t')
+	sb.WriteString(frame.File)
+	sb.WriteByte(':')
+
+	lineBytes := strconv.AppendInt(intBuf[:0], int64(frame.Line), 10)
+	sb.Write(lineBytes)
+
+	appendOffset(sb, frame, intBuf)
+	sb.WriteByte('\n')
+}
+
+// appendOffset renders the PC offset when available.
+func appendOffset(sb *strings.Builder, frame runtime.Frame, intBuf *[20]byte) {
+	if frame.PC == 0 || frame.Entry == 0 || frame.PC < frame.Entry {
+		return
+	}
+	offset := frame.PC - frame.Entry
+	if offset == 0 {
+		return
+	}
+	sb.WriteString(" +0x")
+	hexBytes := strconv.AppendUint(intBuf[:0], uint64(offset), 16)
+	sb.Write(hexBytes)
 }
 
 // trimStackPCs removes leading frames that match skipFn while preserving the remainder.

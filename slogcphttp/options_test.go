@@ -15,9 +15,19 @@
 package slogcphttp
 
 import (
+	"net/http"
+	"strings"
+
 	"log/slog"
 	"testing"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace/noop"
 )
+
+// alwaysIncludeFilter accepts all requests and is used to exercise filter hooks.
+var alwaysIncludeFilter = func(*http.Request) bool { return true }
 
 // TestWithLoggerHandlesNil verifies WithLogger falls back to slog.Default().
 func TestWithLoggerHandlesNil(t *testing.T) {
@@ -47,5 +57,84 @@ func TestWithHTTPRequestAttr(t *testing.T) {
 	cfg = applyOptions([]Option{WithHTTPRequestAttr(false)})
 	if cfg.includeHTTPRequestAttr {
 		t.Fatalf("includeHTTPRequestAttr = true, want false")
+	}
+}
+
+// TestOptionSettersCoverAllFields validates individual option helpers update config fields.
+func TestOptionSettersCoverAllFields(t *testing.T) {
+	t.Parallel()
+
+	prop := propagation.TraceContext{}
+	tp := noop.NewTracerProvider()
+	var filterHit bool
+	filter := func(*http.Request) bool {
+		filterHit = true
+		return true
+	}
+	formatter := func(name string, _ *http.Request) string {
+		return name + "-fmt"
+	}
+
+	cfg := applyOptions([]Option{
+		WithPropagators(prop),
+		WithTracerProvider(tp),
+		WithTracePropagation(false),
+		WithPublicEndpoint(true),
+		WithOTel(false),
+		WithSpanNameFormatter(formatter),
+		WithFilter(nil), // ensure nil is skipped
+		WithFilter(filter),
+		WithClientIP(false),
+	})
+
+	if !cfg.propagatorsSet || cfg.propagators != prop {
+		t.Fatalf("propagators not applied: %#v", cfg.propagators)
+	}
+	if cfg.tracerProvider != tp {
+		t.Fatalf("tracerProvider not applied")
+	}
+	if cfg.propagateTrace {
+		t.Fatalf("propagateTrace should be false after WithTracePropagation(false)")
+	}
+	if !cfg.publicEndpoint {
+		t.Fatalf("publicEndpoint should be true")
+	}
+	if cfg.enableOTel {
+		t.Fatalf("enableOTel should be false after WithOTel(false)")
+	}
+	if cfg.includeClientIP {
+		t.Fatalf("includeClientIP should be false after WithClientIP(false)")
+	}
+	if out := cfg.spanNameFormatter("base", nil); out != "base-fmt" {
+		t.Fatalf("spanNameFormatter output = %q", out)
+	}
+	if len(cfg.filters) != 1 {
+		t.Fatalf("filters len = %d, want 1", len(cfg.filters))
+	}
+	cfg.filters[0](nil)
+	if !filterHit {
+		t.Fatalf("filter was not invoked")
+	}
+}
+
+// TestOtelOptionsCoversBranches ensures otelOptions emits entries for every non-empty field.
+func TestOtelOptionsCoversBranches(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config{
+		tracerProvider:    noop.NewTracerProvider(),
+		propagators:       propagation.TraceContext{},
+		propagatorsSet:    true,
+		publicEndpoint:    true,
+		spanNameFormatter: func(name string, _ *http.Request) string { return strings.ToUpper(name) },
+		filters: []otelhttp.Filter{
+			nil,
+			alwaysIncludeFilter,
+		},
+	}
+
+	opts := otelOptions(cfg)
+	if got := len(opts); got != 5 {
+		t.Fatalf("otelOptions len = %d, want 5", got)
 	}
 }

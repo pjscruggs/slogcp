@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	stdhttp "net/http"
+	"net/http"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -34,9 +34,9 @@ var randRead = rand.Read
 // InjectTraceContextMiddleware extracts legacy X-Cloud-Trace-Context headers
 // when no OpenTelemetry span is present in the incoming context. The extracted
 // span context becomes the active context for downstream handlers.
-func InjectTraceContextMiddleware() func(stdhttp.Handler) stdhttp.Handler {
-	return func(next stdhttp.Handler) stdhttp.Handler {
-		return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+func InjectTraceContextMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx := r.Context()
 			if trace.SpanContextFromContext(ctx).IsValid() {
 				next.ServeHTTP(w, r)
@@ -67,20 +67,42 @@ func contextWithXCloudTrace(ctx context.Context, header string) (context.Context
 
 // parseXCloudTrace decodes an X-Cloud-Trace-Context header into a span context.
 func parseXCloudTrace(header string) (trace.SpanContext, bool) {
-	if header == "" {
+	parts, ok := splitXCloudTraceHeader(header)
+	if !ok {
 		return trace.SpanContext{}, false
 	}
 
-	idPart := header
-	options := ""
-	if cut, opts, ok := strings.Cut(header, ";"); ok {
-		idPart = cut
-		options = opts
+	traceID, err := trace.TraceIDFromHex(parts.traceID)
+	if err != nil || !traceID.IsValid() {
+		return trace.SpanContext{}, false
 	}
 
+	spanID, ok := parseSpanID(parts.spanDecimal)
+	if !ok {
+		return trace.SpanContext{}, false
+	}
+	flags := traceFlagsFromOptions(parts.options)
+
+	return buildSpanContext(traceID, spanID, flags)
+}
+
+type xCloudTraceParts struct {
+	traceID     string
+	spanDecimal string
+	options     string
+}
+
+// splitXCloudTraceHeader separates the trace ID, span ID, and options fields.
+func splitXCloudTraceHeader(header string) (xCloudTraceParts, bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return xCloudTraceParts{}, false
+	}
+
+	idPart, options, _ := strings.Cut(header, ";")
 	idPart = strings.TrimSpace(idPart)
 	if idPart == "" {
-		return trace.SpanContext{}, false
+		return xCloudTraceParts{}, false
 	}
 
 	traceIDStr := idPart
@@ -90,28 +112,40 @@ func parseXCloudTrace(header string) (trace.SpanContext, bool) {
 		spanDecimal = strings.TrimSpace(parts[1])
 	}
 
-	traceID, err := trace.TraceIDFromHex(traceIDStr)
-	if err != nil || !traceID.IsValid() {
-		return trace.SpanContext{}, false
-	}
+	return xCloudTraceParts{
+		traceID:     traceIDStr,
+		spanDecimal: spanDecimal,
+		options:     options,
+	}, true
+}
 
+// parseSpanID converts decimal span IDs into the binary form expected by trace.SpanID.
+func parseSpanID(spanDecimal string) (trace.SpanID, bool) {
 	var spanID trace.SpanID
 	if spanDecimal != "" {
 		if spanUint, err := strconv.ParseUint(spanDecimal, 10, 64); err == nil {
 			binary.BigEndian.PutUint64(spanID[:], spanUint)
 		}
 	}
-	if !spanID.IsValid() {
-		if _, err := randRead(spanID[:]); err != nil {
-			return trace.SpanContext{}, false
-		}
+	if spanID.IsValid() {
+		return spanID, true
 	}
+	if _, err := randRead(spanID[:]); err != nil {
+		return trace.SpanID{}, false
+	}
+	return spanID, true
+}
 
-	var flags trace.TraceFlags
+// traceFlagsFromOptions extracts sampling flags from the options suffix.
+func traceFlagsFromOptions(options string) trace.TraceFlags {
 	if strings.Contains(options, "o=1") {
-		flags = trace.FlagsSampled
+		return trace.FlagsSampled
 	}
+	return 0
+}
 
+// buildSpanContext validates and constructs a remote span context.
+func buildSpanContext(traceID trace.TraceID, spanID trace.SpanID, flags trace.TraceFlags) (trace.SpanContext, bool) {
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    traceID,
 		SpanID:     spanID,

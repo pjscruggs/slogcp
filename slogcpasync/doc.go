@@ -37,9 +37,8 @@
 //		),
 //	)
 //
-// The following environment variables are recognized when [WithEnv] is
-// supplied:
-//   - SLOGCP_ASYNC_ENABLED: true/false to toggle the wrapper
+// The following environment variables are recognized when [WithEnv] is supplied:
+//   - SLOGCP_ASYNC: true/false to toggle the wrapper
 //   - SLOGCP_ASYNC_QUEUE_SIZE: channel capacity (0 makes the queue unbuffered)
 //   - SLOGCP_ASYNC_DROP_MODE: block | drop_newest | drop_oldest
 //   - SLOGCP_ASYNC_WORKERS: number of worker goroutines

@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/benchmarks/slogcp-v-google/slogcp
 
-go 1.25.4
+go 1.25.5
 
 require github.com/pjscruggs/slogcp v0.1.6-alpha
 

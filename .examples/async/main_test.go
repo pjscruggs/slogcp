@@ -62,7 +62,7 @@ func TestAsyncExampleDropsLateWrite(t *testing.T) {
 
 // TestAsyncExampleCanDisableWithEnv ensures WithEnv honours the opt-out flag.
 func TestAsyncExampleCanDisableWithEnv(t *testing.T) {
-	t.Setenv("SLOGCP_ASYNC_ENABLED", "false")
+	t.Setenv("SLOGCP_ASYNC", "false")
 
 	var buf bytes.Buffer
 	example, err := newAsyncExample(&buf)

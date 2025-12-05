@@ -409,6 +409,65 @@ func TestInjectClientTraceRespectsPropagationToggle(t *testing.T) {
 	}
 }
 
+// TestTraceHelperEdgeCases covers fallback parsing and span synthesis helpers.
+func TestTraceHelperEdgeCases(t *testing.T) {
+	t.Run("extract_with_nil_propagator", func(t *testing.T) {
+		orig := otel.GetTextMapPropagator()
+		otel.SetTextMapPropagator(nil)
+		t.Cleanup(func() { otel.SetTextMapPropagator(orig) })
+
+		_, sc := extractWithPropagator(context.Background(), metadata.New(nil), &config{})
+		if sc.IsValid() {
+			t.Fatalf("expected invalid span context when no propagator available, got %v", sc)
+		}
+	})
+
+	t.Run("extract_xcloud_invalid_header", func(t *testing.T) {
+		md := metadata.Pairs(strings.ToLower(XCloudTraceContextHeader), "bad-header")
+		ctx := context.Background()
+		gotCtx, sc := extractXCloudTraceHeader(ctx, md)
+		if gotCtx != ctx {
+			t.Fatalf("expected original context on invalid header")
+		}
+		if sc.IsValid() {
+			t.Fatalf("unexpected valid span context for invalid header: %v", sc)
+		}
+	})
+
+	t.Run("split_header_parts", func(t *testing.T) {
+		parts, ok := splitXCloudTraceHeader("105445aa7843bc8bf206b12000100000/9; o=1")
+		if !ok {
+			t.Fatalf("splitXCloudTraceHeader returned false")
+		}
+		if parts.traceID != "105445aa7843bc8bf206b12000100000" || parts.spanDecimal != "9" {
+			t.Fatalf("parts mismatch: %+v", parts)
+		}
+	})
+
+	t.Run("parse_span_id_fallback", func(t *testing.T) {
+		orig := randReader
+		defer func() { randReader = orig }()
+		randReader = func(b []byte) (int, error) {
+			for i := range b {
+				b[i] = 1
+			}
+			return len(b), nil
+		}
+		if spanID, ok := parseSpanID(""); !ok || !spanID.IsValid() {
+			t.Fatalf("parseSpanID(empty) = (%v,%v), want valid synthesized span", spanID, ok)
+		}
+	})
+
+	t.Run("trace_flags_from_options", func(t *testing.T) {
+		if got := traceFlagsFromOptions("o=1"); got != trace.FlagsSampled {
+			t.Fatalf("traceFlagsFromOptions(o=1) = %v, want sampled", got)
+		}
+		if got := traceFlagsFromOptions("none"); got != 0 {
+			t.Fatalf("traceFlagsFromOptions(no flag) = %v, want 0", got)
+		}
+	})
+}
+
 // encodeTraceBin assembles a grpc-trace-bin payload for tests.
 func encodeTraceBin(traceID trace.TraceID, spanID trace.SpanID, flags trace.TraceFlags) string {
 	data := make([]byte, 0, 30)
