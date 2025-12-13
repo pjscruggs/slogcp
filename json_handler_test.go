@@ -154,30 +154,6 @@ func TestEnabledRespectsLeveler(t *testing.T) {
 	}
 }
 
-// TestMergeLabelsVariants exercises mergeLabels across all branch combinations.
-func TestMergeLabelsVariants(t *testing.T) {
-	if got := mergeLabels(nil, nil); got != nil {
-		t.Fatalf("mergeLabels(nil, nil) = %#v, want nil", got)
-	}
-
-	runtimeLabels := map[string]string{"region": "static"}
-	if got := mergeLabels(nil, runtimeLabels); got["region"] != "static" {
-		t.Fatalf("runtime labels not returned, got %#v", got)
-	}
-	if got := mergeLabels(map[string]string{"env": "prod"}, nil); got["env"] != "prod" {
-		t.Fatalf("dynamic labels not preserved, got %#v", got)
-	}
-
-	dynamic := map[string]string{"env": "prod"}
-	merged := mergeLabels(dynamic, runtimeLabels)
-	if merged["env"] != "prod" || merged["region"] != "static" {
-		t.Fatalf("merged labels mismatch: %#v", merged)
-	}
-	if _, exists := runtimeLabels["env"]; exists {
-		t.Fatalf("runtime labels were mutated: %#v", runtimeLabels)
-	}
-}
-
 // TestResolveResolvedValueHandlesUnknownKinds covers the default branch in resolveResolvedValue.
 func TestResolveResolvedValueHandlesUnknownKinds(t *testing.T) {
 	if val := resolveResolvedValue(slog.GroupValue()); val != nil {
@@ -513,7 +489,6 @@ func TestJSONHandlerHandleBuildsComplexPayload(t *testing.T) {
 		EmitTimeField:     true,
 		StackTraceEnabled: true,
 		StackTraceLevel:   slog.LevelInfo,
-		runtimeLabels:     map[string]string{"static": "label"},
 		runtimeServiceContext: map[string]string{
 			"service": "svc",
 			"version": "v1",
@@ -589,7 +564,7 @@ func TestJSONHandlerHandleBuildsComplexPayload(t *testing.T) {
 	if !ok {
 		t.Fatalf("labels missing from payload: %#v", entry)
 	}
-	for _, key := range []string{"dynamic", "static", "base_label"} {
+	for _, key := range []string{"dynamic", "base_label"} {
 		if _, exists := labels[key]; !exists {
 			t.Fatalf("label %q missing from payload: %#v", key, labels)
 		}
@@ -675,7 +650,6 @@ func TestJSONHandlerBranchSweep(t *testing.T) {
 		EmitTimeField:     true,
 		StackTraceEnabled: true,
 		StackTraceLevel:   slog.LevelDebug,
-		runtimeLabels:     map[string]string{"static": "x"},
 		runtimeServiceContext: map[string]string{
 			"service": "svc",
 			"version": "v1",
@@ -708,13 +682,6 @@ func TestJSONHandlerBranchSweep(t *testing.T) {
 		t.Fatalf("Enabled does not respect default leveler")
 	}
 
-	if mergeLabels(nil, nil) != nil {
-		t.Fatalf("mergeLabels(nil,nil) should be nil")
-	}
-	if merged := mergeLabels(map[string]string{"dyn": "1"}, map[string]string{"static": "x"}); merged["static"] != "x" || merged["dyn"] != "1" {
-		t.Fatalf("mergeLabels failed: %#v", merged)
-	}
-
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://example.com", nil)
 	record := slog.NewRecord(time.Now(), slog.LevelError, "branch", pc)
 	record.AddAttrs(
@@ -734,10 +701,11 @@ func TestJSONHandlerBranchSweep(t *testing.T) {
 	if errType == "" || errMsg == "" || stackStr == "" {
 		t.Fatalf("expected error metadata, got errType=%q errMsg=%q stackStr=%q", errType, errMsg, stackStr)
 	}
-
-	mergedLabels := mergeLabels(dynLabels, cfg.runtimeLabels)
-	if mergedLabels["static"] != "x" || mergedLabels["answer"] != "42" {
-		t.Fatalf("dynamic labels not merged: %#v", mergedLabels)
+	if dynLabels["label"] != "from-base" || dynLabels["answer"] != "42" {
+		t.Fatalf("expected labels from base and record, got %#v", dynLabels)
+	}
+	if _, ok := dynLabels["nil"]; ok {
+		t.Fatalf("nil label value should be skipped: %#v", dynLabels)
 	}
 
 	parent := map[string]any{"collide": "value"}
@@ -803,24 +771,6 @@ func TestJSONHandlerBranchSweep(t *testing.T) {
 
 // TestJSONHandlerHelperBranchesExplicit covers small helper branches directly.
 func TestJSONHandlerHelperBranchesExplicit(t *testing.T) {
-	t.Run("mergeLabelsCombinations", func(t *testing.T) {
-		if got := mergeLabels(nil, nil); got != nil {
-			t.Fatalf("mergeLabels(nil,nil) = %#v, want nil", got)
-		}
-		runtimeLabels := map[string]string{"r": "1"}
-		if got := mergeLabels(nil, runtimeLabels); got["r"] != "1" {
-			t.Fatalf("mergeLabels(nil,runtime) = %#v", got)
-		}
-		if got := mergeLabels(map[string]string{"d": "1"}, nil); got["d"] != "1" {
-			t.Fatalf("mergeLabels(dynamic,nil) = %#v", got)
-		}
-		dynamic := map[string]string{"d": "1"}
-		merged := mergeLabels(dynamic, map[string]string{"r": "1", "d": "skip"})
-		if merged["r"] != "1" || merged["d"] != "1" {
-			t.Fatalf("mergeLabels overlap = %#v", merged)
-		}
-	})
-
 	t.Run("initialHelpers", func(t *testing.T) {
 		cfg := &handlerConfig{
 			Writer: io.Discard,
@@ -999,7 +949,6 @@ func TestJSONHandlerBranchesExhaustive(t *testing.T) {
 			{attr: slog.Attr{}},
 			{groups: []string{"g2"}, attr: slog.String("inner", "v")},
 		},
-		runtimeLabels: map[string]string{"static": "label"},
 		ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
 			if attr.Key == "dropper" {
 				return slog.Attr{}
@@ -1815,9 +1764,9 @@ func TestPayloadBuilderHTTPRequestAndServiceContext(t *testing.T) {
 	}
 }
 
-// TestJSONHandlerHandleMergesLabels ensures runtime labels are merged with dynamic labels and
-// service context fields are emitted alongside error metadata.
-func TestJSONHandlerHandleMergesLabels(t *testing.T) {
+// TestJSONHandlerHandleEmitsLabelsAndServiceContext ensures record labels are emitted alongside
+// service context fields and error metadata.
+func TestJSONHandlerHandleEmitsLabelsAndServiceContext(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
@@ -1826,7 +1775,6 @@ func TestJSONHandlerHandleMergesLabels(t *testing.T) {
 		StackTraceEnabled: true,
 		StackTraceLevel:   slog.LevelInfo,
 		Writer:            &buf,
-		runtimeLabels:     map[string]string{"role": "api", "region": "static"},
 		runtimeServiceContext: map[string]string{
 			"service": "checkout",
 			"version": "v1",
@@ -1861,14 +1809,11 @@ func TestJSONHandlerHandleMergesLabels(t *testing.T) {
 	if labels["env"] != "prod" {
 		t.Fatalf("env label = %v, want %q", labels["env"], "prod")
 	}
-	if labels["role"] != "api" {
-		t.Fatalf("role label = %v, want %q", labels["role"], "api")
-	}
 	if labels["region"] != "dynamic" {
 		t.Fatalf("region label = %v, want %q", labels["region"], "dynamic")
 	}
-	if cfg.runtimeLabels["region"] != "static" {
-		t.Fatalf("runtime labels were mutated: %#v", cfg.runtimeLabels)
+	if _, ok := labels["role"]; ok {
+		t.Fatalf("unexpected runtime label in payload: %#v", labels)
 	}
 
 	if msg, _ := entry[messageKey].(string); msg != "order created: flush failed" {
@@ -1891,15 +1836,52 @@ func TestJSONHandlerHandleMergesLabels(t *testing.T) {
 	}
 }
 
-// TestJSONHandlerHandleUsesRuntimeLabelsWithoutRecordLabels covers the runtime label fallback path.
-func TestJSONHandlerHandleUsesRuntimeLabelsWithoutRecordLabels(t *testing.T) {
+// TestJSONHandlerHandleUsesRecordLabelsOnly ensures record-supplied labels are emitted.
+func TestJSONHandlerHandleUsesRecordLabelsOnly(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
 	cfg := &handlerConfig{
-		Level:         slog.LevelInfo,
-		Writer:        &buf,
-		runtimeLabels: map[string]string{"service": "billing"},
+		Level:             slog.LevelInfo,
+		StackTraceEnabled: true,
+		StackTraceLevel:   slog.LevelInfo,
+		Writer:            &buf,
+	}
+	internalLogger := slog.New(slog.DiscardHandler)
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(slog.LevelInfo)
+	handler := newJSONHandler(cfg, levelVar, internalLogger)
+
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "order created", 0)
+	record.AddAttrs(
+		slog.Group(LabelsGroup,
+			slog.String("env", "prod"),
+			slog.String("region", "dynamic"),
+		),
+	)
+
+	if err := handler.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle returned %v", err)
+	}
+
+	entry := decodeJSONEntry(t, &buf)
+	labels, ok := entry[LabelsGroup].(map[string]any)
+	if !ok {
+		t.Fatalf("labels missing or wrong type: %T", entry[LabelsGroup])
+	}
+	if len(labels) != 2 || labels["env"] != "prod" || labels["region"] != "dynamic" {
+		t.Fatalf("labels = %#v, expected only dynamic labels", labels)
+	}
+}
+
+// TestJSONHandlerHandleOmitsLabelsWithoutRecordLabels ensures labels are omitted when none are supplied.
+func TestJSONHandlerHandleOmitsLabelsWithoutRecordLabels(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	cfg := &handlerConfig{
+		Level:  slog.LevelInfo,
+		Writer: &buf,
 	}
 	levelVar := new(slog.LevelVar)
 	levelVar.Set(slog.LevelInfo)
@@ -1913,15 +1895,8 @@ func TestJSONHandlerHandleUsesRuntimeLabelsWithoutRecordLabels(t *testing.T) {
 	}
 
 	entry := decodeJSONEntry(t, &buf)
-	labels, ok := entry[LabelsGroup].(map[string]any)
-	if !ok {
-		t.Fatalf("labels missing or wrong type: %T", entry[LabelsGroup])
-	}
-	if len(labels) != 1 || labels["service"] != "billing" {
-		t.Fatalf("labels = %#v, want only runtime labels", labels)
-	}
-	if cfg.runtimeLabels["service"] != "billing" {
-		t.Fatalf("runtime labels mutated: %#v", cfg.runtimeLabels)
+	if _, ok := entry[LabelsGroup]; ok {
+		t.Fatalf("labels should be omitted when none are supplied, got %#v", entry[LabelsGroup])
 	}
 	if component, _ := entry["component"].(string); component != "worker" {
 		t.Fatalf("component attr not preserved: %v", component)
