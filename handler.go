@@ -35,6 +35,7 @@ const (
 	LabelsGroup = "logging.googleapis.com/labels"
 
 	envLogLevel         = "SLOGCP_LEVEL"
+	envGenericLogLevel  = "LOG_LEVEL"
 	envLogSource        = "SLOGCP_SOURCE_LOCATION"
 	envLogTime          = "SLOGCP_TIME"
 	envLogStackEnabled  = "SLOGCP_STACK_TRACES"
@@ -288,6 +289,17 @@ func resolveLevelVar(levelVar *slog.LevelVar, level slog.Level) *slog.LevelVar {
 	}
 	levelVar.Set(level)
 	return levelVar
+}
+
+// ResolveLevelVarFromEnv constructs a [slog.LevelVar] initialised from
+// environment variables, preferring SLOGCP_LEVEL and falling back to LOG_LEVEL
+// when the slogcp-specific variable is unset or blank. The returned level
+// defaults to slog.LevelInfo when neither variable is present or valid.
+func ResolveLevelVarFromEnv() (*slog.LevelVar, slog.Level) {
+	level := resolveLevelFromEnv(slog.LevelInfo, nil)
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(level)
+	return levelVar, level
 }
 
 // prepareRuntimeConfig populates runtime-derived fields and validates tracing.
@@ -938,7 +950,7 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 		UseShortSeverityNames: defaultUseShortSeverityNames(),
 	}
 
-	cfg.Level = parseLevelEnv(os.Getenv(envLogLevel), cfg.Level, logger)
+	cfg.Level = resolveLevelFromEnv(cfg.Level, logger)
 	cfg.AddSource = parseBoolEnv(os.Getenv(envLogSource), cfg.AddSource, logger)
 	cfg.EmitTimeField, cfg.emitTimeFieldConfigured = parseBoolEnvWithPresence(os.Getenv(envLogTime), cfg.EmitTimeField, logger)
 	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv(envLogStackEnabled), cfg.StackTraceEnabled, logger)
@@ -1107,6 +1119,17 @@ func parseBoolEnvWithPresence(value string, current bool, logger *slog.Logger) (
 		return current, false
 	}
 	return b, true
+}
+
+// resolveLevelFromEnv selects a log level from slogcp environment variables,
+// preferring SLOGCP_LEVEL and falling back to LOG_LEVEL when the slogcp-specific
+// variable is unset or blank.
+func resolveLevelFromEnv(current slog.Level, logger *slog.Logger) slog.Level {
+	level := strings.TrimSpace(os.Getenv(envLogLevel))
+	if level != "" {
+		return parseLevelEnv(level, current, logger)
+	}
+	return parseLevelEnv(os.Getenv(envGenericLogLevel), current, logger)
 }
 
 var envLevelAliases = map[string]slog.Level{

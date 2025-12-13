@@ -1031,6 +1031,7 @@ func newDiscardLogger() *slog.Logger {
 func clearHandlerEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv(envLogLevel, "")
+	t.Setenv(envGenericLogLevel, "")
 	t.Setenv(envLogSource, "")
 	t.Setenv(envLogTime, "")
 	t.Setenv(envLogStackEnabled, "")
@@ -1097,6 +1098,35 @@ func TestLoadConfigFromEnvLevelOverride(t *testing.T) {
 	}
 	if cfg.Level != slog.LevelWarn {
 		t.Fatalf("cfg.Level = %v, want %v", cfg.Level, slog.LevelWarn)
+	}
+}
+
+// TestLoadConfigFromEnvLevelFallback exercises LOG_LEVEL when SLOGCP_LEVEL is unset.
+func TestLoadConfigFromEnvLevelFallback(t *testing.T) {
+	clearHandlerEnv(t)
+	t.Setenv(envGenericLogLevel, "alert")
+
+	cfg, err := loadConfigFromEnv(newDiscardLogger())
+	if err != nil {
+		t.Fatalf("loadConfigFromEnv() returned %v, want nil", err)
+	}
+	if cfg.Level != slog.Level(LevelAlert) {
+		t.Fatalf("cfg.Level = %v, want %v", cfg.Level, LevelAlert)
+	}
+}
+
+// TestLoadConfigFromEnvLevelPrefersSlogcp ensures SLOGCP_LEVEL wins over LOG_LEVEL.
+func TestLoadConfigFromEnvLevelPrefersSlogcp(t *testing.T) {
+	clearHandlerEnv(t)
+	t.Setenv(envGenericLogLevel, "debug")
+	t.Setenv(envLogLevel, "error")
+
+	cfg, err := loadConfigFromEnv(newDiscardLogger())
+	if err != nil {
+		t.Fatalf("loadConfigFromEnv() returned %v, want nil", err)
+	}
+	if cfg.Level != slog.LevelError {
+		t.Fatalf("cfg.Level = %v, want %v", cfg.Level, slog.LevelError)
 	}
 }
 
@@ -1470,6 +1500,32 @@ func TestParseLevelEnvCoversAliases(t *testing.T) {
 	if got := parseLevelEnv("invalid", slog.LevelWarn, logger); got != slog.LevelWarn {
 		t.Fatalf("parseLevelEnv invalid should retain current level")
 	}
+}
+
+// TestResolveLevelVarFromEnv ensures helper returns a configured LevelVar.
+func TestResolveLevelVarFromEnv(t *testing.T) {
+	t.Run("defaultsToInfo", func(t *testing.T) {
+		clearHandlerEnv(t)
+		levelVar, level := ResolveLevelVarFromEnv()
+		if level != slog.LevelInfo {
+			t.Fatalf("level = %v, want %v", level, slog.LevelInfo)
+		}
+		if levelVar.Level() != level {
+			t.Fatalf("levelVar level = %v, want %v", levelVar.Level(), level)
+		}
+	})
+
+	t.Run("readsEnv", func(t *testing.T) {
+		clearHandlerEnv(t)
+		t.Setenv(envLogLevel, "critical")
+		levelVar, level := ResolveLevelVarFromEnv()
+		if level != slog.Level(LevelCritical) {
+			t.Fatalf("level = %v, want %v", level, LevelCritical)
+		}
+		if levelVar.Level() != level {
+			t.Fatalf("levelVar level = %v, want %v", levelVar.Level(), level)
+		}
+	})
 }
 
 // TestCachedConfigFromEnvCachesResults ensures the first successful load is reused.

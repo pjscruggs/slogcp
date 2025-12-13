@@ -35,7 +35,7 @@ Key options:
 
 | Option | Environment variable(s) | Default | Description |
 | --- | --- | --- | --- |
-| `WithLevel(slog.Level)` | `SLOGCP_LEVEL` | `info` | Minimum severity captured by the handler. |
+| `WithLevel(slog.Level)` | `SLOGCP_LEVEL` (fallback: `LOG_LEVEL`) | `info` | Minimum severity captured by the handler. |
 | `WithLevelVar(*slog.LevelVar)` | (none) | current value of the supplied var | Shares a caller-managed `slog.LevelVar` so external config can adjust levels. |
 | `WithSourceLocationEnabled(bool)` | `SLOGCP_SOURCE_LOCATION` | `false` | Populates `logging.googleapis.com/sourceLocation`. |
 | `WithTime(bool)` | `SLOGCP_TIME` | Enabled outside Cloud Run, Cloud Run Jobs, Cloud Functions, and App Engine; also enabled for file targets on those runtimes; disabled on those runtimes when writing to stdout/stderr | Emits a top-level `time` field so logs carry RFC3339 timestamps. |
@@ -56,6 +56,7 @@ Additional notes:
 - File targets: use `SLOGCP_TARGET=file:<path>` (for example, `file:/var/log/app.json` on Linux/macOS or `file:C:\\logs\\app.json` on Windows). slogcp trims surrounding whitespace and passes the remaining path directly to `os.OpenFile` in append mode; it does not create parent directories or rewrite the string. Invalid values still trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
 - When you choose `WithRedirectWriter`, slogcp does not look at file paths at all; configure any file destination on the writer itself (for example, `*os.File` or a rotation helper like timberjack).
 - When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor after external tools move the file. Always call `Close` during shutdown to flush buffers and release writers.
+- `SLOGCP_LEVEL` is the preferred knob for minimum severity. When it is empty, slogcp also honours `LOG_LEVEL` so shared conventions still work. For code that wants an env-populated var, `ResolveLevelVarFromEnv` returns a configured `*slog.LevelVar` plus its parsed level.
 - `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust levels at runtime via `SetLevel` or share the var with other handlers.
 - `WithSeverityAliases` controls whether JSON carries the terse severity names; Cloud Logging still renders the full names in the console. slogcp enables the aliases by default only on Cloud Run (services/jobs), Cloud Functions, and App Engine deployments.
 - `WithTime` defaults mirror Cloud Logging expectations: timestamps are omitted on the same managed GCP runtimes (Cloud Run, Cloud Functions, App Engine) when writing to stdout/stderr, but file targets keep timestamps even there so rotated/shipped logs stay annotated. When slogcp emits a timestamp it preserves the nanosecond precision provided by `slog`.
