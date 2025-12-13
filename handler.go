@@ -131,26 +131,24 @@ func (td *traceDiagnostics) warnUnknownProject() {
 }
 
 type handlerConfig struct {
-	Level                   slog.Level
-	AddSource               bool
-	EmitTimeField           bool
-	emitTimeFieldConfigured bool
-	StackTraceEnabled       bool
-	StackTraceLevel         slog.Level
-	TraceProjectID          string
-	TraceDiagnostics        TraceDiagnosticsMode
-	UseShortSeverityNames   bool
-	Writer                  io.Writer
-	ClosableWriter          io.Closer
-	writerExternallyOwned   bool
-	FilePath                string
-	ReplaceAttr             func([]string, slog.Attr) slog.Attr
-	Middlewares             []Middleware
-	InitialAttrs            []slog.Attr
-	InitialGroupedAttrs     []groupedAttr
-	InitialGroups           []string
-
-	runtimeLabels            map[string]string
+	Level                    slog.Level
+	AddSource                bool
+	EmitTimeField            bool
+	emitTimeFieldConfigured  bool
+	StackTraceEnabled        bool
+	StackTraceLevel          slog.Level
+	TraceProjectID           string
+	TraceDiagnostics         TraceDiagnosticsMode
+	UseShortSeverityNames    bool
+	Writer                   io.Writer
+	ClosableWriter           io.Closer
+	writerExternallyOwned    bool
+	FilePath                 string
+	ReplaceAttr              func([]string, slog.Attr) slog.Attr
+	Middlewares              []Middleware
+	InitialAttrs             []slog.Attr
+	InitialGroupedAttrs      []groupedAttr
+	InitialGroups            []string
 	runtimeServiceContext    map[string]string
 	runtimeServiceContextAny map[string]any
 	traceAllowAutoformat     bool
@@ -305,7 +303,6 @@ func ResolveLevelVarFromEnv() (*slog.LevelVar, slog.Level) {
 // prepareRuntimeConfig populates runtime-derived fields and validates tracing.
 func prepareRuntimeConfig(cfg *handlerConfig) error {
 	runtimeInfo := DetectRuntimeInfo()
-	cfg.runtimeLabels = cloneStringMap(runtimeInfo.Labels)
 	cfg.runtimeServiceContext = cloneStringMap(runtimeInfo.ServiceContext)
 	cfg.runtimeServiceContextAny = stringMapToAny(cfg.runtimeServiceContext)
 	if cfg.TraceProjectID == "" {

@@ -320,9 +320,8 @@ func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	payload, httpReq, errType, errMsg, stackStr, dynamicLabels := h.buildPayload(r, state)
 
-	labels := mergeLabels(dynamicLabels, h.cfg.runtimeLabels)
-	if len(labels) > 0 {
-		payload[labelsGroupKey] = labels
+	if len(dynamicLabels) > 0 {
+		payload[labelsGroupKey] = dynamicLabels
 	}
 
 	return h.emitJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, ownsSpan, sampled, errType, errMsg, stackStr)
@@ -436,25 +435,6 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	baseAttrs, baseGroups := h.snapshotBaseState()
 	builder := newPayloadBuilder(h, state, r, baseAttrs, baseGroups)
 	return builder.build()
-}
-
-// mergeLabels combines dynamic and runtime labels without mutating runtime labels.
-func mergeLabels(dynamic map[string]string, runtime map[string]string) map[string]string {
-	if len(dynamic) == 0 {
-		if len(runtime) == 0 {
-			return nil
-		}
-		return runtime
-	}
-	if len(runtime) == 0 {
-		return dynamic
-	}
-	for k, v := range runtime {
-		if _, exists := dynamic[k]; !exists {
-			dynamic[k] = v
-		}
-	}
-	return dynamic
 }
 
 // snapshotBaseState captures grouped attributes and groups under lock.
