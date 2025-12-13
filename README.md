@@ -175,7 +175,7 @@ Core environment variables for configuring slogcp:
 | Variable | Description | Default |
 | --- | --- | --- |
 | `SLOGCP_TARGET` | `stdout`, `stderr`, or `file:/path` | `stdout` |
-| `SLOGCP_LEVEL` | Minimum log level (`debug`, `info`, `warn`, `error`, etc.) | `info` |
+| `SLOGCP_LEVEL` (fallback: `LOG_LEVEL`) | Minimum log level (`debug`, `info`, `warn`, `error`, etc.) | `info` |
 | `SLOGCP_SOURCE_LOCATION` | Include source file/line (`true`, `false`) | `false` |
 | `SLOGCP_STACK_TRACES` | Enable stack traces (`true`, `false`) | `false` |
 | `SLOGCP_TRACE_DIAGNOSTICS` | Controls trace-correlation diagnostics: `off`, `warn`/`warn_once`, or `strict` | `warn_once` |
@@ -189,6 +189,7 @@ If slogcp determines at runtime that it is running in a GCP environment such as 
 `slogcp.Handler` exposes runtime level tuning so you can raise or lower verbosity without redeploying. See [`.examples/dynamic-level/main.go`](.examples/dynamic-level/main.go) for a runnable example that tunes handler verbosity at runtime and shares a `slog.LevelVar` across components.
 
 For multi-logger setups, pass a shared `*slog.LevelVar` via `slogcp.WithLevelVar` so every handler stays in sync.
+When you want environment-driven control without writing your own parser, call `slogcp.ResolveLevelVarFromEnv()` to obtain a pre-populated `*slog.LevelVar` that prefers `SLOGCP_LEVEL` and falls back to `LOG_LEVEL`.
 
 ### Error Reporting helpers
 

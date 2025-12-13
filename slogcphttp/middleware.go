@@ -151,7 +151,9 @@ func otelOptions(cfg *config) []otelhttp.Option {
 		otelOpts = append(otelOpts, otelhttp.WithPropagators(cfg.propagators))
 	}
 	if cfg.publicEndpoint {
-		otelOpts = append(otelOpts, otelhttp.WithPublicEndpoint())
+		otelOpts = append(otelOpts, otelhttp.WithPublicEndpointFn(func(*http.Request) bool {
+			return true
+		}))
 	}
 	if cfg.spanNameFormatter != nil {
 		otelOpts = append(otelOpts, otelhttp.WithSpanNameFormatter(cfg.spanNameFormatter))
