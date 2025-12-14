@@ -140,14 +140,14 @@ type httpRequestPayload struct {
 	Referer                        string `json:"referer"`
 	Protocol                       string `json:"protocol"`
 	RequestSize                    string `json:"requestSize"`
-	Status                         int    `json:"status"`
-	ResponseSize                   string `json:"responseSize"`
+	Status                         int    `json:"status,omitempty"`
+	ResponseSize                   string `json:"responseSize,omitempty"`
 	Latency                        string `json:"latency,omitempty"`
 	RemoteIP                       string `json:"remoteIp"`
 	ServerIP                       string `json:"serverIp"`
 	CacheHit                       bool   `json:"cacheHit"`
 	CacheValidatedWithOriginServer bool   `json:"cacheValidatedWithOriginServer"`
-	CacheFillBytes                 string `json:"cacheFillBytes"`
+	CacheFillBytes                 string `json:"cacheFillBytes,omitempty"`
 	CacheLookup                    bool   `json:"cacheLookup"`
 }
 

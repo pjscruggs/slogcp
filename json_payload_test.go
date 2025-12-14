@@ -15,6 +15,7 @@
 package slogcp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -118,6 +119,38 @@ func TestFlattenHTTPRequestToMapHandlesNil(t *testing.T) {
 	}
 	if payload.Latency != "0.000000000s" {
 		t.Fatalf("Latency field should format zero duration, got %q", payload.Latency)
+	}
+}
+
+// TestFlattenHTTPRequestToMapOmitsUnsetFields ensures unset response metadata is not serialized.
+func TestFlattenHTTPRequestToMapOmitsUnsetFields(t *testing.T) {
+	t.Parallel()
+
+	req := &HTTPRequest{
+		RequestMethod: http.MethodGet,
+		RequestURL:    "https://example.com/inflight",
+		Status:        0,
+		ResponseSize:  -1,
+		Latency:       -1,
+	}
+	payload := flattenHTTPRequestToMap(req)
+	if payload == nil {
+		t.Fatalf("flattenHTTPRequestToMap returned nil payload")
+	}
+
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal(payload) = %v", err)
+	}
+	serialized := string(buf)
+	if strings.Contains(serialized, `"status"`) {
+		t.Fatalf("expected status to be omitted, got %s", serialized)
+	}
+	if strings.Contains(serialized, `"responseSize"`) {
+		t.Fatalf("expected responseSize to be omitted, got %s", serialized)
+	}
+	if strings.Contains(serialized, `"latency"`) {
+		t.Fatalf("expected latency to be omitted, got %s", serialized)
 	}
 }
 
