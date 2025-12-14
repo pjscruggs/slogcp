@@ -6,7 +6,7 @@ replace github.com/pjscruggs/slogcp => ../..
 
 require (
 	github.com/DeRuina/timberjack v1.3.9
-	github.com/pjscruggs/slogcp v1.0.0
+	github.com/pjscruggs/slogcp v0.0.0
 )
 
 require (
