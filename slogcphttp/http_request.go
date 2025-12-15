@@ -52,7 +52,7 @@ func HTTPRequestAttr(r *http.Request, scope *RequestScope) slog.Attr {
 				// Suppress in-flight response metadata; latencyForLogging
 				// uses a sentinel so Cloud Logging omits latency.
 				req.ResponseSize = -1
-				req.Status = 0
+				req.Status = -1
 				req.Latency = latencyForLogging(scope)
 			}
 			req.RemoteIP = scope.ClientIP()
@@ -91,7 +91,7 @@ func HTTPRequestFromScope(scope *RequestScope) *slogcp.HTTPRequest {
 	} else {
 		// Mark sizes as unknown while the response is still in flight.
 		req.ResponseSize = -1
-		req.Status = 0
+		req.Status = -1
 	}
 	slogcp.PrepareHTTPRequest(req)
 	return req
