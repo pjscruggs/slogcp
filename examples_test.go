@@ -68,7 +68,7 @@ func discoverExampleModules(t *testing.T, examplesRoot string) []string {
 
 	info, err := os.Stat(examplesRoot)
 	if errors.Is(err, os.ErrNotExist) {
-		t.Skip(".examples directory not present")
+		t.Fatalf(".examples directory not present at %s", examplesRoot)
 	}
 	if err != nil {
 		t.Fatalf("stat %s failed: %v", examplesRoot, err)
@@ -101,7 +101,7 @@ func discoverExampleModules(t *testing.T, examplesRoot string) []string {
 	}
 
 	if len(modules) == 0 {
-		t.Skip("no example modules found under .examples")
+		t.Fatalf("no example modules found under %s", examplesRoot)
 	}
 
 	sort.Strings(modules)
