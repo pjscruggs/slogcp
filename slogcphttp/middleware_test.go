@@ -291,6 +291,15 @@ func TestMiddlewareIncludesHTTPRequestAttr(t *testing.T) {
 	if got := httpPayload["remoteIp"]; got != "203.0.113.10" {
 		t.Fatalf("remoteIp = %v, want 203.0.113.10", got)
 	}
+	if _, ok := httpPayload["status"]; ok {
+		t.Fatalf("status should be omitted for in-flight logs, got %#v", httpPayload["status"])
+	}
+	if _, ok := httpPayload["responseSize"]; ok {
+		t.Fatalf("responseSize should be omitted for in-flight logs, got %#v", httpPayload["responseSize"])
+	}
+	if _, ok := httpPayload["latency"]; ok {
+		t.Fatalf("latency should be omitted for in-flight logs, got %#v", httpPayload["latency"])
+	}
 }
 
 // TestWrapResponseWriterPreservesOptionalInterfaces ensures wrapResponseWriter retains

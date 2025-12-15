@@ -241,7 +241,7 @@ func TestHTTPRequestFromScopeBuildsSnapshot(t *testing.T) {
 	if req.Latency != -1 && req.Latency >= 0 {
 		t.Fatalf("Latency should be omitted when unset, got %v", req.Latency)
 	}
-	if req.Status != 0 {
+	if req.Status != -1 {
 		t.Fatalf("Status should be suppressed for in-flight requests, got %d", req.Status)
 	}
 	if req.ResponseSize != -1 {
