@@ -89,6 +89,7 @@ type Handler struct {
 	switchableWriter *SwitchableWriter
 	ownedFile        *os.File
 	levelVar         *slog.LevelVar
+	asyncHandler     *slogcpasync.Handler
 
 	mu        sync.Mutex
 	closeOnce sync.Once
@@ -223,7 +224,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	}
 
 	cfgPtr := &cfg
-	handler := buildPipeline(cfgPtr, levelVar, internalLogger, builder)
+	handler, asyncHandler := buildPipeline(cfgPtr, levelVar, internalLogger, builder)
 
 	return &Handler{
 		Handler:          handler,
@@ -232,6 +233,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 		switchableWriter: switchWriter,
 		ownedFile:        ownedFile,
 		levelVar:         levelVar,
+		asyncHandler:     asyncHandler,
 	}, nil
 }
 
@@ -289,17 +291,6 @@ func resolveLevelVar(levelVar *slog.LevelVar, level slog.Level) *slog.LevelVar {
 	return levelVar
 }
 
-// ResolveLevelVarFromEnv constructs a [slog.LevelVar] initialised from
-// environment variables, preferring SLOGCP_LEVEL and falling back to LOG_LEVEL
-// when the slogcp-specific variable is unset or blank. The returned level
-// defaults to slog.LevelInfo when neither variable is present or valid.
-func ResolveLevelVarFromEnv() (*slog.LevelVar, slog.Level) {
-	level := resolveLevelFromEnv(slog.LevelInfo, nil)
-	levelVar := new(slog.LevelVar)
-	levelVar.Set(level)
-	return levelVar, level
-}
-
 // prepareRuntimeConfig populates runtime-derived fields and validates tracing.
 func prepareRuntimeConfig(cfg *handlerConfig) error {
 	runtimeInfo := DetectRuntimeInfo()
@@ -317,19 +308,33 @@ func prepareRuntimeConfig(cfg *handlerConfig) error {
 }
 
 // buildPipeline assembles the handler stack with middlewares and async wrapper.
-func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *slog.Logger, builder *options) slog.Handler {
+func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *slog.Logger, builder *options) (slog.Handler, *slogcpasync.Handler) {
 	core := newJSONHandler(cfg, levelVar, internalLogger)
 	handler := slog.Handler(core)
 	for i := len(cfg.Middlewares) - 1; i >= 0; i-- {
 		handler = cfg.Middlewares[i](handler)
 	}
-	if builder.asyncEnabled && (!builder.asyncOnFileTargets || cfg.FilePath != "") {
-		handler = slogcpasync.Wrap(handler, builder.asyncOpts...)
+
+	isFileTarget := hasFileTarget(cfg)
+	asyncEnabled := builder.asyncEnabled
+	asyncOnFileTargets := builder.asyncOnFileTargets
+	if !asyncEnabled && isFileTarget {
+		asyncEnabled = true
+		asyncOnFileTargets = true
+	}
+
+	var asyncHandler *slogcpasync.Handler
+	if asyncEnabled && (!asyncOnFileTargets || isFileTarget) {
+		wrapped := slogcpasync.Wrap(handler, builder.asyncOpts...)
+		if ah, ok := wrapped.(*slogcpasync.Handler); ok {
+			asyncHandler = ah
+		}
+		handler = wrapped
 	}
 	if cfg.AddSource {
 		handler = sourceAwareHandler{Handler: handler}
 	}
-	return handler
+	return handler, asyncHandler
 }
 
 // ensureWriterDefaults assigns cfg.Writer when unset by falling back to either
@@ -402,9 +407,25 @@ func ensureWriterFallback(cfg *handlerConfig) {
 func (h *Handler) Close() error {
 	var firstErr error
 	h.closeOnce.Do(func() {
-		firstErr = h.closeResources()
+		if err := h.closeAsyncHandler(); err != nil {
+			firstErr = err
+		}
+		if err := h.closeResources(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	})
 	return firstErr
+}
+
+// closeAsyncHandler drains any async wrapper so queued records are written before resources are closed.
+func (h *Handler) closeAsyncHandler() error {
+	if h == nil || h.asyncHandler == nil {
+		return nil
+	}
+	if err := h.asyncHandler.Close(); err != nil {
+		return fmt.Errorf("close async handler: %w", err)
+	}
+	return nil
 }
 
 // closeResources tears down owned writers and closers.
@@ -473,19 +494,19 @@ func (h *Handler) ReopenLogFile() error {
 		return nil
 	}
 
-	if h.ownedFile != nil {
-		if err := h.ownedFile.Close(); err != nil {
-			h.internalLogger.Warn("error closing log file before reopen", slog.Any("error", err))
-		}
-	}
-
 	file, err := os.OpenFile(h.cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("slogcp: reopen log file %q: %w", h.cfg.FilePath, err)
 	}
 
+	oldFile := h.ownedFile
 	h.ownedFile = file
 	h.switchableWriter.SetWriter(file)
+	if oldFile != nil {
+		if err := oldFile.Close(); err != nil {
+			h.internalLogger.Warn("error closing log file before reopen", slog.Any("error", err))
+		}
+	}
 	return nil
 }
 
@@ -648,8 +669,9 @@ func WithLevel(level slog.Level) Option {
 
 // WithLevelVar shares the provided slog.LevelVar with the handler, allowing
 // external code to adjust log levels at runtime while keeping slogcp's internal
-// state in sync. When supplied, the handler inherits the LevelVar's current
-// value after other options and environment overrides have been applied.
+// state in sync. When supplied, slogcp initialises the LevelVar to the
+// resolved minimum level (defaults, environment, then WithLevel) during
+// handler construction.
 func WithLevelVar(levelVar *slog.LevelVar) Option {
 	return func(o *options) {
 		if levelVar != nil {
@@ -795,8 +817,8 @@ func WithAsync(opts ...slogcpasync.Option) Option {
 	}
 }
 
-// WithAsyncOnFileTargets wraps the handler in slogcpasync only when logging to a file.
-// This keeps stdout/stderr handlers synchronous while file targets gain async defaults.
+// WithAsyncOnFileTargets applies slogcpasync only when logging to a file target.
+// It keeps stdout/stderr handlers synchronous while letting callers tune (or disable) file buffering.
 func WithAsyncOnFileTargets(opts ...slogcpasync.Option) Option {
 	return func(o *options) {
 		o.asyncEnabled = true
@@ -1000,9 +1022,6 @@ func applyLevelAndTraceOptions(cfg *handlerConfig, o *options) {
 	}
 	if o.stackTraceLevel != nil {
 		cfg.StackTraceLevel = *o.stackTraceLevel
-	}
-	if o.levelVar != nil {
-		cfg.Level = o.levelVar.Level()
 	}
 	if o.traceProjectID != nil {
 		cfg.TraceProjectID = *o.traceProjectID
