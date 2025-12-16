@@ -221,6 +221,10 @@ func TestHandlerReopenLogFile(t *testing.T) {
 
 	logger.InfoContext(context.Background(), "second")
 
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close() returned %v, want nil", err)
+	}
+
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%q) returned %v", logPath, err)
@@ -367,9 +371,8 @@ func TestHandlerWithLevelVar(t *testing.T) {
 
 	var buf bytes.Buffer
 	levelVar := new(slog.LevelVar)
-	levelVar.Set(slog.LevelWarn)
 
-	h, err := NewHandler(io.Discard, WithRedirectWriter(&buf), WithLevelVar(levelVar))
+	h, err := NewHandler(io.Discard, WithRedirectWriter(&buf), WithLevelVar(levelVar), WithLevel(slog.LevelWarn))
 	if err != nil {
 		t.Fatalf("NewHandler() returned %v, want nil", err)
 	}
@@ -402,6 +405,77 @@ func TestHandlerWithLevelVar(t *testing.T) {
 	if got := h.Level(); got != slog.LevelInfo {
 		t.Fatalf("Level() = %v, want %v", got, slog.LevelInfo)
 	}
+}
+
+// TestHandlerWithLevelVarSeedsFromEnv ensures env-driven configuration is applied
+// even when a caller supplies their own LevelVar.
+func TestHandlerWithLevelVarSeedsFromEnv(t *testing.T) {
+	t.Run("defaultsToInfo", func(t *testing.T) {
+		clearHandlerEnv(t)
+		levelVar := new(slog.LevelVar)
+		h, err := NewHandler(io.Discard, WithLevelVar(levelVar))
+		if err != nil {
+			t.Fatalf("NewHandler() returned %v, want nil", err)
+		}
+		t.Cleanup(func() {
+			if cerr := h.Close(); cerr != nil {
+				t.Errorf("Handler.Close() returned %v, want nil", cerr)
+			}
+		})
+
+		if got := h.Level(); got != slog.LevelInfo {
+			t.Fatalf("Level() = %v, want %v", got, slog.LevelInfo)
+		}
+		if got := levelVar.Level(); got != slog.LevelInfo {
+			t.Fatalf("LevelVar.Level() = %v, want %v", got, slog.LevelInfo)
+		}
+	})
+
+	t.Run("prefersSlogcpLevel", func(t *testing.T) {
+		clearHandlerEnv(t)
+		t.Setenv(envLogLevel, "critical")
+		t.Setenv(envGenericLogLevel, "debug")
+		levelVar := new(slog.LevelVar)
+		h, err := NewHandler(io.Discard, WithLevelVar(levelVar))
+		if err != nil {
+			t.Fatalf("NewHandler() returned %v, want nil", err)
+		}
+		t.Cleanup(func() {
+			if cerr := h.Close(); cerr != nil {
+				t.Errorf("Handler.Close() returned %v, want nil", cerr)
+			}
+		})
+
+		want := slog.Level(LevelCritical)
+		if got := h.Level(); got != want {
+			t.Fatalf("Level() = %v, want %v", got, want)
+		}
+		if got := levelVar.Level(); got != want {
+			t.Fatalf("LevelVar.Level() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("fallsBackToLogLevel", func(t *testing.T) {
+		clearHandlerEnv(t)
+		t.Setenv(envGenericLogLevel, "debug")
+		levelVar := new(slog.LevelVar)
+		h, err := NewHandler(io.Discard, WithLevelVar(levelVar))
+		if err != nil {
+			t.Fatalf("NewHandler() returned %v, want nil", err)
+		}
+		t.Cleanup(func() {
+			if cerr := h.Close(); cerr != nil {
+				t.Errorf("Handler.Close() returned %v, want nil", cerr)
+			}
+		})
+
+		if got := h.Level(); got != slog.LevelDebug {
+			t.Fatalf("Level() = %v, want %v", got, slog.LevelDebug)
+		}
+		if got := levelVar.Level(); got != slog.LevelDebug {
+			t.Fatalf("LevelVar.Level() = %v, want %v", got, slog.LevelDebug)
+		}
+	})
 }
 
 // TestHandlerTimeFieldEmission verifies the handler omits the "time" field by
@@ -1060,6 +1134,32 @@ func TestWithAsyncWrapsHandler(t *testing.T) {
 	}
 }
 
+// TestFileTargetsAsyncByDefault verifies file targets queue writes without requiring WithAsync.
+func TestFileTargetsAsyncByDefault(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "log.json")
+	fileHandler, err := NewHandler(nil, WithRedirectToFile(logPath))
+	if err != nil {
+		t.Fatalf("file NewHandler returned %v", err)
+	}
+	if _, ok := fileHandler.Handler.(*slogcpasync.Handler); !ok {
+		t.Fatalf("file Handler is %T, want *slogcpasync.Handler", fileHandler.Handler)
+	}
+	if err := fileHandler.Close(); err != nil {
+		t.Fatalf("file Close returned %v", err)
+	}
+
+	stdHandler, err := NewHandler(io.Discard)
+	if err != nil {
+		t.Fatalf("stdout NewHandler returned %v", err)
+	}
+	if _, ok := stdHandler.Handler.(*slogcpasync.Handler); ok {
+		t.Fatalf("stdout Handler unexpectedly async-wrapped")
+	}
+	if err := stdHandler.Close(); err != nil {
+		t.Fatalf("stdout Close returned %v", err)
+	}
+}
+
 // TestWithAsyncOnFileTargetsWrapsOnlyFiles applies async to file targets only.
 func TestWithAsyncOnFileTargetsWrapsOnlyFiles(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "log.json")
@@ -1500,32 +1600,6 @@ func TestParseLevelEnvCoversAliases(t *testing.T) {
 	if got := parseLevelEnv("invalid", slog.LevelWarn, logger); got != slog.LevelWarn {
 		t.Fatalf("parseLevelEnv invalid should retain current level")
 	}
-}
-
-// TestResolveLevelVarFromEnv ensures helper returns a configured LevelVar.
-func TestResolveLevelVarFromEnv(t *testing.T) {
-	t.Run("defaultsToInfo", func(t *testing.T) {
-		clearHandlerEnv(t)
-		levelVar, level := ResolveLevelVarFromEnv()
-		if level != slog.LevelInfo {
-			t.Fatalf("level = %v, want %v", level, slog.LevelInfo)
-		}
-		if levelVar.Level() != level {
-			t.Fatalf("levelVar level = %v, want %v", levelVar.Level(), level)
-		}
-	})
-
-	t.Run("readsEnv", func(t *testing.T) {
-		clearHandlerEnv(t)
-		t.Setenv(envLogLevel, "critical")
-		levelVar, level := ResolveLevelVarFromEnv()
-		if level != slog.Level(LevelCritical) {
-			t.Fatalf("level = %v, want %v", level, LevelCritical)
-		}
-		if levelVar.Level() != level {
-			t.Fatalf("levelVar level = %v, want %v", levelVar.Level(), level)
-		}
-	})
 }
 
 // TestCachedConfigFromEnvCachesResults ensures the first successful load is reused.
@@ -2344,6 +2418,37 @@ func TestHandlerCloseClosesOwnedResources(t *testing.T) {
 	}
 }
 
+// TestHandlerCloseReturnsAsyncHandlerError ensures Close reports errors from the async wrapper path.
+func TestHandlerCloseReturnsAsyncHandlerError(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("async-close")
+	inner := closeErrorHandler{
+		Handler: slog.NewJSONHandler(io.Discard, nil),
+		err:     sentinel,
+	}
+	wrapped := slogcpasync.Wrap(inner, slogcpasync.WithEnabled(true))
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	h := &Handler{asyncHandler: asyncHandler}
+	err := h.Close()
+	if err == nil {
+		t.Fatalf("Handler.Close() = nil, want error")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Handler.Close() error = %v, want %v", err, sentinel)
+	}
+	if !strings.Contains(err.Error(), "close async handler") {
+		t.Fatalf("Handler.Close() error = %q, want close async handler prefix", err.Error())
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("second Handler.Close() = %v, want nil", err)
+	}
+}
+
 // TestHandlerCloseReportsOwnedFileErrors exercises the log file close error branch.
 func TestHandlerCloseReportsOwnedFileErrors(t *testing.T) {
 	t.Parallel()
@@ -2488,6 +2593,16 @@ func (c *closerSpy) Close() error {
 	return c.err
 }
 
+type closeErrorHandler struct {
+	slog.Handler
+	err error
+}
+
+// Close implements io.Closer and returns the configured error.
+func (h closeErrorHandler) Close() error {
+	return h.err
+}
+
 // TestHandlerReopenLogFileNoopWithoutFile ensures file rotation is a no-op when no file is configured.
 func TestHandlerReopenLogFileNoopWithoutFile(t *testing.T) {
 	t.Parallel()
@@ -2587,7 +2702,7 @@ func TestHandlerSetupHelpers(t *testing.T) {
 	}
 	pipelineOpts := &options{asyncEnabled: false}
 	levelVar := new(slog.LevelVar)
-	handler := buildPipeline(pipelineCfg, levelVar, slog.New(slog.DiscardHandler), pipelineOpts)
+	handler, _ := buildPipeline(pipelineCfg, levelVar, slog.New(slog.DiscardHandler), pipelineOpts)
 
 	if _, ok := handler.(sourceAwareHandler); !ok {
 		t.Fatalf("buildPipeline should wrap handler with source awareness")
