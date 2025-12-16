@@ -36,7 +36,7 @@ Key options:
 | Option | Environment variable(s) | Default | Description |
 | --- | --- | --- | --- |
 | `WithLevel(slog.Level)` | `SLOGCP_LEVEL` (fallback: `LOG_LEVEL`) | `info` | Minimum severity captured by the handler. |
-| `WithLevelVar(*slog.LevelVar)` | (none) | current value of the supplied var | Shares a caller-managed `slog.LevelVar` so external config can adjust levels. |
+| `WithLevelVar(*slog.LevelVar)` | `SLOGCP_LEVEL` (fallback: `LOG_LEVEL`) | `info` | Shares a caller-managed `slog.LevelVar` that slogcp initializes during handler construction so external config can adjust levels. |
 | `WithSourceLocationEnabled(bool)` | `SLOGCP_SOURCE_LOCATION` | `false` | Populates `logging.googleapis.com/sourceLocation`. |
 | `WithTime(bool)` | `SLOGCP_TIME` | Enabled outside Cloud Run, Cloud Run Jobs, Cloud Functions, and App Engine; also enabled for file targets on those runtimes; disabled on those runtimes when writing to stdout/stderr | Emits a top-level `time` field so logs carry RFC3339 timestamps. |
 | `WithStackTraceEnabled(bool)` | `SLOGCP_STACK_TRACES` | `false` | Enables automatic stack capture at or above `StackTraceLevel`. |
@@ -56,27 +56,66 @@ Additional notes:
 - File targets: use `SLOGCP_TARGET=file:<path>` (for example, `file:/var/log/app.json` on Linux/macOS or `file:C:\\logs\\app.json` on Windows). slogcp trims surrounding whitespace and passes the remaining path directly to `os.OpenFile` in append mode; it does not create parent directories or rewrite the string. Invalid values still trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
 - When you choose `WithRedirectWriter`, slogcp does not look at file paths at all; configure any file destination on the writer itself (for example, `*os.File` or a rotation helper like timberjack).
 - When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor after external tools move the file. Always call `Close` during shutdown to flush buffers and release writers.
-- `SLOGCP_LEVEL` is the preferred knob for minimum severity. When it is empty, slogcp also honours `LOG_LEVEL` so shared conventions still work. For code that wants an env-populated var, `ResolveLevelVarFromEnv` returns a configured `*slog.LevelVar` plus its parsed level.
+- `SLOGCP_LEVEL` is the preferred knob for minimum severity. When it is empty, slogcp also honours `LOG_LEVEL` so shared conventions still work. When you supply `WithLevelVar`, slogcp seeds the shared var using the same resolution rules.
 - `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust levels at runtime via `SetLevel` or share the var with other handlers.
 - `WithSeverityAliases` controls whether JSON carries the terse severity names; Cloud Logging still renders the full names in the console. slogcp enables the aliases by default only on Cloud Run (services/jobs), Cloud Functions, and App Engine deployments.
 - `WithTime` defaults mirror Cloud Logging expectations: timestamps are omitted on the same managed GCP runtimes (Cloud Run, Cloud Functions, App Engine) when writing to stdout/stderr, but file targets keep timestamps even there so rotated/shipped logs stay annotated. When slogcp emits a timestamp it preserves the nanosecond precision provided by `slog`.
 - slogcp always validates trace correlation fields before emitting them. When no Cloud project ID can be resolved, the handler omits `logging.googleapis.com/trace` entirely (falling back to the `otel.*` keys) to avoid shipping malformed data. On managed runtimes where the Cloud Logging agent auto-prefixes trace IDs (Cloud Run services/jobs, Cloud Functions, App Engine) slogcp still emits the bare trace ID so existing deployments keep their correlation links. Use `WithTraceDiagnostics`/`SLOGCP_TRACE_DIAGNOSTICS` to upgrade these checks from "warn once" to `strict` or disable them with `off`.
 - `slogcp.ContextWithLogger` and `slogcp.Logger` stash and recover request-scoped loggers. The HTTP and gRPC integrations call these helpers automatically.
 
-## Async wrapper (`github.com/pjscruggs/slogcp/slogcpasync`)
+## Async logging (`slogcpasync`)
 
-`slogcp` stays synchronous by default. When you want to buffer or drop under load, wrap the handler with `slogcpasync`:
+`slogcp` writes synchronously to `stdout`/`stderr` by default.
+
+### Defaults
+
+When slogcp writes to a file target (`SLOGCP_TARGET=file:...` or `slogcp.WithRedirectToFile`), it buffers writes with `slogcpasync` automatically so disk I/O doesn't sit on hot paths. Whenever the async wrapper is in play (file targets by default, or `WithAsync`/`Wrap`), call `Close()` on shutdown so queued records flush.
+
+### Tuning (or disabling) file buffering
+
+Use `slogcp.WithAsyncOnFileTargets(...)` to change the wrapper options applied to file targets, including disabling the wrapper entirely:
 
 ```go
-handler, _ := slogcp.NewHandler(os.Stdout)
-async := slogcpasync.Wrap(handler,
-	slogcpasync.WithQueueSize(4096),
-	slogcpasync.WithDropMode(slogcpasync.DropModeDropNewest),
+handler, _ := slogcp.NewHandler(nil,
+	slogcp.WithRedirectToFile("app.json"),
+	slogcp.WithAsyncOnFileTargets(
+		slogcpasync.WithEnabled(false),
+	),
 )
+defer handler.Close()
+```
+
+### Enabling async for non-file targets
+
+To buffer `stdout`/`stderr` (or any other non-file target), you can have slogcp wrap the handler with `slogcp.WithAsync(...)`:
+
+```go
+handler, _ := slogcp.NewHandler(os.Stdout,
+	slogcp.WithAsync(
+		slogcpasync.WithQueueSize(4096),
+		slogcpasync.WithDropMode(slogcpasync.DropModeDropNewest),
+	),
+)
+defer handler.Close()
+logger := slog.New(handler)
+```
+
+Or wrap any `slog.Handler` directly with `slogcpasync.Wrap(...)`:
+
+```go
+base := slog.NewJSONHandler(os.Stdout, nil)
+async := slogcpasync.Wrap(base, slogcpasync.WithQueueSize(4096))
+if closer, ok := async.(interface{ Close() error }); ok {
+	defer closer.Close()
+}
 logger := slog.New(async)
 ```
 
-When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `WithEnv()` (for example via `slogcp.WithMiddleware(slogcpasync.Middleware(...))`). Supported knobs:
+### Options and environment variables
+
+When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `WithEnv()` (for example via `slogcp.WithMiddleware(slogcpasync.Middleware(...))`).
+
+`slogcp.WithAsync(...)` and `slogcp.WithAsyncOnFileTargets(...)` already integrate the wrapper; avoid also adding `slogcpasync.Middleware` unless you deliberately want multiple queues.
 
 | Option | Environment variable | Default | Description |
 | --- | --- | --- | --- |
@@ -88,7 +127,7 @@ When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `Wi
 | `WithFlushTimeout(time.Duration)` | `SLOGCP_ASYNC_FLUSH_TIMEOUT` | (none) | Optional timeout for `Close`; returns `ErrFlushTimeout` if workers never finish. |
 | `WithOnDrop(func)` | (none) | (none) | Callback invoked when a record is dropped (useful for metrics). |
 | `slogcp.WithAsync(opts...)` | (none) | (disabled) | Convenience option that wraps handlers in slogcpasync using tuned per-mode defaults; supply slogcpasync options to override. |
-| `slogcp.WithAsyncOnFileTargets(opts...)` | (none) | (disabled) | Like `WithAsync`, but only wraps handlers that write to files, leaving stdout/stderr synchronous. |
+| `slogcp.WithAsyncOnFileTargets(opts...)` | (none) | (enabled for file targets) | Tunes (or disables) slogcpasync settings for file targets while leaving stdout/stderr synchronous. |
 | `WithEnv()` | reads all of the above | (none) | Overlays any `SLOGCP_ASYNC_*` values onto the provided config. |
 
 ### Severity Levels
