@@ -114,6 +114,147 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 	}
 }
 
+func TestMiddlewareProxyModeGCLBUsesForwardedHeaders(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	mw := Middleware(
+		WithLogger(baseLogger),
+		WithProjectID("proj-123"),
+		WithOTel(false),
+		WithProxyMode(ProxyModeGCLB),
+	)
+
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scope, ok := ScopeFromContext(r.Context())
+		if !ok {
+			t.Fatalf("scope missing from context")
+		}
+
+		if got := scope.Scheme(); got != "https" {
+			t.Fatalf("scope.Scheme = %q, want https", got)
+		}
+		if got := scope.ClientIP(); got != "198.51.100.10" {
+			t.Fatalf("scope.ClientIP = %q, want 198.51.100.10", got)
+		}
+
+		slogcp.Logger(r.Context()).Info("forwarded metadata")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/widgets", nil)
+	req.URL.Scheme = ""
+	req.Host = "example.com"
+	req.RemoteAddr = "10.0.0.1:12345"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-For", "1.2.3.4, 198.51.100.10, 203.0.113.5")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 log line, got %d", len(lines))
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	if got := entry["http.scheme"]; got != "https" {
+		t.Fatalf("http.scheme = %v, want https", got)
+	}
+	if got := entry["network.peer.ip"]; got != "198.51.100.10" {
+		t.Fatalf("network.peer.ip = %v, want 198.51.100.10", got)
+	}
+}
+
+func TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled(t *testing.T) {
+	t.Parallel()
+
+	t.Run("default-do-not-correlate", func(t *testing.T) {
+		var buf bytes.Buffer
+		baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+		mw := Middleware(
+			WithLogger(baseLogger),
+			WithProjectID("proj-123"),
+			WithOTel(false),
+			WithPublicEndpoint(true),
+		)
+
+		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			slogcp.Logger(r.Context()).Info("public endpoint")
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/public", nil)
+		req.Header.Set("Traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 1 {
+			t.Fatalf("expected 1 log line, got %d", len(lines))
+		}
+
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+			t.Fatalf("unmarshal log: %v", err)
+		}
+
+		if got := entry["logging.googleapis.com/trace"]; got != nil {
+			t.Fatalf("unexpected trace correlation: %v", got)
+		}
+	})
+
+	t.Run("opt-in-correlate", func(t *testing.T) {
+		var buf bytes.Buffer
+		baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+		mw := Middleware(
+			WithLogger(baseLogger),
+			WithProjectID("proj-123"),
+			WithOTel(false),
+			WithPublicEndpoint(true),
+			WithPublicEndpointCorrelateLogsToRemote(true),
+		)
+
+		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			slogcp.Logger(r.Context()).Info("public endpoint")
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/public", nil)
+		req.Header.Set("Traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 1 {
+			t.Fatalf("expected 1 log line, got %d", len(lines))
+		}
+
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+			t.Fatalf("unmarshal log: %v", err)
+		}
+
+		gotTrace, ok := entry["logging.googleapis.com/trace"].(string)
+		if !ok || gotTrace == "" {
+			t.Fatalf("trace correlation missing: %#v", entry["logging.googleapis.com/trace"])
+		}
+		if !strings.Contains(gotTrace, "105445aa7843bc8bf206b12000100000") {
+			t.Fatalf("trace = %v, want remote trace", gotTrace)
+		}
+	})
+}
+
 // TestMiddlewareTracePropagationDisabledIgnoresTraceparent ensures WithTracePropagation(false)
 // prevents otelhttp from extracting an incoming traceparent header.
 func TestMiddlewareTracePropagationDisabledIgnoresTraceparent(t *testing.T) {
@@ -207,7 +348,7 @@ func TestPopulateURLFieldsHandlesNilURL(t *testing.T) {
 	t.Parallel()
 
 	scope := &RequestScope{}
-	scope.populateURLFields(&http.Request{URL: nil})
+	scope.populateURLFields(&http.Request{URL: nil}, nil)
 
 	if scope.target != "" || scope.scheme != "" || scope.host != "" {
 		t.Fatalf("expected zero-valued scope fields")

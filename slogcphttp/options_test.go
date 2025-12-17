@@ -80,11 +80,14 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 		WithTracerProvider(tp),
 		WithTracePropagation(false),
 		WithPublicEndpoint(true),
+		WithPublicEndpointCorrelateLogsToRemote(true),
 		WithOTel(false),
 		WithSpanNameFormatter(formatter),
 		WithFilter(nil), // ensure nil is skipped
 		WithFilter(filter),
 		WithClientIP(false),
+		WithProxyMode(ProxyModeGCLB),
+		WithXForwardedForClientIPFromRight(3),
 	})
 
 	if !cfg.propagatorsSet || cfg.propagators != prop {
@@ -99,11 +102,20 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 	if !cfg.publicEndpoint {
 		t.Fatalf("publicEndpoint should be true")
 	}
+	if !cfg.publicEndpointCorrelateLogsToRemote {
+		t.Fatalf("publicEndpointCorrelateLogsToRemote should be true")
+	}
 	if cfg.enableOTel {
 		t.Fatalf("enableOTel should be false after WithOTel(false)")
 	}
 	if cfg.includeClientIP {
 		t.Fatalf("includeClientIP should be false after WithClientIP(false)")
+	}
+	if cfg.proxyMode != ProxyModeGCLB {
+		t.Fatalf("proxyMode = %v, want ProxyModeGCLB", cfg.proxyMode)
+	}
+	if cfg.xffClientIPFromRight != 3 {
+		t.Fatalf("xffClientIPFromRight = %d, want 3", cfg.xffClientIPFromRight)
 	}
 	if out := cfg.spanNameFormatter("base", nil); out != "base-fmt" {
 		t.Fatalf("spanNameFormatter output = %q", out)

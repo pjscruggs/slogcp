@@ -68,7 +68,25 @@ Options:
 
 - `WithOTel(false)` disables the `otelhttp` wrapper (no spans are created by this middleware).
 - `WithTracePropagation(false)` disables reading/writing trace context headers. When `WithOTel(true)`, spans are still created, but they start new root traces instead of continuing any incoming trace.
+- `WithPublicEndpoint(true)` tells `otelhttp` to start a new root span and link any inbound context instead of parenting (useful for untrusted/public edges). When `WithOTel(false)`, logs do not correlate to inbound trace headers by default; opt in with `WithPublicEndpointCorrelateLogsToRemote(true)`.
 - `WithPropagators(...)` supplies a specific propagator for header extraction/injection.
+
+## Proxy-aware metadata (Cloud Run / GCLB)
+
+Cloud Run terminates TLS before requests reach your container, so `r.TLS` is not a reliable way to determine whether the *original* client request used HTTPS. If you're behind Google Cloud Load Balancing, enable proxy mode to use `X-Forwarded-Proto` and `X-Forwarded-For`:
+
+```go
+wrapped := slogcphttp.Middleware(
+	slogcphttp.WithLogger(logger),
+	slogcphttp.WithProxyMode(slogcphttp.ProxyModeGCLB),
+)(mux)
+```
+
+Proxy mode is off by default because forwarded headers are trivial to spoof if requests can bypass your load balancer/proxy.
+
+In `ProxyModeGCLB`, client IP is derived from `X-Forwarded-For` using the "count from the right" convention (default is 2 = "second from right"). This avoids trusting client-supplied prefixes in `X-Forwarded-For` when a load balancer appends `,<client-ip>,<lb-ip>`.
+
+If your infrastructure appends additional trusted hops to the right, adjust with `WithXForwardedForClientIPFromRight(n)`.
 
 ## Outbound HTTP client
 
@@ -84,6 +102,8 @@ _ = err
 ```
 
 `Transport` injects W3C trace context headers using the configured (or global) OpenTelemetry propagator when an active span is present in the request context. Use `WithTracePropagation(false)` to disable injection, or `WithLegacyXCloudInjection(true)` if you also need the legacy `X-Cloud-Trace-Context` header on outbound requests.
+
+The derived outbound logger includes request metadata such as `http.method`, `http.target`, `http.scheme`, `http.host`, and `server.address`.
 
 ## Custom attributes
 
