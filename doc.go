@@ -60,6 +60,12 @@
 //     and propagate trace context. Helper functions such as
 //     [slogcpgrpc.ServerOptions], [slogcpgrpc.DialOptions], and
 //     [slogcpgrpc.InfoFromContext] simplify wiring in both directions.
+//   - [github.com/pjscruggs/slogcp/slogcppubsub] provides Pub/Sub helpers for
+//     injecting and extracting OpenTelemetry trace context via
+//     `pubsub.Message.Attributes`, deriving per-message loggers (so
+//     `slogcp.Logger(ctx)` works inside handlers), and optionally starting an
+//     application-level consumer span. It supports interoperability with the Go
+//     Pub/Sub client's `googclient_`-prefixed attribute keys when enabled.
 //
 // # Quick Start
 //
