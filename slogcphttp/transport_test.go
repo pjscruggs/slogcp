@@ -477,6 +477,12 @@ func TestTransportInjectsTraceAndLogger(t *testing.T) {
 	if got := entry["http.host"]; got != "api.example.com" {
 		t.Errorf("http.host = %v", got)
 	}
+	if got := entry["server.address"]; got != "api.example.com" {
+		t.Errorf("server.address = %v", got)
+	}
+	if _, ok := entry["network.peer.ip"]; ok {
+		t.Errorf("network.peer.ip should be omitted for outbound requests")
+	}
 	if got := entry["logging.googleapis.com/trace"]; got != "projects/proj-123/traces/105445aa7843bc8bf206b12000100000" {
 		t.Errorf("trace = %v", got)
 	}

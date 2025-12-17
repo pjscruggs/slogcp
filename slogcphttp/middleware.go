@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -196,6 +197,8 @@ type RequestScope struct {
 	scheme      string
 	host        string
 	clientIP    string
+	peerPort    int
+	outbound    bool
 	userAgent   string
 	requestSize int64
 
@@ -225,10 +228,10 @@ func newRequestScope(r *http.Request, start time.Time, cfg *config) *RequestScop
 func (rs *RequestScope) populateFromRequest(r *http.Request, cfg *config) {
 	rs.requestSize = r.ContentLength
 	rs.method = r.Method
-	rs.populateURLFields(r)
+	rs.populateURLFields(r, cfg)
 	rs.userAgent = r.UserAgent()
 	if cfg.includeClientIP {
-		rs.clientIP = extractIP(r.RemoteAddr)
+		rs.clientIP = clientIPFromRequest(r, cfg)
 	}
 	if cfg.routeGetter != nil {
 		rs.route = strings.TrimSpace(cfg.routeGetter(r))
@@ -236,7 +239,7 @@ func (rs *RequestScope) populateFromRequest(r *http.Request, cfg *config) {
 }
 
 // populateURLFields fills URL-derived fields including scheme and host.
-func (rs *RequestScope) populateURLFields(r *http.Request) {
+func (rs *RequestScope) populateURLFields(r *http.Request, cfg *config) {
 	if r.URL == nil {
 		return
 	}
@@ -244,13 +247,21 @@ func (rs *RequestScope) populateURLFields(r *http.Request) {
 	rs.query = r.URL.RawQuery
 	rs.scheme = r.URL.Scheme
 	if rs.scheme == "" {
-		rs.scheme = inferScheme(r)
+		rs.scheme = inferScheme(r, cfg)
 	}
 	rs.host = r.Host
 }
 
 // inferScheme determines http/https scheme based on TLS presence.
-func inferScheme(r *http.Request) string {
+func inferScheme(r *http.Request, cfg *config) string {
+	if r == nil {
+		return ""
+	}
+	if cfg != nil && cfg.proxyMode == ProxyModeGCLB {
+		if proto := gclbForwardedProto(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+			return proto
+		}
+	}
 	if r.TLS != nil {
 		return "https"
 	}
@@ -335,7 +346,14 @@ func (rs *RequestScope) sizeAttrs() []slog.Attr {
 func (rs *RequestScope) clientAttrs(cfg *config) []slog.Attr {
 	var attrs []slog.Attr
 	if cfg.includeClientIP && rs.clientIP != "" {
-		attrs = append(attrs, slog.String("network.peer.ip", rs.clientIP))
+		if rs.outbound {
+			attrs = append(attrs, slog.String("server.address", rs.clientIP))
+			if rs.peerPort > 0 {
+				attrs = append(attrs, slog.Int("server.port", rs.peerPort))
+			}
+		} else {
+			attrs = append(attrs, slog.String("network.peer.ip", rs.clientIP))
+		}
 	}
 	if cfg.includeUserAgent && rs.userAgent != "" {
 		attrs = append(attrs, slog.String("http.user_agent", rs.userAgent))
@@ -590,6 +608,10 @@ func ensureSpanContext(ctx context.Context, r *http.Request, cfg *config) (conte
 		return ctx, sc
 	}
 
+	if cfg != nil && cfg.publicEndpoint && !cfg.enableOTel && !cfg.publicEndpointCorrelateLogsToRemote {
+		return ctx, sc
+	}
+
 	propagator := cfg.propagators
 	if propagator == nil {
 		propagator = otel.GetTextMapPropagator()
@@ -620,6 +642,70 @@ func extractIP(addr string) string {
 		return host
 	}
 	return addr
+}
+
+func clientIPFromRequest(r *http.Request, cfg *config) string {
+	if r == nil {
+		return ""
+	}
+	if cfg != nil && cfg.proxyMode == ProxyModeGCLB {
+		if ip := gclbClientIPFromXForwardedFor(r.Header.Get("X-Forwarded-For"), cfg.xffClientIPFromRight); ip != "" {
+			return ip
+		}
+	}
+	return extractIP(r.RemoteAddr)
+}
+
+func gclbForwardedProto(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if token, _, ok := strings.Cut(value, ","); ok {
+		value = token
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "http" || value == "https" {
+		return value
+	}
+	return ""
+}
+
+func gclbClientIPFromXForwardedFor(value string, fromRight int) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if fromRight <= 0 {
+		fromRight = 1
+	}
+
+	parts := strings.Split(value, ",")
+	cleaned := parts[:0]
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		part = strings.Trim(part, "\"")
+		if part == "" {
+			continue
+		}
+		cleaned = append(cleaned, part)
+	}
+	if len(cleaned) < fromRight {
+		return ""
+	}
+
+	candidate := strings.TrimSpace(cleaned[len(cleaned)-fromRight])
+	candidate = strings.Trim(candidate, "\"")
+	candidate = strings.Trim(candidate, "[]")
+	if candidate == "" {
+		return ""
+	}
+
+	addr, err := netip.ParseAddr(candidate)
+	if err != nil {
+		return ""
+	}
+	return addr.String()
 }
 
 // loggerWithAttrs returns a logger enriched with the supplied attributes.
