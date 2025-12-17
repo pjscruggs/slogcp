@@ -168,12 +168,15 @@ Important options:
 | `WithTracePropagation(bool)` | Enables or disables extraction of incoming trace headers. Defaults to `true`. |
 | `WithTracerProvider(trace.TracerProvider)` | Supplies the tracer provider passed to `otelhttp`. |
 | `WithPublicEndpoint(bool)` | Forwards the public-endpoint hint to `otelhttp`. |
+| `WithPublicEndpointCorrelateLogsToRemote(bool)` | When `WithPublicEndpoint(true)` and `WithOTel(false)`, controls whether logs correlate to inbound trace headers (disabled by default). |
 | `WithOTel(bool)` | Enables or disables wrapping with `otelhttp`. |
 | `WithSpanNameFormatter(otelhttp.SpanNameFormatter)` / `WithFilter(otelhttp.Filter)` | Mirrors the underlying `otelhttp` hooks. |
 | `WithAttrEnricher(func(*http.Request, *RequestScope) []slog.Attr)` | Adds custom attributes to the request logger. |
 | `WithAttrTransformer(func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr)` | Mutates attributes before they are applied. |
 | `WithRouteGetter(func(*http.Request) string)` | Supplies a route template extractor (for example, from your mux). |
-| `WithClientIP(bool)` | Toggles inclusion of `network.peer.ip` (enabled by default). |
+| `WithClientIP(bool)` | Toggles inclusion of `network.peer.ip` (enabled by default). In `ProxyModeGCLB`, the value is derived from `X-Forwarded-For`. |
+| `WithProxyMode(ProxyMode)` | Enables proxy-aware parsing of `X-Forwarded-Proto` and `X-Forwarded-For` (disabled by default). |
+| `WithXForwardedForClientIPFromRight(int)` | In proxy-aware modes, selects the client IP position in `X-Forwarded-For` counting from the right (default: 2). |
 | `WithIncludeQuery(bool)` | Opts into logging raw query strings (disabled by default). |
 | `WithUserAgent(bool)` | Opts into logging the `User-Agent` string (disabled by default). |
 | `WithHTTPRequestAttr(bool)` | Enables automatic addition of the Cloud Logging `httpRequest` payload to the derived logger. Disabled by default so applications must opt in. |
@@ -204,7 +207,7 @@ logger.InfoContext(ctx, "served",
 | `WithPropagators(propagation.TextMapPropagator)` | Overrides the propagator used for trace header injection. |
 | `WithTracePropagation(bool)` | Enables or disables outbound trace header injection. Defaults to `true`. |
 | `WithAttrEnricher` / `WithAttrTransformer` | Allow custom attribute enrichment or redaction for outbound requests. |
-| `WithClientIP(bool)` | Toggles inclusion of the resolved host address as `network.peer.ip`. Enabled by default. |
+| `WithClientIP(bool)` | Toggles inclusion of the resolved host address as `server.address` (and `server.port` when available). Enabled by default. |
 | `WithIncludeQuery(bool)` / `WithUserAgent(bool)` | Control whether the query string and user agent are recorded on derived loggers. |
 | `WithLegacyXCloudInjection(bool)` | Synthesizes the legacy `X-Cloud-Trace-Context` header in addition to W3C trace headers. |
 
@@ -238,6 +241,43 @@ Helpers:
 - `ServerOptions(opts ...Option)` returns a `[]grpc.ServerOption` containing an otelgrpc StatsHandler (when `WithOTel(true)`) plus both server interceptors.
 - `DialOptions(opts ...Option)` returns matching client interceptors and StatsHandler.
 - `InfoFromContext(ctx)` retrieves the `RequestInfo` captured by the interceptors so handlers can inspect RPC metadata at any point.
+
+## Pub/Sub Integration (`github.com/pjscruggs/slogcp/slogcppubsub`)
+
+`slogcppubsub` provides helpers for carrying trace context across Pub/Sub boundaries via message attributes, and for deriving message-scoped loggers in pull subscribers.
+
+Highlights:
+
+- `Inject(ctx, msg)` / `Extract(ctx, msg)` inject and extract OpenTelemetry trace context via `pubsub.Message.Attributes`.
+- `WrapReceiveHandler` wraps `Subscription.Receive` callbacks to:
+  - extract trace context before user code runs,
+  - optionally start an application-level consumer span around message processing, and
+  - store a derived `*slog.Logger` on the context so `slogcp.Logger(ctx)` works in handlers.
+- `WithGoogClientCompat(true)` interoperates with the Go Pub/Sub client's `googclient_`-prefixed trace attribute keys (for example `googclient_traceparent`).
+- `WithPublicEndpoint(true)` starts a new root trace and links the remote context instead of parenting, mirroring the trust-boundary knob used by the HTTP/gRPC helpers.
+
+Important options:
+
+| Option | Description |
+| --- | --- |
+| `WithLogger(*slog.Logger)` | Sets the base logger used to derive per-message loggers. |
+| `WithProjectID(string)` | Controls the project used for Cloud Trace correlation fields. |
+| `WithPropagators(propagation.TextMapPropagator)` | Propagator used for attribute injection/extraction (defaults to `otel.GetTextMapPropagator()`). |
+| `WithTracePropagation(bool)` | Enables/disables attribute-based trace propagation (defaults to `true`). |
+| `WithBaggagePropagation(bool)` | Enables/disables baggage injection/extraction via message attributes when the propagator supports it (defaults to `false`). |
+| `WithCaseInsensitiveExtraction(bool)` | Enables case-insensitive lookup for propagation keys during extraction (defaults to `false`). |
+| `WithOTel(bool)` | Enables/disables consumer span creation around message processing (defaults to `true`). |
+| `WithTracerProvider(trace.TracerProvider)` | Tracer provider used when spans are created. |
+| `WithSpanStrategy(slogcppubsub.SpanStrategy)` | Controls when a span is created (defaults to `SpanStrategyAlways`). |
+| `WithPublicEndpoint(bool)` | Starts new root spans and links extracted remote context (defaults to `false`). |
+| `WithPublicEndpointCorrelateLogsToRemote(bool)` | When `WithPublicEndpoint(true)` and no span is created, controls whether logs correlate to extracted remote trace context (defaults to `false`). |
+| `WithGoogClientCompat(bool)` | Enables `googclient_` extraction + injection compatibility. |
+| `WithGoogClientExtraction(bool)` / `WithGoogClientInjection(bool)` | Toggle compat behavior independently. |
+| `WithInjectOnlyIfSpanPresent(bool)` | Restores legacy behavior of only injecting when a span is present (defaults to `false`). |
+| `WithLogMessageID(bool)` | Controls whether derived loggers include message IDs (defaults to `false`). |
+| `WithLogOrderingKey(bool)` | Controls ordering key logging (defaults to `false`). |
+| `WithLogDeliveryAttempt(bool)` | Controls delivery attempt logging (defaults to `true`). |
+| `WithLogPublishTime(bool)` | Controls publish timestamp logging (defaults to `false`). |
 
 ## Trace Propagation Defaults
 
