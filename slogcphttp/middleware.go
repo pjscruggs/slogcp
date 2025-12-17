@@ -147,8 +147,12 @@ func otelOptions(cfg *config) []otelhttp.Option {
 	if cfg.tracerProvider != nil {
 		otelOpts = append(otelOpts, otelhttp.WithTracerProvider(cfg.tracerProvider))
 	}
-	if cfg.propagatorsSet && cfg.propagators != nil {
-		otelOpts = append(otelOpts, otelhttp.WithPropagators(cfg.propagators))
+	if cfg.propagateTrace {
+		if cfg.propagatorsSet && cfg.propagators != nil {
+			otelOpts = append(otelOpts, otelhttp.WithPropagators(cfg.propagators))
+		}
+	} else {
+		otelOpts = append(otelOpts, otelhttp.WithPropagators(noopPropagator{}))
 	}
 	if cfg.publicEndpoint {
 		otelOpts = append(otelOpts, otelhttp.WithPublicEndpointFn(func(*http.Request) bool {
@@ -165,6 +169,22 @@ func otelOptions(cfg *config) []otelhttp.Option {
 	}
 	return otelOpts
 }
+
+type noopPropagator struct{}
+
+// Inject satisfies propagation.TextMapPropagator while remaining a no-op.
+func (noopPropagator) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+	_ = ctx
+	_ = carrier
+}
+
+// Extract returns the provided context unchanged.
+func (noopPropagator) Extract(ctx context.Context, _ propagation.TextMapCarrier) context.Context {
+	return ctx
+}
+
+// Fields reports no injected fields.
+func (noopPropagator) Fields() []string { return nil }
 
 // RequestScope captures request metadata surfaced to handlers via context.
 type RequestScope struct {

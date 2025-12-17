@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/pjscruggs/slogcp"
@@ -110,6 +111,81 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 	}
 	if _, ok := entry["http.latency"]; ok {
 		t.Errorf("http.latency should be omitted for in-flight logs")
+	}
+}
+
+// TestMiddlewareTracePropagationDisabledIgnoresTraceparent ensures WithTracePropagation(false)
+// prevents otelhttp from extracting an incoming traceparent header.
+func TestMiddlewareTracePropagationDisabledIgnoresTraceparent(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	tracerProvider := sdktrace.NewTracerProvider()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = tracerProvider.Shutdown(ctx)
+	})
+
+	mw := Middleware(
+		WithLogger(baseLogger),
+		WithProjectID("proj-123"),
+		WithTracerProvider(tracerProvider),
+		WithTracePropagation(false),
+	)
+
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slogcp.Logger(r.Context()).Info("propagation disabled")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/disabled", http.NoBody)
+	req.Header.Set("Traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 log line, got %d", len(lines))
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	gotTrace, ok := entry["logging.googleapis.com/trace"].(string)
+	if !ok || gotTrace == "" {
+		t.Fatalf("trace field missing: %#v", entry["logging.googleapis.com/trace"])
+	}
+	if strings.Contains(gotTrace, "105445aa7843bc8bf206b12000100000") {
+		t.Fatalf("expected middleware to ignore incoming traceparent; got trace %q", gotTrace)
+	}
+}
+
+// TestNoopPropagatorMethods verifies noopPropagator behaves like a no-op TextMapPropagator.
+func TestNoopPropagatorMethods(t *testing.T) {
+	t.Parallel()
+
+	p := noopPropagator{}
+	hdr := make(http.Header)
+
+	ctx := context.WithValue(context.Background(), requestScopeKey{}, "ok")
+	got := p.Extract(ctx, propagation.HeaderCarrier(hdr))
+	if got.Value(requestScopeKey{}) != "ok" {
+		t.Fatalf("Extract should preserve context values, got %#v", got.Value(requestScopeKey{}))
+	}
+
+	p.Inject(ctx, propagation.HeaderCarrier(hdr))
+	if len(hdr) != 0 {
+		t.Fatalf("Inject should not mutate headers, got %#v", hdr)
+	}
+
+	if got := p.Fields(); got != nil {
+		t.Fatalf("Fields() = %#v, want nil", got)
 	}
 }
 
@@ -1212,16 +1288,3 @@ func withRawAttrHooks(enrichers []AttrEnricher, transformers []AttrTransformer) 
 		cfg.attrTransformers = append(cfg.attrTransformers, transformers...)
 	}
 }
-
-type noopPropagator struct{}
-
-// Inject satisfies the propagation.TextMapPropagator interface while remaining a no-op for tests.
-func (noopPropagator) Inject(context.Context, propagation.TextMapCarrier) {}
-
-// Extract returns the provided context unchanged to simulate a no-op propagator.
-func (noopPropagator) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
-	return ctx
-}
-
-// Fields reports no carrier fields because the noop propagator does not inject anything.
-func (noopPropagator) Fields() []string { return nil }
