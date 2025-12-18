@@ -194,7 +194,7 @@ logger.InfoContext(ctx, "served",
 #### Do you really need to log httpRequest?
 
 - Managed runtimes already emit an automatic request log (with final status/size/latency) and also stamp `trace`/`spanId` onto every app log. The normal way to correlate is to pivot on `trace` so the app logs and the automatic request log show up together in the Cloud Logging UI/Trace viewer. Attaching `httpRequest` to application logs is therefore an opt-in, niche move for self-contained error/alert payloads or for services that *lack* an automatic request log.
-- Opt-in middleware attachment uses a **lazy LogValuer**: the `httpRequest` is built at log time from the live `RequestScope`. If the request has finished, latency is the final duration; if the request is still in flight, latency is omitted (Cloud Logging will still promote the `httpRequest`).
+- Opt-in middleware attachment uses a **lazy LogValuer**: the `httpRequest` is built at log time from the live `RequestScope`. While the request is in flight we intentionally suppress `httpRequest.status`, `httpRequest.responseSize`, and `httpRequest.latency` (Cloud Logging will still promote the `httpRequest`).
 - For one-shot “access log” style entries, call `slogcphttp.HTTPRequestFromScope(scope)` to snapshot the current state into a Cloud Logging payload. Outside of the middleware, `slogcp.HTTPRequestFromRequest(req)` creates a Cloud Logging payload from any standard library `*http.Request`.
 
 ### HTTP Client Transport
