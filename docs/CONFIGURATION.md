@@ -245,40 +245,37 @@ Helpers:
 
 ## Pub/Sub Integration (`github.com/pjscruggs/slogcp/slogcppubsub`)
 
-`slogcppubsub` provides helpers for carrying trace context across Pub/Sub boundaries via message attributes, and for deriving message-scoped loggers in pull subscribers.
+`slogcppubsub` provides helpers for carrying trace context across Pub/Sub boundaries via `pubsub.Message.Attributes`, and for deriving message-scoped loggers in pull subscribers (so `slogcp.Logger(ctx)` works inside receive handlers). Use `Inject` before publishing and `WrapReceiveHandler` when receiving; `Extract` / `ExtractAttributes` and `InfoFromContext` are available when you want manual control or need to inspect message metadata.
 
-Highlights:
-
-- `Inject(ctx, msg)` / `Extract(ctx, msg)` inject and extract OpenTelemetry trace context via `pubsub.Message.Attributes`.
-- `WrapReceiveHandler` wraps `Subscription.Receive` callbacks to:
-  - extract trace context before user code runs,
-  - optionally start an application-level consumer span around message processing, and
-  - store a derived `*slog.Logger` on the context so `slogcp.Logger(ctx)` works in handlers.
-- `WithGoogClientCompat(true)` interoperates with the Go Pub/Sub client's `googclient_`-prefixed trace attribute keys (for example `googclient_traceparent`).
-- `WithPublicEndpoint(true)` starts a new root trace and links the remote context instead of parenting, mirroring the trust-boundary knob used by the HTTP/gRPC helpers.
-
-Important options:
-
-| Option | Description |
-| --- | --- |
-| `WithLogger(*slog.Logger)` | Sets the base logger used to derive per-message loggers. |
-| `WithProjectID(string)` | Controls the project used for Cloud Trace correlation fields. |
-| `WithPropagators(propagation.TextMapPropagator)` | Propagator used for attribute injection/extraction (defaults to `otel.GetTextMapPropagator()`). |
-| `WithTracePropagation(bool)` | Enables/disables attribute-based trace propagation (defaults to `true`). |
-| `WithBaggagePropagation(bool)` | Enables/disables baggage injection/extraction via message attributes when the propagator supports it (defaults to `false`). |
-| `WithCaseInsensitiveExtraction(bool)` | Enables case-insensitive lookup for propagation keys during extraction (defaults to `false`). |
-| `WithOTel(bool)` | Enables/disables consumer span creation around message processing (defaults to `true`). |
-| `WithTracerProvider(trace.TracerProvider)` | Tracer provider used when spans are created. |
-| `WithSpanStrategy(slogcppubsub.SpanStrategy)` | Controls when a span is created (defaults to `SpanStrategyAlways`). |
-| `WithPublicEndpoint(bool)` | Starts new root spans and links extracted remote context (defaults to `false`). |
-| `WithPublicEndpointCorrelateLogsToRemote(bool)` | When `WithPublicEndpoint(true)` and no span is created, controls whether logs correlate to extracted remote trace context (defaults to `false`). |
-| `WithGoogClientCompat(bool)` | Enables `googclient_` extraction + injection compatibility. |
-| `WithGoogClientExtraction(bool)` / `WithGoogClientInjection(bool)` | Toggle compat behavior independently. |
-| `WithInjectOnlyIfSpanPresent(bool)` | Restores legacy behavior of only injecting when a span is present (defaults to `false`). |
-| `WithLogMessageID(bool)` | Controls whether derived loggers include message IDs (defaults to `false`). |
-| `WithLogOrderingKey(bool)` | Controls ordering key logging (defaults to `false`). |
-| `WithLogDeliveryAttempt(bool)` | Controls delivery attempt logging (defaults to `true`). |
-| `WithLogPublishTime(bool)` | Controls publish timestamp logging (defaults to `false`). |
+| Option | Default | Description |
+| --- | --- | --- |
+| `WithLogger(*slog.Logger)` | `slog.Default()` | Base logger used to derive per-message loggers (used by `WrapReceiveHandler`). |
+| `WithProjectID(string)` | detected at runtime | Project used when formatting Cloud Logging trace correlation fields and `gcp.project_id` span attributes. |
+| `WithSubscription(*pubsub.Subscriber)` | (unset) | Captures a trimmed subscription ID from `sub.ID()` for span/logger enrichment. |
+| `WithSubscriptionID(string)` | (unset) | Sets the trimmed subscription ID used for span/logger enrichment. |
+| `WithTopic(*pubsub.Publisher)` | (unset) | Captures a trimmed topic ID from `topic.ID()` for span/logger enrichment. |
+| `WithTopicID(string)` | (unset) | Sets the trimmed topic ID used for span/logger enrichment. |
+| `WithOTel(bool)` | `true` | Enables/disables creation of an application-level consumer span around message processing. |
+| `WithSpanStrategy(slogcppubsub.SpanStrategy)` | `SpanStrategyAlways` | Controls when consumer spans are started (`SpanStrategyAuto` skips when a local span is already active; `SpanStrategyAlways` always starts). |
+| `WithTracerProvider(trace.TracerProvider)` | global tracer provider | Tracer provider used when consumer spans are created. |
+| `WithSpanName(string)` | `pubsub.process` | Span name used when creating consumer spans. |
+| `WithSpanAttributes(attribute.KeyValue...)` | (none) | Additional OpenTelemetry attributes appended to consumer spans. |
+| `WithPublicEndpoint(bool)` | `false` | Treats producers as untrusted: starts a new root trace and links extracted remote context instead of parenting. |
+| `WithPublicEndpointCorrelateLogsToRemote(bool)` | `false` | When `WithPublicEndpoint(true)` and no local span is created (for example, `WithOTel(false)`), controls whether logs correlate to extracted remote trace context. |
+| `WithPropagators(propagation.TextMapPropagator)` | `otel.GetTextMapPropagator()` | Propagator used for attribute injection/extraction; passing `nil` disables propagator-based extraction/injection. |
+| `WithTracePropagation(bool)` | `true` | Enables/disables trace context extraction and injection via message attributes. |
+| `WithBaggagePropagation(bool)` | `false` | Enables/disables baggage injection/extraction via message attributes when the propagator supports it. |
+| `WithCaseInsensitiveExtraction(bool)` | `false` | Enables case-insensitive lookup for propagation keys during extraction. |
+| `WithInjectOnlyIfSpanPresent(bool)` | `false` | Only injects when a valid span context is present on `ctx`. |
+| `WithLogMessageID(bool)` | `false` | Adds `messaging.message.id` to derived loggers (high-cardinality). |
+| `WithLogOrderingKey(bool)` | `false` | Adds `messaging.gcp_pubsub.message.ordering_key` to derived loggers (can be high-cardinality). |
+| `WithLogDeliveryAttempt(bool)` | `true` | Adds `messaging.gcp_pubsub.message.delivery_attempt` to derived loggers when present. |
+| `WithLogPublishTime(bool)` | `false` | Adds `pubsub.message.publish_time` to derived loggers. |
+| `WithAttrEnricher(func(context.Context, *pubsub.Message, *MessageInfo) []slog.Attr)` | (none) | Appends additional attributes to the derived message logger. |
+| `WithAttrTransformer(func(context.Context, []slog.Attr, *pubsub.Message, *MessageInfo) []slog.Attr)` | (none) | Mutates/redacts the derived message logger attribute slice before it is applied. |
+| `WithGoogClientCompat(bool)` | `false` | Enables both extraction fallback and injection compatibility via `googclient_`-prefixed keys. |
+| `WithGoogClientExtraction(bool)` | `false` | Enables extraction from `googclient_`-prefixed keys when standard keys are absent. |
+| `WithGoogClientInjection(bool)` | `false` | Enables injection of `googclient_`-prefixed keys in addition to standard keys. |
 
 ## Trace Propagation Defaults
 
