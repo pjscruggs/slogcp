@@ -1562,6 +1562,18 @@ func TestParseBoolEnvCoversValidation(t *testing.T) {
 	if !parseBoolEnv("true", false, logger) {
 		t.Fatalf("parseBoolEnv(true) = false, want true")
 	}
+	if !parseBoolEnv("1", false, logger) {
+		t.Fatalf("parseBoolEnv(1) = false, want true")
+	}
+	if !parseBoolEnv("t", false, logger) {
+		t.Fatalf("parseBoolEnv(t) = false, want true")
+	}
+	if parseBoolEnv("0", true, logger) != false {
+		t.Fatalf("parseBoolEnv(0) = true, want false")
+	}
+	if parseBoolEnv("f", true, logger) != false {
+		t.Fatalf("parseBoolEnv(f) = true, want false")
+	}
 	if parseBoolEnv("invalid", true, logger) != true {
 		t.Fatalf("parseBoolEnv(invalid) should keep current value")
 	}

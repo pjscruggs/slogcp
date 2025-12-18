@@ -94,6 +94,9 @@ Error Reporting groups errors by service and stack trace, but getting the JSON s
 ### HTTP and gRPC Interceptors
 HTTP and gRPC usually require bespoke middleware/interceptors just to get request-scoped loggers, consistent request/RPC attributes (method/route/status/duration/sizes), and trace context propagation. slogcp ships `slogcphttp` and `slogcpgrpc` helpers that do that wiring for you, so each service adds one middleware or `ServerOptions` call instead of re-implementing instrumentation.
 
+### Pub/Sub Integration
+Pub/Sub workflows usually require extra glue code: copy trace context into message attributes, recover it on the subscriber, derive a per-message logger, and remember to attach consistent subscription/topic/message fields so Logs Explorer stays queryable. slogcp’s `slogcppubsub` package (`github.com/pjscruggs/slogcp/slogcppubsub`) collapses that to a couple helpers (`Inject` and `WrapReceiveHandler`), giving you message-scoped loggers (`slogcp.Logger(ctx)`), Cloud Logging trace correlation, and OpenTelemetry messaging semantic-convention fields by default. It also supports optional consumer spans, `googclient_` trace attribute interop, and a “public endpoint” trust-boundary mode (new root + link) so you can keep end-to-end observability without blindly trusting producer trace IDs.
+
 ### Async Logging
 `slogcp` writes synchronously to `stdout`/`stderr` by default. When slogcp writes to a file target (`SLOGCP_TARGET=file:...` or `slogcp.WithRedirectToFile`), it buffers writes by default so disk I/O doesn't sit on hot paths. See `docs/CONFIGURATION.md#async-logging-slogcpasync` to tune or disable buffering (or to opt into async for other targets).
 

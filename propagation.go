@@ -67,8 +67,8 @@ func propagatorAutoSetEnabled() bool {
 		return true
 	}
 	b, err := strconv.ParseBool(raw)
-	if err != nil {
-		return true
+	if err == nil {
+		return b
 	}
-	return b
+	return true
 }
