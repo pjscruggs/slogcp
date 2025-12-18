@@ -754,20 +754,20 @@ func TestApplyEnvParsesValues(t *testing.T) {
 	}
 }
 
-// TestApplyEnvBooleanVariants ensures boolean env parsing accepts yes/on/off/1/0 tokens.
+// TestApplyEnvBooleanVariants ensures boolean env parsing accepts strconv.ParseBool tokens.
 func TestApplyEnvBooleanVariants(t *testing.T) {
 	cfg := Config{Enabled: false}
 
-	t.Setenv(envAsyncEnabled, "yes")
+	t.Setenv(envAsyncEnabled, "true")
 	applyEnv(&cfg)
 	if !cfg.Enabled {
-		t.Fatalf("Enabled = false, want true for yes")
+		t.Fatalf("Enabled = false, want true for true")
 	}
 
-	t.Setenv(envAsyncEnabled, "on")
+	t.Setenv(envAsyncEnabled, "1")
 	applyEnv(&cfg)
 	if !cfg.Enabled {
-		t.Fatalf("Enabled = false, want true for on")
+		t.Fatalf("Enabled = false, want true for 1")
 	}
 
 	t.Setenv(envAsyncEnabled, "0")

@@ -12,7 +12,7 @@
 
 ## Boolean ENV VARS
 
-Boolean environment variables always accept any of `true`, `1`, `yes`, or `on` to enable and `false`, `0`, `no`, or `off` to disable (case-insensitive). Invalid values are ignored.
+Boolean environment variables are always parsed with [strconv.ParseBool](https://pkg.go.dev/strconv#ParseBool) which, "accepts `1`, `t`, `T`, `TRUE`, `true`, `True`, `0`, `f`, `F`, `FALSE`, `false`, `False`." Invalid values are ignored.
 
 ## Handler Setup
 

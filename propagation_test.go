@@ -79,9 +79,29 @@ func TestPropagatorAutoSetParsesValues(t *testing.T) {
 		t.Fatalf("propagatorAutoSetEnabled() = false, want true for TRUE")
 	}
 
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "t")
+	if !propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = false, want true for t")
+	}
+
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "1")
+	if !propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = false, want true for 1")
+	}
+
 	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "false")
 	if propagatorAutoSetEnabled() {
 		t.Fatalf("propagatorAutoSetEnabled() = true, want false for false")
+	}
+
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "F")
+	if propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = true, want false for F")
+	}
+
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "0")
+	if propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = true, want false for 0")
 	}
 
 	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "not-a-bool")
