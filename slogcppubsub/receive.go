@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
@@ -74,7 +74,10 @@ func (mi *MessageInfo) DeliveryAttempt() (int, bool) {
 func WrapReceiveHandler(handler func(context.Context, *pubsub.Message), opts ...Option) func(context.Context, *pubsub.Message) {
 	cfg := applyOptions(opts)
 	projectID := resolveProjectID(cfg.projectID)
-	tracer := resolveTracer(cfg)
+	tracer := otel.Tracer(instrumentationName)
+	if cfg.tracerProvider != nil {
+		tracer = cfg.tracerProvider.Tracer(instrumentationName)
+	}
 
 	return func(ctx context.Context, msg *pubsub.Message) {
 		if handler == nil {
@@ -84,23 +87,21 @@ func WrapReceiveHandler(handler func(context.Context, *pubsub.Message), opts ...
 		messageAttrs := msgAttributes(msg)
 
 		var extracted trace.SpanContext
-		if cfg != nil && cfg.publicEndpoint {
-			extractedCtx, remote := ensureSpanContext(ctx, messageAttrs, cfg, true)
+		if cfg.publicEndpoint {
+			extractedCtx, remote := ensureSpanContext(ctx, messageAttrs, cfg)
 			extracted = remote
 			if !cfg.enableOTel && cfg.publicEndpointCorrelateLogsToRemote {
 				ctx = extractedCtx
 			}
 		} else {
-			ctx, extracted = ensureSpanContext(ctx, messageAttrs, cfg, true)
+			ctx, extracted = ensureSpanContext(ctx, messageAttrs, cfg)
 		}
 
 		info := newMessageInfo(cfg, msg, extracted)
 		ctx = context.WithValue(ctx, messageInfoKey{}, info)
 
-		ctx, span := startConsumerSpan(ctx, extracted, tracer, projectID, cfg, info, msg)
-		if span != nil {
-			defer span.End()
-		}
+		ctx, endSpan := startConsumerSpan(ctx, extracted, tracer, projectID, cfg, info, msg)
+		defer endSpan()
 
 		traceAttrs, _ := slogcp.TraceAttributes(ctx, projectID)
 		attrs := info.loggerAttrs(cfg, msg, traceAttrs)
@@ -118,6 +119,7 @@ func WrapReceiveHandler(handler func(context.Context, *pubsub.Message), opts ...
 	}
 }
 
+// msgAttributes returns the message attributes map, or nil when msg is nil.
 func msgAttributes(msg *pubsub.Message) map[string]string {
 	if msg == nil {
 		return nil
@@ -125,6 +127,7 @@ func msgAttributes(msg *pubsub.Message) map[string]string {
 	return msg.Attributes
 }
 
+// resolveProjectID returns the configured project ID or derives it from runtime detection.
 func resolveProjectID(explicit string) string {
 	explicit = strings.TrimSpace(explicit)
 	if explicit != "" {
@@ -133,13 +136,7 @@ func resolveProjectID(explicit string) string {
 	return strings.TrimSpace(slogcp.DetectRuntimeInfo().ProjectID)
 }
 
-func resolveTracer(cfg *config) trace.Tracer {
-	if cfg != nil && cfg.tracerProvider != nil {
-		return cfg.tracerProvider.Tracer(instrumentationName)
-	}
-	return otel.Tracer(instrumentationName)
-}
-
+// newMessageInfo snapshots message metadata and extracted remote trace context.
 func newMessageInfo(cfg *config, msg *pubsub.Message, extracted trace.SpanContext) *MessageInfo {
 	info := &MessageInfo{}
 	if cfg != nil {
@@ -166,6 +163,7 @@ func newMessageInfo(cfg *config, msg *pubsub.Message, extracted trace.SpanContex
 	return info
 }
 
+// startConsumerSpan starts an optional application-level consumer span and returns a span end callback.
 func startConsumerSpan(
 	ctx context.Context,
 	extracted trace.SpanContext,
@@ -174,77 +172,120 @@ func startConsumerSpan(
 	cfg *config,
 	info *MessageInfo,
 	msg *pubsub.Message,
-) (context.Context, trace.Span) {
-	if cfg == nil || !cfg.enableOTel {
-		return ctx, nil
+) (context.Context, func()) {
+	if cfg == nil {
+		cfg = defaultConfig()
+	}
+	if !cfg.enableOTel {
+		return ctx, func() {}
 	}
 
 	if cfg.spanStrategy == SpanStrategyAuto && !cfg.publicEndpoint {
 		current := trace.SpanContextFromContext(ctx)
 		if current.IsValid() && !current.IsRemote() {
-			return ctx, nil
+			return ctx, func() {}
 		}
 	}
 
-	attrs := consumerSpanAttrs(projectID, cfg, info, msg)
-	spanOpts := []trace.SpanStartOption{
-		trace.WithSpanKind(trace.SpanKindConsumer),
-		trace.WithAttributes(attrs...),
-	}
-	if cfg.publicEndpoint {
-		spanOpts = append(spanOpts, trace.WithNewRoot())
-		if extracted.IsValid() && extracted.IsRemote() {
-			spanOpts = append(spanOpts, trace.WithLinks(trace.Link{SpanContext: extracted}))
-		}
-	}
-
-	spanName := cfg.spanName
-	if strings.TrimSpace(spanName) == "" {
-		spanName = "pubsub.process"
-	}
-	return tracer.Start(ctx, spanName, spanOpts...)
+	spanOpts := consumerSpanOptions(projectID, cfg, extracted, info, msg)
+	resolvedSpanName := resolveSpanName(cfg.spanName)
+	ctx, span := tracer.Start(ctx, resolvedSpanName, spanOpts...)
+	return ctx, func() { span.End() }
 }
 
+// resolveSpanName returns a usable span name, falling back to a package default.
+func resolveSpanName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return defaultConsumerSpanName
+	}
+	return name
+}
+
+// consumerSpanOptions builds the span start options for the consumer span.
+func consumerSpanOptions(projectID string, cfg *config, extracted trace.SpanContext, info *MessageInfo, msg *pubsub.Message) []trace.SpanStartOption {
+	opts := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(consumerSpanAttrs(projectID, cfg, info, msg)...),
+	}
+	if !cfg.publicEndpoint {
+		return opts
+	}
+
+	opts = append(opts, trace.WithNewRoot())
+	if extracted.IsValid() && extracted.IsRemote() {
+		opts = append(opts, trace.WithLinks(trace.Link{SpanContext: extracted}))
+	}
+	return opts
+}
+
+// consumerSpanAttrs returns OpenTelemetry attributes for the consumer span.
 func consumerSpanAttrs(projectID string, cfg *config, info *MessageInfo, msg *pubsub.Message) []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, 10+len(cfg.spanAttributes))
+	if cfg == nil {
+		cfg = defaultConfig()
+	}
+	capacity := 10
+	if len(cfg.spanAttributes) > 0 {
+		capacity += len(cfg.spanAttributes)
+	}
+
+	attrs := make([]attribute.KeyValue, 0, capacity)
 	attrs = append(attrs, semconv.MessagingSystemGCPPubsub)
 	attrs = append(attrs, semconv.MessagingOperationName("process"))
 	attrs = append(attrs, semconv.MessagingOperationTypeDeliver)
 
-	if info != nil {
-		if subID := strings.TrimSpace(info.SubscriptionID); subID != "" {
-			attrs = append(attrs, semconv.MessagingDestinationName(subID))
-		}
-		if topicID := strings.TrimSpace(info.TopicID); topicID != "" {
-			attrs = append(attrs, semconv.MessagingDestinationPublishName(topicID))
-		}
-	}
-
-	if msg != nil {
-		if msg.ID != "" {
-			attrs = append(attrs, semconv.MessagingMessageID(msg.ID))
-		}
-		if len(msg.Data) > 0 {
-			attrs = append(attrs, semconv.MessagingMessageBodySize(len(msg.Data)))
-		}
-		if msg.OrderingKey != "" {
-			attrs = append(attrs, semconv.MessagingGCPPubsubMessageOrderingKey(msg.OrderingKey))
-		}
-		if msg.DeliveryAttempt != nil {
-			attrs = append(attrs, semconv.MessagingGCPPubsubMessageDeliveryAttempt(*msg.DeliveryAttempt))
-		}
-	}
-
-	if projectID != "" {
-		attrs = append(attrs, attribute.String("gcp.project_id", projectID))
-	}
-
-	if cfg != nil && len(cfg.spanAttributes) > 0 {
+	attrs = appendConsumerDestinationAttrs(attrs, info)
+	attrs = appendConsumerMessageAttrs(attrs, msg)
+	attrs = appendProjectSpanAttrs(attrs, projectID)
+	if len(cfg.spanAttributes) > 0 {
 		attrs = append(attrs, cfg.spanAttributes...)
 	}
 	return attrs
 }
 
+// appendConsumerDestinationAttrs appends destination attributes derived from MessageInfo.
+func appendConsumerDestinationAttrs(attrs []attribute.KeyValue, info *MessageInfo) []attribute.KeyValue {
+	if info == nil {
+		return attrs
+	}
+	if subID := strings.TrimSpace(info.SubscriptionID); subID != "" {
+		attrs = append(attrs, semconv.MessagingDestinationName(subID))
+	}
+	if topicID := strings.TrimSpace(info.TopicID); topicID != "" {
+		attrs = append(attrs, semconv.MessagingDestinationPublishName(topicID))
+	}
+	return attrs
+}
+
+// appendConsumerMessageAttrs appends message attributes derived from pubsub.Message.
+func appendConsumerMessageAttrs(attrs []attribute.KeyValue, msg *pubsub.Message) []attribute.KeyValue {
+	if msg == nil {
+		return attrs
+	}
+	if msg.ID != "" {
+		attrs = append(attrs, semconv.MessagingMessageID(msg.ID))
+	}
+	if len(msg.Data) > 0 {
+		attrs = append(attrs, semconv.MessagingMessageBodySize(len(msg.Data)))
+	}
+	if msg.OrderingKey != "" {
+		attrs = append(attrs, semconv.MessagingGCPPubsubMessageOrderingKey(msg.OrderingKey))
+	}
+	if msg.DeliveryAttempt != nil {
+		attrs = append(attrs, semconv.MessagingGCPPubsubMessageDeliveryAttempt(*msg.DeliveryAttempt))
+	}
+	return attrs
+}
+
+// appendProjectSpanAttrs appends project ID attributes when available.
+func appendProjectSpanAttrs(attrs []attribute.KeyValue, projectID string) []attribute.KeyValue {
+	if projectID == "" {
+		return attrs
+	}
+	return append(attrs, attribute.String("gcp.project_id", projectID))
+}
+
+// applyEnrichers appends slog attributes produced by configured enrichers.
 func applyEnrichers(ctx context.Context, cfg *config, attrs []slog.Attr, msg *pubsub.Message, info *MessageInfo) []slog.Attr {
 	if cfg == nil {
 		return attrs
@@ -260,6 +301,7 @@ func applyEnrichers(ctx context.Context, cfg *config, attrs []slog.Attr, msg *pu
 	return attrs
 }
 
+// applyTransformers applies configured transformations to the slog attribute slice.
 func applyTransformers(ctx context.Context, cfg *config, attrs []slog.Attr, msg *pubsub.Message, info *MessageInfo) []slog.Attr {
 	if cfg == nil {
 		return attrs
@@ -273,53 +315,109 @@ func applyTransformers(ctx context.Context, cfg *config, attrs []slog.Attr, msg 
 	return attrs
 }
 
+// loggerAttrs assembles the structured log attributes for a message.
 func (mi *MessageInfo) loggerAttrs(cfg *config, msg *pubsub.Message, traceAttrs []slog.Attr) []slog.Attr {
+	if cfg == nil {
+		cfg = defaultConfig()
+	}
+
 	attrs := make([]slog.Attr, 0, len(traceAttrs)+10)
-	if len(traceAttrs) > 0 {
-		attrs = append(attrs, traceAttrs...)
-	}
-
-	if cfg != nil && cfg.publicEndpoint && mi != nil && mi.RemoteTraceparent != "" {
-		attrs = append(attrs, slog.String("pubsub.remote.traceparent", mi.RemoteTraceparent))
-	}
-
-	attrs = append(attrs, slog.String(string(semconv.MessagingSystemGCPPubsub.Key), semconv.MessagingSystemGCPPubsub.Value.AsString()))
-	attrs = append(attrs, slog.String(string(semconv.MessagingOperationNameKey), "process"))
-	attrs = append(attrs, slog.String(string(semconv.MessagingOperationTypeDeliver.Key), semconv.MessagingOperationTypeDeliver.Value.AsString()))
-
-	if mi != nil {
-		if subID := strings.TrimSpace(mi.SubscriptionID); subID != "" {
-			attrs = append(attrs, slog.String(string(semconv.MessagingDestinationNameKey), subID))
-		}
-		if topicID := strings.TrimSpace(mi.TopicID); topicID != "" {
-			attrs = append(attrs, slog.String(string(semconv.MessagingDestinationPublishNameKey), topicID))
-		}
-	}
-
-	if msg != nil {
-		if (cfg == nil || cfg.logMessageID) && msg.ID != "" {
-			attrs = append(attrs, slog.String(string(semconv.MessagingMessageIDKey), msg.ID))
-		}
-		if len(msg.Data) > 0 {
-			bodySizeKV := semconv.MessagingMessageBodySize(len(msg.Data))
-			attrs = append(attrs, slog.Int(string(bodySizeKV.Key), int(bodySizeKV.Value.AsInt64())))
-		}
-		if (cfg == nil || cfg.logOrderingKey) && msg.OrderingKey != "" {
-			orderKV := semconv.MessagingGCPPubsubMessageOrderingKey(msg.OrderingKey)
-			attrs = append(attrs, slog.String(string(orderKV.Key), orderKV.Value.AsString()))
-		}
-		if (cfg == nil || cfg.logDeliveryAttempt) && msg.DeliveryAttempt != nil {
-			attemptKV := semconv.MessagingGCPPubsubMessageDeliveryAttempt(*msg.DeliveryAttempt)
-			attrs = append(attrs, slog.Int(string(attemptKV.Key), int(attemptKV.Value.AsInt64())))
-		}
-		if (cfg == nil || cfg.logPublishTime) && !msg.PublishTime.IsZero() {
-			attrs = append(attrs, slog.Time("pubsub.message.publish_time", msg.PublishTime))
-		}
-	}
-
+	attrs = append(attrs, traceAttrs...)
+	attrs = appendRemoteTraceparent(attrs, cfg, mi)
+	attrs = appendMessagingCoreLoggerAttrs(attrs)
+	attrs = appendMessagingDestinationLoggerAttrs(attrs, mi)
+	attrs = appendMessagingMessageLoggerAttrs(attrs, cfg, msg)
 	return attrs
 }
 
+// appendRemoteTraceparent appends a debug-only traceparent field for public endpoint mode.
+func appendRemoteTraceparent(attrs []slog.Attr, cfg *config, mi *MessageInfo) []slog.Attr {
+	if !cfg.publicEndpoint {
+		return attrs
+	}
+	if mi == nil || mi.RemoteTraceparent == "" {
+		return attrs
+	}
+	return append(attrs, slog.String("pubsub.remote.traceparent", mi.RemoteTraceparent))
+}
+
+// appendMessagingCoreLoggerAttrs appends core messaging semantic convention fields.
+func appendMessagingCoreLoggerAttrs(attrs []slog.Attr) []slog.Attr {
+	attrs = append(attrs, slog.String(string(semconv.MessagingSystemGCPPubsub.Key), semconv.MessagingSystemGCPPubsub.Value.AsString()))
+	attrs = append(attrs, slog.String(string(semconv.MessagingOperationNameKey), "process"))
+	return append(attrs, slog.String(string(semconv.MessagingOperationTypeDeliver.Key), semconv.MessagingOperationTypeDeliver.Value.AsString()))
+}
+
+// appendMessagingDestinationLoggerAttrs appends destination fields from MessageInfo.
+func appendMessagingDestinationLoggerAttrs(attrs []slog.Attr, mi *MessageInfo) []slog.Attr {
+	if mi == nil {
+		return attrs
+	}
+	if subID := strings.TrimSpace(mi.SubscriptionID); subID != "" {
+		attrs = append(attrs, slog.String(string(semconv.MessagingDestinationNameKey), subID))
+	}
+	if topicID := strings.TrimSpace(mi.TopicID); topicID != "" {
+		attrs = append(attrs, slog.String(string(semconv.MessagingDestinationPublishNameKey), topicID))
+	}
+	return attrs
+}
+
+// appendMessagingMessageLoggerAttrs appends message-specific fields according to configuration.
+func appendMessagingMessageLoggerAttrs(attrs []slog.Attr, cfg *config, msg *pubsub.Message) []slog.Attr {
+	if msg == nil {
+		return attrs
+	}
+	attrs = appendMessageIDLoggerAttr(attrs, cfg, msg)
+	attrs = appendMessageBodySizeLoggerAttr(attrs, msg)
+	attrs = appendOrderingKeyLoggerAttr(attrs, cfg, msg)
+	attrs = appendDeliveryAttemptLoggerAttr(attrs, cfg, msg)
+	return appendPublishTimeLoggerAttr(attrs, cfg, msg)
+}
+
+// appendMessageIDLoggerAttr appends a message ID field when enabled.
+func appendMessageIDLoggerAttr(attrs []slog.Attr, cfg *config, msg *pubsub.Message) []slog.Attr {
+	if !cfg.logMessageID || msg.ID == "" {
+		return attrs
+	}
+	return append(attrs, slog.String(string(semconv.MessagingMessageIDKey), msg.ID))
+}
+
+// appendMessageBodySizeLoggerAttr appends a body size field when the message has a non-empty payload.
+func appendMessageBodySizeLoggerAttr(attrs []slog.Attr, msg *pubsub.Message) []slog.Attr {
+	if len(msg.Data) == 0 {
+		return attrs
+	}
+	bodySizeKV := semconv.MessagingMessageBodySize(len(msg.Data))
+	return append(attrs, slog.Int(string(bodySizeKV.Key), int(bodySizeKV.Value.AsInt64())))
+}
+
+// appendOrderingKeyLoggerAttr appends an ordering key field when enabled.
+func appendOrderingKeyLoggerAttr(attrs []slog.Attr, cfg *config, msg *pubsub.Message) []slog.Attr {
+	if !cfg.logOrderingKey || msg.OrderingKey == "" {
+		return attrs
+	}
+	orderKV := semconv.MessagingGCPPubsubMessageOrderingKey(msg.OrderingKey)
+	return append(attrs, slog.String(string(orderKV.Key), orderKV.Value.AsString()))
+}
+
+// appendDeliveryAttemptLoggerAttr appends a delivery attempt field when enabled and present.
+func appendDeliveryAttemptLoggerAttr(attrs []slog.Attr, cfg *config, msg *pubsub.Message) []slog.Attr {
+	if !cfg.logDeliveryAttempt || msg.DeliveryAttempt == nil {
+		return attrs
+	}
+	attemptKV := semconv.MessagingGCPPubsubMessageDeliveryAttempt(*msg.DeliveryAttempt)
+	return append(attrs, slog.Int(string(attemptKV.Key), int(attemptKV.Value.AsInt64())))
+}
+
+// appendPublishTimeLoggerAttr appends a publish timestamp field when enabled.
+func appendPublishTimeLoggerAttr(attrs []slog.Attr, cfg *config, msg *pubsub.Message) []slog.Attr {
+	if !cfg.logPublishTime || msg.PublishTime.IsZero() {
+		return attrs
+	}
+	return append(attrs, slog.Time("pubsub.message.publish_time", msg.PublishTime))
+}
+
+// loggerWithAttrs returns a logger enriched with the supplied attributes.
 func loggerWithAttrs(base *slog.Logger, attrs []slog.Attr) *slog.Logger {
 	if base == nil {
 		base = slog.Default()
@@ -334,6 +432,7 @@ func loggerWithAttrs(base *slog.Logger, attrs []slog.Attr) *slog.Logger {
 	return base.With(args...)
 }
 
+// formatTraceparent formats a SpanContext as a W3C traceparent header value.
 func formatTraceparent(sc trace.SpanContext) string {
 	if !sc.IsValid() {
 		return ""

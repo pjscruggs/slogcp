@@ -19,11 +19,13 @@ import (
 	"log/slog"
 	"strings"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
+
+const defaultConsumerSpanName = "pubsub.process"
 
 // AttrEnricher can append additional attributes to the derived message logger.
 type AttrEnricher func(context.Context, *pubsub.Message, *MessageInfo) []slog.Attr
@@ -63,6 +65,7 @@ type config struct {
 	googClientInjection                 bool
 }
 
+// defaultConfig returns a config populated with production-oriented defaults.
 func defaultConfig() *config {
 	return &config{
 		logger:             slog.Default(),
@@ -70,7 +73,7 @@ func defaultConfig() *config {
 		spanStrategy:       SpanStrategyAlways,
 		propagateTrace:     true,
 		propagateBaggage:   false,
-		spanName:           "pubsub.process",
+		spanName:           defaultConsumerSpanName,
 		logMessageID:       false,
 		logOrderingKey:     false,
 		logDeliveryAttempt: true,
@@ -78,6 +81,7 @@ func defaultConfig() *config {
 	}
 }
 
+// applyOptions applies Option values to the default configuration.
 func applyOptions(opts []Option) *config {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -109,7 +113,7 @@ func WithProjectID(projectID string) Option {
 
 // WithSubscription sets the subscription identifier used for span and logger
 // enrichment.
-func WithSubscription(sub *pubsub.Subscription) Option {
+func WithSubscription(sub *pubsub.Subscriber) Option {
 	return func(cfg *config) {
 		if sub == nil {
 			return
@@ -127,7 +131,7 @@ func WithSubscriptionID(subscriptionID string) Option {
 }
 
 // WithTopic sets the topic identifier used for span and logger enrichment.
-func WithTopic(topic *pubsub.Topic) Option {
+func WithTopic(topic *pubsub.Publisher) Option {
 	return func(cfg *config) {
 		if topic == nil {
 			return

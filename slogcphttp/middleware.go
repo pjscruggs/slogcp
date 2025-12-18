@@ -37,6 +37,11 @@ import (
 
 const instrumentationName = "github.com/pjscruggs/slogcp/slogcphttp"
 
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
 var xCloudTraceContextExtractor = contextWithXCloudTrace
 
 // Middleware returns an http.Handler middleware that derives a request-scoped
@@ -263,9 +268,9 @@ func inferScheme(r *http.Request, cfg *config) string {
 		}
 	}
 	if r.TLS != nil {
-		return "https"
+		return schemeHTTPS
 	}
-	return "http"
+	return schemeHTTP
 }
 
 // loggerAttrs assembles the structured log attributes for the request scope.
@@ -599,8 +604,10 @@ func (rr *responseRecorder) CloseNotify() <-chan bool {
 
 // ensureSpanContext extracts existing span context or synthesizes one from incoming headers.
 func ensureSpanContext(ctx context.Context, r *http.Request, cfg *config) (context.Context, trace.SpanContext) {
-	if cfg != nil && !cfg.propagateTrace {
-		return ctx, trace.SpanContextFromContext(ctx)
+	if cfg != nil {
+		if !cfg.propagateTrace {
+			return ctx, trace.SpanContextFromContext(ctx)
+		}
 	}
 
 	sc := trace.SpanContextFromContext(ctx)
@@ -608,29 +615,79 @@ func ensureSpanContext(ctx context.Context, r *http.Request, cfg *config) (conte
 		return ctx, sc
 	}
 
-	if cfg != nil && cfg.publicEndpoint && !cfg.enableOTel && !cfg.publicEndpointCorrelateLogsToRemote {
+	if !shouldExtractRemoteSpanContext(cfg) {
 		return ctx, sc
 	}
 
-	propagator := cfg.propagators
-	if propagator == nil {
-		propagator = otel.GetTextMapPropagator()
-	}
-	if propagator != nil {
-		extracted := propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
-		sc = trace.SpanContextFromContext(extracted)
-		if sc.IsValid() {
-			return extracted, sc
-		}
+	if r == nil {
+		return ctx, sc
 	}
 
-	if header := r.Header.Get(XCloudTraceContextHeader); header != "" {
-		if xctx, ok := xCloudTraceContextExtractor(ctx, header); ok {
-			return xctx, trace.SpanContextFromContext(xctx)
-		}
+	if extractedCtx, extractedSC, ok := extractSpanContextFromHeaders(ctx, r, cfg); ok {
+		return extractedCtx, extractedSC
+	}
+
+	if xctx, xsc, ok := extractSpanContextFromXCloudTraceContext(ctx, r); ok {
+		return xctx, xsc
 	}
 
 	return ctx, sc
+}
+
+// shouldExtractRemoteSpanContext reports whether ensureSpanContext should trust and extract remote context.
+func shouldExtractRemoteSpanContext(cfg *config) bool {
+	if cfg == nil {
+		return true
+	}
+	if !cfg.publicEndpoint {
+		return true
+	}
+	if cfg.enableOTel {
+		return true
+	}
+	return cfg.publicEndpointCorrelateLogsToRemote
+}
+
+// extractSpanContextFromHeaders extracts a span context using the configured/global propagator.
+func extractSpanContextFromHeaders(ctx context.Context, r *http.Request, cfg *config) (context.Context, trace.SpanContext, bool) {
+	var propagator propagation.TextMapPropagator
+	if cfg != nil {
+		propagator = cfg.propagators
+		if propagator == nil && !cfg.propagatorsSet {
+			propagator = otel.GetTextMapPropagator()
+		}
+	}
+	if propagator == nil && cfg == nil {
+		propagator = otel.GetTextMapPropagator()
+	}
+	if propagator == nil {
+		return ctx, trace.SpanContextFromContext(ctx), false
+	}
+
+	extracted := propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
+	sc := trace.SpanContextFromContext(extracted)
+	if !sc.IsValid() {
+		return ctx, trace.SpanContextFromContext(ctx), false
+	}
+	return extracted, sc, true
+}
+
+// extractSpanContextFromXCloudTraceContext extracts span context from X-Cloud-Trace-Context when present.
+func extractSpanContextFromXCloudTraceContext(ctx context.Context, r *http.Request) (context.Context, trace.SpanContext, bool) {
+	header := r.Header.Get(XCloudTraceContextHeader)
+	if header == "" {
+		return ctx, trace.SpanContextFromContext(ctx), false
+	}
+
+	extracted, ok := xCloudTraceContextExtractor(ctx, header)
+	if !ok {
+		return ctx, trace.SpanContextFromContext(ctx), false
+	}
+	sc := trace.SpanContextFromContext(extracted)
+	if !sc.IsValid() {
+		return ctx, trace.SpanContextFromContext(ctx), false
+	}
+	return extracted, sc, true
 }
 
 // extractIP strips the port from a host:port string and returns the host component.
@@ -644,6 +701,7 @@ func extractIP(addr string) string {
 	return addr
 }
 
+// clientIPFromRequest determines the client IP address for the request based on proxy mode.
 func clientIPFromRequest(r *http.Request, cfg *config) string {
 	if r == nil {
 		return ""
@@ -656,6 +714,7 @@ func clientIPFromRequest(r *http.Request, cfg *config) string {
 	return extractIP(r.RemoteAddr)
 }
 
+// gclbForwardedProto parses X-Forwarded-Proto as set by Google Cloud external HTTP(S) load balancers.
 func gclbForwardedProto(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -665,12 +724,14 @@ func gclbForwardedProto(value string) string {
 		value = token
 	}
 	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "http" || value == "https" {
+	if value == schemeHTTP || value == schemeHTTPS {
 		return value
 	}
 	return ""
 }
 
+// gclbClientIPFromXForwardedFor extracts the trusted client IP from X-Forwarded-For by selecting
+// the Nth IP from the right and validating it as an IP address.
 func gclbClientIPFromXForwardedFor(value string, fromRight int) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

@@ -129,6 +129,17 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 	}
 }
 
+// TestWithXForwardedForClientIPFromRightNormalizesNonPositive covers the pos<=0 branch.
+func TestWithXForwardedForClientIPFromRightNormalizesNonPositive(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	WithXForwardedForClientIPFromRight(0)(cfg)
+	if cfg.xffClientIPFromRight != 1 {
+		t.Fatalf("xffClientIPFromRight = %d, want 1", cfg.xffClientIPFromRight)
+	}
+}
+
 // TestOtelOptionsCoversBranches ensures otelOptions emits entries for every non-empty field.
 func TestOtelOptionsCoversBranches(t *testing.T) {
 	t.Parallel()
