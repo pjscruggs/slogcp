@@ -16,6 +16,8 @@ package slogcp
 
 import (
 	"context"
+	"errors"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -49,7 +51,7 @@ const (
 	RuntimeEnvAppEngineStandard
 	// RuntimeEnvAppEngineFlexible indicates execution on App Engine flexible.
 	RuntimeEnvAppEngineFlexible
-	// RuntimeEnvKubernetes indicates execution on Kubernetes.
+	// RuntimeEnvKubernetes indicates execution on Kubernetes (including Google Kubernetes Engine).
 	RuntimeEnvKubernetes
 	// RuntimeEnvComputeEngine indicates execution on Compute Engine.
 	RuntimeEnvComputeEngine
@@ -228,10 +230,10 @@ func detectCloudFunction(info *RuntimeInfo, md *metadataLookup) bool {
 
 	revision := trimmedEnv("K_REVISION")
 	region := firstNonEmpty(
-		md.region(),
 		trimmedEnv("FUNCTION_REGION"),
 		trimmedEnv("GOOGLE_CLOUD_REGION"),
 		trimmedEnv("CLOUD_RUN_REGION"),
+		md.region(),
 	)
 
 	info.ServiceContext = map[string]string{
@@ -269,9 +271,9 @@ func detectCloudRunService(info *RuntimeInfo, md *metadataLookup) bool {
 	info.Environment = RuntimeEnvCloudRunService
 
 	region := firstNonEmpty(
-		md.region(),
 		trimmedEnv("CLOUD_RUN_REGION"),
 		trimmedEnv("GOOGLE_CLOUD_REGION"),
+		md.region(),
 	)
 
 	info.ServiceContext = map[string]string{
@@ -311,9 +313,9 @@ func detectCloudRunJob(info *RuntimeInfo, md *metadataLookup) bool {
 	info.Environment = RuntimeEnvCloudRunJob
 
 	region := firstNonEmpty(
-		md.region(),
 		trimmedEnv("CLOUD_RUN_REGION"),
 		trimmedEnv("GOOGLE_CLOUD_REGION"),
+		md.region(),
 	)
 
 	info.ServiceContext = map[string]string{
@@ -428,12 +430,10 @@ func kubernetesLabels(md *metadataLookup, clusterName string) map[string]string 
 
 // clusterLocation returns the cluster location from metadata or environment.
 func clusterLocation(md *metadataLookup) string {
-	if md != nil {
-		if location := md.clusterLocation(); location != "" {
-			return location
-		}
+	if md == nil {
+		return trimmedEnv("CLUSTER_LOCATION")
 	}
-	return trimmedEnv("CLUSTER_LOCATION")
+	return firstNonEmpty(trimmedEnv("CLUSTER_LOCATION"), md.clusterLocation())
 }
 
 // kubernetesNamespace resolves the namespace name from service account files or env.
@@ -600,6 +600,9 @@ func (l *metadataLookup) get(path string) (string, bool) {
 	}
 	val, err := l.client.Get(path)
 	if err != nil {
+		if metadataLookupDisablesAvailability(err) {
+			l.available = false
+		}
 		l.cache[path] = metadataCacheEntry{populated: true, ok: false}
 		return "", false
 	}
@@ -607,6 +610,24 @@ func (l *metadataLookup) get(path string) (string, bool) {
 	ok := val != ""
 	l.cache[path] = metadataCacheEntry{value: val, ok: ok, populated: true}
 	return val, ok
+}
+
+// metadataLookupDisablesAvailability reports whether a metadata lookup error
+// suggests the metadata service is unreachable so subsequent lookups should be
+// skipped.
+func metadataLookupDisablesAvailability(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var nde metadata.NotDefinedError
+	if errors.As(err, &nde) {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 // projectID reads and normalizes the project ID from metadata.
