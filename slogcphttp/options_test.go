@@ -87,6 +87,7 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 		WithFilter(filter),
 		WithClientIP(false),
 		WithProxyMode(ProxyModeGCLB),
+		WithTrustXForwardedProto(true),
 		WithXForwardedForClientIPFromRight(3),
 	})
 
@@ -113,6 +114,9 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 	}
 	if cfg.proxyMode != ProxyModeGCLB {
 		t.Fatalf("proxyMode = %v, want ProxyModeGCLB", cfg.proxyMode)
+	}
+	if !cfg.trustXForwardedProtoSet || !cfg.trustXForwardedProto {
+		t.Fatalf("trustXForwardedProto not applied: set=%v value=%v", cfg.trustXForwardedProtoSet, cfg.trustXForwardedProto)
 	}
 	if cfg.xffClientIPFromRight != 3 {
 		t.Fatalf("xffClientIPFromRight = %d, want 3", cfg.xffClientIPFromRight)

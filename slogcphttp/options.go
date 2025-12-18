@@ -72,6 +72,8 @@ type config struct {
 	includeHTTPRequestAttr              bool
 	proxyMode                           ProxyMode
 	xffClientIPFromRight                int
+	trustXForwardedProto                bool
+	trustXForwardedProtoSet             bool
 }
 
 // defaultConfig returns the baseline configuration for slogcp HTTP helpers.
@@ -265,6 +267,18 @@ func WithHTTPRequestAttr(enabled bool) Option {
 func WithProxyMode(mode ProxyMode) Option {
 	return func(cfg *config) {
 		cfg.proxyMode = mode
+	}
+}
+
+// WithTrustXForwardedProto controls whether the middleware uses the
+// X-Forwarded-Proto header to derive the request scheme for logging.
+//
+// This option only affects scheme inference. Client IP parsing remains
+// controlled by proxy mode.
+func WithTrustXForwardedProto(enabled bool) Option {
+	return func(cfg *config) {
+		cfg.trustXForwardedProto = enabled
+		cfg.trustXForwardedProtoSet = true
 	}
 }
 

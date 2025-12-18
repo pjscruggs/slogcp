@@ -48,8 +48,14 @@ var xCloudTraceContextExtractor = contextWithXCloudTrace
 // logger, extracts trace context, and leaves application logging to handlers.
 func Middleware(opts ...Option) func(http.Handler) http.Handler {
 	cfg := applyOptions(opts)
+	needsRuntimeInfo := strings.TrimSpace(cfg.projectID) == "" || (!cfg.trustXForwardedProtoSet && cfg.proxyMode != ProxyModeGCLB)
+	var runtimeInfo slogcp.RuntimeInfo
+	if needsRuntimeInfo {
+		runtimeInfo = slogcp.DetectRuntimeInfo()
+	}
+	applyDefaultForwardedProtoTrust(cfg, runtimeInfo)
 
-	projectID := resolveProjectID(cfg.projectID)
+	projectID := resolveProjectID(cfg.projectID, runtimeInfo)
 
 	return func(next http.Handler) http.Handler {
 		if next == nil {
@@ -70,12 +76,12 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 }
 
 // resolveProjectID derives a project ID from configuration or runtime detection.
-func resolveProjectID(configured string) string {
+func resolveProjectID(configured string, runtimeInfo slogcp.RuntimeInfo) string {
 	projectID := strings.TrimSpace(configured)
 	if projectID != "" {
 		return projectID
 	}
-	return strings.TrimSpace(slogcp.DetectRuntimeInfo().ProjectID)
+	return strings.TrimSpace(runtimeInfo.ProjectID)
 }
 
 // buildLoggingHandler constructs the logging middleware around the next handler.
@@ -99,6 +105,38 @@ func buildLoggingHandler(cfg *config, projectID string, next http.Handler) http.
 
 		next.ServeHTTP(wrapped, r)
 	})
+}
+
+// applyDefaultForwardedProtoTrust enables X-Forwarded-Proto parsing when callers
+// have not explicitly configured scheme inference and the process is running in
+// a managed GCP serverless environment where TLS terminates before the request
+// reaches the application (Cloud Run services, Cloud Functions, App Engine).
+func applyDefaultForwardedProtoTrust(cfg *config, runtimeInfo slogcp.RuntimeInfo) {
+	if cfg == nil {
+		return
+	}
+	if cfg.trustXForwardedProtoSet {
+		return
+	}
+	if cfg.proxyMode == ProxyModeGCLB {
+		cfg.trustXForwardedProto = true
+		return
+	}
+	cfg.trustXForwardedProto = shouldTrustXForwardedProtoByEnvironment(runtimeInfo.Environment)
+}
+
+// shouldTrustXForwardedProtoByEnvironment reports whether slogcphttp should treat
+// X-Forwarded-Proto as a reliable scheme signal for the detected environment.
+func shouldTrustXForwardedProtoByEnvironment(env slogcp.RuntimeEnvironment) bool {
+	switch env {
+	case slogcp.RuntimeEnvCloudRunService,
+		slogcp.RuntimeEnvCloudFunctions,
+		slogcp.RuntimeEnvAppEngineStandard,
+		slogcp.RuntimeEnvAppEngineFlexible:
+		return true
+	default:
+		return false
+	}
 }
 
 // buildRequestAttributes assembles request-scoped attributes including enrichers.
@@ -257,13 +295,14 @@ func (rs *RequestScope) populateURLFields(r *http.Request, cfg *config) {
 	rs.host = r.Host
 }
 
-// inferScheme determines http/https scheme based on TLS presence.
+// inferScheme determines the request scheme, preferring trusted proxy headers
+// when configured, and otherwise falling back to TLS presence.
 func inferScheme(r *http.Request, cfg *config) string {
 	if r == nil {
 		return ""
 	}
-	if cfg != nil && cfg.proxyMode == ProxyModeGCLB {
-		if proto := gclbForwardedProto(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+	if cfg != nil && (cfg.proxyMode == ProxyModeGCLB || cfg.trustXForwardedProto) {
+		if proto := xForwardedProto(r.Header.Get("X-Forwarded-Proto")); proto != "" {
 			return proto
 		}
 	}
@@ -714,8 +753,9 @@ func clientIPFromRequest(r *http.Request, cfg *config) string {
 	return extractIP(r.RemoteAddr)
 }
 
-// gclbForwardedProto parses X-Forwarded-Proto as set by Google Cloud external HTTP(S) load balancers.
-func gclbForwardedProto(value string) string {
+// xForwardedProto parses X-Forwarded-Proto, returning a normalized http/https
+// token when present.
+func xForwardedProto(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""

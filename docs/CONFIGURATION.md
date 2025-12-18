@@ -175,7 +175,8 @@ Important options:
 | `WithAttrTransformer(func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr)` | Mutates attributes before they are applied. |
 | `WithRouteGetter(func(*http.Request) string)` | Supplies a route template extractor (for example, from your mux). |
 | `WithClientIP(bool)` | Toggles inclusion of `network.peer.ip` (enabled by default). In `ProxyModeGCLB`, the value is derived from `X-Forwarded-For`. |
-| `WithProxyMode(ProxyMode)` | Enables proxy-aware parsing of `X-Forwarded-Proto` and `X-Forwarded-For` (disabled by default). |
+| `WithTrustXForwardedProto(bool)` | Controls whether `http.scheme` is derived from `X-Forwarded-Proto` for logging. Defaults to enabled on Cloud Run services, Cloud Functions, and App Engine; otherwise disabled. |
+| `WithProxyMode(ProxyMode)` | Enables proxy-aware parsing of `X-Forwarded-For` (and always trusts `X-Forwarded-Proto` for scheme). Disabled by default because forwarded headers are easy to spoof if requests can bypass your proxy. |
 | `WithXForwardedForClientIPFromRight(int)` | In proxy-aware modes, selects the client IP position in `X-Forwarded-For` counting from the right (default: 2). |
 | `WithIncludeQuery(bool)` | Opts into logging raw query strings (disabled by default). |
 | `WithUserAgent(bool)` | Opts into logging the `User-Agent` string (disabled by default). |

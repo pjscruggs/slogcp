@@ -282,14 +282,14 @@ func TestMiddlewareHelpersCoverBranches(t *testing.T) {
 		t.Fatalf("clientIPFromRequest(nil) = %q, want empty", got)
 	}
 
-	if got := gclbForwardedProto(""); got != "" {
-		t.Fatalf("gclbForwardedProto(empty) = %q, want empty", got)
+	if got := xForwardedProto(""); got != "" {
+		t.Fatalf("xForwardedProto(empty) = %q, want empty", got)
 	}
-	if got := gclbForwardedProto(schemeHTTPS + ", " + schemeHTTP); got != schemeHTTPS {
-		t.Fatalf("gclbForwardedProto(list) = %q, want %q", got, schemeHTTPS)
+	if got := xForwardedProto(schemeHTTPS + ", " + schemeHTTP); got != schemeHTTPS {
+		t.Fatalf("xForwardedProto(list) = %q, want %q", got, schemeHTTPS)
 	}
-	if got := gclbForwardedProto("ftp"); got != "" {
-		t.Fatalf("gclbForwardedProto(invalid) = %q, want empty", got)
+	if got := xForwardedProto("ftp"); got != "" {
+		t.Fatalf("xForwardedProto(invalid) = %q, want empty", got)
 	}
 
 	if got := gclbClientIPFromXForwardedFor("", 2); got != "" {
@@ -326,6 +326,61 @@ func TestMiddlewareHelpersCoverBranches(t *testing.T) {
 	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/1;o=1")
 	if _, _, ok := extractSpanContextFromXCloudTraceContext(ctx, req); ok {
 		t.Fatalf("extractSpanContextFromXCloudTraceContext should fail when extractor returns invalid span context")
+	}
+}
+
+// TestApplyDefaultForwardedProtoTrustUsesRuntimeEnvironment verifies defaults are derived from cached runtime info.
+func TestApplyDefaultForwardedProtoTrustUsesRuntimeEnvironment(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	applyDefaultForwardedProtoTrust(cfg, slogcp.RuntimeInfo{Environment: slogcp.RuntimeEnvCloudRunService})
+	if !cfg.trustXForwardedProto {
+		t.Fatalf("trustXForwardedProto = false, want true for Cloud Run service")
+	}
+
+	cfg = defaultConfig()
+	applyDefaultForwardedProtoTrust(cfg, slogcp.RuntimeInfo{Environment: slogcp.RuntimeEnvUnknown})
+	if cfg.trustXForwardedProto {
+		t.Fatalf("trustXForwardedProto = true, want false for unknown environment")
+	}
+}
+
+// TestApplyDefaultForwardedProtoTrustNilConfig ensures nil configs are handled safely.
+func TestApplyDefaultForwardedProtoTrustNilConfig(t *testing.T) {
+	t.Parallel()
+
+	applyDefaultForwardedProtoTrust(nil, slogcp.RuntimeInfo{Environment: slogcp.RuntimeEnvCloudRunService})
+}
+
+// TestApplyDefaultForwardedProtoTrustRespectsOverrides ensures explicit options and proxy mode override defaults.
+func TestApplyDefaultForwardedProtoTrustRespectsOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg := applyOptions([]Option{WithTrustXForwardedProto(false)})
+	applyDefaultForwardedProtoTrust(cfg, slogcp.RuntimeInfo{Environment: slogcp.RuntimeEnvCloudRunService})
+	if cfg.trustXForwardedProto {
+		t.Fatalf("trustXForwardedProto = true, want false when explicitly disabled")
+	}
+
+	cfg = defaultConfig()
+	cfg.proxyMode = ProxyModeGCLB
+	applyDefaultForwardedProtoTrust(cfg, slogcp.RuntimeInfo{Environment: slogcp.RuntimeEnvUnknown})
+	if !cfg.trustXForwardedProto {
+		t.Fatalf("trustXForwardedProto = false, want true when ProxyModeGCLB is enabled")
+	}
+}
+
+// TestInferSchemeTrustXForwardedProtoUsesHeader verifies WithTrustXForwardedProto toggles scheme inference.
+func TestInferSchemeTrustXForwardedProtoUsesHeader(t *testing.T) {
+	t.Parallel()
+
+	cfg := applyOptions([]Option{WithTrustXForwardedProto(true)})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/widgets", nil)
+	req.URL.Scheme = ""
+	req.Header.Set("X-Forwarded-Proto", schemeHTTPS)
+	if got := inferScheme(req, cfg); got != schemeHTTPS {
+		t.Fatalf("inferScheme(trust_xfp) = %q, want %q", got, schemeHTTPS)
 	}
 }
 

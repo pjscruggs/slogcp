@@ -73,7 +73,11 @@ Options:
 
 ## Proxy-aware metadata (Cloud Run / GCLB)
 
-Cloud Run terminates TLS before requests reach your container, so `r.TLS` is not a reliable way to determine whether the *original* client request used HTTPS. If you're behind Google Cloud Load Balancing, enable proxy mode to use `X-Forwarded-Proto` and `X-Forwarded-For`:
+Cloud Run, Cloud Functions, and App Engine terminate TLS before requests reach your code, so `r.TLS` is not a reliable way to determine whether the *original* client request used HTTPS.
+
+By default, slogcphttp trusts `X-Forwarded-Proto` for **scheme only** when it detects one of those serverless environments (so `http.scheme` and derived URLs remain correct). If you need to disable this, set `WithTrustXForwardedProto(false)`.
+
+Client IP parsing remains opt-in: if you're behind Google Cloud Load Balancing and want to derive `network.peer.ip` from `X-Forwarded-For`, enable proxy mode:
 
 ```go
 wrapped := slogcphttp.Middleware(
