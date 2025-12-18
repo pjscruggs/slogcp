@@ -114,6 +114,7 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 	}
 }
 
+// TestMiddlewareProxyModeGCLBUsesForwardedHeaders verifies proxy mode overrides scheme and client IP.
 func TestMiddlewareProxyModeGCLBUsesForwardedHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -133,8 +134,8 @@ func TestMiddlewareProxyModeGCLBUsesForwardedHeaders(t *testing.T) {
 			t.Fatalf("scope missing from context")
 		}
 
-		if got := scope.Scheme(); got != "https" {
-			t.Fatalf("scope.Scheme = %q, want https", got)
+		if got := scope.Scheme(); got != schemeHTTPS {
+			t.Fatalf("scope.Scheme = %q, want %s", got, schemeHTTPS)
 		}
 		if got := scope.ClientIP(); got != "198.51.100.10" {
 			t.Fatalf("scope.ClientIP = %q, want 198.51.100.10", got)
@@ -148,7 +149,7 @@ func TestMiddlewareProxyModeGCLBUsesForwardedHeaders(t *testing.T) {
 	req.URL.Scheme = ""
 	req.Host = "example.com"
 	req.RemoteAddr = "10.0.0.1:12345"
-	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Proto", schemeHTTPS)
 	req.Header.Set("X-Forwarded-For", "1.2.3.4, 198.51.100.10, 203.0.113.5")
 
 	rr := httptest.NewRecorder()
@@ -164,14 +165,15 @@ func TestMiddlewareProxyModeGCLBUsesForwardedHeaders(t *testing.T) {
 		t.Fatalf("unmarshal log: %v", err)
 	}
 
-	if got := entry["http.scheme"]; got != "https" {
-		t.Fatalf("http.scheme = %v, want https", got)
+	if got := entry["http.scheme"]; got != schemeHTTPS {
+		t.Fatalf("http.scheme = %v, want %s", got, schemeHTTPS)
 	}
 	if got := entry["network.peer.ip"]; got != "198.51.100.10" {
 		t.Fatalf("network.peer.ip = %v, want 198.51.100.10", got)
 	}
 }
 
+// TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled ensures untrusted trace IDs do not correlate logs by default.
 func TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -253,6 +255,110 @@ func TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled(t *testi
 			t.Fatalf("trace = %v, want remote trace", gotTrace)
 		}
 	})
+}
+
+// TestMiddlewareHelpersCoverBranches exercises helper branches for 100% coverage.
+func TestMiddlewareHelpersCoverBranches(t *testing.T) {
+	if got := inferScheme(nil, defaultConfig()); got != "" {
+		t.Fatalf("inferScheme(nil) = %q, want empty", got)
+	}
+
+	if !shouldExtractRemoteSpanContext(nil) {
+		t.Fatal("shouldExtractRemoteSpanContext(nil) should be true")
+	}
+
+	ctx := context.Background()
+	if _, sc := ensureSpanContext(ctx, nil, defaultConfig()); sc.IsValid() {
+		t.Fatalf("ensureSpanContext(nil request) span context should be invalid")
+	}
+
+	cfg := applyOptions([]Option{WithPropagators(nil)})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	if _, _, ok := extractSpanContextFromHeaders(ctx, req, cfg); ok {
+		t.Fatalf("extractSpanContextFromHeaders should fail when propagator is nil")
+	}
+
+	if got := clientIPFromRequest(nil, defaultConfig()); got != "" {
+		t.Fatalf("clientIPFromRequest(nil) = %q, want empty", got)
+	}
+
+	if got := gclbForwardedProto(""); got != "" {
+		t.Fatalf("gclbForwardedProto(empty) = %q, want empty", got)
+	}
+	if got := gclbForwardedProto(schemeHTTPS + ", " + schemeHTTP); got != schemeHTTPS {
+		t.Fatalf("gclbForwardedProto(list) = %q, want %q", got, schemeHTTPS)
+	}
+	if got := gclbForwardedProto("ftp"); got != "" {
+		t.Fatalf("gclbForwardedProto(invalid) = %q, want empty", got)
+	}
+
+	if got := gclbClientIPFromXForwardedFor("", 2); got != "" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(empty) = %q, want empty", got)
+	}
+	if got := gclbClientIPFromXForwardedFor("198.51.100.10", 0); got != "198.51.100.10" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(fromRight<=0) = %q, want 198.51.100.10", got)
+	}
+	if got := gclbClientIPFromXForwardedFor("198.51.100.10,,203.0.113.5", 1); got != "203.0.113.5" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(empty parts) = %q, want 203.0.113.5", got)
+	}
+	if got := gclbClientIPFromXForwardedFor("198.51.100.10", 2); got != "" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(len<fromRight) = %q, want empty", got)
+	}
+	if got := gclbClientIPFromXForwardedFor("[]", 1); got != "" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(empty candidate) = %q, want empty", got)
+	}
+	if got := gclbClientIPFromXForwardedFor("not-an-ip", 1); got != "" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(invalid ip) = %q, want empty", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req.Header.Set(XCloudTraceContextHeader, "not-a-valid-xctc")
+	if _, _, ok := extractSpanContextFromXCloudTraceContext(ctx, req); ok {
+		t.Fatalf("extractSpanContextFromXCloudTraceContext should fail on invalid header")
+	}
+
+	originalExtractor := xCloudTraceContextExtractor
+	t.Cleanup(func() { xCloudTraceContextExtractor = originalExtractor })
+	xCloudTraceContextExtractor = func(ctx context.Context, _ string) (context.Context, bool) {
+		return ctx, true
+	}
+	req = httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/1;o=1")
+	if _, _, ok := extractSpanContextFromXCloudTraceContext(ctx, req); ok {
+		t.Fatalf("extractSpanContextFromXCloudTraceContext should fail when extractor returns invalid span context")
+	}
+}
+
+// TestExtractSpanContextFromHeadersFallsBackToGlobal verifies cfg nil uses the global propagator.
+func TestExtractSpanContextFromHeadersFallsBackToGlobal(t *testing.T) {
+	traceID, err := trace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("parse trace id: %v", err)
+	}
+	spanID, err := trace.SpanIDFromHex("0123456789abcdef")
+	if err != nil {
+		t.Fatalf("parse span id: %v", err)
+	}
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctxWithSpan := trace.ContextWithSpanContext(context.Background(), sc)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	propagation.TraceContext{}.Inject(ctxWithSpan, propagation.HeaderCarrier(req.Header))
+
+	_, extracted, ok := extractSpanContextFromHeaders(context.Background(), req, nil)
+	if !ok {
+		t.Fatalf("expected extractSpanContextFromHeaders to succeed with cfg nil")
+	}
+	if extracted.TraceID() != traceID {
+		t.Fatalf("expected trace ID %s, got %s", traceID, extracted.TraceID())
+	}
+	if extracted.SpanID() != spanID {
+		t.Fatalf("expected span ID %s, got %s", spanID, extracted.SpanID())
+	}
 }
 
 // TestMiddlewareTracePropagationDisabledIgnoresTraceparent ensures WithTracePropagation(false)
@@ -722,8 +828,8 @@ func TestNewRequestScopeInfersTLSScheme(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 
 	scope := newRequestScope(req, time.Now(), defaultConfig())
-	if scope.scheme != "https" {
-		t.Fatalf("scheme = %q, want https", scope.scheme)
+	if scope.scheme != schemeHTTPS {
+		t.Fatalf("scheme = %q, want %s", scope.scheme, schemeHTTPS)
 	}
 }
 

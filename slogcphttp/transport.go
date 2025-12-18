@@ -221,30 +221,23 @@ func outboundHostPort(req *http.Request) (string, int) {
 	if req == nil {
 		return "", 0
 	}
-	if req.URL != nil && req.URL.Host != "" {
-		if host, port, err := splitHostPort(req.URL.Host); err == nil {
-			return host, port
+	if req.URL != nil {
+		if host := req.URL.Hostname(); host != "" {
+			if port, err := strconv.Atoi(req.URL.Port()); err == nil {
+				return host, port
+			}
+			return host, 0
 		}
-		return strings.Trim(req.URL.Host, "[]"), 0
 	}
 	if req.Host != "" {
-		if host, port, err := splitHostPort(req.Host); err == nil {
-			return host, port
+		hostport := strings.TrimSpace(req.Host)
+		if host, portStr, err := net.SplitHostPort(hostport); err == nil {
+			if port, err := strconv.Atoi(portStr); err == nil {
+				return strings.Trim(host, "[]"), port
+			}
+			return strings.Trim(host, "[]"), 0
 		}
-		return strings.Trim(req.Host, "[]"), 0
+		return strings.Trim(hostport, "[]"), 0
 	}
 	return "", 0
-}
-
-func splitHostPort(hostport string) (string, int, error) {
-	hostport = strings.TrimSpace(hostport)
-	host, portStr, err := net.SplitHostPort(hostport)
-	if err != nil {
-		return "", 0, err
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return host, 0, nil
-	}
-	return host, port, nil
 }

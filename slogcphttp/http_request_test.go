@@ -208,7 +208,7 @@ func TestHTTPRequestFromScopeBuildsSnapshot(t *testing.T) {
 		method:      http.MethodPost,
 		target:      "/items/1",
 		query:       "q=ok",
-		scheme:      "https",
+		scheme:      schemeHTTPS,
 		host:        "api.example.com",
 		requestSize: 128,
 		clientIP:    "198.51.100.5",

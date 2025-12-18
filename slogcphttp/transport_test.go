@@ -541,6 +541,17 @@ func TestOutboundHost(t *testing.T) {
 	}
 }
 
+// TestOutboundHostPortHandlesNonNumericPort covers the Atoi error branch.
+func TestOutboundHostPortHandlesNonNumericPort(t *testing.T) {
+	t.Parallel()
+
+	req := &http.Request{Host: "example.com:abc"}
+	host, port := outboundHostPort(req)
+	if host != "example.com" || port != 0 {
+		t.Fatalf("outboundHostPort() = (%q,%d), want (example.com,0)", host, port)
+	}
+}
+
 type recordingRoundTripper struct {
 	req *http.Request
 }

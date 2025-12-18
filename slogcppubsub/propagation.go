@@ -18,13 +18,17 @@ import (
 	"context"
 	"strings"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub/v2"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
-const googclientPrefix = "googclient_"
+const (
+	googclientPrefix = "googclient_"
+	baggageKey       = "baggage"
+)
 
 // Inject injects trace context from ctx into msg.Attributes, creating the
 // attributes map when necessary.
@@ -44,28 +48,36 @@ func InjectAttributes(ctx context.Context, attrs map[string]string, opts ...Opti
 	return injectAttributes(ctx, attrs, cfg)
 }
 
+// injectAttributes injects configured propagation data from ctx into attrs.
 func injectAttributes(ctx context.Context, attrs map[string]string, cfg *config) map[string]string {
-	if cfg != nil && !cfg.propagateTrace {
+	if cfg == nil {
+		cfg = defaultConfig()
+	}
+	if !cfg.propagateTrace {
 		return attrs
 	}
 	if ctx == nil {
 		return attrs
 	}
 
-	if cfg != nil && cfg.injectOnlyIfSpanPresent && !trace.SpanContextFromContext(ctx).IsValid() {
-		return attrs
+	if cfg.injectOnlyIfSpanPresent {
+		if !trace.SpanContextFromContext(ctx).IsValid() {
+			return attrs
+		}
 	}
 
 	propagator := cfg.propagators
 	if propagator == nil {
-		propagator = otel.GetTextMapPropagator()
+		if !cfg.propagatorsSet {
+			propagator = otel.GetTextMapPropagator()
+		}
 	}
 	if propagator != nil {
-		propagator.Inject(ctx, lazyCarrier{attrs: &attrs, allowBaggage: cfg == nil || cfg.propagateBaggage})
+		propagator.Inject(ctx, lazyCarrier{attrs: &attrs, allowBaggage: cfg.propagateBaggage})
 	}
 
-	if cfg != nil && cfg.googClientInjection {
-		propagation.TraceContext{}.Inject(ctx, lazyCarrier{attrs: &attrs, prefix: googclientPrefix, allowBaggage: cfg == nil || cfg.propagateBaggage})
+	if cfg.googClientInjection {
+		propagation.TraceContext{}.Inject(ctx, lazyCarrier{attrs: &attrs, prefix: googclientPrefix, allowBaggage: false})
 	}
 
 	return attrs
@@ -84,11 +96,15 @@ func Extract(ctx context.Context, msg *pubsub.Message, opts ...Option) (context.
 // updated context plus the discovered span context (if any).
 func ExtractAttributes(ctx context.Context, attrs map[string]string, opts ...Option) (context.Context, trace.SpanContext) {
 	cfg := applyOptions(opts)
-	return ensureSpanContext(ctx, attrs, cfg, true)
+	return ensureSpanContext(ctx, attrs, cfg)
 }
 
-func ensureSpanContext(ctx context.Context, attrs map[string]string, cfg *config, forceExtract bool) (context.Context, trace.SpanContext) {
-	if cfg != nil && !cfg.propagateTrace {
+// ensureSpanContext extracts span context from attrs and overlays it onto ctx, preserving deadlines and values.
+func ensureSpanContext(ctx context.Context, attrs map[string]string, cfg *config) (context.Context, trace.SpanContext) {
+	if cfg == nil {
+		cfg = defaultConfig()
+	}
+	if !cfg.propagateTrace {
 		return ctx, trace.SpanContextFromContext(ctx)
 	}
 	if ctx == nil {
@@ -96,46 +112,67 @@ func ensureSpanContext(ctx context.Context, attrs map[string]string, cfg *config
 	}
 
 	current := trace.SpanContextFromContext(ctx)
-	if current.IsValid() && !forceExtract {
-		return ctx, current
-	}
 	if len(attrs) == 0 {
 		return ctx, current
 	}
 
+	if extracted, sc := extractSpanContext(attrs, cfg); sc.IsValid() {
+		return applyExtractedContext(ctx, extracted, cfg), sc
+	}
+
+	if cfg.googClientExtraction {
+		if extracted, sc := extractGoogClientSpanContext(attrs, cfg); sc.IsValid() {
+			return trace.ContextWithSpan(ctx, trace.SpanFromContext(extracted)), sc
+		}
+	}
+
+	return ctx, current
+}
+
+// applyExtractedContext overlays the extracted span context (and optional baggage) onto ctx.
+func applyExtractedContext(ctx context.Context, extracted context.Context, cfg *config) context.Context {
+	if cfg == nil {
+		return trace.ContextWithSpan(ctx, trace.SpanFromContext(extracted))
+	}
+	ctx = trace.ContextWithSpan(ctx, trace.SpanFromContext(extracted))
+	if cfg.propagateBaggage {
+		ctx = baggage.ContextWithBaggage(ctx, baggage.FromContext(extracted))
+	}
+	return ctx
+}
+
+// extractSpanContext extracts span context from attrs using the configured/global propagator.
+func extractSpanContext(attrs map[string]string, cfg *config) (context.Context, trace.SpanContext) {
 	propagator := cfg.propagators
 	if propagator == nil {
-		propagator = otel.GetTextMapPropagator()
+		if !cfg.propagatorsSet {
+			propagator = otel.GetTextMapPropagator()
+		}
 	}
-	if propagator != nil {
-		var carrier propagation.TextMapCarrier
-		if cfg != nil && cfg.caseInsensitiveExtraction {
-			carrier = &caseInsensitiveCarrier{attrs: attrs, allowBaggage: cfg.propagateBaggage}
-		} else {
-			carrier = strictCarrier{attrs: attrs, allowBaggage: cfg == nil || cfg.propagateBaggage}
-		}
-		extracted := propagator.Extract(ctx, carrier)
-		sc := trace.SpanContextFromContext(extracted)
-		if sc.IsValid() {
-			return extracted, sc
-		}
+	if propagator == nil {
+		return context.Background(), trace.SpanContext{}
 	}
 
-	if cfg != nil && cfg.googClientExtraction {
-		var carrier propagation.TextMapCarrier
-		if cfg.caseInsensitiveExtraction {
-			carrier = &caseInsensitiveCarrier{attrs: attrs, prefix: googclientPrefix}
-		} else {
-			carrier = strictCarrier{attrs: attrs, prefix: googclientPrefix}
-		}
-		extracted := propagation.TraceContext{}.Extract(ctx, carrier)
-		sc := trace.SpanContextFromContext(extracted)
-		if sc.IsValid() {
-			return extracted, sc
-		}
+	var carrier propagation.TextMapCarrier
+	if cfg.caseInsensitiveExtraction {
+		carrier = &caseInsensitiveCarrier{attrs: attrs, prefix: "", allowBaggage: cfg.propagateBaggage}
+	} else {
+		carrier = strictCarrier{attrs: attrs, prefix: "", allowBaggage: cfg.propagateBaggage}
 	}
+	extracted := propagator.Extract(context.Background(), carrier)
+	return extracted, trace.SpanContextFromContext(extracted)
+}
 
-	return ctx, trace.SpanContextFromContext(ctx)
+// extractGoogClientSpanContext extracts span context from googclient_-prefixed keys using W3C Trace Context.
+func extractGoogClientSpanContext(attrs map[string]string, cfg *config) (context.Context, trace.SpanContext) {
+	var carrier propagation.TextMapCarrier
+	if cfg.caseInsensitiveExtraction {
+		carrier = &caseInsensitiveCarrier{attrs: attrs, prefix: googclientPrefix, allowBaggage: cfg.propagateBaggage}
+	} else {
+		carrier = strictCarrier{attrs: attrs, prefix: googclientPrefix, allowBaggage: cfg.propagateBaggage}
+	}
+	extracted := propagation.TraceContext{}.Extract(context.Background(), carrier)
+	return extracted, trace.SpanContextFromContext(extracted)
 }
 
 type lazyCarrier struct {
@@ -144,13 +181,14 @@ type lazyCarrier struct {
 	allowBaggage bool
 }
 
+// Get returns the attribute value for the propagation key.
 func (c lazyCarrier) Get(key string) string {
 	if c.attrs == nil || *c.attrs == nil {
 		return ""
 	}
 	m := *c.attrs
 	key = strings.ToLower(key)
-	if !c.allowBaggage && key == "baggage" {
+	if !c.allowBaggage && key == baggageKey {
 		return ""
 	}
 	if c.prefix != "" {
@@ -159,13 +197,14 @@ func (c lazyCarrier) Get(key string) string {
 	return m[key]
 }
 
+// Set writes the propagation key/value into the attributes map.
 func (c lazyCarrier) Set(key, value string) {
 	if c.attrs == nil {
 		return
 	}
 	m := *c.attrs
 	key = strings.ToLower(key)
-	if !c.allowBaggage && key == "baggage" {
+	if !c.allowBaggage && key == baggageKey {
 		return
 	}
 	if m == nil {
@@ -178,6 +217,7 @@ func (c lazyCarrier) Set(key, value string) {
 	m[key] = value
 }
 
+// Keys returns all keys present in the carrier.
 func (c lazyCarrier) Keys() []string {
 	if c.attrs == nil || len(*c.attrs) == 0 {
 		return nil
@@ -197,13 +237,14 @@ type caseInsensitiveCarrier struct {
 	lower        map[string]string
 }
 
+// Get returns the attribute value for the provided key, optionally matching case-insensitively.
 func (c *caseInsensitiveCarrier) Get(key string) string {
 	if len(c.attrs) == 0 {
 		return ""
 	}
 
 	lowerKey := strings.ToLower(key)
-	if !c.allowBaggage && lowerKey == "baggage" {
+	if !c.allowBaggage && lowerKey == baggageKey {
 		return ""
 	}
 	if c.prefix == "" {
@@ -224,12 +265,13 @@ func (c *caseInsensitiveCarrier) Get(key string) string {
 	return c.lookupLower(prefixedKey)
 }
 
+// Set writes the propagation key/value into the attributes map.
 func (c *caseInsensitiveCarrier) Set(key, value string) {
 	if c.attrs == nil {
 		return
 	}
 	lowerKey := strings.ToLower(key)
-	if !c.allowBaggage && lowerKey == "baggage" {
+	if !c.allowBaggage && lowerKey == baggageKey {
 		return
 	}
 	if c.prefix != "" {
@@ -238,6 +280,7 @@ func (c *caseInsensitiveCarrier) Set(key, value string) {
 	c.attrs[lowerKey] = value
 }
 
+// Keys returns all keys present in the carrier.
 func (c *caseInsensitiveCarrier) Keys() []string {
 	if len(c.attrs) == 0 {
 		return nil
@@ -249,6 +292,7 @@ func (c *caseInsensitiveCarrier) Keys() []string {
 	return keys
 }
 
+// lookupLower performs a lower-cased lookup, populating a normalized map lazily.
 func (c *caseInsensitiveCarrier) lookupLower(key string) string {
 	if c.lower == nil {
 		c.lower = make(map[string]string, len(c.attrs))
@@ -265,11 +309,12 @@ type strictCarrier struct {
 	allowBaggage bool
 }
 
+// Get returns the attribute value for the propagation key.
 func (c strictCarrier) Get(key string) string {
 	if len(c.attrs) == 0 {
 		return ""
 	}
-	if !c.allowBaggage && strings.EqualFold(key, "baggage") {
+	if !c.allowBaggage && strings.EqualFold(key, baggageKey) {
 		return ""
 	}
 	if c.prefix != "" {
@@ -278,11 +323,12 @@ func (c strictCarrier) Get(key string) string {
 	return c.attrs[key]
 }
 
+// Set writes the propagation key/value into the attributes map.
 func (c strictCarrier) Set(key, value string) {
 	if c.attrs == nil {
 		return
 	}
-	if !c.allowBaggage && strings.EqualFold(key, "baggage") {
+	if !c.allowBaggage && strings.EqualFold(key, baggageKey) {
 		return
 	}
 	if c.prefix != "" {
@@ -291,6 +337,7 @@ func (c strictCarrier) Set(key, value string) {
 	c.attrs[key] = value
 }
 
+// Keys returns all keys present in the carrier.
 func (c strictCarrier) Keys() []string {
 	if len(c.attrs) == 0 {
 		return nil
