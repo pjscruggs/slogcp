@@ -603,6 +603,11 @@ func wrapResponseWriter(w http.ResponseWriter, scope *RequestScope) (http.Respon
 	return rec, rec
 }
 
+// Unwrap exposes the underlying ResponseWriter for http.ResponseController.
+func (rr *responseRecorder) Unwrap() http.ResponseWriter {
+	return rr.ResponseWriter
+}
+
 // Flush forwards the flush request to the underlying ResponseWriter when supported.
 func (rr *responseRecorder) Flush() {
 	if flusher, ok := rr.ResponseWriter.(http.Flusher); ok {
