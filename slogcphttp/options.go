@@ -124,11 +124,11 @@ func WithProjectID(projectID string) Option {
 
 // WithPropagators supplies a TextMapPropagator used for extracting (server) or
 // injecting (client) trace context. When omitted, otel.GetTextMapPropagator()
-// is used.
+// is used. Passing nil is treated the same as omitting the option.
 func WithPropagators(p propagation.TextMapPropagator) Option {
 	return func(cfg *config) {
 		cfg.propagators = p
-		cfg.propagatorsSet = true
+		cfg.propagatorsSet = p != nil
 	}
 }
 
