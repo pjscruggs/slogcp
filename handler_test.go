@@ -1753,6 +1753,109 @@ func TestTraceDiagnosticsWarnUnknownProjectLogsOnce(t *testing.T) {
 	}
 }
 
+// TestTraceDiagnosticsWarnTraceProjectIDLogsOnce ensures trace project warnings log once.
+func TestTraceDiagnosticsWarnTraceProjectIDLogsOnce(t *testing.T) {
+	t.Parallel()
+
+	logger := &diagRecorder{}
+	td := &traceDiagnostics{mode: TraceDiagnosticsWarnOnce, logger: logger}
+	td.warnInvalidTraceProjectID("bad-project", "")
+	td.warnInvalidTraceProjectID("bad-project", "")
+	td.warnNormalizedTraceProjectID("Bad-Project", "bad-project", "")
+	td.warnNormalizedTraceProjectID("Bad-Project", "bad-project", "")
+
+	if len(logger.messages) != 2 {
+		t.Fatalf("trace project warnings logged %d messages, want 2", len(logger.messages))
+	}
+
+	silent := &traceDiagnostics{mode: TraceDiagnosticsOff, logger: logger}
+	silent.warnInvalidTraceProjectID("bad-project", "env")
+	silent.warnNormalizedTraceProjectID("Bad-Project", "bad-project", "env")
+	if len(logger.messages) != 2 {
+		t.Fatalf("TraceDiagnosticsOff should not log trace project warnings")
+	}
+
+	nilLogger := &traceDiagnostics{mode: TraceDiagnosticsWarnOnce, logger: nil}
+	nilLogger.warnInvalidTraceProjectID("bad-project", "env")
+	nilLogger.warnNormalizedTraceProjectID("Bad-Project", "bad-project", "env")
+}
+
+// TestPrepareRuntimeConfigNormalizesExplicitTraceProjectID verifies normalization warnings and output.
+func TestPrepareRuntimeConfigNormalizesExplicitTraceProjectID(t *testing.T) {
+	resetRuntimeInfoCache()
+	t.Cleanup(resetRuntimeInfoCache)
+	stubRuntimeInfo(RuntimeInfo{ProjectID: "runtime-project"})
+
+	recorder := &diagRecorder{}
+	original := traceDiagnosticLogger
+	traceDiagnosticLogger = recorder
+	t.Cleanup(func() { traceDiagnosticLogger = original })
+
+	cfg := handlerConfig{
+		TraceDiagnostics:     TraceDiagnosticsWarnOnce,
+		TraceProjectID:       "Projects/Proj-123",
+		traceProjectExplicit: true,
+		traceProjectSource:   traceProjectSourceOption,
+	}
+	if err := prepareRuntimeConfig(&cfg); err != nil {
+		t.Fatalf("prepareRuntimeConfig returned %v", err)
+	}
+	if cfg.TraceProjectID != "proj-123" {
+		t.Fatalf("TraceProjectID = %q, want proj-123", cfg.TraceProjectID)
+	}
+	if len(recorder.messages) != 1 {
+		t.Fatalf("normalized TraceProjectID warning count = %d, want 1", len(recorder.messages))
+	}
+	if !strings.Contains(recorder.messages[0], "normalized TraceProjectID") {
+		t.Fatalf("normalized warning = %q, want normalized TraceProjectID", recorder.messages[0])
+	}
+}
+
+// TestPrepareRuntimeConfigInvalidExplicitTraceProjectIDWarnsAndFallsBack verifies fallback on invalid values.
+func TestPrepareRuntimeConfigInvalidExplicitTraceProjectIDWarnsAndFallsBack(t *testing.T) {
+	resetRuntimeInfoCache()
+	t.Cleanup(resetRuntimeInfoCache)
+	stubRuntimeInfo(RuntimeInfo{ProjectID: "runtime-project"})
+
+	recorder := &diagRecorder{}
+	original := traceDiagnosticLogger
+	traceDiagnosticLogger = recorder
+	t.Cleanup(func() { traceDiagnosticLogger = original })
+
+	cfg := handlerConfig{
+		TraceDiagnostics:     TraceDiagnosticsWarnOnce,
+		TraceProjectID:       "projects/invalid/extra",
+		traceProjectExplicit: true,
+		traceProjectSource:   traceProjectSourceOption,
+	}
+	if err := prepareRuntimeConfig(&cfg); err != nil {
+		t.Fatalf("prepareRuntimeConfig returned %v", err)
+	}
+	if cfg.TraceProjectID != "runtime-project" {
+		t.Fatalf("TraceProjectID = %q, want runtime-project", cfg.TraceProjectID)
+	}
+	if len(recorder.messages) != 1 {
+		t.Fatalf("invalid TraceProjectID warning count = %d, want 1", len(recorder.messages))
+	}
+	if !strings.Contains(recorder.messages[0], "invalid TraceProjectID") {
+		t.Fatalf("invalid warning = %q, want invalid TraceProjectID", recorder.messages[0])
+	}
+}
+
+// TestNormalizeTraceProjectConfigStrictInvalidWithoutSource checks strict error formatting.
+func TestNormalizeTraceProjectConfigStrictInvalidWithoutSource(t *testing.T) {
+	cfg := handlerConfig{
+		TraceDiagnostics:     TraceDiagnosticsStrict,
+		TraceProjectID:       "projects/invalid/extra",
+		traceProjectExplicit: true,
+	}
+	if err := normalizeTraceProjectConfig(&cfg); err == nil {
+		t.Fatalf("normalizeTraceProjectConfig() returned nil error, want strict invalid failure")
+	} else if strings.Contains(err.Error(), "from") {
+		t.Fatalf("normalizeTraceProjectConfig() error = %q, want no source suffix", err.Error())
+	}
+}
+
 // TestParseTraceDiagnosticsEnvCoversModes validates environment inputs and defaults.
 func TestParseTraceDiagnosticsEnvCoversModes(t *testing.T) {
 	t.Parallel()
@@ -2179,6 +2282,26 @@ func TestNewHandlerStrictDiagnosticsRequiresProject(t *testing.T) {
 		t.Fatalf("NewHandler() returned handler despite strict diagnostics failure")
 	}
 	if !strings.Contains(err.Error(), "requires a Cloud project ID") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestNewHandlerStrictDiagnosticsRejectsInvalidTraceProjectID ensures invalid explicit IDs fail fast.
+func TestNewHandlerStrictDiagnosticsRejectsInvalidTraceProjectID(t *testing.T) {
+	resetRuntimeInfoCache()
+	t.Cleanup(resetRuntimeInfoCache)
+
+	handler, err := NewHandler(io.Discard,
+		WithTraceDiagnostics(TraceDiagnosticsStrict),
+		WithTraceProjectID("projects/invalid/extra"),
+	)
+	if err == nil {
+		t.Fatalf("NewHandler() returned nil error, want strict invalid TraceProjectID failure")
+	}
+	if handler != nil {
+		t.Fatalf("NewHandler() returned handler despite strict invalid TraceProjectID failure")
+	}
+	if !strings.Contains(err.Error(), "invalid TraceProjectID") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -140,6 +140,23 @@ func getMetadataClientFactory() func() metadataClient {
 	return metadataFactoryDefault
 }
 
+var runtimeProjectIDEnvKeys = []string{
+	"SLOGCP_TRACE_PROJECT_ID",
+	"SLOGCP_PROJECT_ID",
+	"SLOGCP_GCP_PROJECT",
+	"GOOGLE_CLOUD_PROJECT",
+	"GCLOUD_PROJECT",
+	"GCP_PROJECT",
+	"PROJECT_ID",
+}
+
+var serviceProjectIDEnvKeys = []string{
+	"SLOGCP_GCP_PROJECT",
+	"GOOGLE_CLOUD_PROJECT",
+	"GCLOUD_PROJECT",
+	"GCP_PROJECT",
+}
+
 // DetectRuntimeInfo inspects well-known environment variables to infer
 // platform-specific labels and service context. Results are cached for reuse.
 func DetectRuntimeInfo() RuntimeInfo {
@@ -164,15 +181,7 @@ func DetectRuntimeInfo() RuntimeInfo {
 // detectRuntimeInfo inspects environment variables and metadata endpoints to infer runtime context.
 func detectRuntimeInfo() RuntimeInfo {
 	info := RuntimeInfo{}
-	info.ProjectID = firstValidProjectID(
-		trimmedEnv("SLOGCP_TRACE_PROJECT_ID"),
-		trimmedEnv("SLOGCP_PROJECT_ID"),
-		trimmedEnv("SLOGCP_GCP_PROJECT"),
-		trimmedEnv("GOOGLE_CLOUD_PROJECT"),
-		trimmedEnv("GCLOUD_PROJECT"),
-		trimmedEnv("GCP_PROJECT"),
-		trimmedEnv("PROJECT_ID"),
-	)
+	info.ProjectID = resolveProjectIDFromEnv("", runtimeProjectIDEnvKeys...)
 
 	md := newMetadataLookup(getMetadataClientFactory()())
 
@@ -250,13 +259,7 @@ func detectCloudFunction(info *RuntimeInfo, md *metadataLookup) bool {
 	}
 	info.Labels = labels
 
-	info.ProjectID = firstValidProjectID(
-		info.ProjectID,
-		trimmedEnv("SLOGCP_GCP_PROJECT"),
-		trimmedEnv("GOOGLE_CLOUD_PROJECT"),
-		trimmedEnv("GCLOUD_PROJECT"),
-		trimmedEnv("GCP_PROJECT"),
-	)
+	info.ProjectID = resolveProjectIDFromEnv(info.ProjectID, serviceProjectIDEnvKeys...)
 	if info.ProjectID == "" {
 		info.ProjectID = md.projectID()
 	}
@@ -297,13 +300,7 @@ func detectCloudRunService(info *RuntimeInfo, md *metadataLookup) bool {
 	}
 	info.Labels = labels
 
-	info.ProjectID = firstValidProjectID(
-		info.ProjectID,
-		trimmedEnv("SLOGCP_GCP_PROJECT"),
-		trimmedEnv("GOOGLE_CLOUD_PROJECT"),
-		trimmedEnv("GCLOUD_PROJECT"),
-		trimmedEnv("GCP_PROJECT"),
-	)
+	info.ProjectID = resolveProjectIDFromEnv(info.ProjectID, serviceProjectIDEnvKeys...)
 	if info.ProjectID == "" {
 		info.ProjectID = md.projectID()
 	}
@@ -344,13 +341,7 @@ func detectCloudRunJob(info *RuntimeInfo, md *metadataLookup) bool {
 	}
 	info.Labels = labels
 
-	info.ProjectID = firstValidProjectID(
-		info.ProjectID,
-		trimmedEnv("SLOGCP_GCP_PROJECT"),
-		trimmedEnv("GOOGLE_CLOUD_PROJECT"),
-		trimmedEnv("GCLOUD_PROJECT"),
-		trimmedEnv("GCP_PROJECT"),
-	)
+	info.ProjectID = resolveProjectIDFromEnv(info.ProjectID, serviceProjectIDEnvKeys...)
 	if info.ProjectID == "" {
 		info.ProjectID = md.projectID()
 	}
@@ -387,12 +378,8 @@ func detectAppEngine(info *RuntimeInfo, md *metadataLookup) bool {
 	}
 	info.Labels = labels
 
-	info.ProjectID = firstValidProjectID(
-		info.ProjectID,
-		trimmedEnv("SLOGCP_GCP_PROJECT"),
-		trimmedEnv("GOOGLE_CLOUD_PROJECT"),
-		strings.TrimPrefix(trimmedEnv("GAE_APPLICATION"), "_"),
-	)
+	info.ProjectID = resolveProjectIDFromEnv(info.ProjectID, serviceProjectIDEnvKeys...)
+	info.ProjectID = firstValidProjectID(info.ProjectID, strings.TrimPrefix(trimmedEnv("GAE_APPLICATION"), "_"))
 	if info.ProjectID == "" {
 		info.ProjectID = md.projectID()
 	}
@@ -477,13 +464,7 @@ func kubernetesPodName() string {
 
 // resolveKubernetesProject determines the project ID for Kubernetes environments.
 func resolveKubernetesProject(current string, md *metadataLookup) string {
-	project := firstValidProjectID(
-		current,
-		trimmedEnv("SLOGCP_GCP_PROJECT"),
-		trimmedEnv("GOOGLE_CLOUD_PROJECT"),
-		trimmedEnv("GCLOUD_PROJECT"),
-		trimmedEnv("GCP_PROJECT"),
-	)
+	project := resolveProjectIDFromEnv(current, serviceProjectIDEnvKeys...)
 	if project != "" {
 		return project
 	}
@@ -519,6 +500,16 @@ func detectComputeEngine(info *RuntimeInfo, md *metadataLookup) bool {
 // trimmedEnv reads an environment variable and trims surrounding whitespace.
 func trimmedEnv(key string) string {
 	return strings.TrimSpace(os.Getenv(key))
+}
+
+// resolveProjectIDFromEnv returns the first valid project ID from the supplied env keys.
+func resolveProjectIDFromEnv(current string, keys ...string) string {
+	candidates := make([]string, 0, len(keys)+1)
+	candidates = append(candidates, current)
+	for _, key := range keys {
+		candidates = append(candidates, trimmedEnv(key))
+	}
+	return firstValidProjectID(candidates...)
 }
 
 // firstNonEmpty returns the first non-empty string after trimming whitespace.
