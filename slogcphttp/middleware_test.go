@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -272,10 +273,17 @@ func TestMiddlewareHelpersCoverBranches(t *testing.T) {
 		t.Fatalf("ensureSpanContext(nil request) span context should be invalid")
 	}
 
+	origPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(origPropagator)
+	})
+
 	cfg := applyOptions([]Option{WithPropagators(nil)})
 	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
-	if _, _, ok := extractSpanContextFromHeaders(ctx, req, cfg); ok {
-		t.Fatalf("extractSpanContextFromHeaders should fail when propagator is nil")
+	req.Header.Set("traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+	if _, _, ok := extractSpanContextFromHeaders(ctx, req, cfg); !ok {
+		t.Fatalf("extractSpanContextFromHeaders should use the global propagator when nil is supplied")
 	}
 
 	if got := clientIPFromRequest(nil, defaultConfig()); got != "" {
@@ -413,6 +421,19 @@ func TestExtractSpanContextFromHeadersFallsBackToGlobal(t *testing.T) {
 	}
 	if extracted.SpanID() != spanID {
 		t.Fatalf("expected span ID %s, got %s", spanID, extracted.SpanID())
+	}
+}
+
+// TestExtractSpanContextFromHeadersReturnsFalseWithoutPropagator ensures nil propagators skip extraction.
+func TestExtractSpanContextFromHeadersReturnsFalseWithoutPropagator(t *testing.T) {
+	orig := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(nil)
+	t.Cleanup(func() { otel.SetTextMapPropagator(orig) })
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req.Header.Set("traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+	if _, _, ok := extractSpanContextFromHeaders(context.Background(), req, nil); ok {
+		t.Fatalf("expected extractSpanContextFromHeaders to return false when no propagator is configured")
 	}
 }
 

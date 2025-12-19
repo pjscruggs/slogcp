@@ -84,8 +84,13 @@ func ensureServerSpanContext(ctx context.Context, md metadata.MD, cfg *config) (
 
 // extractWithPropagator uses configured propagators to pull trace context from metadata.
 func extractWithPropagator(ctx context.Context, md metadata.MD, cfg *config) (context.Context, trace.SpanContext) {
-	propagator := cfg.propagators
-	if propagator == nil {
+	var propagator propagation.TextMapPropagator
+	if cfg != nil {
+		propagator = cfg.propagators
+		if propagator == nil && !cfg.propagatorsSet {
+			propagator = otel.GetTextMapPropagator()
+		}
+	} else {
 		propagator = otel.GetTextMapPropagator()
 	}
 	if propagator == nil {
@@ -143,12 +148,20 @@ func extractXCloudTraceHeader(ctx context.Context, md metadata.MD) (context.Cont
 
 // injectClientTrace injects tracing metadata for outbound RPCs, including optional legacy headers.
 func injectClientTrace(ctx context.Context, md metadata.MD, cfg *config) {
-	if cfg != nil && !cfg.propagateTrace {
+	if cfg == nil {
+		propagator := otel.GetTextMapPropagator()
+		if propagator != nil {
+			propagator.Inject(ctx, metadataCarrier{md})
+		}
+		return
+	}
+	if !cfg.propagateTrace {
 		return
 	}
 
-	propagator := cfg.propagators
-	if propagator == nil {
+	var propagator propagation.TextMapPropagator
+	propagator = cfg.propagators
+	if propagator == nil && !cfg.propagatorsSet {
 		propagator = otel.GetTextMapPropagator()
 	}
 	if propagator != nil {

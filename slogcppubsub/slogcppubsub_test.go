@@ -26,6 +26,7 @@ import (
 	"unsafe"
 
 	"cloud.google.com/go/pubsub/v2"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/propagation"
@@ -562,8 +563,8 @@ func TestApplyOptionsCoversSetters(t *testing.T) {
 	if !cfg.publicEndpointCorrelateLogsToRemote {
 		t.Fatalf("publicEndpointCorrelateLogsToRemote should be true")
 	}
-	if !cfg.propagatorsSet || cfg.propagators != nil {
-		t.Fatalf("expected propagatorsSet and nil propagator")
+	if cfg.propagatorsSet || cfg.propagators != nil {
+		t.Fatalf("expected propagators to be unset and nil")
 	}
 	if cfg.propagateTrace {
 		t.Fatalf("propagateTrace should be false")
@@ -610,6 +611,11 @@ func TestApplyOptionsCoversSetters(t *testing.T) {
 func TestPropagationCoverBranches(t *testing.T) {
 	spanCtx := mustSpanContext(t)
 	ctxWithSpan := trace.ContextWithSpanContext(context.Background(), spanCtx)
+	origPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(origPropagator)
+	})
 
 	Inject(ctxWithSpan, nil)
 	ctx, sc := Extract(ctxWithSpan, nil)
@@ -637,8 +643,8 @@ func TestPropagationCoverBranches(t *testing.T) {
 	}
 
 	out := InjectAttributes(ctxWithSpan, nil, WithPropagators(nil))
-	if out != nil {
-		t.Fatalf("expected nil propagator to write nothing")
+	if out == nil || out["traceparent"] == "" {
+		t.Fatalf("expected nil propagator to use global traceparent injection")
 	}
 
 	out = InjectAttributes(ctxWithSpan, nil, WithPropagators(nil), WithGoogClientInjection(true))
@@ -669,6 +675,12 @@ func TestPropagationCoverBranches(t *testing.T) {
 	if _, sc := ExtractAttributes(context.Background(), globalAttrs, WithTracePropagation(false)); sc.IsValid() {
 		t.Fatalf("expected ExtractAttributes to skip extraction when propagation is disabled")
 	}
+	cfgNoProp := defaultConfig()
+	cfgNoProp.propagatorsSet = true
+	cfgNoProp.propagators = nil
+	if _, sc := extractSpanContext(globalAttrs, cfgNoProp); sc.IsValid() {
+		t.Fatalf("expected extractSpanContext to skip extraction when propagator is explicitly nil")
+	}
 
 	missingAttrs := map[string]string{"k": "v"}
 	cfgGoog := applyOptions([]Option{WithPropagators(propagation.TraceContext{}), WithGoogClientExtraction(true)})
@@ -676,8 +688,8 @@ func TestPropagationCoverBranches(t *testing.T) {
 		t.Fatalf("expected ensureSpanContext to return invalid span context when no trace keys exist")
 	}
 
-	if _, sc := ExtractAttributes(context.Background(), globalAttrs, WithPropagators(nil)); sc.IsValid() {
-		t.Fatalf("expected ExtractAttributes to skip extraction when propagator is nil")
+	if _, sc := ExtractAttributes(context.Background(), globalAttrs, WithPropagators(nil)); !sc.IsValid() {
+		t.Fatalf("expected ExtractAttributes to use global propagator when nil is supplied")
 	}
 
 	outWithUpper := map[string]string{

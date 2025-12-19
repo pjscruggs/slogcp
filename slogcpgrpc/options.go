@@ -96,11 +96,11 @@ func WithProjectID(projectID string) Option {
 
 // WithPropagators sets the text map propagator used for extracting metadata
 // (server) or injecting metadata (client). When omitted, the global propagator
-// is used.
+// is used. Passing nil is treated the same as omitting the option.
 func WithPropagators(p propagation.TextMapPropagator) Option {
 	return func(cfg *config) {
 		cfg.propagators = p
-		cfg.propagatorsSet = true
+		cfg.propagatorsSet = p != nil
 	}
 }
 

@@ -164,7 +164,7 @@ Important options:
 | --- | --- |
 | `WithLogger(*slog.Logger)` | Sets the base logger used to derive request loggers. Defaults to `slog.Default()`. |
 | `WithProjectID(string)` | Overrides the project ID used for Cloud Trace correlation. |
-| `WithPropagators(propagation.TextMapPropagator)` | Customizes the propagator used to extract trace context when no span exists. |
+| `WithPropagators(propagation.TextMapPropagator)` | Customizes the propagator used to extract trace context when no span exists. Passing `nil` is treated the same as omitting the option (use the global propagator); disable propagation with `WithTracePropagation(false)`. |
 | `WithTracePropagation(bool)` | Enables or disables extraction of incoming trace headers. Defaults to `true`. |
 | `WithTracerProvider(trace.TracerProvider)` | Supplies the tracer provider passed to `otelhttp`. |
 | `WithPublicEndpoint(bool)` | Forwards the public-endpoint hint to `otelhttp`. |
@@ -224,7 +224,7 @@ Important options:
 | --- | --- |
 | `WithLogger(*slog.Logger)` | Sets the base logger for derived RPC loggers. Defaults to `slog.Default()`. |
 | `WithProjectID(string)` | Overrides the project used for trace correlation. |
-| `WithPropagators(propagation.TextMapPropagator)` | Custom propagator for metadata extraction (server) or injection (client). |
+| `WithPropagators(propagation.TextMapPropagator)` | Custom propagator for metadata extraction (server) or injection (client). Passing `nil` is treated the same as omitting the option (use the global propagator); disable propagation with `WithTracePropagation(false)`. |
 | `WithTracePropagation(bool)` | Enables or disables trace extraction/injection on servers and clients. Defaults to `true`. |
 | `WithTracerProvider(trace.TracerProvider)` | Passed to the otelgrpc StatsHandler when OpenTelemetry instrumentation is enabled. |
 | `WithPublicEndpoint(bool)` | Marks the service as public for telemetry. |
@@ -262,7 +262,7 @@ Helpers:
 | `WithSpanAttributes(attribute.KeyValue...)` | (none) | Additional OpenTelemetry attributes appended to consumer spans. |
 | `WithPublicEndpoint(bool)` | `false` | Treats producers as untrusted: starts a new root trace and links extracted remote context instead of parenting. |
 | `WithPublicEndpointCorrelateLogsToRemote(bool)` | `false` | When `WithPublicEndpoint(true)` and no local span is created (for example, `WithOTel(false)`), controls whether logs correlate to extracted remote trace context. |
-| `WithPropagators(propagation.TextMapPropagator)` | `otel.GetTextMapPropagator()` | Propagator used for attribute injection/extraction; passing `nil` disables propagator-based extraction/injection. |
+| `WithPropagators(propagation.TextMapPropagator)` | `otel.GetTextMapPropagator()` | Propagator used for attribute injection/extraction; passing `nil` is treated the same as omitting the option (use the global propagator). Disable propagation with `WithTracePropagation(false)`. |
 | `WithTracePropagation(bool)` | `true` | Enables/disables trace context extraction and injection via message attributes. |
 | `WithBaggagePropagation(bool)` | `false` | Enables/disables baggage injection/extraction via message attributes when the propagator supports it. |
 | `WithCaseInsensitiveExtraction(bool)` | `false` | Enables case-insensitive lookup for propagation keys during extraction. |
@@ -279,4 +279,4 @@ Helpers:
 
 ## Trace Propagation Defaults
 
-Importing `slogcp` installs a composite OpenTelemetry propagator that understands both W3C Trace Context and Google's legacy `X-Cloud-Trace-Context` header (read-only). Set `SLOGCP_PROPAGATOR_AUTOSET=false` before importing the package if you prefer to manage `otel.SetTextMapPropagator` yourself; call `slogcp.EnsurePropagation()` if you need to reapply the library's defaults later in process startup.
+Importing `slogcp` installs a composite OpenTelemetry propagator that understands both W3C Trace Context and Google's legacy `X-Cloud-Trace-Context` header (read-only). Set `SLOGCP_PROPAGATOR_AUTOSET=false` before importing the package if you prefer to manage `otel.SetTextMapPropagator` yourself; explicit calls to `slogcp.EnsurePropagation()` remain available during startup. Call `EnsurePropagation` before constructing `otelhttp` transports or gRPC clients/servers that rely on the global propagator, since some instrumentation snapshots the global value during initialization.
