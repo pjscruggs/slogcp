@@ -47,6 +47,8 @@ const (
 	envTarget           = "SLOGCP_TARGET"
 	envSlogcpGCP        = "SLOGCP_GCP_PROJECT"
 	envTraceDiagnostics = "SLOGCP_TRACE_DIAGNOSTICS"
+
+	traceProjectSourceOption = "WithTraceProjectID"
 )
 
 // TraceDiagnosticsMode controls how slogcp surfaces trace correlation issues.
@@ -102,9 +104,11 @@ type diagLogger interface {
 var traceDiagnosticLogger diagLogger = log.New(os.Stderr, "slogcp: ", log.LstdFlags)
 
 type traceDiagnostics struct {
-	mode      TraceDiagnosticsMode
-	logger    diagLogger
-	unknownMu sync.Once
+	mode         TraceDiagnosticsMode
+	logger       diagLogger
+	unknownMu    sync.Once
+	invalidMu    sync.Once
+	normalizedMu sync.Once
 }
 
 // newTraceDiagnostics constructs a traceDiagnostics helper unless tracing is disabled.
@@ -131,6 +135,40 @@ func (td *traceDiagnostics) warnUnknownProject() {
 	})
 }
 
+// warnInvalidTraceProjectID emits a single warning when an explicit trace project ID is invalid.
+func (td *traceDiagnostics) warnInvalidTraceProjectID(value, source string) {
+	if td == nil || td.mode != TraceDiagnosticsWarnOnce {
+		return
+	}
+	td.invalidMu.Do(func() {
+		if td.logger == nil {
+			return
+		}
+		if source != "" {
+			td.logger.Printf("trace correlation disabled: invalid TraceProjectID %q from %s; falling back to runtime detection", value, source)
+			return
+		}
+		td.logger.Printf("trace correlation disabled: invalid TraceProjectID %q; falling back to runtime detection", value)
+	})
+}
+
+// warnNormalizedTraceProjectID emits a single warning when an explicit trace project ID is normalized.
+func (td *traceDiagnostics) warnNormalizedTraceProjectID(value, normalized, source string) {
+	if td == nil || td.mode != TraceDiagnosticsWarnOnce {
+		return
+	}
+	td.normalizedMu.Do(func() {
+		if td.logger == nil {
+			return
+		}
+		if source != "" {
+			td.logger.Printf("trace correlation: normalized TraceProjectID from %q to %q (%s)", value, normalized, source)
+			return
+		}
+		td.logger.Printf("trace correlation: normalized TraceProjectID from %q to %q", value, normalized)
+	})
+}
+
 type handlerConfig struct {
 	Level                    slog.Level
 	AddSource                bool
@@ -139,6 +177,8 @@ type handlerConfig struct {
 	StackTraceEnabled        bool
 	StackTraceLevel          slog.Level
 	TraceProjectID           string
+	traceProjectExplicit     bool
+	traceProjectSource       string
 	TraceDiagnostics         TraceDiagnosticsMode
 	UseShortSeverityNames    bool
 	Writer                   io.Writer
@@ -296,15 +336,64 @@ func prepareRuntimeConfig(cfg *handlerConfig) error {
 	runtimeInfo := DetectRuntimeInfo()
 	cfg.runtimeServiceContext = cloneStringMap(runtimeInfo.ServiceContext)
 	cfg.runtimeServiceContextAny = stringMapToAny(cfg.runtimeServiceContext)
+	cfg.traceDiagnosticsState = newTraceDiagnostics(cfg.TraceDiagnostics)
+
+	if err := normalizeTraceProjectConfig(cfg); err != nil {
+		return err
+	}
 	if cfg.TraceProjectID == "" {
 		cfg.TraceProjectID = strings.TrimSpace(runtimeInfo.ProjectID)
 	}
 	cfg.traceAllowAutoformat = cfg.TraceProjectID == "" && prefersManagedGCPDefaults(runtimeInfo)
-	cfg.traceDiagnosticsState = newTraceDiagnostics(cfg.TraceDiagnostics)
-	if cfg.TraceDiagnostics == TraceDiagnosticsStrict && cfg.TraceProjectID == "" && !cfg.traceAllowAutoformat {
-		return errors.New("slogcp: trace diagnostics strict mode requires a Cloud project ID; set SLOGCP_TRACE_PROJECT_ID or provide slogcp.WithTraceProjectID")
+	return validateTraceProjectAvailability(cfg)
+}
+
+// normalizeTraceProjectConfig validates and normalizes the configured trace project ID.
+func normalizeTraceProjectConfig(cfg *handlerConfig) error {
+	rawTraceProject := strings.TrimSpace(cfg.TraceProjectID)
+	if rawTraceProject == "" {
+		cfg.TraceProjectID = ""
+		return nil
+	}
+
+	normalized, changed, ok := normalizeTraceProjectID(rawTraceProject)
+	if !ok {
+		return handleInvalidTraceProjectID(cfg, rawTraceProject)
+	}
+
+	cfg.TraceProjectID = normalized
+	if cfg.traceProjectExplicit && changed {
+		cfg.traceDiagnosticsState.warnNormalizedTraceProjectID(rawTraceProject, normalized, cfg.traceProjectSource)
 	}
 	return nil
+}
+
+// handleInvalidTraceProjectID applies diagnostics for invalid trace project IDs.
+func handleInvalidTraceProjectID(cfg *handlerConfig, rawTraceProject string) error {
+	if cfg.traceProjectExplicit && cfg.TraceDiagnostics == TraceDiagnosticsStrict {
+		return invalidTraceProjectIDError(rawTraceProject, cfg.traceProjectSource)
+	}
+	if cfg.traceProjectExplicit {
+		cfg.traceDiagnosticsState.warnInvalidTraceProjectID(rawTraceProject, cfg.traceProjectSource)
+	}
+	cfg.TraceProjectID = ""
+	return nil
+}
+
+// invalidTraceProjectIDError formats a strict-mode error for invalid project IDs.
+func invalidTraceProjectIDError(value, source string) error {
+	if source != "" {
+		return fmt.Errorf("slogcp: invalid TraceProjectID %q from %s", value, source)
+	}
+	return fmt.Errorf("slogcp: invalid TraceProjectID %q", value)
+}
+
+// validateTraceProjectAvailability enforces strict mode project ID requirements.
+func validateTraceProjectAvailability(cfg *handlerConfig) error {
+	if cfg.TraceDiagnostics != TraceDiagnosticsStrict || cfg.TraceProjectID != "" || cfg.traceAllowAutoformat {
+		return nil
+	}
+	return errors.New("slogcp: trace diagnostics strict mode requires a Cloud project ID; set SLOGCP_TRACE_PROJECT_ID or provide slogcp.WithTraceProjectID")
 }
 
 // buildPipeline assembles the handler stack with middlewares and async wrapper.
@@ -958,6 +1047,22 @@ func resetHandlerConfigCache() {
 	handlerEnvConfigCache.Store(nil)
 }
 
+// resolveTraceProjectFromEnv returns the highest-priority trace project ID and its source.
+func resolveTraceProjectFromEnv() (string, string) {
+	candidates := []string{
+		envTraceProjectID,
+		envProjectID,
+		envSlogcpGCP,
+		envGoogleProject,
+	}
+	for _, name := range candidates {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value, name
+		}
+	}
+	return "", ""
+}
+
 // loadConfigFromEnv reads handler configuration overrides from environment
 // variables, returning the assembled configuration and any validation errors.
 func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
@@ -977,17 +1082,10 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 	cfg.UseShortSeverityNames = parseBoolEnv(os.Getenv(envSeverityAliases), cfg.UseShortSeverityNames, logger)
 	cfg.TraceDiagnostics = parseTraceDiagnosticsEnv(os.Getenv(envTraceDiagnostics), cfg.TraceDiagnostics, logger)
 
-	traceProject := strings.TrimSpace(os.Getenv(envTraceProjectID))
-	if traceProject == "" {
-		traceProject = strings.TrimSpace(os.Getenv(envProjectID))
-	}
-	if traceProject == "" {
-		traceProject = strings.TrimSpace(os.Getenv(envSlogcpGCP))
-	}
-	if traceProject == "" {
-		traceProject = strings.TrimSpace(os.Getenv(envGoogleProject))
-	}
+	traceProject, source := resolveTraceProjectFromEnv()
 	cfg.TraceProjectID = traceProject
+	cfg.traceProjectSource = source
+	cfg.traceProjectExplicit = traceProject != ""
 
 	if err := applyTargetFromEnv(&cfg, logger); err != nil {
 		return handlerConfig{}, err
@@ -1025,6 +1123,8 @@ func applyLevelAndTraceOptions(cfg *handlerConfig, o *options) {
 	}
 	if o.traceProjectID != nil {
 		cfg.TraceProjectID = *o.traceProjectID
+		cfg.traceProjectExplicit = true
+		cfg.traceProjectSource = traceProjectSourceOption
 	}
 	if o.traceDiagnostics != nil {
 		cfg.TraceDiagnostics = *o.traceDiagnostics
