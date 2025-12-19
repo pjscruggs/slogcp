@@ -1094,30 +1094,32 @@ func TestNormalizeProjectID(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name   string
+		input  string
+		want   string
+		wantOK bool
 	}{
-		{name: "empty", input: "", want: ""},
-		{name: "valid", input: "alpha-123", want: "alpha-123"},
-		{name: "valid_min_length", input: "a23456", want: "a23456"},
-		{name: "valid_max_length", input: "a12345678901234567890123456789", want: "a12345678901234567890123456789"},
-		{name: "with_resource_prefix", input: "projects/my-project", want: "my-project"},
-		{name: "with_uppercase_prefix_and_spaces", input: "  PROJECTS/service-001  ", want: "service-001"},
-		{name: "reject_trailing_hyphen", input: "alpha-123-", want: ""},
-		{name: "reject_short", input: "short", want: ""},
-		{name: "reject_long", input: "abcdefghijklmnopqrstuvwxyz12345", want: ""},
-		{name: "reject_uppercase", input: "Alpha-123", want: ""},
-		{name: "reject_leading_digit", input: "1project", want: ""},
-		{name: "reject_slash", input: "my/project", want: ""},
-		{name: "reject_underscore", input: "project_id", want: ""},
-		{name: "reject_extra_path", input: "projects/proj/extra", want: ""},
+		{name: "empty", input: "", want: "", wantOK: false},
+		{name: "valid", input: "alpha-123", want: "alpha-123", wantOK: true},
+		{name: "valid_min_length", input: "a23456", want: "a23456", wantOK: true},
+		{name: "valid_max_length", input: "a12345678901234567890123456789", want: "a12345678901234567890123456789", wantOK: true},
+		{name: "with_resource_prefix", input: "projects/my-project", want: "my-project", wantOK: true},
+		{name: "with_uppercase_prefix_and_spaces", input: "  PROJECTS/service-001  ", want: "service-001", wantOK: true},
+		{name: "normalizes_uppercase", input: "Alpha-123", want: "alpha-123", wantOK: true},
+		{name: "reject_trailing_hyphen", input: "alpha-123-", want: "", wantOK: false},
+		{name: "reject_short", input: "short", want: "", wantOK: false},
+		{name: "reject_long", input: "abcdefghijklmnopqrstuvwxyz12345", want: "", wantOK: false},
+		{name: "reject_leading_digit", input: "1project", want: "", wantOK: false},
+		{name: "reject_slash", input: "my/project", want: "", wantOK: false},
+		{name: "reject_underscore", input: "project_id", want: "", wantOK: false},
+		{name: "reject_extra_path", input: "projects/proj/extra", want: "", wantOK: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeProjectID(tt.input); got != tt.want {
-				t.Fatalf("normalizeProjectID(%q) = %q, want %q", tt.input, got, tt.want)
+			got, ok := normalizeProjectID(tt.input)
+			if got != tt.want || ok != tt.wantOK {
+				t.Fatalf("normalizeProjectID(%q) = (%q, %v), want (%q, %v)", tt.input, got, ok, tt.want, tt.wantOK)
 			}
 		})
 	}
