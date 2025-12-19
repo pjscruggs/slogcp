@@ -210,6 +210,10 @@ See [`.examples/http-client/main.go`](.examples/http-client/main.go) to watch th
 - See [`.examples/grpc/main.go`](.examples/grpc/main.go) for a Greeter service that uses the interceptors end-to-end.
 - If you're already invested in the [gRPC Ecosystem](https://github.com/grpc-ecosystem) ecosystem framework, slogcp still fits: use the ready-made [`slogcp-grpc-adapter`](https://github.com/pjscruggs/slogcp-grpc-adapter) module to have its logging interceptors emit slogcp/Cloud Logging–friendly JSON.
 
+### Pub/Sub
+
+See [`.examples/pubsub/main.go`](.examples/pubsub/main.go) for a runnable Pub/Sub example that injects trace context and derives message-scoped loggers.
+
 ## Integration with other libraries
 
 Since slogcp is just a `slog.Handler`, it can easily be integrated with other popular slog libraries.
