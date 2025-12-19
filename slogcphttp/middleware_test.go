@@ -1123,6 +1123,17 @@ func TestResponseRecorderOptionalInterfacesForwarding(t *testing.T) {
 	}
 }
 
+// TestResponseRecorderUnwrap ensures the wrapper exposes the base ResponseWriter.
+func TestResponseRecorderUnwrap(t *testing.T) {
+	t.Parallel()
+
+	base := &minimalResponseWriter{header: make(http.Header)}
+	_, recorder := wrapResponseWriter(base, &RequestScope{})
+	if got := recorder.Unwrap(); got != base {
+		t.Fatalf("Unwrap() = %v, want base writer", got)
+	}
+}
+
 // TestExtractIPVariants validates IP parsing for several address formats.
 func TestExtractIPVariants(t *testing.T) {
 	t.Parallel()

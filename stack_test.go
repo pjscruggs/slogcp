@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -123,6 +124,30 @@ func (f fakeStackError) StackTrace() []uintptr {
 	return f.pcs
 }
 
+type emptyStackError struct{}
+
+// Error returns a fixed error string for empty stack errors.
+func (emptyStackError) Error() string { return "empty-stack" }
+
+// StackTrace returns an empty stack trace for coverage.
+func (emptyStackError) StackTrace() []uintptr { return nil }
+
+type badStackTraceSignatureError struct{}
+
+// Error returns a fixed error string for signature mismatch tests.
+func (badStackTraceSignatureError) Error() string { return "bad-stack-signature" }
+
+// StackTrace accepts an argument to trigger the signature guard.
+func (badStackTraceSignatureError) StackTrace(_ int) []uintptr { return nil }
+
+type badStackTraceReturnError struct{}
+
+// Error returns a fixed error string for return-type mismatch tests.
+func (badStackTraceReturnError) Error() string { return "bad-stack-return" }
+
+// StackTrace returns a non-slice to exercise the conversion guard.
+func (badStackTraceReturnError) StackTrace() string { return "nope" }
+
 // captureProgramCounters collects the current stack for use in tests.
 func captureProgramCounters(t *testing.T) []uintptr {
 	t.Helper()
@@ -169,6 +194,91 @@ func TestExtractAndFormatOriginStackUsesTracer(t *testing.T) {
 
 	if stack := extractAndFormatOriginStack(errors.New("plain")); stack != "" {
 		t.Fatalf("expected empty stack for errors without stackTracer, got %q", stack)
+	}
+}
+
+// TestStackPCsFromErrorBranches exercises stackPCsFromError control flow.
+func TestStackPCsFromErrorBranches(t *testing.T) {
+	t.Parallel()
+
+	if got := stackPCsFromError(nil); got != nil {
+		t.Fatalf("stackPCsFromError(nil) = %v, want nil", got)
+	}
+
+	pcs := captureProgramCounters(t)
+	if got := stackPCsFromError(fakeStackError{pcs: pcs}); len(got) == 0 {
+		t.Fatalf("stackPCsFromError(stackTracer) returned empty")
+	}
+
+	if got := stackPCsFromError(emptyStackError{}); got != nil {
+		t.Fatalf("stackPCsFromError(empty) = %v, want nil", got)
+	}
+}
+
+// TestStackPCsFromStackTraceMethodBranches exercises reflection-based stack extraction.
+func TestStackPCsFromStackTraceMethodBranches(t *testing.T) {
+	t.Parallel()
+
+	if got := stackPCsFromStackTraceMethod(nil); got != nil {
+		t.Fatalf("stackPCsFromStackTraceMethod(nil) = %v, want nil", got)
+	}
+
+	if got := stackPCsFromStackTraceMethod(errors.New("plain")); got != nil {
+		t.Fatalf("stackPCsFromStackTraceMethod(no method) = %v, want nil", got)
+	}
+
+	if got := stackPCsFromStackTraceMethod(badStackTraceSignatureError{}); got != nil {
+		t.Fatalf("stackPCsFromStackTraceMethod(bad signature) = %v, want nil", got)
+	}
+
+	if got := stackPCsFromStackTraceMethod(badStackTraceReturnError{}); got != nil {
+		t.Fatalf("stackPCsFromStackTraceMethod(bad return) = %v, want nil", got)
+	}
+
+	pcs := captureProgramCounters(t)
+	if got := stackPCsFromStackTraceMethod(fakeStackError{pcs: pcs}); len(got) == 0 {
+		t.Fatalf("stackPCsFromStackTraceMethod(valid) returned empty")
+	}
+}
+
+// TestStackPCsFromValueBranches exercises stackPCsFromValue guardrails and conversions.
+func TestStackPCsFromValueBranches(t *testing.T) {
+	t.Parallel()
+
+	if got := stackPCsFromValue(reflect.Value{}); got != nil {
+		t.Fatalf("stackPCsFromValue(invalid) = %v, want nil", got)
+	}
+
+	var nilPtr *[]uintptr
+	if got := stackPCsFromValue(reflect.ValueOf(nilPtr)); got != nil {
+		t.Fatalf("stackPCsFromValue(nil pointer) = %v, want nil", got)
+	}
+
+	if got := stackPCsFromValue(reflect.ValueOf(42)); got != nil {
+		t.Fatalf("stackPCsFromValue(non-slice) = %v, want nil", got)
+	}
+
+	if got := stackPCsFromValue(reflect.ValueOf([]uintptr{})); got != nil {
+		t.Fatalf("stackPCsFromValue(empty slice) = %v, want nil", got)
+	}
+
+	var nilElem *uintptr
+	if got := stackPCsFromValue(reflect.ValueOf([]*uintptr{nilElem})); got != nil {
+		t.Fatalf("stackPCsFromValue(nil elements) = %v, want nil", got)
+	}
+
+	if got := stackPCsFromValue(reflect.ValueOf([]string{"bad"})); got != nil {
+		t.Fatalf("stackPCsFromValue(non-convertible) = %v, want nil", got)
+	}
+
+	slice := []uintptr{1}
+	if got := stackPCsFromValue(reflect.ValueOf(&slice)); len(got) != 1 || got[0] != slice[0] {
+		t.Fatalf("stackPCsFromValue(pointer to slice) = %v, want %v", got, slice)
+	}
+
+	val := uintptr(99)
+	if got := stackPCsFromValue(reflect.ValueOf([]*uintptr{&val})); len(got) != 1 || got[0] != val {
+		t.Fatalf("stackPCsFromValue(pointer) = %v, want %d", got, val)
 	}
 }
 

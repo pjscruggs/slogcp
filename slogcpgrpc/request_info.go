@@ -41,6 +41,8 @@ type RequestInfo struct {
 	peer       atomic.Value
 }
 
+const unsetLatencySentinel = int64(-1)
+
 // newRequestInfo constructs a RequestInfo with derived service and method details.
 func newRequestInfo(fullMethod, kind string, client bool, start time.Time) *RequestInfo {
 	service, method := splitFullMethod(fullMethod)
@@ -53,7 +55,7 @@ func newRequestInfo(fullMethod, kind string, client bool, start time.Time) *Requ
 		start:      start,
 	}
 	info.status.Store(uint32(codes.OK))
-	info.latencyNS.Store(-1)
+	info.latencyNS.Store(unsetLatencySentinel)
 	return info
 }
 
@@ -111,7 +113,7 @@ func (ri *RequestInfo) Status() codes.Code {
 
 // Latency returns the recorded latency or the elapsed time if finalization has not occurred.
 func (ri *RequestInfo) Latency() time.Duration {
-	if ns := ri.latencyNS.Load(); ns > 0 {
+	if ns := ri.latencyNS.Load(); ns != unsetLatencySentinel {
 		return time.Duration(ns)
 	}
 	return time.Since(ri.start)
