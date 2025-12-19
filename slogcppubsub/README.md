@@ -114,3 +114,8 @@ metadata writing. To preserve end-to-end trace continuity, inject standard W3C
 keys (`traceparent`/`tracestate`) into message attributes on publish and ensure
 your push configuration forwards them as headers so your HTTP middleware can
 extract them.
+
+## More
+
+- Configuration reference: `../docs/CONFIGURATION.md` (see "Pub/Sub Integration")
+- Runnable example: `../.examples/pubsub`
