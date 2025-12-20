@@ -314,18 +314,20 @@ func inferScheme(r *http.Request, cfg *config) string {
 
 // loggerAttrs assembles the structured log attributes for the request scope.
 func (rs *RequestScope) loggerAttrs(cfg *config, traceAttrs []slog.Attr) []slog.Attr {
-	attrs := make([]slog.Attr, 0, len(traceAttrs)+10)
-	attrs = append(attrs, traceAttrs...)
-	attrs = append(attrs, rs.requestCoreAttrs(cfg)...)
-	attrs = append(attrs, rs.metricAttrs()...)
-	attrs = append(attrs, rs.sizeAttrs()...)
-	attrs = append(attrs, rs.clientAttrs(cfg)...)
+	capHint := len(traceAttrs) + 14
+	attrs := make([]slog.Attr, 0, capHint)
+	if len(traceAttrs) > 0 {
+		attrs = append(attrs, traceAttrs...)
+	}
+	attrs = rs.appendRequestCoreAttrs(cfg, attrs)
+	attrs = rs.appendMetricAttrs(attrs)
+	attrs = rs.appendSizeAttrs(attrs)
+	attrs = rs.appendClientAttrs(cfg, attrs)
 	return attrs
 }
 
-// requestCoreAttrs returns method/target/route/scheme/host attributes.
-func (rs *RequestScope) requestCoreAttrs(cfg *config) []slog.Attr {
-	var attrs []slog.Attr
+// appendRequestCoreAttrs appends method/target/route/scheme/host attributes.
+func (rs *RequestScope) appendRequestCoreAttrs(cfg *config, attrs []slog.Attr) []slog.Attr {
 	if rs.method != "" {
 		attrs = append(attrs, slog.String("http.method", rs.method))
 	}
@@ -349,46 +351,68 @@ func (rs *RequestScope) requestCoreAttrs(cfg *config) []slog.Attr {
 
 // metricAttrs supplies status, latency, and response size attributes.
 func (rs *RequestScope) metricAttrs() []slog.Attr {
+	return rs.appendMetricAttrs(nil)
+}
+
+type requestScopeMetricKind uint8
+
+const (
+	requestScopeMetricStatus requestScopeMetricKind = iota
+	requestScopeMetricResponseSize
+)
+
+type requestScopeMetricValue struct {
+	scope *RequestScope
+	kind  requestScopeMetricKind
+}
+
+// LogValue implements slog.LogValuer for deferred metric evaluation.
+func (v requestScopeMetricValue) LogValue() slog.Value {
+	if v.scope == nil {
+		return slog.Value{}
+	}
+	switch v.kind {
+	case requestScopeMetricStatus:
+		return slog.IntValue(v.scope.Status())
+	case requestScopeMetricResponseSize:
+		return slog.Int64Value(v.scope.ResponseSize())
+	default:
+		return slog.Value{}
+	}
+}
+
+// appendMetricAttrs appends status, latency, and response size attributes.
+func (rs *RequestScope) appendMetricAttrs(attrs []slog.Attr) []slog.Attr {
 	lat, finalized := rs.Latency()
 
-	attrs := []slog.Attr{
-		{
-			Key: "http.status_code",
-			Value: slog.AnyValue(logValueFunc(func() slog.Value {
-				return slog.IntValue(rs.Status())
-			})),
+	attrs = append(attrs,
+		slog.Attr{
+			Key:   "http.status_code",
+			Value: slog.AnyValue(requestScopeMetricValue{scope: rs, kind: requestScopeMetricStatus}),
 		},
-		{
-			Key: "http.response_size",
-			Value: slog.AnyValue(logValueFunc(func() slog.Value {
-				return slog.Int64Value(rs.ResponseSize())
-			})),
+		slog.Attr{
+			Key:   "http.response_size",
+			Value: slog.AnyValue(requestScopeMetricValue{scope: rs, kind: requestScopeMetricResponseSize}),
 		},
-	}
+	)
 
 	if finalized {
-		attrs = append(attrs, slog.Attr{
-			Key: "http.latency",
-			Value: slog.AnyValue(logValueFunc(func() slog.Value {
-				return slog.DurationValue(lat)
-			})),
-		})
+		attrs = append(attrs, slog.Duration("http.latency", lat))
 	}
 
 	return attrs
 }
 
-// sizeAttrs reports request size when available.
-func (rs *RequestScope) sizeAttrs() []slog.Attr {
+// appendSizeAttrs appends the request size attribute when available.
+func (rs *RequestScope) appendSizeAttrs(attrs []slog.Attr) []slog.Attr {
 	if rs.requestSize <= 0 {
-		return nil
+		return attrs
 	}
-	return []slog.Attr{slog.Int64("http.request_size", rs.requestSize)}
+	return append(attrs, slog.Int64("http.request_size", rs.requestSize))
 }
 
-// clientAttrs emits optional network and user agent attributes.
-func (rs *RequestScope) clientAttrs(cfg *config) []slog.Attr {
-	var attrs []slog.Attr
+// appendClientAttrs appends optional network and user agent attributes.
+func (rs *RequestScope) appendClientAttrs(cfg *config, attrs []slog.Attr) []slog.Attr {
 	if cfg.includeClientIP && rs.clientIP != "" {
 		if rs.outbound {
 			attrs = append(attrs, slog.String("server.address", rs.clientIP))
@@ -504,13 +528,6 @@ func ScopeFromContext(ctx context.Context) (*RequestScope, bool) {
 	}
 	scope, ok := ctx.Value(requestScopeKey{}).(*RequestScope)
 	return scope, ok && scope != nil
-}
-
-type logValueFunc func() slog.Value
-
-// LogValue implements slog.LogValuer for deferred attribute evaluation.
-func (f logValueFunc) LogValue() slog.Value {
-	return f()
 }
 
 type responseRecorder struct {
@@ -822,9 +839,6 @@ func loggerWithAttrs(base *slog.Logger, attrs []slog.Attr) *slog.Logger {
 	if len(attrs) == 0 {
 		return base
 	}
-	args := make([]any, len(attrs))
-	for i, attr := range attrs {
-		args[i] = attr
-	}
-	return base.With(args...)
+	handler := base.Handler().WithAttrs(attrs)
+	return slog.New(handler)
 }

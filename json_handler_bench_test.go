@@ -222,7 +222,7 @@ func BenchmarkJSONHandlerAttrProcessing(b *testing.B) {
 		h := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
 		attrs := make([]slog.Attr, 0, 64)
-		for i := 0; i < 64; i++ {
+		for i := range 64 {
 			key := "k" + strconv.Itoa(i)
 			attrs = append(attrs, slog.Int(key, i))
 		}

@@ -64,23 +64,43 @@ func BenchmarkMiddlewareServeHTTP(b *testing.B) {
 		}
 	}
 
-	b.Run("NoTransformer", func(b *testing.B) {
-		run(b, Middleware(
+	defaultOpts := func() []Option {
+		return []Option{
 			WithLogger(logger),
 			WithProjectID("bench-project"),
 			WithOTel(false),
 			WithHTTPRequestAttr(true),
-		))
+		}
+	}
+
+	b.Run("NoTransformer", func(b *testing.B) {
+		run(b, Middleware(defaultOpts()...))
 	})
 
 	b.Run("RedactTransformer", func(b *testing.B) {
+		opts := defaultOpts()
+		opts = append(opts, WithAttrTransformer(transformer))
+		run(b, Middleware(opts...))
+	})
+
+	b.Run("NoHTTPRequestAttr", func(b *testing.B) {
 		run(b, Middleware(
 			WithLogger(logger),
 			WithProjectID("bench-project"),
 			WithOTel(false),
-			WithHTTPRequestAttr(true),
-			WithAttrTransformer(transformer),
 		))
+	})
+
+	b.Run("NoClientIP", func(b *testing.B) {
+		opts := defaultOpts()
+		opts = append(opts, WithClientIP(false))
+		run(b, Middleware(opts...))
+	})
+
+	b.Run("NoTracePropagation", func(b *testing.B) {
+		opts := defaultOpts()
+		opts = append(opts, WithTracePropagation(false))
+		run(b, Middleware(opts...))
 	})
 }
 

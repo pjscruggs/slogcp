@@ -33,9 +33,8 @@ type groupedAttr struct {
 	attr   slog.Attr
 }
 
-// extractErrorFromValue unwraps an error from a slog.Value when possible.
-func extractErrorFromValue(v slog.Value) error {
-	v = v.Resolve()
+// extractErrorFromResolved unwraps an error from a resolved slog.Value when possible.
+func extractErrorFromResolved(v slog.Value) error {
 	if v.Kind() != slog.KindAny {
 		return nil
 	}
@@ -343,10 +342,11 @@ func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	internalLogger := h.internalLogger
 	h.mu.Unlock()
 
-	grouped := baseGrouped
+	grouped := make([]groupedAttr, len(baseGrouped), len(baseGrouped)+len(attrs))
+	copy(grouped, baseGrouped)
 	for _, attr := range attrs {
 		grouped = append(grouped, groupedAttr{
-			groups: append([]string(nil), baseGroups...),
+			groups: baseGroups,
 			attr:   attr,
 		})
 	}
@@ -531,6 +531,12 @@ func (pb *payloadBuilder) applyRecordAttrs() {
 
 // walkAttr processes a single attribute, dispatching to group or leaf handlers.
 func (pb *payloadBuilder) walkAttr(groupsLen int, currMap map[string]any, attr slog.Attr, inLabels bool) {
+	if attr.Key == httpRequestKey && pb.handler.cfg.ReplaceAttr == nil {
+		if pb.handleHTTPRequestAttr(attr.Value) {
+			return
+		}
+	}
+
 	attr, rawValue, kind := pb.normalizeAttr(groupsLen, attr)
 
 	if attr.Key == "" {
@@ -598,14 +604,14 @@ func (pb *payloadBuilder) handleLeafAttr(currMap map[string]any, attr slog.Attr,
 	if attr.Key == httpRequestKey && pb.handleHTTPRequestAttr(rawValue) {
 		return
 	}
-	if val := resolveSlogValue(attr.Value); val != nil {
+	if val := resolveSlogValueWithRaw(rawValue, attr.Value); val != nil {
 		currMap[attr.Key] = val
 	}
 }
 
 // addLabel inserts a label value when it converts successfully.
 func (pb *payloadBuilder) addLabel(attr slog.Attr) {
-	if s, ok := labelValueToString(attr.Value); ok {
+	if s, ok := labelValueToStringResolved(attr.Value); ok {
 		pb.ensureLabels()[attr.Key] = s
 	}
 }
@@ -651,7 +657,7 @@ func (pb *payloadBuilder) captureFirstError(val slog.Value) {
 	if pb.firstErr != nil {
 		return
 	}
-	if errVal := extractErrorFromValue(val); errVal != nil {
+	if errVal := extractErrorFromResolved(val); errVal != nil {
 		pb.firstErr = errVal
 	}
 }
