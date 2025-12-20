@@ -194,9 +194,13 @@ func TestEnsureGroupMapBranches(t *testing.T) {
 // TestPayloadBuilderWalkAttrBranches drives the attribute walker through its key branches.
 func TestPayloadBuilderWalkAttrBranches(t *testing.T) {
 	state := &payloadState{}
+	req := &HTTPRequest{RequestMethod: http.MethodGet}
 	handler := &jsonHandler{
 		cfg: &handlerConfig{
 			ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+				if a.Key == httpRequestKey {
+					return slog.Any(httpRequestKey, req)
+				}
 				if len(groups) > 0 && a.Key == "to_replace" {
 					return slog.String("replaced", groups[0])
 				}
@@ -218,10 +222,7 @@ func TestPayloadBuilderWalkAttrBranches(t *testing.T) {
 
 	pb.walkAttr(1, baseMap, slog.Attr{}, false)
 
-	req := &HTTPRequest{RequestMethod: http.MethodGet}
-	if handled := pb.handleHTTPRequestAttr(slog.AnyValue(req)); !handled {
-		t.Fatalf("handleHTTPRequestAttr did not capture request value")
-	}
+	pb.walkAttr(1, baseMap, slog.Attr{Key: httpRequestKey, Value: slog.StringValue("primary")}, false)
 	pb.walkAttr(1, baseMap, slog.Attr{Key: httpRequestKey, Value: slog.StringValue("secondary")}, false)
 
 	pb.walkAttr(1, baseMap, slog.Attr{Key: LabelsGroup, Value: slog.GroupValue(slog.String("region", "us-central1"))}, false)
@@ -248,7 +249,32 @@ func TestPayloadBuilderWalkAttrBranches(t *testing.T) {
 	if got := baseMap["replaced"]; got != "base" {
 		t.Fatalf("ReplaceAttr branch not applied, got %#v", got)
 	}
-	if got := baseMap[httpRequestKey]; got != "secondary" {
+	if got := baseMap[httpRequestKey]; got != req {
+		t.Fatalf("secondary httpRequest attr should retain request, got %#v", got)
+	}
+}
+
+// TestPayloadBuilderWalkAttrStoresSecondaryHTTPRequestValue ensures non-request httpRequest values persist.
+func TestPayloadBuilderWalkAttrStoresSecondaryHTTPRequestValue(t *testing.T) {
+	state := &payloadState{}
+	handler := &jsonHandler{cfg: &handlerConfig{}}
+
+	pb := &payloadBuilder{
+		handler:    handler,
+		state:      state,
+		record:     slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0),
+		payload:    state.prepare(4),
+		groupStack: state.groupStack[:0],
+	}
+
+	req := &HTTPRequest{RequestMethod: http.MethodGet}
+	pb.walkAttr(0, pb.payload, slog.Attr{Key: httpRequestKey, Value: slog.AnyValue(req)}, false)
+	pb.walkAttr(0, pb.payload, slog.Attr{Key: httpRequestKey, Value: slog.StringValue("secondary")}, false)
+
+	if pb.httpReq == nil || pb.httpReq.RequestMethod != http.MethodGet {
+		t.Fatalf("http request not captured: %#v", pb.httpReq)
+	}
+	if got := pb.payload[httpRequestKey]; got != "secondary" {
 		t.Fatalf("secondary httpRequest attr should be stored as value, got %#v", got)
 	}
 }

@@ -486,9 +486,6 @@ func loggerWithAttrs(base *slog.Logger, attrs []slog.Attr) *slog.Logger {
 	if len(attrs) == 0 {
 		return base
 	}
-	args := make([]any, len(attrs))
-	for i, attr := range attrs {
-		args[i] = attr
-	}
-	return base.With(args...)
+	handler := base.Handler().WithAttrs(attrs)
+	return slog.New(handler)
 }

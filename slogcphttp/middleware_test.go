@@ -882,6 +882,58 @@ func TestMetricAttrsLatencyFinalization(t *testing.T) {
 	}
 }
 
+// TestRequestScopeMetricValueLogValue covers deferred metric log value evaluation.
+func TestRequestScopeMetricValueLogValue(t *testing.T) {
+	t.Parallel()
+
+	scope := newRequestScope(nil, time.Now(), defaultConfig())
+	scope.setStatus(http.StatusAccepted)
+	scope.addResponseBytes(128)
+
+	tests := []struct {
+		name     string
+		value    requestScopeMetricValue
+		wantKind slog.Kind
+		wantInt  int64
+	}{
+		{
+			name:     "status",
+			value:    requestScopeMetricValue{scope: scope, kind: requestScopeMetricStatus},
+			wantKind: slog.KindInt64,
+			wantInt:  int64(http.StatusAccepted),
+		},
+		{
+			name:     "response_size",
+			value:    requestScopeMetricValue{scope: scope, kind: requestScopeMetricResponseSize},
+			wantKind: slog.KindInt64,
+			wantInt:  128,
+		},
+		{
+			name:     "default",
+			value:    requestScopeMetricValue{scope: scope, kind: requestScopeMetricKind(99)},
+			wantKind: slog.KindAny,
+		},
+		{
+			name:     "nil_scope",
+			value:    requestScopeMetricValue{scope: nil, kind: requestScopeMetricStatus},
+			wantKind: slog.KindAny,
+		},
+	}
+
+	for _, tt := range tests {
+		got := tt.value.LogValue()
+		if got.Kind() != tt.wantKind {
+			t.Fatalf("%s kind = %v, want %v", tt.name, got.Kind(), tt.wantKind)
+		}
+		if tt.wantKind == slog.KindInt64 && got.Int64() != tt.wantInt {
+			t.Fatalf("%s value = %d, want %d", tt.name, got.Int64(), tt.wantInt)
+		}
+		if tt.wantKind == slog.KindAny && got.Any() != nil {
+			t.Fatalf("%s expected nil Any, got %#v", tt.name, got.Any())
+		}
+	}
+}
+
 // TestScopeFromContextNil verifies nil and empty contexts return no scope.
 func TestScopeFromContextNil(t *testing.T) {
 	t.Parallel()

@@ -56,15 +56,19 @@ func formatErrorForReporting(err error) (fe formattedError, originStackTrace str
 // resolveSlogValue converts an slog.Value into a Go type suitable for JSON
 // marshalling within the payload map.
 func resolveSlogValue(v slog.Value) any {
-	if req, ok := httpRequestFromValue(v); ok {
+	return resolveSlogValueWithRaw(v, v.Resolve())
+}
+
+// resolveSlogValueWithRaw converts a resolved slog.Value, preserving access to
+// the original value for LogValuer-based httpRequest detection.
+func resolveSlogValueWithRaw(raw, resolved slog.Value) any {
+	if req, ok := httpRequestFromValue(raw); ok {
 		return req
 	}
-	rv := v.Resolve()
-
-	if val, handled := resolveGroupValue(rv); handled {
+	if val, handled := resolveGroupValue(resolved); handled {
 		return val
 	}
-	return resolveResolvedValue(rv)
+	return resolveResolvedValue(resolved)
 }
 
 // resolveGroupValue handles slog.KindGroup values.
@@ -199,7 +203,11 @@ func formatLatency(d time.Duration) string {
 
 // labelValueToString converts a slog.Value into its string form suitable for label emission.
 func labelValueToString(v slog.Value) (string, bool) {
-	rv := v.Resolve()
+	return labelValueToStringResolved(v.Resolve())
+}
+
+// labelValueToStringResolved converts a resolved slog.Value into a label string.
+func labelValueToStringResolved(rv slog.Value) (string, bool) {
 	switch rv.Kind() {
 	case slog.KindString:
 		return rv.String(), true
