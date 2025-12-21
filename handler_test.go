@@ -1116,6 +1116,7 @@ func clearHandlerEnv(t *testing.T) {
 	t.Setenv(envSlogcpGCP, "")
 	t.Setenv(envGoogleProject, "")
 	t.Setenv(envTarget, "")
+	t.Setenv(envAsyncOnFile, "")
 	resetRuntimeInfoCache()
 	resetHandlerConfigCache()
 }
@@ -1160,11 +1161,11 @@ func TestFileTargetsAsyncByDefault(t *testing.T) {
 	}
 }
 
-// TestWithAsyncOnFileTargetsWrapsOnlyFiles applies async to file targets only.
-func TestWithAsyncOnFileTargetsWrapsOnlyFiles(t *testing.T) {
+// TestWithAsyncOnFileWrapsOnlyFiles applies async to file targets only.
+func TestWithAsyncOnFileWrapsOnlyFiles(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "log.json")
 
-	fileHandler, err := NewHandler(nil, WithRedirectToFile(logPath), WithAsyncOnFileTargets())
+	fileHandler, err := NewHandler(nil, WithRedirectToFile(logPath), WithAsyncOnFile())
 	if err != nil {
 		t.Fatalf("file NewHandler returned %v", err)
 	}
@@ -1175,7 +1176,7 @@ func TestWithAsyncOnFileTargetsWrapsOnlyFiles(t *testing.T) {
 		t.Fatalf("file Close returned %v", err)
 	}
 
-	stdHandler, err := NewHandler(io.Discard, WithAsyncOnFileTargets())
+	stdHandler, err := NewHandler(io.Discard, WithAsyncOnFile())
 	if err != nil {
 		t.Fatalf("stdout NewHandler returned %v", err)
 	}
@@ -1184,6 +1185,57 @@ func TestWithAsyncOnFileTargetsWrapsOnlyFiles(t *testing.T) {
 	}
 	if err := stdHandler.Close(); err != nil {
 		t.Fatalf("stdout Close returned %v", err)
+	}
+}
+
+// TestFileTargetsAsyncDisabledByEnv verifies SLOGCP_ASYNC_ON_FILE can disable default buffering.
+func TestFileTargetsAsyncDisabledByEnv(t *testing.T) {
+	t.Setenv(envAsyncOnFile, "false")
+
+	logPath := filepath.Join(t.TempDir(), "log.json")
+	fileHandler, err := NewHandler(nil, WithRedirectToFile(logPath))
+	if err != nil {
+		t.Fatalf("file NewHandler returned %v", err)
+	}
+	if _, ok := fileHandler.Handler.(*slogcpasync.Handler); ok {
+		t.Fatalf("file Handler unexpectedly async-wrapped")
+	}
+	if err := fileHandler.Close(); err != nil {
+		t.Fatalf("file Close returned %v", err)
+	}
+}
+
+// TestFileTargetsAsyncEnabledByEnv verifies SLOGCP_ASYNC_ON_FILE=true keeps file buffering enabled.
+func TestFileTargetsAsyncEnabledByEnv(t *testing.T) {
+	t.Setenv(envAsyncOnFile, "true")
+
+	logPath := filepath.Join(t.TempDir(), "log.json")
+	fileHandler, err := NewHandler(nil, WithRedirectToFile(logPath))
+	if err != nil {
+		t.Fatalf("file NewHandler returned %v", err)
+	}
+	if _, ok := fileHandler.Handler.(*slogcpasync.Handler); !ok {
+		t.Fatalf("file Handler is %T, want *slogcpasync.Handler", fileHandler.Handler)
+	}
+	if err := fileHandler.Close(); err != nil {
+		t.Fatalf("file Close returned %v", err)
+	}
+}
+
+// TestFileTargetsAsyncIgnoresInvalidEnv verifies invalid env values fall back to defaults.
+func TestFileTargetsAsyncIgnoresInvalidEnv(t *testing.T) {
+	t.Setenv(envAsyncOnFile, "notabool")
+
+	logPath := filepath.Join(t.TempDir(), "log.json")
+	fileHandler, err := NewHandler(nil, WithRedirectToFile(logPath))
+	if err != nil {
+		t.Fatalf("file NewHandler returned %v", err)
+	}
+	if _, ok := fileHandler.Handler.(*slogcpasync.Handler); !ok {
+		t.Fatalf("file Handler is %T, want *slogcpasync.Handler", fileHandler.Handler)
+	}
+	if err := fileHandler.Close(); err != nil {
+		t.Fatalf("file Close returned %v", err)
 	}
 }
 

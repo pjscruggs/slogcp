@@ -69,16 +69,16 @@ Additional notes:
 
 ### Defaults
 
-When slogcp writes to a file target (`SLOGCP_TARGET=file:...` or `slogcp.WithRedirectToFile`), it buffers writes with `slogcpasync` automatically so disk I/O doesn't sit on hot paths. Whenever the async wrapper is in play (file targets by default, or `WithAsync`/`Wrap`), call `Close()` on shutdown so queued records flush.
+When slogcp writes to a file target (`SLOGCP_TARGET=file:...` or `slogcp.WithRedirectToFile`), it buffers writes with `slogcpasync` automatically so disk I/O doesn't sit on hot paths. Set `SLOGCP_ASYNC_ON_FILE=false` to disable the default buffering, or call `WithAsyncOnFile(...)` to tune it. Whenever the async wrapper is in play (file targets by default, or `WithAsync`/`Wrap`), call `Close()` on shutdown so queued records flush.
 
 ### Tuning (or disabling) file buffering
 
-Use `slogcp.WithAsyncOnFileTargets(...)` to change the wrapper options applied to file targets, including disabling the wrapper entirely:
+Use `slogcp.WithAsyncOnFile(...)` to change the wrapper options applied to file targets, including disabling the wrapper entirely:
 
 ```go
 handler, _ := slogcp.NewHandler(nil,
 	slogcp.WithRedirectToFile("app.json"),
-	slogcp.WithAsyncOnFileTargets(
+	slogcp.WithAsyncOnFile(
 		slogcpasync.WithEnabled(false),
 	),
 )
@@ -115,7 +115,7 @@ logger := slog.New(async)
 
 When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `WithEnv()` (for example via `slogcp.WithMiddleware(slogcpasync.Middleware(...))`).
 
-`slogcp.WithAsync(...)` and `slogcp.WithAsyncOnFileTargets(...)` already integrate the wrapper; avoid also adding `slogcpasync.Middleware` unless you deliberately want multiple queues.
+`slogcp.WithAsync(...)` and `slogcp.WithAsyncOnFile(...)` already integrate the wrapper; avoid also adding `slogcpasync.Middleware` unless you deliberately want multiple queues.
 
 | Option | Environment variable | Default | Description |
 | --- | --- | --- | --- |
@@ -127,7 +127,7 @@ When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `Wi
 | `WithFlushTimeout(time.Duration)` | `SLOGCP_ASYNC_FLUSH_TIMEOUT` | (none) | Optional timeout for `Close`; returns `ErrFlushTimeout` if workers never finish. |
 | `WithOnDrop(func)` | (none) | (none) | Callback invoked when a record is dropped (useful for metrics). |
 | `slogcp.WithAsync(opts...)` | (none) | (disabled) | Convenience option that wraps handlers in slogcpasync using tuned per-mode defaults; supply slogcpasync options to override. |
-| `slogcp.WithAsyncOnFileTargets(opts...)` | (none) | (enabled for file targets) | Tunes (or disables) slogcpasync settings for file targets while leaving stdout/stderr synchronous. |
+| `slogcp.WithAsyncOnFile(opts...)` | `SLOGCP_ASYNC_ON_FILE` | (enabled for file targets) | Tunes (or disables) slogcpasync settings for file targets while leaving stdout/stderr synchronous; `SLOGCP_ASYNC_ON_FILE` toggles the default wrapper when this option is unset. |
 | `WithEnv()` | reads all of the above | (none) | Overlays any `SLOGCP_ASYNC_*` values onto the provided config. |
 
 ### Severity Levels

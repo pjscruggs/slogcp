@@ -67,7 +67,7 @@ func BenchmarkHandlerAsyncModes(b *testing.B) {
 			b,
 			nil,
 			WithRedirectToFile(path),
-			WithAsyncOnFileTargets(slogcpasync.WithEnabled(false)),
+			WithAsyncOnFile(slogcpasync.WithEnabled(false)),
 		)
 		benchmarkHandlerHandle(b, handler, ctx, rec)
 	})

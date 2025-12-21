@@ -50,12 +50,12 @@ if err != nil {
 defer handler.Close()
 ```
 
-Tune (or disable) buffering on file targets via `slogcp.WithAsyncOnFileTargets(...)`:
+Tune (or disable) buffering on file targets via `slogcp.WithAsyncOnFile(...)`:
 
 ```go
 handler, err := slogcp.NewHandler(nil,
 	slogcp.WithRedirectToFile("app.json"),
-	slogcp.WithAsyncOnFileTargets(
+	slogcp.WithAsyncOnFile(
 		slogcpasync.WithEnabled(false),
 	),
 )
