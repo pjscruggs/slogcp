@@ -90,7 +90,7 @@ func WrapReceiveHandler(handler func(context.Context, *pubsub.Message), opts ...
 		if cfg.publicEndpoint {
 			extractedCtx, remote := ensureSpanContext(ctx, messageAttrs, cfg)
 			extracted = remote
-			if !cfg.enableOTel && cfg.publicEndpointCorrelateLogsToRemote {
+			if !cfg.enableOTel && cfg.trustRemoteTraceForLogs {
 				ctx = extractedCtx
 			}
 		} else {

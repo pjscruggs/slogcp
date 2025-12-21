@@ -17,6 +17,9 @@ package slogcphttp
 import (
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/propagation"
@@ -50,30 +53,33 @@ const (
 	ProxyModeGCLB
 )
 
+const envTrustRemoteTrace = "SLOGCP_TRUST_REMOTE_TRACE"
+
 type config struct {
-	logger                              *slog.Logger
-	projectID                           string
-	enableOTel                          bool
-	tracerProvider                      trace.TracerProvider
-	propagators                         propagation.TextMapPropagator
-	propagatorsSet                      bool
-	propagateTrace                      bool
-	publicEndpoint                      bool
-	publicEndpointCorrelateLogsToRemote bool
-	spanNameFormatter                   func(string, *http.Request) string
-	filters                             []otelhttp.Filter
-	attrEnrichers                       []AttrEnricher
-	attrTransformers                    []AttrTransformer
-	routeGetter                         func(*http.Request) string
-	includeClientIP                     bool
-	includeQuery                        bool
-	includeUserAgent                    bool
-	injectLegacyXCTC                    bool
-	includeHTTPRequestAttr              bool
-	proxyMode                           ProxyMode
-	xffClientIPFromRight                int
-	trustXForwardedProto                bool
-	trustXForwardedProtoSet             bool
+	logger                     *slog.Logger
+	projectID                  string
+	enableOTel                 bool
+	tracerProvider             trace.TracerProvider
+	propagators                propagation.TextMapPropagator
+	propagatorsSet             bool
+	propagateTrace             bool
+	publicEndpoint             bool
+	trustRemoteTraceForLogs    bool
+	trustRemoteTraceForLogsSet bool
+	spanNameFormatter          func(string, *http.Request) string
+	filters                    []otelhttp.Filter
+	attrEnrichers              []AttrEnricher
+	attrTransformers           []AttrTransformer
+	routeGetter                func(*http.Request) string
+	includeClientIP            bool
+	includeQuery               bool
+	includeUserAgent           bool
+	injectLegacyXCTC           bool
+	includeHTTPRequestAttr     bool
+	proxyMode                  ProxyMode
+	xffClientIPFromRight       int
+	trustXForwardedProto       bool
+	trustXForwardedProtoSet    bool
 }
 
 // defaultConfig returns the baseline configuration for slogcp HTTP helpers.
@@ -98,7 +104,24 @@ func applyOptions(opts []Option) *config {
 			opt(cfg)
 		}
 	}
+	applyTrustRemoteTraceEnv(cfg)
 	return cfg
+}
+
+// applyTrustRemoteTraceEnv applies SLOGCP_TRUST_REMOTE_TRACE when not set explicitly.
+func applyTrustRemoteTraceEnv(cfg *config) {
+	if cfg == nil || cfg.trustRemoteTraceForLogsSet {
+		return
+	}
+	raw := strings.TrimSpace(os.Getenv(envTrustRemoteTrace))
+	if raw == "" {
+		return
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return
+	}
+	cfg.trustRemoteTraceForLogs = enabled
 }
 
 // WithLogger sets the base logger used to derive per-request loggers. When
@@ -155,15 +178,17 @@ func WithPublicEndpoint(enabled bool) Option {
 	}
 }
 
-// WithPublicEndpointCorrelateLogsToRemote controls whether, in public-endpoint
-// mode, the middleware correlates logs to inbound trace context when OpenTelemetry
-// span creation is disabled.
+// WithRemoteTrace controls whether, in public-endpoint mode, the middleware
+// correlates logs to inbound trace context when OpenTelemetry span creation is
+// disabled. When unset, SLOGCP_TRUST_REMOTE_TRACE can be used to configure the
+// same behavior.
 //
 // When public endpoint is enabled and WithOTel(false) is in effect, the default is
 // to avoid trusting inbound trace headers for log correlation.
-func WithPublicEndpointCorrelateLogsToRemote(enabled bool) Option {
+func WithRemoteTrace(enabled bool) Option {
 	return func(cfg *config) {
-		cfg.publicEndpointCorrelateLogsToRemote = enabled
+		cfg.trustRemoteTraceForLogs = enabled
+		cfg.trustRemoteTraceForLogsSet = true
 	}
 }
 

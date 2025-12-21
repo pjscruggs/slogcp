@@ -409,6 +409,8 @@ func TestWrapReceiveHandlerPublicEndpointLinksRemote(t *testing.T) {
 
 // TestPublicEndpointWithoutSpanDoesNotCorrelateLogs verifies untrusted remote context is not used for log correlation by default.
 func TestPublicEndpointWithoutSpanDoesNotCorrelateLogs(t *testing.T) {
+	t.Setenv(envTrustRemoteTrace, "")
+
 	spanCtx := mustSpanContext(t)
 	upstreamCtx := trace.ContextWithSpanContext(context.Background(), spanCtx)
 	attrs := InjectAttributes(upstreamCtx, nil, WithPropagators(propagation.TraceContext{}))
@@ -467,7 +469,7 @@ func TestPublicEndpointWithoutSpanCanCorrelateLogsWhenEnabled(t *testing.T) {
 		WithPropagators(propagation.TraceContext{}),
 		WithPublicEndpoint(true),
 		WithOTel(false),
-		WithPublicEndpointCorrelateLogsToRemote(true),
+		WithRemoteTrace(true),
 	)
 
 	wrapped(context.Background(), msg)
@@ -512,7 +514,7 @@ func TestApplyOptionsCoversSetters(t *testing.T) {
 		WithSpanStrategy(SpanStrategyAuto),
 		WithTracerProvider(tp),
 		WithPublicEndpoint(true),
-		WithPublicEndpointCorrelateLogsToRemote(true),
+		WithRemoteTrace(true),
 		WithPropagators(nil),
 		WithTracePropagation(false),
 		WithBaggagePropagation(true),
@@ -560,8 +562,8 @@ func TestApplyOptionsCoversSetters(t *testing.T) {
 	if !cfg.publicEndpoint {
 		t.Fatalf("publicEndpoint should be true")
 	}
-	if !cfg.publicEndpointCorrelateLogsToRemote {
-		t.Fatalf("publicEndpointCorrelateLogsToRemote should be true")
+	if !cfg.trustRemoteTraceForLogs || !cfg.trustRemoteTraceForLogsSet {
+		t.Fatalf("trustRemoteTraceForLogs not applied: value=%v set=%v", cfg.trustRemoteTraceForLogs, cfg.trustRemoteTraceForLogsSet)
 	}
 	if cfg.propagatorsSet || cfg.propagators != nil {
 		t.Fatalf("expected propagators to be unset and nil")
@@ -604,6 +606,36 @@ func TestApplyOptionsCoversSetters(t *testing.T) {
 	}
 	if !cfg.googClientExtraction || !cfg.googClientInjection {
 		t.Fatalf("googclient compat flags not set")
+	}
+}
+
+// TestRemoteTraceForLogsEnvIsAppliedWhenUnset verifies env defaults apply when options are unset.
+func TestRemoteTraceForLogsEnvIsAppliedWhenUnset(t *testing.T) {
+	t.Setenv(envTrustRemoteTrace, "true")
+
+	cfg := applyOptions(nil)
+	if !cfg.trustRemoteTraceForLogs {
+		t.Fatalf("trustRemoteTraceForLogs = false, want true")
+	}
+}
+
+// TestRemoteTraceForLogsEnvDoesNotOverrideExplicitOption verifies explicit options win over env.
+func TestRemoteTraceForLogsEnvDoesNotOverrideExplicitOption(t *testing.T) {
+	t.Setenv(envTrustRemoteTrace, "true")
+
+	cfg := applyOptions([]Option{WithRemoteTrace(false)})
+	if cfg.trustRemoteTraceForLogs {
+		t.Fatalf("trustRemoteTraceForLogs = true, want false")
+	}
+}
+
+// TestRemoteTraceForLogsEnvIgnoresInvalidValue ensures invalid env values are ignored.
+func TestRemoteTraceForLogsEnvIgnoresInvalidValue(t *testing.T) {
+	t.Setenv(envTrustRemoteTrace, "notabool")
+
+	cfg := applyOptions(nil)
+	if cfg.trustRemoteTraceForLogs {
+		t.Fatalf("trustRemoteTraceForLogs = true, want false")
 	}
 }
 

@@ -81,14 +81,14 @@ slogcppubsub.Inject(ctx, msg, slogcppubsub.WithInjectOnlyIfSpanPresent(true))
 
 When public endpoint mode is enabled and `WithOTel(false)` is used, logs do not
 correlate to extracted remote trace context by default. If you explicitly want
-that behavior:
+that behavior (or set `SLOGCP_TRUST_REMOTE_TRACE=true`):
 
 ```go
 wrapped := slogcppubsub.WrapReceiveHandler(
 	handler,
 	slogcppubsub.WithPublicEndpoint(true),
 	slogcppubsub.WithOTel(false),
-	slogcppubsub.WithPublicEndpointCorrelateLogsToRemote(true),
+	slogcppubsub.WithRemoteTrace(true),
 )
 ```
 

@@ -68,7 +68,7 @@ Options:
 
 - `WithOTel(false)` disables the `otelhttp` wrapper (no spans are created by this middleware).
 - `WithTracePropagation(false)` disables reading/writing trace context headers. When `WithOTel(true)`, spans are still created, but they start new root traces instead of continuing any incoming trace.
-- `WithPublicEndpoint(true)` tells `otelhttp` to start a new root span and link any inbound context instead of parenting (useful for untrusted/public edges). When `WithOTel(false)`, logs do not correlate to inbound trace headers by default; opt in with `WithPublicEndpointCorrelateLogsToRemote(true)`.
+- `WithPublicEndpoint(true)` tells `otelhttp` to start a new root span and link any inbound context instead of parenting (useful for untrusted/public edges). When `WithOTel(false)`, logs do not correlate to inbound trace headers by default; opt in with `WithRemoteTrace(true)` (or set `SLOGCP_TRUST_REMOTE_TRACE=true`).
 - `WithPropagators(...)` supplies a specific propagator for header extraction/injection.
 
 ## Proxy-aware metadata (Cloud Run / GCLB)

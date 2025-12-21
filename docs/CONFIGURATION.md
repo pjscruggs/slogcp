@@ -168,7 +168,7 @@ Important options:
 | `WithTracePropagation(bool)` | Enables or disables extraction of incoming trace headers. Defaults to `true`. |
 | `WithTracerProvider(trace.TracerProvider)` | Supplies the tracer provider passed to `otelhttp`. |
 | `WithPublicEndpoint(bool)` | Forwards the public-endpoint hint to `otelhttp`. |
-| `WithPublicEndpointCorrelateLogsToRemote(bool)` | When `WithPublicEndpoint(true)` and `WithOTel(false)`, controls whether logs correlate to inbound trace headers (disabled by default). |
+| `WithRemoteTrace(bool)` | When `WithPublicEndpoint(true)` and `WithOTel(false)`, controls whether logs correlate to inbound trace headers (disabled by default). Also reads `SLOGCP_TRUST_REMOTE_TRACE` when unset. |
 | `WithOTel(bool)` | Enables or disables wrapping with `otelhttp`. |
 | `WithSpanNameFormatter(otelhttp.SpanNameFormatter)` / `WithFilter(otelhttp.Filter)` | Mirrors the underlying `otelhttp` hooks. |
 | `WithAttrEnricher(func(*http.Request, *RequestScope) []slog.Attr)` | Adds custom attributes to the request logger. |
@@ -261,7 +261,7 @@ Helpers:
 | `WithSpanName(string)` | `pubsub.process` | Span name used when creating consumer spans. |
 | `WithSpanAttributes(attribute.KeyValue...)` | (none) | Additional OpenTelemetry attributes appended to consumer spans. |
 | `WithPublicEndpoint(bool)` | `false` | Treats producers as untrusted: starts a new root trace and links extracted remote context instead of parenting. |
-| `WithPublicEndpointCorrelateLogsToRemote(bool)` | `false` | When `WithPublicEndpoint(true)` and no local span is created (for example, `WithOTel(false)`), controls whether logs correlate to extracted remote trace context. |
+| `WithRemoteTrace(bool)` | `false` | When `WithPublicEndpoint(true)` and no local span is created (for example, `WithOTel(false)`), controls whether logs correlate to extracted remote trace context. Also reads `SLOGCP_TRUST_REMOTE_TRACE` when unset. |
 | `WithPropagators(propagation.TextMapPropagator)` | `otel.GetTextMapPropagator()` | Propagator used for attribute injection/extraction; passing `nil` is treated the same as omitting the option (use the global propagator). Disable propagation with `WithTracePropagation(false)`. |
 | `WithTracePropagation(bool)` | `true` | Enables/disables trace context extraction and injection via message attributes. |
 | `WithBaggagePropagation(bool)` | `false` | Enables/disables baggage injection/extraction via message attributes when the propagator supports it. |
