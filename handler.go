@@ -47,6 +47,7 @@ const (
 	envTarget           = "SLOGCP_TARGET"
 	envSlogcpGCP        = "SLOGCP_GCP_PROJECT"
 	envTraceDiagnostics = "SLOGCP_TRACE_DIAGNOSTICS"
+	envAsyncOnFile      = "SLOGCP_ASYNC_ON_FILE"
 
 	traceProjectSourceOption = "WithTraceProjectID"
 )
@@ -405,12 +406,7 @@ func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *
 	}
 
 	isFileTarget := hasFileTarget(cfg)
-	asyncEnabled := builder.asyncEnabled
-	asyncOnFileTargets := builder.asyncOnFileTargets
-	if !asyncEnabled && isFileTarget {
-		asyncEnabled = true
-		asyncOnFileTargets = true
-	}
+	asyncEnabled, asyncOnFileTargets := resolveAsyncConfig(isFileTarget, builder)
 
 	var asyncHandler *slogcpasync.Handler
 	if asyncEnabled && (!asyncOnFileTargets || isFileTarget) {
@@ -424,6 +420,34 @@ func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *
 		handler = sourceAwareHandler{Handler: handler}
 	}
 	return handler, asyncHandler
+}
+
+// resolveAsyncConfig determines async wrapper defaults for file targets when no explicit option is set.
+func resolveAsyncConfig(isFileTarget bool, builder *options) (bool, bool) {
+	if builder.asyncEnabled {
+		return true, builder.asyncOnFileTargets
+	}
+	if !isFileTarget {
+		return false, false
+	}
+	enabled, ok := asyncOnFileTargetsFromEnv()
+	if ok && !enabled {
+		return false, false
+	}
+	return true, true
+}
+
+// asyncOnFileTargetsFromEnv reads SLOGCP_ASYNC_ON_FILE to enable or disable file buffering.
+func asyncOnFileTargetsFromEnv() (bool, bool) {
+	raw := strings.TrimSpace(os.Getenv(envAsyncOnFile))
+	if raw == "" {
+		return false, false
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, false
+	}
+	return enabled, true
 }
 
 // ensureWriterDefaults assigns cfg.Writer when unset by falling back to either
@@ -906,9 +930,9 @@ func WithAsync(opts ...slogcpasync.Option) Option {
 	}
 }
 
-// WithAsyncOnFileTargets applies slogcpasync only when logging to a file target.
+// WithAsyncOnFile applies slogcpasync only when logging to a file target.
 // It keeps stdout/stderr handlers synchronous while letting callers tune (or disable) file buffering.
-func WithAsyncOnFileTargets(opts ...slogcpasync.Option) Option {
+func WithAsyncOnFile(opts ...slogcpasync.Option) Option {
 	return func(o *options) {
 		o.asyncEnabled = true
 		o.asyncOnFileTargets = true
