@@ -2611,7 +2611,7 @@ func TestHandlerCloseReturnsAsyncHandlerError(t *testing.T) {
 
 	sentinel := errors.New("async-close")
 	inner := closeErrorHandler{
-		Handler: slog.NewJSONHandler(io.Discard, nil),
+		Handler: slog.DiscardHandler,
 		err:     sentinel,
 	}
 	wrapped := slogcpasync.Wrap(inner, slogcpasync.WithEnabled(true))
