@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -36,14 +37,25 @@ import (
 
 const instrumentationName = "github.com/pjscruggs/slogcp/slogcphttp"
 
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
 var xCloudTraceContextExtractor = contextWithXCloudTrace
 
 // Middleware returns an http.Handler middleware that derives a request-scoped
 // logger, extracts trace context, and leaves application logging to handlers.
 func Middleware(opts ...Option) func(http.Handler) http.Handler {
 	cfg := applyOptions(opts)
+	needsRuntimeInfo := strings.TrimSpace(cfg.projectID) == "" || (!cfg.trustXForwardedProtoSet && cfg.proxyMode != ProxyModeGCLB)
+	var runtimeInfo slogcp.RuntimeInfo
+	if needsRuntimeInfo {
+		runtimeInfo = slogcp.DetectRuntimeInfo()
+	}
+	applyDefaultForwardedProtoTrust(cfg, runtimeInfo)
 
-	projectID := resolveProjectID(cfg.projectID)
+	projectID := resolveProjectID(cfg.projectID, runtimeInfo)
 
 	return func(next http.Handler) http.Handler {
 		if next == nil {
@@ -64,12 +76,12 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 }
 
 // resolveProjectID derives a project ID from configuration or runtime detection.
-func resolveProjectID(configured string) string {
+func resolveProjectID(configured string, runtimeInfo slogcp.RuntimeInfo) string {
 	projectID := strings.TrimSpace(configured)
 	if projectID != "" {
 		return projectID
 	}
-	return strings.TrimSpace(slogcp.DetectRuntimeInfo().ProjectID)
+	return strings.TrimSpace(runtimeInfo.ProjectID)
 }
 
 // buildLoggingHandler constructs the logging middleware around the next handler.
@@ -93,6 +105,38 @@ func buildLoggingHandler(cfg *config, projectID string, next http.Handler) http.
 
 		next.ServeHTTP(wrapped, r)
 	})
+}
+
+// applyDefaultForwardedProtoTrust enables X-Forwarded-Proto parsing when callers
+// have not explicitly configured scheme inference and the process is running in
+// a managed GCP serverless environment where TLS terminates before the request
+// reaches the application (Cloud Run services, Cloud Functions, App Engine).
+func applyDefaultForwardedProtoTrust(cfg *config, runtimeInfo slogcp.RuntimeInfo) {
+	if cfg == nil {
+		return
+	}
+	if cfg.trustXForwardedProtoSet {
+		return
+	}
+	if cfg.proxyMode == ProxyModeGCLB {
+		cfg.trustXForwardedProto = true
+		return
+	}
+	cfg.trustXForwardedProto = shouldTrustXForwardedProtoByEnvironment(runtimeInfo.Environment)
+}
+
+// shouldTrustXForwardedProtoByEnvironment reports whether slogcphttp should treat
+// X-Forwarded-Proto as a reliable scheme signal for the detected environment.
+func shouldTrustXForwardedProtoByEnvironment(env slogcp.RuntimeEnvironment) bool {
+	switch env {
+	case slogcp.RuntimeEnvCloudRunService,
+		slogcp.RuntimeEnvCloudFunctions,
+		slogcp.RuntimeEnvAppEngineStandard,
+		slogcp.RuntimeEnvAppEngineFlexible:
+		return true
+	default:
+		return false
+	}
 }
 
 // buildRequestAttributes assembles request-scoped attributes including enrichers.
@@ -147,11 +191,17 @@ func otelOptions(cfg *config) []otelhttp.Option {
 	if cfg.tracerProvider != nil {
 		otelOpts = append(otelOpts, otelhttp.WithTracerProvider(cfg.tracerProvider))
 	}
-	if cfg.propagatorsSet && cfg.propagators != nil {
-		otelOpts = append(otelOpts, otelhttp.WithPropagators(cfg.propagators))
+	if cfg.propagateTrace {
+		if cfg.propagatorsSet && cfg.propagators != nil {
+			otelOpts = append(otelOpts, otelhttp.WithPropagators(cfg.propagators))
+		}
+	} else {
+		otelOpts = append(otelOpts, otelhttp.WithPropagators(noopPropagator{}))
 	}
 	if cfg.publicEndpoint {
-		otelOpts = append(otelOpts, otelhttp.WithPublicEndpoint())
+		otelOpts = append(otelOpts, otelhttp.WithPublicEndpointFn(func(*http.Request) bool {
+			return true
+		}))
 	}
 	if cfg.spanNameFormatter != nil {
 		otelOpts = append(otelOpts, otelhttp.WithSpanNameFormatter(cfg.spanNameFormatter))
@@ -164,6 +214,22 @@ func otelOptions(cfg *config) []otelhttp.Option {
 	return otelOpts
 }
 
+type noopPropagator struct{}
+
+// Inject satisfies propagation.TextMapPropagator while remaining a no-op.
+func (noopPropagator) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+	_ = ctx
+	_ = carrier
+}
+
+// Extract returns the provided context unchanged.
+func (noopPropagator) Extract(ctx context.Context, _ propagation.TextMapCarrier) context.Context {
+	return ctx
+}
+
+// Fields reports no injected fields.
+func (noopPropagator) Fields() []string { return nil }
+
 // RequestScope captures request metadata surfaced to handlers via context.
 type RequestScope struct {
 	start       time.Time
@@ -174,6 +240,8 @@ type RequestScope struct {
 	scheme      string
 	host        string
 	clientIP    string
+	peerPort    int
+	outbound    bool
 	userAgent   string
 	requestSize int64
 
@@ -203,10 +271,10 @@ func newRequestScope(r *http.Request, start time.Time, cfg *config) *RequestScop
 func (rs *RequestScope) populateFromRequest(r *http.Request, cfg *config) {
 	rs.requestSize = r.ContentLength
 	rs.method = r.Method
-	rs.populateURLFields(r)
+	rs.populateURLFields(r, cfg)
 	rs.userAgent = r.UserAgent()
 	if cfg.includeClientIP {
-		rs.clientIP = extractIP(r.RemoteAddr)
+		rs.clientIP = clientIPFromRequest(r, cfg)
 	}
 	if cfg.routeGetter != nil {
 		rs.route = strings.TrimSpace(cfg.routeGetter(r))
@@ -214,7 +282,7 @@ func (rs *RequestScope) populateFromRequest(r *http.Request, cfg *config) {
 }
 
 // populateURLFields fills URL-derived fields including scheme and host.
-func (rs *RequestScope) populateURLFields(r *http.Request) {
+func (rs *RequestScope) populateURLFields(r *http.Request, cfg *config) {
 	if r.URL == nil {
 		return
 	}
@@ -222,33 +290,44 @@ func (rs *RequestScope) populateURLFields(r *http.Request) {
 	rs.query = r.URL.RawQuery
 	rs.scheme = r.URL.Scheme
 	if rs.scheme == "" {
-		rs.scheme = inferScheme(r)
+		rs.scheme = inferScheme(r, cfg)
 	}
 	rs.host = r.Host
 }
 
-// inferScheme determines http/https scheme based on TLS presence.
-func inferScheme(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
+// inferScheme determines the request scheme, preferring trusted proxy headers
+// when configured, and otherwise falling back to TLS presence.
+func inferScheme(r *http.Request, cfg *config) string {
+	if r == nil {
+		return ""
 	}
-	return "http"
+	if cfg != nil && (cfg.proxyMode == ProxyModeGCLB || cfg.trustXForwardedProto) {
+		if proto := xForwardedProto(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+			return proto
+		}
+	}
+	if r.TLS != nil {
+		return schemeHTTPS
+	}
+	return schemeHTTP
 }
 
 // loggerAttrs assembles the structured log attributes for the request scope.
 func (rs *RequestScope) loggerAttrs(cfg *config, traceAttrs []slog.Attr) []slog.Attr {
-	attrs := make([]slog.Attr, 0, len(traceAttrs)+10)
-	attrs = append(attrs, traceAttrs...)
-	attrs = append(attrs, rs.requestCoreAttrs(cfg)...)
-	attrs = append(attrs, rs.metricAttrs()...)
-	attrs = append(attrs, rs.sizeAttrs()...)
-	attrs = append(attrs, rs.clientAttrs(cfg)...)
+	capHint := len(traceAttrs) + 14
+	attrs := make([]slog.Attr, 0, capHint)
+	if len(traceAttrs) > 0 {
+		attrs = append(attrs, traceAttrs...)
+	}
+	attrs = rs.appendRequestCoreAttrs(cfg, attrs)
+	attrs = rs.appendMetricAttrs(attrs)
+	attrs = rs.appendSizeAttrs(attrs)
+	attrs = rs.appendClientAttrs(cfg, attrs)
 	return attrs
 }
 
-// requestCoreAttrs returns method/target/route/scheme/host attributes.
-func (rs *RequestScope) requestCoreAttrs(cfg *config) []slog.Attr {
-	var attrs []slog.Attr
+// appendRequestCoreAttrs appends method/target/route/scheme/host attributes.
+func (rs *RequestScope) appendRequestCoreAttrs(cfg *config, attrs []slog.Attr) []slog.Attr {
 	if rs.method != "" {
 		attrs = append(attrs, slog.String("http.method", rs.method))
 	}
@@ -272,48 +351,77 @@ func (rs *RequestScope) requestCoreAttrs(cfg *config) []slog.Attr {
 
 // metricAttrs supplies status, latency, and response size attributes.
 func (rs *RequestScope) metricAttrs() []slog.Attr {
+	return rs.appendMetricAttrs(nil)
+}
+
+type requestScopeMetricKind uint8
+
+const (
+	requestScopeMetricStatus requestScopeMetricKind = iota
+	requestScopeMetricResponseSize
+)
+
+type requestScopeMetricValue struct {
+	scope *RequestScope
+	kind  requestScopeMetricKind
+}
+
+// LogValue implements slog.LogValuer for deferred metric evaluation.
+func (v requestScopeMetricValue) LogValue() slog.Value {
+	if v.scope == nil {
+		return slog.Value{}
+	}
+	switch v.kind {
+	case requestScopeMetricStatus:
+		return slog.IntValue(v.scope.Status())
+	case requestScopeMetricResponseSize:
+		return slog.Int64Value(v.scope.ResponseSize())
+	default:
+		return slog.Value{}
+	}
+}
+
+// appendMetricAttrs appends status, latency, and response size attributes.
+func (rs *RequestScope) appendMetricAttrs(attrs []slog.Attr) []slog.Attr {
 	lat, finalized := rs.Latency()
 
-	attrs := []slog.Attr{
-		{
-			Key: "http.status_code",
-			Value: slog.AnyValue(logValueFunc(func() slog.Value {
-				return slog.IntValue(rs.Status())
-			})),
+	attrs = append(attrs,
+		slog.Attr{
+			Key:   "http.status_code",
+			Value: slog.AnyValue(requestScopeMetricValue{scope: rs, kind: requestScopeMetricStatus}),
 		},
-		{
-			Key: "http.response_size",
-			Value: slog.AnyValue(logValueFunc(func() slog.Value {
-				return slog.Int64Value(rs.ResponseSize())
-			})),
+		slog.Attr{
+			Key:   "http.response_size",
+			Value: slog.AnyValue(requestScopeMetricValue{scope: rs, kind: requestScopeMetricResponseSize}),
 		},
-	}
+	)
 
 	if finalized {
-		attrs = append(attrs, slog.Attr{
-			Key: "http.latency",
-			Value: slog.AnyValue(logValueFunc(func() slog.Value {
-				return slog.DurationValue(lat)
-			})),
-		})
+		attrs = append(attrs, slog.Duration("http.latency", lat))
 	}
 
 	return attrs
 }
 
-// sizeAttrs reports request size when available.
-func (rs *RequestScope) sizeAttrs() []slog.Attr {
+// appendSizeAttrs appends the request size attribute when available.
+func (rs *RequestScope) appendSizeAttrs(attrs []slog.Attr) []slog.Attr {
 	if rs.requestSize <= 0 {
-		return nil
+		return attrs
 	}
-	return []slog.Attr{slog.Int64("http.request_size", rs.requestSize)}
+	return append(attrs, slog.Int64("http.request_size", rs.requestSize))
 }
 
-// clientAttrs emits optional network and user agent attributes.
-func (rs *RequestScope) clientAttrs(cfg *config) []slog.Attr {
-	var attrs []slog.Attr
+// appendClientAttrs appends optional network and user agent attributes.
+func (rs *RequestScope) appendClientAttrs(cfg *config, attrs []slog.Attr) []slog.Attr {
 	if cfg.includeClientIP && rs.clientIP != "" {
-		attrs = append(attrs, slog.String("network.peer.ip", rs.clientIP))
+		if rs.outbound {
+			attrs = append(attrs, slog.String("server.address", rs.clientIP))
+			if rs.peerPort > 0 {
+				attrs = append(attrs, slog.Int("server.port", rs.peerPort))
+			}
+		} else {
+			attrs = append(attrs, slog.String("network.peer.ip", rs.clientIP))
+		}
 	}
 	if cfg.includeUserAgent && rs.userAgent != "" {
 		attrs = append(attrs, slog.String("http.user_agent", rs.userAgent))
@@ -422,13 +530,6 @@ func ScopeFromContext(ctx context.Context) (*RequestScope, bool) {
 	return scope, ok && scope != nil
 }
 
-type logValueFunc func() slog.Value
-
-// LogValue implements slog.LogValuer for deferred attribute evaluation.
-func (f logValueFunc) LogValue() slog.Value {
-	return f()
-}
-
 type responseRecorder struct {
 	http.ResponseWriter
 	scope        *RequestScope
@@ -519,6 +620,11 @@ func wrapResponseWriter(w http.ResponseWriter, scope *RequestScope) (http.Respon
 	return rec, rec
 }
 
+// Unwrap exposes the underlying ResponseWriter for http.ResponseController.
+func (rr *responseRecorder) Unwrap() http.ResponseWriter {
+	return rr.ResponseWriter
+}
+
 // Flush forwards the flush request to the underlying ResponseWriter when supported.
 func (rr *responseRecorder) Flush() {
 	if flusher, ok := rr.ResponseWriter.(http.Flusher); ok {
@@ -559,8 +665,10 @@ func (rr *responseRecorder) CloseNotify() <-chan bool {
 
 // ensureSpanContext extracts existing span context or synthesizes one from incoming headers.
 func ensureSpanContext(ctx context.Context, r *http.Request, cfg *config) (context.Context, trace.SpanContext) {
-	if cfg != nil && !cfg.propagateTrace {
-		return ctx, trace.SpanContextFromContext(ctx)
+	if cfg != nil {
+		if !cfg.propagateTrace {
+			return ctx, trace.SpanContextFromContext(ctx)
+		}
 	}
 
 	sc := trace.SpanContextFromContext(ctx)
@@ -568,25 +676,79 @@ func ensureSpanContext(ctx context.Context, r *http.Request, cfg *config) (conte
 		return ctx, sc
 	}
 
-	propagator := cfg.propagators
-	if propagator == nil {
-		propagator = otel.GetTextMapPropagator()
-	}
-	if propagator != nil {
-		extracted := propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
-		sc = trace.SpanContextFromContext(extracted)
-		if sc.IsValid() {
-			return extracted, sc
-		}
+	if !shouldExtractRemoteSpanContext(cfg) {
+		return ctx, sc
 	}
 
-	if header := r.Header.Get(XCloudTraceContextHeader); header != "" {
-		if xctx, ok := xCloudTraceContextExtractor(ctx, header); ok {
-			return xctx, trace.SpanContextFromContext(xctx)
-		}
+	if r == nil {
+		return ctx, sc
+	}
+
+	if extractedCtx, extractedSC, ok := extractSpanContextFromHeaders(ctx, r, cfg); ok {
+		return extractedCtx, extractedSC
+	}
+
+	if xctx, xsc, ok := extractSpanContextFromXCloudTraceContext(ctx, r); ok {
+		return xctx, xsc
 	}
 
 	return ctx, sc
+}
+
+// shouldExtractRemoteSpanContext reports whether ensureSpanContext should trust and extract remote context.
+func shouldExtractRemoteSpanContext(cfg *config) bool {
+	if cfg == nil {
+		return true
+	}
+	if !cfg.publicEndpoint {
+		return true
+	}
+	if cfg.enableOTel {
+		return true
+	}
+	return cfg.trustRemoteTraceForLogs
+}
+
+// extractSpanContextFromHeaders extracts a span context using the configured/global propagator.
+func extractSpanContextFromHeaders(ctx context.Context, r *http.Request, cfg *config) (context.Context, trace.SpanContext, bool) {
+	var propagator propagation.TextMapPropagator
+	if cfg != nil {
+		propagator = cfg.propagators
+		if propagator == nil && !cfg.propagatorsSet {
+			propagator = otel.GetTextMapPropagator()
+		}
+	}
+	if propagator == nil && cfg == nil {
+		propagator = otel.GetTextMapPropagator()
+	}
+	if propagator == nil {
+		return ctx, trace.SpanContextFromContext(ctx), false
+	}
+
+	extracted := propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
+	sc := trace.SpanContextFromContext(extracted)
+	if !sc.IsValid() {
+		return ctx, trace.SpanContextFromContext(ctx), false
+	}
+	return extracted, sc, true
+}
+
+// extractSpanContextFromXCloudTraceContext extracts span context from X-Cloud-Trace-Context when present.
+func extractSpanContextFromXCloudTraceContext(ctx context.Context, r *http.Request) (context.Context, trace.SpanContext, bool) {
+	header := r.Header.Get(XCloudTraceContextHeader)
+	if header == "" {
+		return ctx, trace.SpanContextFromContext(ctx), false
+	}
+
+	extracted, ok := xCloudTraceContextExtractor(ctx, header)
+	if !ok {
+		return ctx, trace.SpanContextFromContext(ctx), false
+	}
+	sc := trace.SpanContextFromContext(extracted)
+	if !sc.IsValid() {
+		return ctx, trace.SpanContextFromContext(ctx), false
+	}
+	return extracted, sc, true
 }
 
 // extractIP strips the port from a host:port string and returns the host component.
@@ -600,6 +762,75 @@ func extractIP(addr string) string {
 	return addr
 }
 
+// clientIPFromRequest determines the client IP address for the request based on proxy mode.
+func clientIPFromRequest(r *http.Request, cfg *config) string {
+	if r == nil {
+		return ""
+	}
+	if cfg != nil && cfg.proxyMode == ProxyModeGCLB {
+		if ip := gclbClientIPFromXForwardedFor(r.Header.Get("X-Forwarded-For"), cfg.xffClientIPFromRight); ip != "" {
+			return ip
+		}
+	}
+	return extractIP(r.RemoteAddr)
+}
+
+// xForwardedProto parses X-Forwarded-Proto, returning a normalized http/https
+// token when present.
+func xForwardedProto(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if token, _, ok := strings.Cut(value, ","); ok {
+		value = token
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == schemeHTTP || value == schemeHTTPS {
+		return value
+	}
+	return ""
+}
+
+// gclbClientIPFromXForwardedFor extracts the trusted client IP from X-Forwarded-For by selecting
+// the Nth IP from the right and validating it as an IP address.
+func gclbClientIPFromXForwardedFor(value string, fromRight int) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if fromRight <= 0 {
+		fromRight = 1
+	}
+
+	parts := strings.Split(value, ",")
+	cleaned := parts[:0]
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		part = strings.Trim(part, "\"")
+		if part == "" {
+			continue
+		}
+		cleaned = append(cleaned, part)
+	}
+	if len(cleaned) < fromRight {
+		return ""
+	}
+
+	candidate := strings.TrimSpace(cleaned[len(cleaned)-fromRight])
+	candidate = strings.Trim(candidate, "\"")
+	candidate = strings.Trim(candidate, "[]")
+	if candidate == "" {
+		return ""
+	}
+
+	addr, err := netip.ParseAddr(candidate)
+	if err != nil {
+		return ""
+	}
+	return addr.String()
+}
+
 // loggerWithAttrs returns a logger enriched with the supplied attributes.
 func loggerWithAttrs(base *slog.Logger, attrs []slog.Attr) *slog.Logger {
 	if base == nil {
@@ -608,9 +839,6 @@ func loggerWithAttrs(base *slog.Logger, attrs []slog.Attr) *slog.Logger {
 	if len(attrs) == 0 {
 		return base
 	}
-	args := make([]any, len(attrs))
-	for i, attr := range attrs {
-		args[i] = attr
-	}
-	return base.With(args...)
+	handler := base.Handler().WithAttrs(attrs)
+	return slog.New(handler)
 }

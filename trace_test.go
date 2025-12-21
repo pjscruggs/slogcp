@@ -48,6 +48,35 @@ func TestBuildXCloudTraceContextUnsampled(t *testing.T) {
 	}
 }
 
+// TestNormalizeTraceProjectID verifies strict normalization and validation.
+func TestNormalizeTraceProjectID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		input       string
+		want        string
+		wantChanged bool
+		wantOK      bool
+	}{
+		{name: "empty", input: "", want: "", wantChanged: false, wantOK: false},
+		{name: "valid", input: "alpha-123", want: "alpha-123", wantChanged: false, wantOK: true},
+		{name: "with_prefix", input: "projects/my-project", want: "my-project", wantChanged: true, wantOK: true},
+		{name: "uppercased", input: "My-Project", want: "my-project", wantChanged: true, wantOK: true},
+		{name: "reject_extra_path", input: "projects/proj/extra", want: "", wantChanged: false, wantOK: false},
+		{name: "reject_pattern", input: "short", want: "", wantChanged: false, wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, changed, ok := normalizeTraceProjectID(tt.input)
+			if got != tt.want || changed != tt.wantChanged || ok != tt.wantOK {
+				t.Fatalf("normalizeTraceProjectID(%q) = (%q, %v, %v), want (%q, %v, %v)", tt.input, got, changed, ok, tt.want, tt.wantChanged, tt.wantOK)
+			}
+		})
+	}
+}
+
 // TestDetectTraceProjectIDFromEnvPriority ensures higher-priority variables win.
 func TestDetectTraceProjectIDFromEnvPriority(t *testing.T) {
 	t.Setenv("SLOGCP_PROJECT_ID", "project-id")
@@ -56,6 +85,16 @@ func TestDetectTraceProjectIDFromEnvPriority(t *testing.T) {
 
 	if got := detectTraceProjectIDFromEnv(); got != "trace-id" {
 		t.Fatalf("detectTraceProjectIDFromEnv() = %q, want %q", got, "trace-id")
+	}
+}
+
+// TestDetectTraceProjectIDFromEnvSkipsInvalid ensures invalid values are ignored.
+func TestDetectTraceProjectIDFromEnvSkipsInvalid(t *testing.T) {
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "projects/invalid/extra")
+	t.Setenv("SLOGCP_PROJECT_ID", "valid-project")
+
+	if got := detectTraceProjectIDFromEnv(); got != "valid-project" {
+		t.Fatalf("detectTraceProjectIDFromEnv() = %q, want %q", got, "valid-project")
 	}
 }
 
@@ -158,10 +197,40 @@ func TestTraceAttributesFallsBackToEnvProjectID(t *testing.T) {
 	}
 }
 
+// TestTraceAttributesIgnoresInvalidProjectID ensures invalid project IDs fall back to OTel attributes.
+func TestTraceAttributesIgnoresInvalidProjectID(t *testing.T) {
+	resetTraceProjectEnvCache()
+	t.Cleanup(resetTraceProjectEnvCache)
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "")
+	t.Setenv("SLOGCP_PROJECT_ID", "")
+	t.Setenv("SLOGCP_GCP_PROJECT", "")
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+	t.Setenv("GCLOUD_PROJECT", "")
+	t.Setenv("GCP_PROJECT", "")
+
+	traceID, _ := trace.TraceIDFromHex("dddddddddddddddddddddddddddddddd")
+	spanID, _ := trace.SpanIDFromHex("eeeeeeeeeeeeeeee")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	attrs, ok := TraceAttributes(ctx, "projects/invalid/extra")
+	if !ok {
+		t.Fatalf("TraceAttributes() ok = false, want true")
+	}
+	got := attrsToMap(attrs)
+	if _, exists := got[TraceKey]; exists {
+		t.Fatalf("TraceKey should be omitted for invalid project ID")
+	}
+	if got["otel.trace_id"] != "dddddddddddddddddddddddddddddddd" {
+		t.Fatalf("otel.trace_id attr = %v, want raw trace id", got["otel.trace_id"])
+	}
+}
+
 // TestTraceAttributesOtelFallback covers local dev scenarios with no project ID.
 func TestTraceAttributesOtelFallback(t *testing.T) {
-	t.Parallel()
-
 	resetTraceProjectEnvCache()
 	t.Cleanup(resetTraceProjectEnvCache)
 
@@ -308,7 +377,7 @@ func TestHandlerFallsBackToOTELTraceKeys(t *testing.T) {
 func TestTraceAttributesReturnsNilWithoutSpan(t *testing.T) {
 	t.Parallel()
 
-	if attrs, ok := TraceAttributes(context.Background(), "proj"); ok || len(attrs) != 0 {
+	if attrs, ok := TraceAttributes(context.Background(), "proj-123"); ok || len(attrs) != 0 {
 		t.Fatalf("TraceAttributes() without span = (%v,%v), want (nil,false)", attrs, ok)
 	}
 }
@@ -316,7 +385,7 @@ func TestTraceAttributesReturnsNilWithoutSpan(t *testing.T) {
 // TestTraceAttributesNilContext ensures nil contexts short circuit.
 func TestTraceAttributesNilContext(t *testing.T) {
 	var nilCtx context.Context
-	if attrs, ok := TraceAttributes(nilCtx, "proj"); ok || len(attrs) != 0 {
+	if attrs, ok := TraceAttributes(nilCtx, "proj-123"); ok || len(attrs) != 0 {
 		t.Fatalf("TraceAttributes(nil) = (%v,%v), want (nil,false)", attrs, ok)
 	}
 }

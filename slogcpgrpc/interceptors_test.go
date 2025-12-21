@@ -27,6 +27,8 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	nooptrace "go.opentelemetry.io/otel/trace/noop"
@@ -34,10 +36,14 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 
 	"github.com/pjscruggs/slogcp"
 )
+
+// allowAllRPCTags is an otelgrpc.Filter helper that accepts every RPC.
+func allowAllRPCTags(*stats.RPCTagInfo) bool { return true }
 
 // TestUnaryServerInterceptorAttachesLogger ensures the server interceptor attaches a request logger and info.
 func TestUnaryServerInterceptorAttachesLogger(t *testing.T) {
@@ -729,7 +735,7 @@ func TestUnaryClientInterceptorPayloadSizesToggle(t *testing.T) {
 func TestStatsHandlerOptionsHonorsConfig(t *testing.T) {
 	t.Parallel()
 
-	cfg := &config{}
+	cfg := defaultConfig()
 	if opts := statsHandlerOptions(cfg); len(opts) != 0 {
 		t.Fatalf("expected no statsHandlerOptions by default, got %d", len(opts))
 	}
@@ -737,9 +743,44 @@ func TestStatsHandlerOptionsHonorsConfig(t *testing.T) {
 	cfg.tracerProvider = nooptrace.NewTracerProvider()
 	cfg.propagators = propagation.TraceContext{}
 	cfg.propagatorsSet = true
+	cfg.publicEndpoint = true
+	cfg.spanAttributes = []attribute.KeyValue{attribute.String("rpc.system", "grpc")}
+	cfg.filters = []otelgrpc.Filter{
+		nil,
+		otelgrpc.Filter(allowAllRPCTags),
+	}
 
-	if opts := statsHandlerOptions(cfg); len(opts) != 2 {
-		t.Fatalf("expected tracer provider and propagator options, got %d", len(opts))
+	if opts := statsHandlerOptions(cfg); len(opts) != 5 {
+		t.Fatalf("expected tracer provider, propagator, public endpoint, span attrs, and filter options, got %d", len(opts))
+	}
+
+	cfg.propagateTrace = false
+	if opts := statsHandlerOptions(cfg); len(opts) != 5 {
+		t.Fatalf("expected tracer provider, noop propagator, public endpoint, span attrs, and filter options, got %d", len(opts))
+	}
+}
+
+// TestNoopPropagatorMethods verifies noopPropagator is an explicit no-op TextMapPropagator.
+func TestNoopPropagatorMethods(t *testing.T) {
+	t.Parallel()
+
+	p := noopPropagator{}
+	md := metadata.New(nil)
+	carrier := metadataCarrier{md}
+
+	ctx := context.WithValue(context.Background(), requestInfoKey{}, "ok")
+	got := p.Extract(ctx, carrier)
+	if got.Value(requestInfoKey{}) != "ok" {
+		t.Fatalf("Extract should preserve context values, got %#v", got.Value(requestInfoKey{}))
+	}
+
+	p.Inject(ctx, carrier)
+	if md.Len() != 0 {
+		t.Fatalf("Inject should not mutate metadata, got %#v", md)
+	}
+
+	if got := p.Fields(); got != nil {
+		t.Fatalf("Fields() = %#v, want nil", got)
 	}
 }
 

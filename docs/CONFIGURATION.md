@@ -12,7 +12,7 @@
 
 ## Boolean ENV VARS
 
-Boolean environment variables always accept any of `true`, `1`, `yes`, or `on` to enable and `false`, `0`, `no`, or `off` to disable (case-insensitive). Invalid values are ignored.
+Boolean environment variables are always parsed with [strconv.ParseBool](https://pkg.go.dev/strconv#ParseBool) which, "accepts `1`, `t`, `T`, `TRUE`, `true`, `True`, `0`, `f`, `F`, `FALSE`, `false`, `False`." Invalid values are ignored.
 
 ## Handler Setup
 
@@ -35,8 +35,8 @@ Key options:
 
 | Option | Environment variable(s) | Default | Description |
 | --- | --- | --- | --- |
-| `WithLevel(slog.Level)` | `SLOGCP_LEVEL` | `info` | Minimum severity captured by the handler. |
-| `WithLevelVar(*slog.LevelVar)` | (none) | current value of the supplied var | Shares a caller-managed `slog.LevelVar` so external config can adjust levels. |
+| `WithLevel(slog.Level)` | `SLOGCP_LEVEL` (fallback: `LOG_LEVEL`) | `info` | Minimum severity captured by the handler. |
+| `WithLevelVar(*slog.LevelVar)` | `SLOGCP_LEVEL` (fallback: `LOG_LEVEL`) | `info` | Shares a caller-managed `slog.LevelVar` that slogcp initializes during handler construction so external config can adjust levels. |
 | `WithSourceLocationEnabled(bool)` | `SLOGCP_SOURCE_LOCATION` | `false` | Populates `logging.googleapis.com/sourceLocation`. |
 | `WithTime(bool)` | `SLOGCP_TIME` | Enabled outside Cloud Run, Cloud Run Jobs, Cloud Functions, and App Engine; also enabled for file targets on those runtimes; disabled on those runtimes when writing to stdout/stderr | Emits a top-level `time` field so logs carry RFC3339 timestamps. |
 | `WithStackTraceEnabled(bool)` | `SLOGCP_STACK_TRACES` | `false` | Enables automatic stack capture at or above `StackTraceLevel`. |
@@ -56,26 +56,66 @@ Additional notes:
 - File targets: use `SLOGCP_TARGET=file:<path>` (for example, `file:/var/log/app.json` on Linux/macOS or `file:C:\\logs\\app.json` on Windows). slogcp trims surrounding whitespace and passes the remaining path directly to `os.OpenFile` in append mode; it does not create parent directories or rewrite the string. Invalid values still trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
 - When you choose `WithRedirectWriter`, slogcp does not look at file paths at all; configure any file destination on the writer itself (for example, `*os.File` or a rotation helper like timberjack).
 - When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor after external tools move the file. Always call `Close` during shutdown to flush buffers and release writers.
+- `SLOGCP_LEVEL` is the preferred knob for minimum severity. When it is empty, slogcp also honours `LOG_LEVEL` so shared conventions still work. When you supply `WithLevelVar`, slogcp seeds the shared var using the same resolution rules.
 - `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust levels at runtime via `SetLevel` or share the var with other handlers.
 - `WithSeverityAliases` controls whether JSON carries the terse severity names; Cloud Logging still renders the full names in the console. slogcp enables the aliases by default only on Cloud Run (services/jobs), Cloud Functions, and App Engine deployments.
 - `WithTime` defaults mirror Cloud Logging expectations: timestamps are omitted on the same managed GCP runtimes (Cloud Run, Cloud Functions, App Engine) when writing to stdout/stderr, but file targets keep timestamps even there so rotated/shipped logs stay annotated. When slogcp emits a timestamp it preserves the nanosecond precision provided by `slog`.
-- slogcp always validates trace correlation fields before emitting them. When no Cloud project ID can be resolved, the handler omits `logging.googleapis.com/trace` entirely (falling back to the `otel.*` keys) to avoid shipping malformed data. On managed runtimes where the Cloud Logging agent auto-prefixes trace IDs (Cloud Run services/jobs, Cloud Functions, App Engine) slogcp still emits the bare trace ID so existing deployments keep their correlation links. Use `WithTraceDiagnostics`/`SLOGCP_TRACE_DIAGNOSTICS` to upgrade these checks from "warn once" to `strict` or disable them with `off`.
+- slogcp always validates trace correlation fields before emitting them. Explicit `TraceProjectID` values (from env or `WithTraceProjectID`) are normalized and validated; invalid values are ignored in `warn`/`off` modes (with a single warning in `warn`) and cause handler construction to fail in `strict`. When no Cloud project ID can be resolved, slogcp avoids emitting malformed `projects/<project>/traces/<trace>` values. On managed runtimes (Cloud Run services/jobs, Cloud Functions, App Engine) it emits a **bare** trace ID in `logging.googleapis.com/trace` for compatibility, but this is best-effort and not guaranteed to be rewritten by ingestion. Some ingestion paths (notably the legacy logging agent/fluentd plugin with `autoformat_stackdriver_trace` enabled) can auto-format bare trace IDs into `projects/<project>/traces/<trace>`, while other environments fall back to `otel.*` fields. To guarantee correlation, emit the full resource name by setting `TraceProjectID`. Use `WithTraceDiagnostics`/`SLOGCP_TRACE_DIAGNOSTICS` to upgrade these checks from "warn once" to `strict` or disable them with `off`.
 - `slogcp.ContextWithLogger` and `slogcp.Logger` stash and recover request-scoped loggers. The HTTP and gRPC integrations call these helpers automatically.
 
-## Async wrapper (`github.com/pjscruggs/slogcp/slogcpasync`)
+## Async logging (`slogcpasync`)
 
-`slogcp` stays synchronous by default. When you want to buffer or drop under load, wrap the handler with `slogcpasync`:
+`slogcp` writes synchronously to `stdout`/`stderr` by default.
+
+### Defaults
+
+When slogcp writes to a file target (`SLOGCP_TARGET=file:...` or `slogcp.WithRedirectToFile`), it buffers writes with `slogcpasync` automatically so disk I/O doesn't sit on hot paths. Set `SLOGCP_ASYNC_ON_FILE=false` to disable the default buffering, or call `WithAsyncOnFile(...)` to tune it. Whenever the async wrapper is in play (file targets by default, or `WithAsync`/`Wrap`), call `Close()` on shutdown so queued records flush.
+
+### Tuning (or disabling) file buffering
+
+Use `slogcp.WithAsyncOnFile(...)` to change the wrapper options applied to file targets, including disabling the wrapper entirely:
 
 ```go
-handler, _ := slogcp.NewHandler(os.Stdout)
-async := slogcpasync.Wrap(handler,
-	slogcpasync.WithQueueSize(4096),
-	slogcpasync.WithDropMode(slogcpasync.DropModeDropNewest),
+handler, _ := slogcp.NewHandler(nil,
+	slogcp.WithRedirectToFile("app.json"),
+	slogcp.WithAsyncOnFile(
+		slogcpasync.WithEnabled(false),
+	),
 )
+defer handler.Close()
+```
+
+### Enabling async for non-file targets
+
+To buffer `stdout`/`stderr` (or any other non-file target), you can have slogcp wrap the handler with `slogcp.WithAsync(...)`:
+
+```go
+handler, _ := slogcp.NewHandler(os.Stdout,
+	slogcp.WithAsync(
+		slogcpasync.WithQueueSize(4096),
+		slogcpasync.WithDropMode(slogcpasync.DropModeDropNewest),
+	),
+)
+defer handler.Close()
+logger := slog.New(handler)
+```
+
+Or wrap any `slog.Handler` directly with `slogcpasync.Wrap(...)`:
+
+```go
+base := slog.NewJSONHandler(os.Stdout, nil)
+async := slogcpasync.Wrap(base, slogcpasync.WithQueueSize(4096))
+if closer, ok := async.(interface{ Close() error }); ok {
+	defer closer.Close()
+}
 logger := slog.New(async)
 ```
 
-When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `WithEnv()` (for example via `slogcp.WithMiddleware(slogcpasync.Middleware(...))`). Supported knobs:
+### Options and environment variables
+
+When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `WithEnv()` (for example via `slogcp.WithMiddleware(slogcpasync.Middleware(...))`).
+
+`slogcp.WithAsync(...)` and `slogcp.WithAsyncOnFile(...)` already integrate the wrapper; avoid also adding `slogcpasync.Middleware` unless you deliberately want multiple queues.
 
 | Option | Environment variable | Default | Description |
 | --- | --- | --- | --- |
@@ -87,7 +127,7 @@ When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `Wi
 | `WithFlushTimeout(time.Duration)` | `SLOGCP_ASYNC_FLUSH_TIMEOUT` | (none) | Optional timeout for `Close`; returns `ErrFlushTimeout` if workers never finish. |
 | `WithOnDrop(func)` | (none) | (none) | Callback invoked when a record is dropped (useful for metrics). |
 | `slogcp.WithAsync(opts...)` | (none) | (disabled) | Convenience option that wraps handlers in slogcpasync using tuned per-mode defaults; supply slogcpasync options to override. |
-| `slogcp.WithAsyncOnFileTargets(opts...)` | (none) | (disabled) | Like `WithAsync`, but only wraps handlers that write to files, leaving stdout/stderr synchronous. |
+| `slogcp.WithAsyncOnFile(opts...)` | `SLOGCP_ASYNC_ON_FILE` | (enabled for file targets) | Tunes (or disables) slogcpasync settings for file targets while leaving stdout/stderr synchronous; `SLOGCP_ASYNC_ON_FILE` toggles the default wrapper when this option is unset. |
 | `WithEnv()` | reads all of the above | (none) | Overlays any `SLOGCP_ASYNC_*` values onto the provided config. |
 
 ### Severity Levels
@@ -124,16 +164,20 @@ Important options:
 | --- | --- |
 | `WithLogger(*slog.Logger)` | Sets the base logger used to derive request loggers. Defaults to `slog.Default()`. |
 | `WithProjectID(string)` | Overrides the project ID used for Cloud Trace correlation. |
-| `WithPropagators(propagation.TextMapPropagator)` | Customizes the propagator used to extract trace context when no span exists. |
+| `WithPropagators(propagation.TextMapPropagator)` | Customizes the propagator used to extract trace context when no span exists. Passing `nil` is treated the same as omitting the option (use the global propagator); disable propagation with `WithTracePropagation(false)`. |
 | `WithTracePropagation(bool)` | Enables or disables extraction of incoming trace headers. Defaults to `true`. |
 | `WithTracerProvider(trace.TracerProvider)` | Supplies the tracer provider passed to `otelhttp`. |
 | `WithPublicEndpoint(bool)` | Forwards the public-endpoint hint to `otelhttp`. |
+| `WithRemoteTrace(bool)` | When `WithPublicEndpoint(true)` and `WithOTel(false)`, controls whether logs correlate to inbound trace headers (disabled by default). Also reads `SLOGCP_TRUST_REMOTE_TRACE` when unset. |
 | `WithOTel(bool)` | Enables or disables wrapping with `otelhttp`. |
 | `WithSpanNameFormatter(otelhttp.SpanNameFormatter)` / `WithFilter(otelhttp.Filter)` | Mirrors the underlying `otelhttp` hooks. |
 | `WithAttrEnricher(func(*http.Request, *RequestScope) []slog.Attr)` | Adds custom attributes to the request logger. |
 | `WithAttrTransformer(func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr)` | Mutates attributes before they are applied. |
 | `WithRouteGetter(func(*http.Request) string)` | Supplies a route template extractor (for example, from your mux). |
-| `WithClientIP(bool)` | Toggles inclusion of `network.peer.ip` (enabled by default). |
+| `WithClientIP(bool)` | Toggles inclusion of `network.peer.ip` (enabled by default). In `ProxyModeGCLB`, the value is derived from `X-Forwarded-For`. |
+| `WithTrustXForwardedProto(bool)` | Controls whether `http.scheme` is derived from `X-Forwarded-Proto` for logging. Defaults to enabled on Cloud Run services, Cloud Functions, and App Engine; otherwise disabled. |
+| `WithProxyMode(ProxyMode)` | Enables proxy-aware parsing of `X-Forwarded-For` (and always trusts `X-Forwarded-Proto` for scheme). Disabled by default because forwarded headers are easy to spoof if requests can bypass your proxy. |
+| `WithXForwardedForClientIPFromRight(int)` | In proxy-aware modes, selects the client IP position in `X-Forwarded-For` counting from the right (default: 2). |
 | `WithIncludeQuery(bool)` | Opts into logging raw query strings (disabled by default). |
 | `WithUserAgent(bool)` | Opts into logging the `User-Agent` string (disabled by default). |
 | `WithHTTPRequestAttr(bool)` | Enables automatic addition of the Cloud Logging `httpRequest` payload to the derived logger. Disabled by default so applications must opt in. |
@@ -150,7 +194,7 @@ logger.InfoContext(ctx, "served",
 #### Do you really need to log httpRequest?
 
 - Managed runtimes already emit an automatic request log (with final status/size/latency) and also stamp `trace`/`spanId` onto every app log. The normal way to correlate is to pivot on `trace` so the app logs and the automatic request log show up together in the Cloud Logging UI/Trace viewer. Attaching `httpRequest` to application logs is therefore an opt-in, niche move for self-contained error/alert payloads or for services that *lack* an automatic request log.
-- Opt-in middleware attachment uses a **lazy LogValuer**: the `httpRequest` is built at log time from the live `RequestScope`. If the request has finished, latency is the final duration; if the request is still in flight, latency is omitted (Cloud Logging will still promote the `httpRequest`).
+- Opt-in middleware attachment uses a **lazy LogValuer**: the `httpRequest` is built at log time from the live `RequestScope`. While the request is in flight we intentionally suppress `httpRequest.status`, `httpRequest.responseSize`, and `httpRequest.latency` (Cloud Logging will still promote the `httpRequest`).
 - For one-shot “access log” style entries, call `slogcphttp.HTTPRequestFromScope(scope)` to snapshot the current state into a Cloud Logging payload. Outside of the middleware, `slogcp.HTTPRequestFromRequest(req)` creates a Cloud Logging payload from any standard library `*http.Request`.
 
 ### HTTP Client Transport
@@ -164,7 +208,7 @@ logger.InfoContext(ctx, "served",
 | `WithPropagators(propagation.TextMapPropagator)` | Overrides the propagator used for trace header injection. |
 | `WithTracePropagation(bool)` | Enables or disables outbound trace header injection. Defaults to `true`. |
 | `WithAttrEnricher` / `WithAttrTransformer` | Allow custom attribute enrichment or redaction for outbound requests. |
-| `WithClientIP(bool)` | Toggles inclusion of the resolved host address as `network.peer.ip`. Enabled by default. |
+| `WithClientIP(bool)` | Toggles inclusion of the resolved host address as `server.address` (and `server.port` when available). Enabled by default. |
 | `WithIncludeQuery(bool)` / `WithUserAgent(bool)` | Control whether the query string and user agent are recorded on derived loggers. |
 | `WithLegacyXCloudInjection(bool)` | Synthesizes the legacy `X-Cloud-Trace-Context` header in addition to W3C trace headers. |
 
@@ -180,7 +224,7 @@ Important options:
 | --- | --- |
 | `WithLogger(*slog.Logger)` | Sets the base logger for derived RPC loggers. Defaults to `slog.Default()`. |
 | `WithProjectID(string)` | Overrides the project used for trace correlation. |
-| `WithPropagators(propagation.TextMapPropagator)` | Custom propagator for metadata extraction (server) or injection (client). |
+| `WithPropagators(propagation.TextMapPropagator)` | Custom propagator for metadata extraction (server) or injection (client). Passing `nil` is treated the same as omitting the option (use the global propagator); disable propagation with `WithTracePropagation(false)`. |
 | `WithTracePropagation(bool)` | Enables or disables trace extraction/injection on servers and clients. Defaults to `true`. |
 | `WithTracerProvider(trace.TracerProvider)` | Passed to the otelgrpc StatsHandler when OpenTelemetry instrumentation is enabled. |
 | `WithPublicEndpoint(bool)` | Marks the service as public for telemetry. |
@@ -199,6 +243,40 @@ Helpers:
 - `DialOptions(opts ...Option)` returns matching client interceptors and StatsHandler.
 - `InfoFromContext(ctx)` retrieves the `RequestInfo` captured by the interceptors so handlers can inspect RPC metadata at any point.
 
+## Pub/Sub Integration (`github.com/pjscruggs/slogcp/slogcppubsub`)
+
+`slogcppubsub` provides helpers for carrying trace context across Pub/Sub boundaries via `pubsub.Message.Attributes`, and for deriving message-scoped loggers in pull subscribers (so `slogcp.Logger(ctx)` works inside receive handlers). Use `Inject` before publishing and `WrapReceiveHandler` when receiving; `Extract` / `ExtractAttributes` and `InfoFromContext` are available when you want manual control or need to inspect message metadata.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `WithLogger(*slog.Logger)` | `slog.Default()` | Base logger used to derive per-message loggers (used by `WrapReceiveHandler`). |
+| `WithProjectID(string)` | detected at runtime | Project used when formatting Cloud Logging trace correlation fields and `gcp.project_id` span attributes. |
+| `WithSubscription(*pubsub.Subscriber)` | (unset) | Captures a trimmed subscription ID from `sub.ID()` for span/logger enrichment. |
+| `WithSubscriptionID(string)` | (unset) | Sets the trimmed subscription ID used for span/logger enrichment. |
+| `WithTopic(*pubsub.Publisher)` | (unset) | Captures a trimmed topic ID from `topic.ID()` for span/logger enrichment. |
+| `WithTopicID(string)` | (unset) | Sets the trimmed topic ID used for span/logger enrichment. |
+| `WithOTel(bool)` | `true` | Enables/disables creation of an application-level consumer span around message processing. |
+| `WithSpanStrategy(slogcppubsub.SpanStrategy)` | `SpanStrategyAlways` | Controls when consumer spans are started (`SpanStrategyAuto` skips when a local span is already active; `SpanStrategyAlways` always starts). |
+| `WithTracerProvider(trace.TracerProvider)` | global tracer provider | Tracer provider used when consumer spans are created. |
+| `WithSpanName(string)` | `pubsub.process` | Span name used when creating consumer spans. |
+| `WithSpanAttributes(attribute.KeyValue...)` | (none) | Additional OpenTelemetry attributes appended to consumer spans. |
+| `WithPublicEndpoint(bool)` | `false` | Treats producers as untrusted: starts a new root trace and links extracted remote context instead of parenting. |
+| `WithRemoteTrace(bool)` | `false` | When `WithPublicEndpoint(true)` and no local span is created (for example, `WithOTel(false)`), controls whether logs correlate to extracted remote trace context. Also reads `SLOGCP_TRUST_REMOTE_TRACE` when unset. |
+| `WithPropagators(propagation.TextMapPropagator)` | `otel.GetTextMapPropagator()` | Propagator used for attribute injection/extraction; passing `nil` is treated the same as omitting the option (use the global propagator). Disable propagation with `WithTracePropagation(false)`. |
+| `WithTracePropagation(bool)` | `true` | Enables/disables trace context extraction and injection via message attributes. |
+| `WithBaggagePropagation(bool)` | `false` | Enables/disables baggage injection/extraction via message attributes when the propagator supports it. |
+| `WithCaseInsensitiveExtraction(bool)` | `false` | Enables case-insensitive lookup for propagation keys during extraction. |
+| `WithInjectOnlyIfSpanPresent(bool)` | `false` | Only injects when a valid span context is present on `ctx`. |
+| `WithLogMessageID(bool)` | `false` | Adds `messaging.message.id` to derived loggers (high-cardinality). |
+| `WithLogOrderingKey(bool)` | `false` | Adds `messaging.gcp_pubsub.message.ordering_key` to derived loggers (can be high-cardinality). |
+| `WithLogDeliveryAttempt(bool)` | `true` | Adds `messaging.gcp_pubsub.message.delivery_attempt` to derived loggers when present. |
+| `WithLogPublishTime(bool)` | `false` | Adds `pubsub.message.publish_time` to derived loggers. |
+| `WithAttrEnricher(func(context.Context, *pubsub.Message, *MessageInfo) []slog.Attr)` | (none) | Appends additional attributes to the derived message logger. |
+| `WithAttrTransformer(func(context.Context, []slog.Attr, *pubsub.Message, *MessageInfo) []slog.Attr)` | (none) | Mutates/redacts the derived message logger attribute slice before it is applied. |
+| `WithGoogClientCompat(bool)` | `false` | Enables both extraction fallback and injection compatibility via `googclient_`-prefixed keys. |
+| `WithGoogClientExtraction(bool)` | `false` | Enables extraction from `googclient_`-prefixed keys when standard keys are absent. |
+| `WithGoogClientInjection(bool)` | `false` | Enables injection of `googclient_`-prefixed keys in addition to standard keys. |
+
 ## Trace Propagation Defaults
 
-Importing `slogcp` installs a composite OpenTelemetry propagator that understands both W3C Trace Context and Google's legacy `X-Cloud-Trace-Context` header (read-only). Set `SLOGCP_PROPAGATOR_AUTOSET=false` before importing the package if you prefer to manage `otel.SetTextMapPropagator` yourself; call `slogcp.EnsurePropagation()` if you need to reapply the library's defaults later in process startup.
+Importing `slogcp` installs a composite OpenTelemetry propagator that understands both W3C Trace Context and Google's legacy `X-Cloud-Trace-Context` header (read-only). Set `SLOGCP_PROPAGATOR_AUTOSET=false` before importing the package if you prefer to manage `otel.SetTextMapPropagator` yourself; explicit calls to `slogcp.EnsurePropagation()` remain available during startup. Call `EnsurePropagation` before constructing `otelhttp` transports or gRPC clients/servers that rely on the global propagator, since some instrumentation snapshots the global value during initialization.

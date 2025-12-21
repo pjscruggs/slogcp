@@ -193,3 +193,94 @@ func TestRequestInfoAttributeBuilders(t *testing.T) {
 		t.Fatalf("expected attrs to shrink when size and peer disabled, got %d vs %d", len(trimmed), len(attrs))
 	}
 }
+
+// TestRequestInfoValueLogValue covers deferred RequestInfo value rendering.
+func TestRequestInfoValueLogValue(t *testing.T) {
+	t.Parallel()
+
+	info := newRequestInfo("/svc.Method/Unary", "unary", false, time.Now())
+	info.recordRequest(fakeSizer(11))
+	info.recordResponse(fakeSizer(7))
+	info.finalize(codes.PermissionDenied, 12*time.Millisecond)
+
+	tests := []struct {
+		name     string
+		value    requestInfoValue
+		wantKind slog.Kind
+		wantInt  int64
+		wantStr  string
+		wantDur  time.Duration
+	}{
+		{
+			name:     "status",
+			value:    requestInfoValue{info: info, kind: requestInfoStatus},
+			wantKind: slog.KindString,
+			wantStr:  codes.PermissionDenied.String(),
+		},
+		{
+			name:     "duration",
+			value:    requestInfoValue{info: info, kind: requestInfoDuration},
+			wantKind: slog.KindDuration,
+			wantDur:  12 * time.Millisecond,
+		},
+		{
+			name:     "request_bytes",
+			value:    requestInfoValue{info: info, kind: requestInfoRequestBytes},
+			wantKind: slog.KindInt64,
+			wantInt:  11,
+		},
+		{
+			name:     "response_bytes",
+			value:    requestInfoValue{info: info, kind: requestInfoResponseBytes},
+			wantKind: slog.KindInt64,
+			wantInt:  7,
+		},
+		{
+			name:     "request_count",
+			value:    requestInfoValue{info: info, kind: requestInfoRequestCount},
+			wantKind: slog.KindInt64,
+			wantInt:  1,
+		},
+		{
+			name:     "response_count",
+			value:    requestInfoValue{info: info, kind: requestInfoResponseCount},
+			wantKind: slog.KindInt64,
+			wantInt:  1,
+		},
+		{
+			name:     "default",
+			value:    requestInfoValue{info: info, kind: requestInfoValueKind(99)},
+			wantKind: slog.KindAny,
+		},
+		{
+			name:     "nil_info",
+			value:    requestInfoValue{info: nil, kind: requestInfoStatus},
+			wantKind: slog.KindAny,
+		},
+	}
+
+	for _, tt := range tests {
+		got := tt.value.LogValue()
+		if got.Kind() != tt.wantKind {
+			t.Fatalf("%s kind = %v, want %v", tt.name, got.Kind(), tt.wantKind)
+		}
+		switch tt.wantKind {
+		case slog.KindString:
+			if got.String() != tt.wantStr {
+				t.Fatalf("%s string = %q, want %q", tt.name, got.String(), tt.wantStr)
+			}
+		case slog.KindDuration:
+			if got.Duration() != tt.wantDur {
+				t.Fatalf("%s duration = %v, want %v", tt.name, got.Duration(), tt.wantDur)
+			}
+		case slog.KindInt64:
+			if got.Int64() != tt.wantInt {
+				t.Fatalf("%s int = %d, want %d", tt.name, got.Int64(), tt.wantInt)
+			}
+		case slog.KindAny:
+			if got.Any() != nil {
+				t.Fatalf("%s expected nil Any, got %#v", tt.name, got.Any())
+			}
+		}
+	}
+}

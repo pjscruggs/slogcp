@@ -15,6 +15,7 @@
 package slogcp
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -118,6 +119,38 @@ func TestFlattenHTTPRequestToMapHandlesNil(t *testing.T) {
 	}
 	if payload.Latency != "0.000000000s" {
 		t.Fatalf("Latency field should format zero duration, got %q", payload.Latency)
+	}
+}
+
+// TestFlattenHTTPRequestToMapOmitsUnsetFields ensures unset response metadata is not serialized.
+func TestFlattenHTTPRequestToMapOmitsUnsetFields(t *testing.T) {
+	t.Parallel()
+
+	req := &HTTPRequest{
+		RequestMethod: http.MethodGet,
+		RequestURL:    "https://example.com/inflight",
+		Status:        0,
+		ResponseSize:  -1,
+		Latency:       -1,
+	}
+	payload := flattenHTTPRequestToMap(req)
+	if payload == nil {
+		t.Fatalf("flattenHTTPRequestToMap returned nil payload")
+	}
+
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal(payload) = %v", err)
+	}
+	serialized := string(buf)
+	if strings.Contains(serialized, `"status"`) {
+		t.Fatalf("expected status to be omitted, got %s", serialized)
+	}
+	if strings.Contains(serialized, `"responseSize"`) {
+		t.Fatalf("expected responseSize to be omitted, got %s", serialized)
+	}
+	if strings.Contains(serialized, `"latency"`) {
+		t.Fatalf("expected latency to be omitted, got %s", serialized)
 	}
 }
 
@@ -288,6 +321,25 @@ func TestFormatErrorForReportingHandlesNilAndStackTracer(t *testing.T) {
 	}
 }
 
+// TestFormatErrorForReportingHandlesAliasStackTrace covers non-[]uintptr StackTrace methods.
+func TestFormatErrorForReportingHandlesAliasStackTrace(t *testing.T) {
+	t.Parallel()
+
+	pcs := make([]uintptr, 32)
+	if n := runtime.Callers(0, pcs); n > 0 {
+		pcs = pcs[:n]
+	}
+	traceErr := &stubAliasTracingError{pcs: pcs}
+
+	_, traceStack := formatErrorForReporting(traceErr)
+	if traceStack == "" {
+		t.Fatalf("expected stack trace for alias tracing error")
+	}
+	if !strings.Contains(traceStack, "TestFormatErrorForReportingHandlesAliasStackTrace") {
+		t.Fatalf("stack trace missing test frame: %q", traceStack)
+	}
+}
+
 // TestCloneStringMapAndStringMapToAny ensure helper conversions copy the map content.
 func TestCloneStringMapAndStringMapToAny(t *testing.T) {
 	t.Parallel()
@@ -396,3 +448,23 @@ func (e *stubTracingError) Error() string { return "trace me" }
 
 // StackTrace exposes stored program counters to satisfy the stackTracer contract.
 func (e *stubTracingError) StackTrace() []uintptr { return e.pcs }
+
+type aliasFrame uintptr
+type aliasStack []aliasFrame
+
+// stubAliasTracingError mimics pkg/errors-style StackTrace return types.
+type stubAliasTracingError struct {
+	pcs []uintptr
+}
+
+// Error returns the fixed error message.
+func (e *stubAliasTracingError) Error() string { return "trace alias" }
+
+// StackTrace exposes stored program counters using an alias slice type.
+func (e *stubAliasTracingError) StackTrace() aliasStack {
+	stack := make(aliasStack, len(e.pcs))
+	for i, pc := range e.pcs {
+		stack[i] = aliasFrame(pc)
+	}
+	return stack
+}

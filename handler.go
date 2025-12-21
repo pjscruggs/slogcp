@@ -35,6 +35,7 @@ const (
 	LabelsGroup = "logging.googleapis.com/labels"
 
 	envLogLevel         = "SLOGCP_LEVEL"
+	envGenericLogLevel  = "LOG_LEVEL"
 	envLogSource        = "SLOGCP_SOURCE_LOCATION"
 	envLogTime          = "SLOGCP_TIME"
 	envLogStackEnabled  = "SLOGCP_STACK_TRACES"
@@ -46,6 +47,9 @@ const (
 	envTarget           = "SLOGCP_TARGET"
 	envSlogcpGCP        = "SLOGCP_GCP_PROJECT"
 	envTraceDiagnostics = "SLOGCP_TRACE_DIAGNOSTICS"
+	envAsyncOnFile      = "SLOGCP_ASYNC_ON_FILE"
+
+	traceProjectSourceOption = "WithTraceProjectID"
 )
 
 // TraceDiagnosticsMode controls how slogcp surfaces trace correlation issues.
@@ -88,6 +92,7 @@ type Handler struct {
 	switchableWriter *SwitchableWriter
 	ownedFile        *os.File
 	levelVar         *slog.LevelVar
+	asyncHandler     *slogcpasync.Handler
 
 	mu        sync.Mutex
 	closeOnce sync.Once
@@ -100,9 +105,11 @@ type diagLogger interface {
 var traceDiagnosticLogger diagLogger = log.New(os.Stderr, "slogcp: ", log.LstdFlags)
 
 type traceDiagnostics struct {
-	mode      TraceDiagnosticsMode
-	logger    diagLogger
-	unknownMu sync.Once
+	mode         TraceDiagnosticsMode
+	logger       diagLogger
+	unknownMu    sync.Once
+	invalidMu    sync.Once
+	normalizedMu sync.Once
 }
 
 // newTraceDiagnostics constructs a traceDiagnostics helper unless tracing is disabled.
@@ -129,27 +136,61 @@ func (td *traceDiagnostics) warnUnknownProject() {
 	})
 }
 
-type handlerConfig struct {
-	Level                   slog.Level
-	AddSource               bool
-	EmitTimeField           bool
-	emitTimeFieldConfigured bool
-	StackTraceEnabled       bool
-	StackTraceLevel         slog.Level
-	TraceProjectID          string
-	TraceDiagnostics        TraceDiagnosticsMode
-	UseShortSeverityNames   bool
-	Writer                  io.Writer
-	ClosableWriter          io.Closer
-	writerExternallyOwned   bool
-	FilePath                string
-	ReplaceAttr             func([]string, slog.Attr) slog.Attr
-	Middlewares             []Middleware
-	InitialAttrs            []slog.Attr
-	InitialGroupedAttrs     []groupedAttr
-	InitialGroups           []string
+// warnInvalidTraceProjectID emits a single warning when an explicit trace project ID is invalid.
+func (td *traceDiagnostics) warnInvalidTraceProjectID(value, source string) {
+	if td == nil || td.mode != TraceDiagnosticsWarnOnce {
+		return
+	}
+	td.invalidMu.Do(func() {
+		if td.logger == nil {
+			return
+		}
+		if source != "" {
+			td.logger.Printf("trace correlation disabled: invalid TraceProjectID %q from %s; falling back to runtime detection", value, source)
+			return
+		}
+		td.logger.Printf("trace correlation disabled: invalid TraceProjectID %q; falling back to runtime detection", value)
+	})
+}
 
-	runtimeLabels            map[string]string
+// warnNormalizedTraceProjectID emits a single warning when an explicit trace project ID is normalized.
+func (td *traceDiagnostics) warnNormalizedTraceProjectID(value, normalized, source string) {
+	if td == nil || td.mode != TraceDiagnosticsWarnOnce {
+		return
+	}
+	td.normalizedMu.Do(func() {
+		if td.logger == nil {
+			return
+		}
+		if source != "" {
+			td.logger.Printf("trace correlation: normalized TraceProjectID from %q to %q (%s)", value, normalized, source)
+			return
+		}
+		td.logger.Printf("trace correlation: normalized TraceProjectID from %q to %q", value, normalized)
+	})
+}
+
+type handlerConfig struct {
+	Level                    slog.Level
+	AddSource                bool
+	EmitTimeField            bool
+	emitTimeFieldConfigured  bool
+	StackTraceEnabled        bool
+	StackTraceLevel          slog.Level
+	TraceProjectID           string
+	traceProjectExplicit     bool
+	traceProjectSource       string
+	TraceDiagnostics         TraceDiagnosticsMode
+	UseShortSeverityNames    bool
+	Writer                   io.Writer
+	ClosableWriter           io.Closer
+	writerExternallyOwned    bool
+	FilePath                 string
+	ReplaceAttr              func([]string, slog.Attr) slog.Attr
+	Middlewares              []Middleware
+	InitialAttrs             []slog.Attr
+	InitialGroupedAttrs      []groupedAttr
+	InitialGroups            []string
 	runtimeServiceContext    map[string]string
 	runtimeServiceContextAny map[string]any
 	traceAllowAutoformat     bool
@@ -224,7 +265,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	}
 
 	cfgPtr := &cfg
-	handler := buildPipeline(cfgPtr, levelVar, internalLogger, builder)
+	handler, asyncHandler := buildPipeline(cfgPtr, levelVar, internalLogger, builder)
 
 	return &Handler{
 		Handler:          handler,
@@ -233,6 +274,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 		switchableWriter: switchWriter,
 		ownedFile:        ownedFile,
 		levelVar:         levelVar,
+		asyncHandler:     asyncHandler,
 	}, nil
 }
 
@@ -293,34 +335,119 @@ func resolveLevelVar(levelVar *slog.LevelVar, level slog.Level) *slog.LevelVar {
 // prepareRuntimeConfig populates runtime-derived fields and validates tracing.
 func prepareRuntimeConfig(cfg *handlerConfig) error {
 	runtimeInfo := DetectRuntimeInfo()
-	cfg.runtimeLabels = cloneStringMap(runtimeInfo.Labels)
 	cfg.runtimeServiceContext = cloneStringMap(runtimeInfo.ServiceContext)
 	cfg.runtimeServiceContextAny = stringMapToAny(cfg.runtimeServiceContext)
+	cfg.traceDiagnosticsState = newTraceDiagnostics(cfg.TraceDiagnostics)
+
+	if err := normalizeTraceProjectConfig(cfg); err != nil {
+		return err
+	}
 	if cfg.TraceProjectID == "" {
 		cfg.TraceProjectID = strings.TrimSpace(runtimeInfo.ProjectID)
 	}
 	cfg.traceAllowAutoformat = cfg.TraceProjectID == "" && prefersManagedGCPDefaults(runtimeInfo)
-	cfg.traceDiagnosticsState = newTraceDiagnostics(cfg.TraceDiagnostics)
-	if cfg.TraceDiagnostics == TraceDiagnosticsStrict && cfg.TraceProjectID == "" && !cfg.traceAllowAutoformat {
-		return errors.New("slogcp: trace diagnostics strict mode requires a Cloud project ID; set SLOGCP_TRACE_PROJECT_ID or provide slogcp.WithTraceProjectID")
+	return validateTraceProjectAvailability(cfg)
+}
+
+// normalizeTraceProjectConfig validates and normalizes the configured trace project ID.
+func normalizeTraceProjectConfig(cfg *handlerConfig) error {
+	rawTraceProject := strings.TrimSpace(cfg.TraceProjectID)
+	if rawTraceProject == "" {
+		cfg.TraceProjectID = ""
+		return nil
+	}
+
+	normalized, changed, ok := normalizeTraceProjectID(rawTraceProject)
+	if !ok {
+		return handleInvalidTraceProjectID(cfg, rawTraceProject)
+	}
+
+	cfg.TraceProjectID = normalized
+	if cfg.traceProjectExplicit && changed {
+		cfg.traceDiagnosticsState.warnNormalizedTraceProjectID(rawTraceProject, normalized, cfg.traceProjectSource)
 	}
 	return nil
 }
 
+// handleInvalidTraceProjectID applies diagnostics for invalid trace project IDs.
+func handleInvalidTraceProjectID(cfg *handlerConfig, rawTraceProject string) error {
+	if cfg.traceProjectExplicit && cfg.TraceDiagnostics == TraceDiagnosticsStrict {
+		return invalidTraceProjectIDError(rawTraceProject, cfg.traceProjectSource)
+	}
+	if cfg.traceProjectExplicit {
+		cfg.traceDiagnosticsState.warnInvalidTraceProjectID(rawTraceProject, cfg.traceProjectSource)
+	}
+	cfg.TraceProjectID = ""
+	return nil
+}
+
+// invalidTraceProjectIDError formats a strict-mode error for invalid project IDs.
+func invalidTraceProjectIDError(value, source string) error {
+	if source != "" {
+		return fmt.Errorf("slogcp: invalid TraceProjectID %q from %s", value, source)
+	}
+	return fmt.Errorf("slogcp: invalid TraceProjectID %q", value)
+}
+
+// validateTraceProjectAvailability enforces strict mode project ID requirements.
+func validateTraceProjectAvailability(cfg *handlerConfig) error {
+	if cfg.TraceDiagnostics != TraceDiagnosticsStrict || cfg.TraceProjectID != "" || cfg.traceAllowAutoformat {
+		return nil
+	}
+	return errors.New("slogcp: trace diagnostics strict mode requires a Cloud project ID; set SLOGCP_TRACE_PROJECT_ID or provide slogcp.WithTraceProjectID")
+}
+
 // buildPipeline assembles the handler stack with middlewares and async wrapper.
-func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *slog.Logger, builder *options) slog.Handler {
+func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *slog.Logger, builder *options) (slog.Handler, *slogcpasync.Handler) {
 	core := newJSONHandler(cfg, levelVar, internalLogger)
 	handler := slog.Handler(core)
 	for i := len(cfg.Middlewares) - 1; i >= 0; i-- {
 		handler = cfg.Middlewares[i](handler)
 	}
-	if builder.asyncEnabled && (!builder.asyncOnFileTargets || cfg.FilePath != "") {
-		handler = slogcpasync.Wrap(handler, builder.asyncOpts...)
+
+	isFileTarget := hasFileTarget(cfg)
+	asyncEnabled, asyncOnFileTargets := resolveAsyncConfig(isFileTarget, builder)
+
+	var asyncHandler *slogcpasync.Handler
+	if asyncEnabled && (!asyncOnFileTargets || isFileTarget) {
+		wrapped := slogcpasync.Wrap(handler, builder.asyncOpts...)
+		if ah, ok := wrapped.(*slogcpasync.Handler); ok {
+			asyncHandler = ah
+		}
+		handler = wrapped
 	}
 	if cfg.AddSource {
 		handler = sourceAwareHandler{Handler: handler}
 	}
-	return handler
+	return handler, asyncHandler
+}
+
+// resolveAsyncConfig determines async wrapper defaults for file targets when no explicit option is set.
+func resolveAsyncConfig(isFileTarget bool, builder *options) (bool, bool) {
+	if builder.asyncEnabled {
+		return true, builder.asyncOnFileTargets
+	}
+	if !isFileTarget {
+		return false, false
+	}
+	enabled, ok := asyncOnFileTargetsFromEnv()
+	if ok && !enabled {
+		return false, false
+	}
+	return true, true
+}
+
+// asyncOnFileTargetsFromEnv reads SLOGCP_ASYNC_ON_FILE to enable or disable file buffering.
+func asyncOnFileTargetsFromEnv() (bool, bool) {
+	raw := strings.TrimSpace(os.Getenv(envAsyncOnFile))
+	if raw == "" {
+		return false, false
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, false
+	}
+	return enabled, true
 }
 
 // ensureWriterDefaults assigns cfg.Writer when unset by falling back to either
@@ -393,9 +520,25 @@ func ensureWriterFallback(cfg *handlerConfig) {
 func (h *Handler) Close() error {
 	var firstErr error
 	h.closeOnce.Do(func() {
-		firstErr = h.closeResources()
+		if err := h.closeAsyncHandler(); err != nil {
+			firstErr = err
+		}
+		if err := h.closeResources(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	})
 	return firstErr
+}
+
+// closeAsyncHandler drains any async wrapper so queued records are written before resources are closed.
+func (h *Handler) closeAsyncHandler() error {
+	if h == nil || h.asyncHandler == nil {
+		return nil
+	}
+	if err := h.asyncHandler.Close(); err != nil {
+		return fmt.Errorf("close async handler: %w", err)
+	}
+	return nil
 }
 
 // closeResources tears down owned writers and closers.
@@ -464,19 +607,19 @@ func (h *Handler) ReopenLogFile() error {
 		return nil
 	}
 
-	if h.ownedFile != nil {
-		if err := h.ownedFile.Close(); err != nil {
-			h.internalLogger.Warn("error closing log file before reopen", slog.Any("error", err))
-		}
-	}
-
 	file, err := os.OpenFile(h.cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("slogcp: reopen log file %q: %w", h.cfg.FilePath, err)
 	}
 
+	oldFile := h.ownedFile
 	h.ownedFile = file
 	h.switchableWriter.SetWriter(file)
+	if oldFile != nil {
+		if err := oldFile.Close(); err != nil {
+			h.internalLogger.Warn("error closing log file before reopen", slog.Any("error", err))
+		}
+	}
 	return nil
 }
 
@@ -639,8 +782,9 @@ func WithLevel(level slog.Level) Option {
 
 // WithLevelVar shares the provided slog.LevelVar with the handler, allowing
 // external code to adjust log levels at runtime while keeping slogcp's internal
-// state in sync. When supplied, the handler inherits the LevelVar's current
-// value after other options and environment overrides have been applied.
+// state in sync. When supplied, slogcp initialises the LevelVar to the
+// resolved minimum level (defaults, environment, then WithLevel) during
+// handler construction.
 func WithLevelVar(levelVar *slog.LevelVar) Option {
 	return func(o *options) {
 		if levelVar != nil {
@@ -786,9 +930,9 @@ func WithAsync(opts ...slogcpasync.Option) Option {
 	}
 }
 
-// WithAsyncOnFileTargets wraps the handler in slogcpasync only when logging to a file.
-// This keeps stdout/stderr handlers synchronous while file targets gain async defaults.
-func WithAsyncOnFileTargets(opts ...slogcpasync.Option) Option {
+// WithAsyncOnFile applies slogcpasync only when logging to a file target.
+// It keeps stdout/stderr handlers synchronous while letting callers tune (or disable) file buffering.
+func WithAsyncOnFile(opts ...slogcpasync.Option) Option {
 	return func(o *options) {
 		o.asyncEnabled = true
 		o.asyncOnFileTargets = true
@@ -927,6 +1071,22 @@ func resetHandlerConfigCache() {
 	handlerEnvConfigCache.Store(nil)
 }
 
+// resolveTraceProjectFromEnv returns the highest-priority trace project ID and its source.
+func resolveTraceProjectFromEnv() (string, string) {
+	candidates := []string{
+		envTraceProjectID,
+		envProjectID,
+		envSlogcpGCP,
+		envGoogleProject,
+	}
+	for _, name := range candidates {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value, name
+		}
+	}
+	return "", ""
+}
+
 // loadConfigFromEnv reads handler configuration overrides from environment
 // variables, returning the assembled configuration and any validation errors.
 func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
@@ -938,7 +1098,7 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 		UseShortSeverityNames: defaultUseShortSeverityNames(),
 	}
 
-	cfg.Level = parseLevelEnv(os.Getenv(envLogLevel), cfg.Level, logger)
+	cfg.Level = resolveLevelFromEnv(cfg.Level, logger)
 	cfg.AddSource = parseBoolEnv(os.Getenv(envLogSource), cfg.AddSource, logger)
 	cfg.EmitTimeField, cfg.emitTimeFieldConfigured = parseBoolEnvWithPresence(os.Getenv(envLogTime), cfg.EmitTimeField, logger)
 	cfg.StackTraceEnabled = parseBoolEnv(os.Getenv(envLogStackEnabled), cfg.StackTraceEnabled, logger)
@@ -946,17 +1106,10 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 	cfg.UseShortSeverityNames = parseBoolEnv(os.Getenv(envSeverityAliases), cfg.UseShortSeverityNames, logger)
 	cfg.TraceDiagnostics = parseTraceDiagnosticsEnv(os.Getenv(envTraceDiagnostics), cfg.TraceDiagnostics, logger)
 
-	traceProject := strings.TrimSpace(os.Getenv(envTraceProjectID))
-	if traceProject == "" {
-		traceProject = strings.TrimSpace(os.Getenv(envProjectID))
-	}
-	if traceProject == "" {
-		traceProject = strings.TrimSpace(os.Getenv(envSlogcpGCP))
-	}
-	if traceProject == "" {
-		traceProject = strings.TrimSpace(os.Getenv(envGoogleProject))
-	}
+	traceProject, source := resolveTraceProjectFromEnv()
 	cfg.TraceProjectID = traceProject
+	cfg.traceProjectSource = source
+	cfg.traceProjectExplicit = traceProject != ""
 
 	if err := applyTargetFromEnv(&cfg, logger); err != nil {
 		return handlerConfig{}, err
@@ -992,11 +1145,10 @@ func applyLevelAndTraceOptions(cfg *handlerConfig, o *options) {
 	if o.stackTraceLevel != nil {
 		cfg.StackTraceLevel = *o.stackTraceLevel
 	}
-	if o.levelVar != nil {
-		cfg.Level = o.levelVar.Level()
-	}
 	if o.traceProjectID != nil {
 		cfg.TraceProjectID = *o.traceProjectID
+		cfg.traceProjectExplicit = true
+		cfg.traceProjectSource = traceProjectSourceOption
 	}
 	if o.traceDiagnostics != nil {
 		cfg.TraceDiagnostics = *o.traceDiagnostics
@@ -1107,6 +1259,17 @@ func parseBoolEnvWithPresence(value string, current bool, logger *slog.Logger) (
 		return current, false
 	}
 	return b, true
+}
+
+// resolveLevelFromEnv selects a log level from slogcp environment variables,
+// preferring SLOGCP_LEVEL and falling back to LOG_LEVEL when the slogcp-specific
+// variable is unset or blank.
+func resolveLevelFromEnv(current slog.Level, logger *slog.Logger) slog.Level {
+	level := strings.TrimSpace(os.Getenv(envLogLevel))
+	if level != "" {
+		return parseLevelEnv(level, current, logger)
+	}
+	return parseLevelEnv(os.Getenv(envGenericLogLevel), current, logger)
 }
 
 var envLevelAliases = map[string]slog.Level{

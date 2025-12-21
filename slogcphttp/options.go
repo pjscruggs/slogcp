@@ -17,6 +17,9 @@ package slogcphttp
 import (
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/propagation"
@@ -36,25 +39,47 @@ type AttrTransformer func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr
 // Option configures HTTP middleware or transport behaviour.
 type Option func(*config)
 
+// ProxyMode configures how the middleware derives peer and scheme metadata when
+// the application is running behind an intermediary (for example Cloud Run
+// behind a Google Cloud external HTTPS load balancer).
+type ProxyMode int
+
+const (
+	// ProxyModeNone disables proxy-aware parsing. This is the default since
+	// forwarded headers are trivial to spoof if requests can bypass your proxy.
+	ProxyModeNone ProxyMode = iota
+	// ProxyModeGCLB enables Google Cloud Load Balancing conventions for
+	// X-Forwarded-Proto and X-Forwarded-For.
+	ProxyModeGCLB
+)
+
+const envTrustRemoteTrace = "SLOGCP_TRUST_REMOTE_TRACE"
+
 type config struct {
-	logger                 *slog.Logger
-	projectID              string
-	enableOTel             bool
-	tracerProvider         trace.TracerProvider
-	propagators            propagation.TextMapPropagator
-	propagatorsSet         bool
-	propagateTrace         bool
-	publicEndpoint         bool
-	spanNameFormatter      func(string, *http.Request) string
-	filters                []otelhttp.Filter
-	attrEnrichers          []AttrEnricher
-	attrTransformers       []AttrTransformer
-	routeGetter            func(*http.Request) string
-	includeClientIP        bool
-	includeQuery           bool
-	includeUserAgent       bool
-	injectLegacyXCTC       bool
-	includeHTTPRequestAttr bool
+	logger                     *slog.Logger
+	projectID                  string
+	enableOTel                 bool
+	tracerProvider             trace.TracerProvider
+	propagators                propagation.TextMapPropagator
+	propagatorsSet             bool
+	propagateTrace             bool
+	publicEndpoint             bool
+	trustRemoteTraceForLogs    bool
+	trustRemoteTraceForLogsSet bool
+	spanNameFormatter          func(string, *http.Request) string
+	filters                    []otelhttp.Filter
+	attrEnrichers              []AttrEnricher
+	attrTransformers           []AttrTransformer
+	routeGetter                func(*http.Request) string
+	includeClientIP            bool
+	includeQuery               bool
+	includeUserAgent           bool
+	injectLegacyXCTC           bool
+	includeHTTPRequestAttr     bool
+	proxyMode                  ProxyMode
+	xffClientIPFromRight       int
+	trustXForwardedProto       bool
+	trustXForwardedProtoSet    bool
 }
 
 // defaultConfig returns the baseline configuration for slogcp HTTP helpers.
@@ -64,6 +89,10 @@ func defaultConfig() *config {
 		enableOTel:      true,
 		includeClientIP: true,
 		propagateTrace:  true,
+		proxyMode:       ProxyModeNone,
+		// Default to the GCLB convention: when X-Forwarded-For has multiple values,
+		// the load balancer appends "<client-ip>,<lb-ip>" to the right.
+		xffClientIPFromRight: 2,
 	}
 }
 
@@ -75,7 +104,24 @@ func applyOptions(opts []Option) *config {
 			opt(cfg)
 		}
 	}
+	applyTrustRemoteTraceEnv(cfg)
 	return cfg
+}
+
+// applyTrustRemoteTraceEnv applies SLOGCP_TRUST_REMOTE_TRACE when not set explicitly.
+func applyTrustRemoteTraceEnv(cfg *config) {
+	if cfg == nil || cfg.trustRemoteTraceForLogsSet {
+		return
+	}
+	raw := strings.TrimSpace(os.Getenv(envTrustRemoteTrace))
+	if raw == "" {
+		return
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return
+	}
+	cfg.trustRemoteTraceForLogs = enabled
 }
 
 // WithLogger sets the base logger used to derive per-request loggers. When
@@ -101,11 +147,11 @@ func WithProjectID(projectID string) Option {
 
 // WithPropagators supplies a TextMapPropagator used for extracting (server) or
 // injecting (client) trace context. When omitted, otel.GetTextMapPropagator()
-// is used.
+// is used. Passing nil is treated the same as omitting the option.
 func WithPropagators(p propagation.TextMapPropagator) Option {
 	return func(cfg *config) {
 		cfg.propagators = p
-		cfg.propagatorsSet = true
+		cfg.propagatorsSet = p != nil
 	}
 }
 
@@ -129,6 +175,20 @@ func WithTracePropagation(enabled bool) Option {
 func WithPublicEndpoint(enabled bool) Option {
 	return func(cfg *config) {
 		cfg.publicEndpoint = enabled
+	}
+}
+
+// WithRemoteTrace controls whether, in public-endpoint mode, the middleware
+// correlates logs to inbound trace context when OpenTelemetry span creation is
+// disabled. When unset, SLOGCP_TRUST_REMOTE_TRACE can be used to configure the
+// same behavior.
+//
+// When public endpoint is enabled and WithOTel(false) is in effect, the default is
+// to avoid trusting inbound trace headers for log correlation.
+func WithRemoteTrace(enabled bool) Option {
+	return func(cfg *config) {
+		cfg.trustRemoteTraceForLogs = enabled
+		cfg.trustRemoteTraceForLogsSet = true
 	}
 }
 
@@ -224,5 +284,41 @@ func WithLegacyXCloudInjection(enabled bool) Option {
 func WithHTTPRequestAttr(enabled bool) Option {
 	return func(cfg *config) {
 		cfg.includeHTTPRequestAttr = enabled
+	}
+}
+
+// WithProxyMode configures whether the middleware should trust proxy-provided
+// headers such as X-Forwarded-For and X-Forwarded-Proto. Disabled by default.
+func WithProxyMode(mode ProxyMode) Option {
+	return func(cfg *config) {
+		cfg.proxyMode = mode
+	}
+}
+
+// WithTrustXForwardedProto controls whether the middleware uses the
+// X-Forwarded-Proto header to derive the request scheme for logging.
+//
+// This option only affects scheme inference. Client IP parsing remains
+// controlled by proxy mode.
+func WithTrustXForwardedProto(enabled bool) Option {
+	return func(cfg *config) {
+		cfg.trustXForwardedProto = enabled
+		cfg.trustXForwardedProtoSet = true
+	}
+}
+
+// WithXForwardedForClientIPFromRight configures which element (counting from the
+// right, 1-indexed) to treat as the client IP when parsing X-Forwarded-For in
+// proxy-aware modes.
+//
+// For Google Cloud external HTTP(S) load balancers, the recommended value is 2
+// ("second from right"), corresponding to the load balancer appending
+// "<client-ip>,<lb-ip>" to the right.
+func WithXForwardedForClientIPFromRight(pos int) Option {
+	return func(cfg *config) {
+		if pos <= 0 {
+			pos = 1
+		}
+		cfg.xffClientIPFromRight = pos
 	}
 }

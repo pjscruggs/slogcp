@@ -16,6 +16,7 @@ package slogcp
 
 import (
 	"errors"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -48,29 +49,115 @@ var (
 )
 
 // stackTracer defines an interface errors can implement to provide their own stack trace
-// in the form of program counters. Compatible with github.com/pkg/errors.
+// in the form of program counters.
 type stackTracer interface {
 	StackTrace() []uintptr
 }
 
-// extractAndFormatOriginStack attempts to get a stack trace via the stackTracer interface
-// implemented by the error (or one it wraps) and formats it according to Go standards.
+// extractAndFormatOriginStack attempts to get a stack trace via stack tracer interfaces
+// (including pkg/errors-style StackTrace methods) and formats it according to Go standards.
 // It returns an empty string if the interface is not found or provides no PCs.
 func extractAndFormatOriginStack(err error) string {
+	pcs := stackPCsFromError(err)
+	if len(pcs) == 0 {
+		return ""
+	}
+	if len(pcs) > maxStackFrames {
+		pcs = pcs[:maxStackFrames]
+	}
+	return formatPCsToStackString(pcs)
+}
+
+var uintptrType = reflect.TypeOf(uintptr(0))
+
+// stackPCsFromError extracts program counters from supported stack-trace methods.
+func stackPCsFromError(err error) []uintptr {
+	if err == nil {
+		return nil
+	}
+
 	var st stackTracer
-	// Use errors.As to find the first error in the chain implementing the interface.
 	if errors.As(err, &st) {
-		pcs := st.StackTrace()
-		if len(pcs) > 0 {
-			// Limit the number of program counters to maxStackFrames
-			if len(pcs) > maxStackFrames {
-				pcs = pcs[:maxStackFrames]
-			}
-			// Format the program counters obtained from the error.
-			return formatPCsToStackString(pcs)
+		if pcs := st.StackTrace(); len(pcs) > 0 {
+			return pcs
 		}
 	}
-	return "" // No stack trace available from the error itself.
+
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if pcs := stackPCsFromStackTraceMethod(e); len(pcs) > 0 {
+			return pcs
+		}
+	}
+	return nil
+}
+
+// stackPCsFromStackTraceMethod uses reflection to read stack traces from methods that
+// return slices of uintptr-compatible values (for example pkg/errors.StackTrace).
+func stackPCsFromStackTraceMethod(err error) []uintptr {
+	if err == nil {
+		return nil
+	}
+	value := reflect.ValueOf(err)
+	method := value.MethodByName("StackTrace")
+	if !method.IsValid() {
+		return nil
+	}
+	if method.Type().NumIn() != 0 || method.Type().NumOut() != 1 {
+		return nil
+	}
+	out := method.Call(nil)
+	return stackPCsFromValue(out[0])
+}
+
+// stackPCsFromValue converts a slice/array of uintptr-compatible values into []uintptr.
+func stackPCsFromValue(value reflect.Value) []uintptr {
+	normalized, ok := normalizeStackValue(value)
+	if !ok {
+		return nil
+	}
+	return stackPCsFromSlice(normalized)
+}
+
+// normalizeStackValue ensures value is a non-empty slice/array, dereferencing pointers.
+func normalizeStackValue(value reflect.Value) (reflect.Value, bool) {
+	if !value.IsValid() {
+		return reflect.Value{}, false
+	}
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return reflect.Value{}, false
+		}
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.Slice && value.Kind() != reflect.Array {
+		return reflect.Value{}, false
+	}
+	if value.Len() == 0 {
+		return reflect.Value{}, false
+	}
+	return value, true
+}
+
+// stackPCsFromSlice converts slice or array elements into program counters.
+func stackPCsFromSlice(value reflect.Value) []uintptr {
+	pcs := make([]uintptr, 0, value.Len())
+	for i := 0; i < value.Len(); i++ {
+		elem := value.Index(i)
+		if elem.Kind() == reflect.Pointer {
+			if elem.IsNil() {
+				continue
+			}
+			elem = elem.Elem()
+		}
+		if !elem.IsValid() || !elem.Type().ConvertibleTo(uintptrType) {
+			return nil
+		}
+		pcs = append(pcs, elem.Convert(uintptrType).Interface().(uintptr))
+	}
+	if len(pcs) == 0 {
+		return nil
+	}
+	return pcs
 }
 
 // formatPCsToStackString formats program counters (pcs) into a standard Go stack trace string,

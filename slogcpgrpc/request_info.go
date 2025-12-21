@@ -41,6 +41,8 @@ type RequestInfo struct {
 	peer       atomic.Value
 }
 
+const unsetLatencySentinel = int64(-1)
+
 // newRequestInfo constructs a RequestInfo with derived service and method details.
 func newRequestInfo(fullMethod, kind string, client bool, start time.Time) *RequestInfo {
 	service, method := splitFullMethod(fullMethod)
@@ -53,7 +55,7 @@ func newRequestInfo(fullMethod, kind string, client bool, start time.Time) *Requ
 		start:      start,
 	}
 	info.status.Store(uint32(codes.OK))
-	info.latencyNS.Store(-1)
+	info.latencyNS.Store(unsetLatencySentinel)
 	return info
 }
 
@@ -111,7 +113,7 @@ func (ri *RequestInfo) Status() codes.Code {
 
 // Latency returns the recorded latency or the elapsed time if finalization has not occurred.
 func (ri *RequestInfo) Latency() time.Duration {
-	if ns := ri.latencyNS.Load(); ns > 0 {
+	if ns := ri.latencyNS.Load(); ns != unsetLatencySentinel {
 		return time.Duration(ns)
 	}
 	return time.Since(ri.start)
@@ -139,20 +141,27 @@ func (ri *RequestInfo) ResponseCount() int64 {
 
 // loggerAttrs builds structured logging attributes for the request.
 func (ri *RequestInfo) loggerAttrs(cfg *config, traceAttrs []slog.Attr) []slog.Attr {
-	attrs := make([]slog.Attr, 0, len(traceAttrs)+10)
+	capHint := len(traceAttrs) + 8
+	if cfg.includeSizes {
+		capHint += 4
+	}
+	if cfg.includePeer {
+		capHint++
+	}
+	attrs := make([]slog.Attr, 0, capHint)
 	if len(traceAttrs) > 0 {
 		attrs = append(attrs, traceAttrs...)
 	}
-	attrs = append(attrs, ri.baseRPCAttrs()...)
+	attrs = ri.appendBaseRPCAttrs(attrs)
 	attrs = append(attrs, ri.statusAttr(), ri.durationAttr())
 	attrs = ri.appendSizeAttrs(attrs, cfg)
 	attrs = ri.appendPeerAttr(attrs, cfg)
 	return attrs
 }
 
-// baseRPCAttrs returns the core RPC attributes for the request.
-func (ri *RequestInfo) baseRPCAttrs() []slog.Attr {
-	attrs := []slog.Attr{slog.String("rpc.system", "grpc")}
+// appendBaseRPCAttrs appends the core RPC attributes for the request.
+func (ri *RequestInfo) appendBaseRPCAttrs(attrs []slog.Attr) []slog.Attr {
+	attrs = append(attrs, slog.String("rpc.system", "grpc"))
 	if ri.service != "" {
 		attrs = append(attrs, slog.String("rpc.service", ri.service))
 	}
@@ -165,23 +174,58 @@ func (ri *RequestInfo) baseRPCAttrs() []slog.Attr {
 	return attrs
 }
 
+type requestInfoValueKind uint8
+
+const (
+	requestInfoStatus requestInfoValueKind = iota
+	requestInfoDuration
+	requestInfoRequestBytes
+	requestInfoResponseBytes
+	requestInfoRequestCount
+	requestInfoResponseCount
+)
+
+type requestInfoValue struct {
+	info *RequestInfo
+	kind requestInfoValueKind
+}
+
+// LogValue implements slog.LogValuer for deferred RequestInfo evaluation.
+func (v requestInfoValue) LogValue() slog.Value {
+	if v.info == nil {
+		return slog.Value{}
+	}
+	switch v.kind {
+	case requestInfoStatus:
+		return slog.StringValue(v.info.Status().String())
+	case requestInfoDuration:
+		return slog.DurationValue(v.info.Latency())
+	case requestInfoRequestBytes:
+		return slog.Int64Value(v.info.RequestBytes())
+	case requestInfoResponseBytes:
+		return slog.Int64Value(v.info.ResponseBytes())
+	case requestInfoRequestCount:
+		return slog.Int64Value(v.info.RequestCount())
+	case requestInfoResponseCount:
+		return slog.Int64Value(v.info.ResponseCount())
+	default:
+		return slog.Value{}
+	}
+}
+
 // statusAttr lazily renders the status code attribute.
 func (ri *RequestInfo) statusAttr() slog.Attr {
 	return slog.Attr{
-		Key: "grpc.status_code",
-		Value: slog.AnyValue(logValueFunc(func() slog.Value {
-			return slog.StringValue(ri.Status().String())
-		})),
+		Key:   "grpc.status_code",
+		Value: slog.AnyValue(requestInfoValue{info: ri, kind: requestInfoStatus}),
 	}
 }
 
 // durationAttr lazily renders the RPC duration attribute.
 func (ri *RequestInfo) durationAttr() slog.Attr {
 	return slog.Attr{
-		Key: "rpc.duration",
-		Value: slog.AnyValue(logValueFunc(func() slog.Value {
-			return slog.DurationValue(ri.Latency())
-		})),
+		Key:   "rpc.duration",
+		Value: slog.AnyValue(requestInfoValue{info: ri, kind: requestInfoDuration}),
 	}
 }
 
@@ -193,28 +237,20 @@ func (ri *RequestInfo) appendSizeAttrs(attrs []slog.Attr, cfg *config) []slog.At
 
 	return append(attrs,
 		slog.Attr{
-			Key: "rpc.request_size",
-			Value: slog.AnyValue(logValueFunc(func() slog.Value {
-				return slog.Int64Value(ri.RequestBytes())
-			})),
+			Key:   "rpc.request_size",
+			Value: slog.AnyValue(requestInfoValue{info: ri, kind: requestInfoRequestBytes}),
 		},
 		slog.Attr{
-			Key: "rpc.response_size",
-			Value: slog.AnyValue(logValueFunc(func() slog.Value {
-				return slog.Int64Value(ri.ResponseBytes())
-			})),
+			Key:   "rpc.response_size",
+			Value: slog.AnyValue(requestInfoValue{info: ri, kind: requestInfoResponseBytes}),
 		},
 		slog.Attr{
-			Key: "rpc.request_count",
-			Value: slog.AnyValue(logValueFunc(func() slog.Value {
-				return slog.Int64Value(ri.RequestCount())
-			})),
+			Key:   "rpc.request_count",
+			Value: slog.AnyValue(requestInfoValue{info: ri, kind: requestInfoRequestCount}),
 		},
 		slog.Attr{
-			Key: "rpc.response_count",
-			Value: slog.AnyValue(logValueFunc(func() slog.Value {
-				return slog.Int64Value(ri.ResponseCount())
-			})),
+			Key:   "rpc.response_count",
+			Value: slog.AnyValue(requestInfoValue{info: ri, kind: requestInfoResponseCount}),
 		},
 	)
 }

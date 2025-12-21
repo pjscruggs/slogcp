@@ -30,7 +30,9 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/pjscruggs/slogcp"
@@ -113,6 +115,403 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 	}
 }
 
+// TestMiddlewareProxyModeGCLBUsesForwardedHeaders verifies proxy mode overrides scheme and client IP.
+func TestMiddlewareProxyModeGCLBUsesForwardedHeaders(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	mw := Middleware(
+		WithLogger(baseLogger),
+		WithProjectID("proj-123"),
+		WithOTel(false),
+		WithProxyMode(ProxyModeGCLB),
+	)
+
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scope, ok := ScopeFromContext(r.Context())
+		if !ok {
+			t.Fatalf("scope missing from context")
+		}
+
+		if got := scope.Scheme(); got != schemeHTTPS {
+			t.Fatalf("scope.Scheme = %q, want %s", got, schemeHTTPS)
+		}
+		if got := scope.ClientIP(); got != "198.51.100.10" {
+			t.Fatalf("scope.ClientIP = %q, want 198.51.100.10", got)
+		}
+
+		slogcp.Logger(r.Context()).Info("forwarded metadata")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/widgets", nil)
+	req.URL.Scheme = ""
+	req.Host = "example.com"
+	req.RemoteAddr = "10.0.0.1:12345"
+	req.Header.Set("X-Forwarded-Proto", schemeHTTPS)
+	req.Header.Set("X-Forwarded-For", "1.2.3.4, 198.51.100.10, 203.0.113.5")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 log line, got %d", len(lines))
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	if got := entry["http.scheme"]; got != schemeHTTPS {
+		t.Fatalf("http.scheme = %v, want %s", got, schemeHTTPS)
+	}
+	if got := entry["network.peer.ip"]; got != "198.51.100.10" {
+		t.Fatalf("network.peer.ip = %v, want 198.51.100.10", got)
+	}
+}
+
+// TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled ensures untrusted trace IDs do not correlate logs by default.
+func TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled(t *testing.T) {
+	t.Run("default-do-not-correlate", func(t *testing.T) {
+		t.Setenv(envTrustRemoteTrace, "")
+
+		var buf bytes.Buffer
+		baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+		mw := Middleware(
+			WithLogger(baseLogger),
+			WithProjectID("proj-123"),
+			WithOTel(false),
+			WithPublicEndpoint(true),
+		)
+
+		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			slogcp.Logger(r.Context()).Info("public endpoint")
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/public", nil)
+		req.Header.Set("Traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 1 {
+			t.Fatalf("expected 1 log line, got %d", len(lines))
+		}
+
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+			t.Fatalf("unmarshal log: %v", err)
+		}
+
+		if got := entry["logging.googleapis.com/trace"]; got != nil {
+			t.Fatalf("unexpected trace correlation: %v", got)
+		}
+	})
+
+	t.Run("opt-in-correlate", func(t *testing.T) {
+		var buf bytes.Buffer
+		baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+		mw := Middleware(
+			WithLogger(baseLogger),
+			WithProjectID("proj-123"),
+			WithOTel(false),
+			WithPublicEndpoint(true),
+			WithRemoteTrace(true),
+		)
+
+		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			slogcp.Logger(r.Context()).Info("public endpoint")
+			w.WriteHeader(http.StatusNoContent)
+		}))
+
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/public", nil)
+		req.Header.Set("Traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		if len(lines) != 1 {
+			t.Fatalf("expected 1 log line, got %d", len(lines))
+		}
+
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+			t.Fatalf("unmarshal log: %v", err)
+		}
+
+		gotTrace, ok := entry["logging.googleapis.com/trace"].(string)
+		if !ok || gotTrace == "" {
+			t.Fatalf("trace correlation missing: %#v", entry["logging.googleapis.com/trace"])
+		}
+		if !strings.Contains(gotTrace, "105445aa7843bc8bf206b12000100000") {
+			t.Fatalf("trace = %v, want remote trace", gotTrace)
+		}
+	})
+}
+
+// TestMiddlewareHelpersCoverBranches exercises helper branches for 100% coverage.
+func TestMiddlewareHelpersCoverBranches(t *testing.T) {
+	if got := inferScheme(nil, defaultConfig()); got != "" {
+		t.Fatalf("inferScheme(nil) = %q, want empty", got)
+	}
+
+	if !shouldExtractRemoteSpanContext(nil) {
+		t.Fatal("shouldExtractRemoteSpanContext(nil) should be true")
+	}
+
+	ctx := context.Background()
+	if _, sc := ensureSpanContext(ctx, nil, defaultConfig()); sc.IsValid() {
+		t.Fatalf("ensureSpanContext(nil request) span context should be invalid")
+	}
+
+	origPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(origPropagator)
+	})
+
+	cfg := applyOptions([]Option{WithPropagators(nil)})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req.Header.Set("traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+	if _, _, ok := extractSpanContextFromHeaders(ctx, req, cfg); !ok {
+		t.Fatalf("extractSpanContextFromHeaders should use the global propagator when nil is supplied")
+	}
+
+	if got := clientIPFromRequest(nil, defaultConfig()); got != "" {
+		t.Fatalf("clientIPFromRequest(nil) = %q, want empty", got)
+	}
+
+	if got := xForwardedProto(""); got != "" {
+		t.Fatalf("xForwardedProto(empty) = %q, want empty", got)
+	}
+	if got := xForwardedProto(schemeHTTPS + ", " + schemeHTTP); got != schemeHTTPS {
+		t.Fatalf("xForwardedProto(list) = %q, want %q", got, schemeHTTPS)
+	}
+	if got := xForwardedProto("ftp"); got != "" {
+		t.Fatalf("xForwardedProto(invalid) = %q, want empty", got)
+	}
+
+	if got := gclbClientIPFromXForwardedFor("", 2); got != "" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(empty) = %q, want empty", got)
+	}
+	if got := gclbClientIPFromXForwardedFor("198.51.100.10", 0); got != "198.51.100.10" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(fromRight<=0) = %q, want 198.51.100.10", got)
+	}
+	if got := gclbClientIPFromXForwardedFor("198.51.100.10,,203.0.113.5", 1); got != "203.0.113.5" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(empty parts) = %q, want 203.0.113.5", got)
+	}
+	if got := gclbClientIPFromXForwardedFor("198.51.100.10", 2); got != "" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(len<fromRight) = %q, want empty", got)
+	}
+	if got := gclbClientIPFromXForwardedFor("[]", 1); got != "" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(empty candidate) = %q, want empty", got)
+	}
+	if got := gclbClientIPFromXForwardedFor("not-an-ip", 1); got != "" {
+		t.Fatalf("gclbClientIPFromXForwardedFor(invalid ip) = %q, want empty", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req.Header.Set(XCloudTraceContextHeader, "not-a-valid-xctc")
+	if _, _, ok := extractSpanContextFromXCloudTraceContext(ctx, req); ok {
+		t.Fatalf("extractSpanContextFromXCloudTraceContext should fail on invalid header")
+	}
+
+	originalExtractor := xCloudTraceContextExtractor
+	t.Cleanup(func() { xCloudTraceContextExtractor = originalExtractor })
+	xCloudTraceContextExtractor = func(ctx context.Context, _ string) (context.Context, bool) {
+		return ctx, true
+	}
+	req = httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/1;o=1")
+	if _, _, ok := extractSpanContextFromXCloudTraceContext(ctx, req); ok {
+		t.Fatalf("extractSpanContextFromXCloudTraceContext should fail when extractor returns invalid span context")
+	}
+}
+
+// TestApplyDefaultForwardedProtoTrustUsesRuntimeEnvironment verifies defaults are derived from cached runtime info.
+func TestApplyDefaultForwardedProtoTrustUsesRuntimeEnvironment(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	applyDefaultForwardedProtoTrust(cfg, slogcp.RuntimeInfo{Environment: slogcp.RuntimeEnvCloudRunService})
+	if !cfg.trustXForwardedProto {
+		t.Fatalf("trustXForwardedProto = false, want true for Cloud Run service")
+	}
+
+	cfg = defaultConfig()
+	applyDefaultForwardedProtoTrust(cfg, slogcp.RuntimeInfo{Environment: slogcp.RuntimeEnvUnknown})
+	if cfg.trustXForwardedProto {
+		t.Fatalf("trustXForwardedProto = true, want false for unknown environment")
+	}
+}
+
+// TestApplyDefaultForwardedProtoTrustNilConfig ensures nil configs are handled safely.
+func TestApplyDefaultForwardedProtoTrustNilConfig(t *testing.T) {
+	t.Parallel()
+
+	applyDefaultForwardedProtoTrust(nil, slogcp.RuntimeInfo{Environment: slogcp.RuntimeEnvCloudRunService})
+}
+
+// TestApplyDefaultForwardedProtoTrustRespectsOverrides ensures explicit options and proxy mode override defaults.
+func TestApplyDefaultForwardedProtoTrustRespectsOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg := applyOptions([]Option{WithTrustXForwardedProto(false)})
+	applyDefaultForwardedProtoTrust(cfg, slogcp.RuntimeInfo{Environment: slogcp.RuntimeEnvCloudRunService})
+	if cfg.trustXForwardedProto {
+		t.Fatalf("trustXForwardedProto = true, want false when explicitly disabled")
+	}
+
+	cfg = defaultConfig()
+	cfg.proxyMode = ProxyModeGCLB
+	applyDefaultForwardedProtoTrust(cfg, slogcp.RuntimeInfo{Environment: slogcp.RuntimeEnvUnknown})
+	if !cfg.trustXForwardedProto {
+		t.Fatalf("trustXForwardedProto = false, want true when ProxyModeGCLB is enabled")
+	}
+}
+
+// TestInferSchemeTrustXForwardedProtoUsesHeader verifies WithTrustXForwardedProto toggles scheme inference.
+func TestInferSchemeTrustXForwardedProtoUsesHeader(t *testing.T) {
+	t.Parallel()
+
+	cfg := applyOptions([]Option{WithTrustXForwardedProto(true)})
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/widgets", nil)
+	req.URL.Scheme = ""
+	req.Header.Set("X-Forwarded-Proto", schemeHTTPS)
+	if got := inferScheme(req, cfg); got != schemeHTTPS {
+		t.Fatalf("inferScheme(trust_xfp) = %q, want %q", got, schemeHTTPS)
+	}
+}
+
+// TestExtractSpanContextFromHeadersFallsBackToGlobal verifies cfg nil uses the global propagator.
+func TestExtractSpanContextFromHeadersFallsBackToGlobal(t *testing.T) {
+	traceID, err := trace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("parse trace id: %v", err)
+	}
+	spanID, err := trace.SpanIDFromHex("0123456789abcdef")
+	if err != nil {
+		t.Fatalf("parse span id: %v", err)
+	}
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctxWithSpan := trace.ContextWithSpanContext(context.Background(), sc)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	propagation.TraceContext{}.Inject(ctxWithSpan, propagation.HeaderCarrier(req.Header))
+
+	_, extracted, ok := extractSpanContextFromHeaders(context.Background(), req, nil)
+	if !ok {
+		t.Fatalf("expected extractSpanContextFromHeaders to succeed with cfg nil")
+	}
+	if extracted.TraceID() != traceID {
+		t.Fatalf("expected trace ID %s, got %s", traceID, extracted.TraceID())
+	}
+	if extracted.SpanID() != spanID {
+		t.Fatalf("expected span ID %s, got %s", spanID, extracted.SpanID())
+	}
+}
+
+// TestExtractSpanContextFromHeadersReturnsFalseWithoutPropagator ensures nil propagators skip extraction.
+func TestExtractSpanContextFromHeadersReturnsFalseWithoutPropagator(t *testing.T) {
+	orig := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(nil)
+	t.Cleanup(func() { otel.SetTextMapPropagator(orig) })
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req.Header.Set("traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+	if _, _, ok := extractSpanContextFromHeaders(context.Background(), req, nil); ok {
+		t.Fatalf("expected extractSpanContextFromHeaders to return false when no propagator is configured")
+	}
+}
+
+// TestMiddlewareTracePropagationDisabledIgnoresTraceparent ensures WithTracePropagation(false)
+// prevents otelhttp from extracting an incoming traceparent header.
+func TestMiddlewareTracePropagationDisabledIgnoresTraceparent(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	tracerProvider := sdktrace.NewTracerProvider()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = tracerProvider.Shutdown(ctx)
+	})
+
+	mw := Middleware(
+		WithLogger(baseLogger),
+		WithProjectID("proj-123"),
+		WithTracerProvider(tracerProvider),
+		WithTracePropagation(false),
+	)
+
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slogcp.Logger(r.Context()).Info("propagation disabled")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/disabled", http.NoBody)
+	req.Header.Set("Traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 log line, got %d", len(lines))
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	gotTrace, ok := entry["logging.googleapis.com/trace"].(string)
+	if !ok || gotTrace == "" {
+		t.Fatalf("trace field missing: %#v", entry["logging.googleapis.com/trace"])
+	}
+	if strings.Contains(gotTrace, "105445aa7843bc8bf206b12000100000") {
+		t.Fatalf("expected middleware to ignore incoming traceparent; got trace %q", gotTrace)
+	}
+}
+
+// TestNoopPropagatorMethods verifies noopPropagator behaves like a no-op TextMapPropagator.
+func TestNoopPropagatorMethods(t *testing.T) {
+	t.Parallel()
+
+	p := noopPropagator{}
+	hdr := make(http.Header)
+
+	ctx := context.WithValue(context.Background(), requestScopeKey{}, "ok")
+	got := p.Extract(ctx, propagation.HeaderCarrier(hdr))
+	if got.Value(requestScopeKey{}) != "ok" {
+		t.Fatalf("Extract should preserve context values, got %#v", got.Value(requestScopeKey{}))
+	}
+
+	p.Inject(ctx, propagation.HeaderCarrier(hdr))
+	if len(hdr) != 0 {
+		t.Fatalf("Inject should not mutate headers, got %#v", hdr)
+	}
+
+	if got := p.Fields(); got != nil {
+		t.Fatalf("Fields() = %#v, want nil", got)
+	}
+}
+
 // TestMiddlewareNilNextUsesNotFound ensures nil handlers fall back to http.NotFoundHandler.
 func TestMiddlewareNilNextUsesNotFound(t *testing.T) {
 	t.Parallel()
@@ -131,7 +530,7 @@ func TestPopulateURLFieldsHandlesNilURL(t *testing.T) {
 	t.Parallel()
 
 	scope := &RequestScope{}
-	scope.populateURLFields(&http.Request{URL: nil})
+	scope.populateURLFields(&http.Request{URL: nil}, nil)
 
 	if scope.target != "" || scope.scheme != "" || scope.host != "" {
 		t.Fatalf("expected zero-valued scope fields")
@@ -290,6 +689,15 @@ func TestMiddlewareIncludesHTTPRequestAttr(t *testing.T) {
 	}
 	if got := httpPayload["remoteIp"]; got != "203.0.113.10" {
 		t.Fatalf("remoteIp = %v, want 203.0.113.10", got)
+	}
+	if _, ok := httpPayload["status"]; ok {
+		t.Fatalf("status should be omitted for in-flight logs, got %#v", httpPayload["status"])
+	}
+	if _, ok := httpPayload["responseSize"]; ok {
+		t.Fatalf("responseSize should be omitted for in-flight logs, got %#v", httpPayload["responseSize"])
+	}
+	if _, ok := httpPayload["latency"]; ok {
+		t.Fatalf("latency should be omitted for in-flight logs, got %#v", httpPayload["latency"])
 	}
 }
 
@@ -474,6 +882,58 @@ func TestMetricAttrsLatencyFinalization(t *testing.T) {
 	}
 }
 
+// TestRequestScopeMetricValueLogValue covers deferred metric log value evaluation.
+func TestRequestScopeMetricValueLogValue(t *testing.T) {
+	t.Parallel()
+
+	scope := newRequestScope(nil, time.Now(), defaultConfig())
+	scope.setStatus(http.StatusAccepted)
+	scope.addResponseBytes(128)
+
+	tests := []struct {
+		name     string
+		value    requestScopeMetricValue
+		wantKind slog.Kind
+		wantInt  int64
+	}{
+		{
+			name:     "status",
+			value:    requestScopeMetricValue{scope: scope, kind: requestScopeMetricStatus},
+			wantKind: slog.KindInt64,
+			wantInt:  int64(http.StatusAccepted),
+		},
+		{
+			name:     "response_size",
+			value:    requestScopeMetricValue{scope: scope, kind: requestScopeMetricResponseSize},
+			wantKind: slog.KindInt64,
+			wantInt:  128,
+		},
+		{
+			name:     "default",
+			value:    requestScopeMetricValue{scope: scope, kind: requestScopeMetricKind(99)},
+			wantKind: slog.KindAny,
+		},
+		{
+			name:     "nil_scope",
+			value:    requestScopeMetricValue{scope: nil, kind: requestScopeMetricStatus},
+			wantKind: slog.KindAny,
+		},
+	}
+
+	for _, tt := range tests {
+		got := tt.value.LogValue()
+		if got.Kind() != tt.wantKind {
+			t.Fatalf("%s kind = %v, want %v", tt.name, got.Kind(), tt.wantKind)
+		}
+		if tt.wantKind == slog.KindInt64 && got.Int64() != tt.wantInt {
+			t.Fatalf("%s value = %d, want %d", tt.name, got.Int64(), tt.wantInt)
+		}
+		if tt.wantKind == slog.KindAny && got.Any() != nil {
+			t.Fatalf("%s expected nil Any, got %#v", tt.name, got.Any())
+		}
+	}
+}
+
 // TestScopeFromContextNil verifies nil and empty contexts return no scope.
 func TestScopeFromContextNil(t *testing.T) {
 	t.Parallel()
@@ -496,8 +956,8 @@ func TestNewRequestScopeInfersTLSScheme(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 
 	scope := newRequestScope(req, time.Now(), defaultConfig())
-	if scope.scheme != "https" {
-		t.Fatalf("scheme = %q, want https", scope.scheme)
+	if scope.scheme != schemeHTTPS {
+		t.Fatalf("scheme = %q, want %s", scope.scheme, schemeHTTPS)
 	}
 }
 
@@ -712,6 +1172,17 @@ func TestResponseRecorderOptionalInterfacesForwarding(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("CloseNotify did not forward values")
+	}
+}
+
+// TestResponseRecorderUnwrap ensures the wrapper exposes the base ResponseWriter.
+func TestResponseRecorderUnwrap(t *testing.T) {
+	t.Parallel()
+
+	base := &minimalResponseWriter{header: make(http.Header)}
+	_, recorder := wrapResponseWriter(base, &RequestScope{})
+	if got := recorder.Unwrap(); got != base {
+		t.Fatalf("Unwrap() = %v, want base writer", got)
 	}
 }
 
@@ -1203,16 +1674,3 @@ func withRawAttrHooks(enrichers []AttrEnricher, transformers []AttrTransformer) 
 		cfg.attrTransformers = append(cfg.attrTransformers, transformers...)
 	}
 }
-
-type noopPropagator struct{}
-
-// Inject satisfies the propagation.TextMapPropagator interface while remaining a no-op for tests.
-func (noopPropagator) Inject(context.Context, propagation.TextMapCarrier) {}
-
-// Extract returns the provided context unchanged to simulate a no-op propagator.
-func (noopPropagator) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
-	return ctx
-}
-
-// Fields reports no carrier fields because the noop propagator does not inject anything.
-func (noopPropagator) Fields() []string { return nil }

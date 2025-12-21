@@ -422,6 +422,28 @@ func TestTraceHelperEdgeCases(t *testing.T) {
 		}
 	})
 
+	t.Run("extract_with_nil_config_uses_global", func(t *testing.T) {
+		traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+		spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+		source := trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    traceID,
+			SpanID:     spanID,
+			TraceFlags: trace.FlagsSampled,
+		})
+
+		orig := otel.GetTextMapPropagator()
+		otel.SetTextMapPropagator(propagation.TraceContext{})
+		t.Cleanup(func() { otel.SetTextMapPropagator(orig) })
+
+		md := metadata.New(nil)
+		propagation.TraceContext{}.Inject(trace.ContextWithSpanContext(context.Background(), source), metadataCarrier{md})
+
+		_, sc := extractWithPropagator(context.Background(), md, nil)
+		if sc.TraceID() != traceID || sc.SpanID() != spanID {
+			t.Fatalf("expected extractWithPropagator to use global propagator, got %v", sc)
+		}
+	})
+
 	t.Run("extract_xcloud_invalid_header", func(t *testing.T) {
 		md := metadata.Pairs(strings.ToLower(XCloudTraceContextHeader), "bad-header")
 		ctx := context.Background()
@@ -466,6 +488,27 @@ func TestTraceHelperEdgeCases(t *testing.T) {
 			t.Fatalf("traceFlagsFromOptions(no flag) = %v, want 0", got)
 		}
 	})
+}
+
+// TestInjectClientTraceWithNilConfigUsesGlobal ensures the global propagator is used when cfg is nil.
+func TestInjectClientTraceWithNilConfigUsesGlobal(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	orig := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTextMapPropagator(orig) })
+
+	md := metadata.New(nil)
+	injectClientTrace(ctx, md, nil)
+	if got := md.Get("traceparent"); len(got) == 0 {
+		t.Fatalf("expected traceparent header to be injected when cfg is nil")
+	}
 }
 
 // encodeTraceBin assembles a grpc-trace-bin payload for tests.

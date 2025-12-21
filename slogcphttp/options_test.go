@@ -80,11 +80,15 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 		WithTracerProvider(tp),
 		WithTracePropagation(false),
 		WithPublicEndpoint(true),
+		WithRemoteTrace(true),
 		WithOTel(false),
 		WithSpanNameFormatter(formatter),
 		WithFilter(nil), // ensure nil is skipped
 		WithFilter(filter),
 		WithClientIP(false),
+		WithProxyMode(ProxyModeGCLB),
+		WithTrustXForwardedProto(true),
+		WithXForwardedForClientIPFromRight(3),
 	})
 
 	if !cfg.propagatorsSet || cfg.propagators != prop {
@@ -99,11 +103,23 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 	if !cfg.publicEndpoint {
 		t.Fatalf("publicEndpoint should be true")
 	}
+	if !cfg.trustRemoteTraceForLogs || !cfg.trustRemoteTraceForLogsSet {
+		t.Fatalf("trustRemoteTraceForLogs not applied: value=%v set=%v", cfg.trustRemoteTraceForLogs, cfg.trustRemoteTraceForLogsSet)
+	}
 	if cfg.enableOTel {
 		t.Fatalf("enableOTel should be false after WithOTel(false)")
 	}
 	if cfg.includeClientIP {
 		t.Fatalf("includeClientIP should be false after WithClientIP(false)")
+	}
+	if cfg.proxyMode != ProxyModeGCLB {
+		t.Fatalf("proxyMode = %v, want ProxyModeGCLB", cfg.proxyMode)
+	}
+	if !cfg.trustXForwardedProtoSet || !cfg.trustXForwardedProto {
+		t.Fatalf("trustXForwardedProto not applied: set=%v value=%v", cfg.trustXForwardedProtoSet, cfg.trustXForwardedProto)
+	}
+	if cfg.xffClientIPFromRight != 3 {
+		t.Fatalf("xffClientIPFromRight = %d, want 3", cfg.xffClientIPFromRight)
 	}
 	if out := cfg.spanNameFormatter("base", nil); out != "base-fmt" {
 		t.Fatalf("spanNameFormatter output = %q", out)
@@ -114,6 +130,47 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 	cfg.filters[0](nil)
 	if !filterHit {
 		t.Fatalf("filter was not invoked")
+	}
+}
+
+// TestRemoteTraceForLogsEnvIsAppliedWhenUnset verifies env defaults apply when options are unset.
+func TestRemoteTraceForLogsEnvIsAppliedWhenUnset(t *testing.T) {
+	t.Setenv(envTrustRemoteTrace, "true")
+
+	cfg := applyOptions(nil)
+	if !cfg.trustRemoteTraceForLogs {
+		t.Fatalf("trustRemoteTraceForLogs = false, want true")
+	}
+}
+
+// TestRemoteTraceForLogsEnvDoesNotOverrideExplicitOption verifies explicit options win over env.
+func TestRemoteTraceForLogsEnvDoesNotOverrideExplicitOption(t *testing.T) {
+	t.Setenv(envTrustRemoteTrace, "true")
+
+	cfg := applyOptions([]Option{WithRemoteTrace(false)})
+	if cfg.trustRemoteTraceForLogs {
+		t.Fatalf("trustRemoteTraceForLogs = true, want false")
+	}
+}
+
+// TestRemoteTraceForLogsEnvIgnoresInvalidValue ensures invalid env values are ignored.
+func TestRemoteTraceForLogsEnvIgnoresInvalidValue(t *testing.T) {
+	t.Setenv(envTrustRemoteTrace, "notabool")
+
+	cfg := applyOptions(nil)
+	if cfg.trustRemoteTraceForLogs {
+		t.Fatalf("trustRemoteTraceForLogs = true, want false")
+	}
+}
+
+// TestWithXForwardedForClientIPFromRightNormalizesNonPositive covers the pos<=0 branch.
+func TestWithXForwardedForClientIPFromRightNormalizesNonPositive(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultConfig()
+	WithXForwardedForClientIPFromRight(0)(cfg)
+	if cfg.xffClientIPFromRight != 1 {
+		t.Fatalf("xffClientIPFromRight = %d, want 1", cfg.xffClientIPFromRight)
 	}
 }
 
