@@ -80,7 +80,7 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 		WithTracerProvider(tp),
 		WithTracePropagation(false),
 		WithPublicEndpoint(true),
-		WithPublicEndpointCorrelateLogsToRemote(true),
+		WithRemoteTrace(true),
 		WithOTel(false),
 		WithSpanNameFormatter(formatter),
 		WithFilter(nil), // ensure nil is skipped
@@ -103,8 +103,8 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 	if !cfg.publicEndpoint {
 		t.Fatalf("publicEndpoint should be true")
 	}
-	if !cfg.publicEndpointCorrelateLogsToRemote {
-		t.Fatalf("publicEndpointCorrelateLogsToRemote should be true")
+	if !cfg.trustRemoteTraceForLogs || !cfg.trustRemoteTraceForLogsSet {
+		t.Fatalf("trustRemoteTraceForLogs not applied: value=%v set=%v", cfg.trustRemoteTraceForLogs, cfg.trustRemoteTraceForLogsSet)
 	}
 	if cfg.enableOTel {
 		t.Fatalf("enableOTel should be false after WithOTel(false)")
@@ -130,6 +130,36 @@ func TestOptionSettersCoverAllFields(t *testing.T) {
 	cfg.filters[0](nil)
 	if !filterHit {
 		t.Fatalf("filter was not invoked")
+	}
+}
+
+// TestRemoteTraceForLogsEnvIsAppliedWhenUnset verifies env defaults apply when options are unset.
+func TestRemoteTraceForLogsEnvIsAppliedWhenUnset(t *testing.T) {
+	t.Setenv(envTrustRemoteTrace, "true")
+
+	cfg := applyOptions(nil)
+	if !cfg.trustRemoteTraceForLogs {
+		t.Fatalf("trustRemoteTraceForLogs = false, want true")
+	}
+}
+
+// TestRemoteTraceForLogsEnvDoesNotOverrideExplicitOption verifies explicit options win over env.
+func TestRemoteTraceForLogsEnvDoesNotOverrideExplicitOption(t *testing.T) {
+	t.Setenv(envTrustRemoteTrace, "true")
+
+	cfg := applyOptions([]Option{WithRemoteTrace(false)})
+	if cfg.trustRemoteTraceForLogs {
+		t.Fatalf("trustRemoteTraceForLogs = true, want false")
+	}
+}
+
+// TestRemoteTraceForLogsEnvIgnoresInvalidValue ensures invalid env values are ignored.
+func TestRemoteTraceForLogsEnvIgnoresInvalidValue(t *testing.T) {
+	t.Setenv(envTrustRemoteTrace, "notabool")
+
+	cfg := applyOptions(nil)
+	if cfg.trustRemoteTraceForLogs {
+		t.Fatalf("trustRemoteTraceForLogs = true, want false")
 	}
 }
 

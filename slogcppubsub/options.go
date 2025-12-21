@@ -17,6 +17,8 @@ package slogcppubsub
 import (
 	"context"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 
 	"cloud.google.com/go/pubsub/v2"
@@ -25,7 +27,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const defaultConsumerSpanName = "pubsub.process"
+const (
+	defaultConsumerSpanName = "pubsub.process"
+	envTrustRemoteTrace     = "SLOGCP_TRUST_REMOTE_TRACE"
+)
 
 // AttrEnricher can append additional attributes to the derived message logger.
 type AttrEnricher func(context.Context, *pubsub.Message, *MessageInfo) []slog.Attr
@@ -38,31 +43,32 @@ type AttrTransformer func(context.Context, []slog.Attr, *pubsub.Message, *Messag
 type Option func(*config)
 
 type config struct {
-	logger                              *slog.Logger
-	projectID                           string
-	subscriptionID                      string
-	topicID                             string
-	enableOTel                          bool
-	spanStrategy                        SpanStrategy
-	tracerProvider                      trace.TracerProvider
-	publicEndpoint                      bool
-	publicEndpointCorrelateLogsToRemote bool
-	propagators                         propagation.TextMapPropagator
-	propagatorsSet                      bool
-	propagateTrace                      bool
-	propagateBaggage                    bool
-	caseInsensitiveExtraction           bool
-	injectOnlyIfSpanPresent             bool
-	spanName                            string
-	spanAttributes                      []attribute.KeyValue
-	logMessageID                        bool
-	logOrderingKey                      bool
-	logDeliveryAttempt                  bool
-	logPublishTime                      bool
-	attrEnrichers                       []AttrEnricher
-	attrTransformers                    []AttrTransformer
-	googClientExtraction                bool
-	googClientInjection                 bool
+	logger                     *slog.Logger
+	projectID                  string
+	subscriptionID             string
+	topicID                    string
+	enableOTel                 bool
+	spanStrategy               SpanStrategy
+	tracerProvider             trace.TracerProvider
+	publicEndpoint             bool
+	trustRemoteTraceForLogs    bool
+	trustRemoteTraceForLogsSet bool
+	propagators                propagation.TextMapPropagator
+	propagatorsSet             bool
+	propagateTrace             bool
+	propagateBaggage           bool
+	caseInsensitiveExtraction  bool
+	injectOnlyIfSpanPresent    bool
+	spanName                   string
+	spanAttributes             []attribute.KeyValue
+	logMessageID               bool
+	logOrderingKey             bool
+	logDeliveryAttempt         bool
+	logPublishTime             bool
+	attrEnrichers              []AttrEnricher
+	attrTransformers           []AttrTransformer
+	googClientExtraction       bool
+	googClientInjection        bool
 }
 
 // defaultConfig returns a config populated with production-oriented defaults.
@@ -89,7 +95,24 @@ func applyOptions(opts []Option) *config {
 			opt(cfg)
 		}
 	}
+	applyTrustRemoteTraceEnv(cfg)
 	return cfg
+}
+
+// applyTrustRemoteTraceEnv applies SLOGCP_TRUST_REMOTE_TRACE when not set explicitly.
+func applyTrustRemoteTraceEnv(cfg *config) {
+	if cfg == nil || cfg.trustRemoteTraceForLogsSet {
+		return
+	}
+	raw := strings.TrimSpace(os.Getenv(envTrustRemoteTrace))
+	if raw == "" {
+		return
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return
+	}
+	cfg.trustRemoteTraceForLogs = enabled
 }
 
 // WithLogger sets the base logger used to derive per-message loggers.
@@ -193,13 +216,15 @@ func WithPublicEndpoint(enabled bool) Option {
 	}
 }
 
-// WithPublicEndpointCorrelateLogsToRemote controls whether logs are correlated
-// to extracted remote trace context when public endpoint mode is enabled and no
-// local span is created (for example, when WithOTel(false)). The default is
-// false so untrusted producers cannot choose the trace associated with logs.
-func WithPublicEndpointCorrelateLogsToRemote(enabled bool) Option {
+// WithRemoteTrace controls whether logs are correlated to extracted remote
+// trace context when public endpoint mode is enabled and no local span is created
+// (for example, when WithOTel(false)). When unset, SLOGCP_TRUST_REMOTE_TRACE can
+// be used to configure the same behavior. The default is false so untrusted
+// producers cannot choose the trace associated with logs.
+func WithRemoteTrace(enabled bool) Option {
 	return func(cfg *config) {
-		cfg.publicEndpointCorrelateLogsToRemote = enabled
+		cfg.trustRemoteTraceForLogs = enabled
+		cfg.trustRemoteTraceForLogsSet = true
 	}
 }
 

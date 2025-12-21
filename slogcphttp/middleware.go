@@ -706,7 +706,7 @@ func shouldExtractRemoteSpanContext(cfg *config) bool {
 	if cfg.enableOTel {
 		return true
 	}
-	return cfg.publicEndpointCorrelateLogsToRemote
+	return cfg.trustRemoteTraceForLogs
 }
 
 // extractSpanContextFromHeaders extracts a span context using the configured/global propagator.

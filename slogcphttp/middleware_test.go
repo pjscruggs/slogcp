@@ -176,9 +176,9 @@ func TestMiddlewareProxyModeGCLBUsesForwardedHeaders(t *testing.T) {
 
 // TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled ensures untrusted trace IDs do not correlate logs by default.
 func TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled(t *testing.T) {
-	t.Parallel()
-
 	t.Run("default-do-not-correlate", func(t *testing.T) {
+		t.Setenv(envTrustRemoteTrace, "")
+
 		var buf bytes.Buffer
 		baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
 
@@ -224,7 +224,7 @@ func TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled(t *testi
 			WithProjectID("proj-123"),
 			WithOTel(false),
 			WithPublicEndpoint(true),
-			WithPublicEndpointCorrelateLogsToRemote(true),
+			WithRemoteTrace(true),
 		)
 
 		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
