@@ -154,9 +154,8 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 
 // resolveTraceProject chooses a project ID from input or cached environment.
 func resolveTraceProject(projectID string) string {
-	projectID = strings.TrimSpace(projectID)
-	if projectID != "" {
-		return projectID
+	if normalized, _, ok := normalizeTraceProjectID(projectID); ok {
+		return normalized
 	}
 	return cachedTraceProjectID()
 }
@@ -201,7 +200,7 @@ func cachedTraceProjectID() string {
 }
 
 // detectTraceProjectIDFromEnv inspects known environment variables in
-// priority order and returns the first non-empty project identifier.
+// priority order and returns the first valid project identifier.
 func detectTraceProjectIDFromEnv() string {
 	candidates := []string{
 		"SLOGCP_TRACE_PROJECT_ID",
@@ -212,9 +211,46 @@ func detectTraceProjectIDFromEnv() string {
 		"GCP_PROJECT",
 	}
 	for _, name := range candidates {
-		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-			return value
+		value := strings.TrimSpace(os.Getenv(name))
+		if value == "" {
+			continue
+		}
+		if normalized, _, ok := normalizeTraceProjectID(value); ok {
+			return normalized
 		}
 	}
 	return ""
+}
+
+// normalizeTraceProjectID normalizes and validates a trace project identifier.
+func normalizeTraceProjectID(raw string) (normalized string, changed bool, ok bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false, false
+	}
+	if trimmed != raw {
+		changed = true
+	}
+
+	s := trimmed
+	if strings.HasPrefix(strings.ToLower(s), "projects/") {
+		s = s[len("projects/"):]
+		changed = true
+	}
+	s = strings.TrimSpace(s)
+	if s != trimmed {
+		changed = true
+	}
+	if strings.Contains(s, "/") {
+		return "", false, false
+	}
+
+	lower := strings.ToLower(s)
+	if lower != s {
+		changed = true
+	}
+	if !projectIDPattern.MatchString(lower) {
+		return "", false, false
+	}
+	return lower, changed, true
 }

@@ -477,6 +477,12 @@ func TestTransportInjectsTraceAndLogger(t *testing.T) {
 	if got := entry["http.host"]; got != "api.example.com" {
 		t.Errorf("http.host = %v", got)
 	}
+	if got := entry["server.address"]; got != "api.example.com" {
+		t.Errorf("server.address = %v", got)
+	}
+	if _, ok := entry["network.peer.ip"]; ok {
+		t.Errorf("network.peer.ip should be omitted for outbound requests")
+	}
 	if got := entry["logging.googleapis.com/trace"]; got != "projects/proj-123/traces/105445aa7843bc8bf206b12000100000" {
 		t.Errorf("trace = %v", got)
 	}
@@ -532,6 +538,17 @@ func TestOutboundHost(t *testing.T) {
 				t.Fatalf("outboundHost() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestOutboundHostPortHandlesNonNumericPort covers the Atoi error branch.
+func TestOutboundHostPortHandlesNonNumericPort(t *testing.T) {
+	t.Parallel()
+
+	req := &http.Request{Host: "example.com:abc"}
+	host, port := outboundHostPort(req)
+	if host != "example.com" || port != 0 {
+		t.Fatalf("outboundHostPort() = (%q,%d), want (example.com,0)", host, port)
 	}
 }
 

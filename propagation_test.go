@@ -59,16 +59,29 @@ func TestEnsurePropagationInstallsCompositePropagator(t *testing.T) {
 	}
 }
 
-// TestEnsurePropagationHonorsDisableFlag ensures the disable env var prevents mutation.
-func TestEnsurePropagationHonorsDisableFlag(t *testing.T) {
+// TestAutoSetPropagationHonorsDisableFlag ensures the disable env var prevents import-time mutation.
+func TestAutoSetPropagationHonorsDisableFlag(t *testing.T) {
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "false")
+
+	stub := stubPropagator{}
+	resetPropagatorForTest(t, stub)
+
+	autoSetPropagation()
+	if reflect.TypeOf(otel.GetTextMapPropagator()) != reflect.TypeOf(stub) {
+		t.Fatalf("expected stub propagator to remain installed when auto-set disabled")
+	}
+}
+
+// TestEnsurePropagationIgnoresAutoSetFlag verifies explicit calls still install the propagator.
+func TestEnsurePropagationIgnoresAutoSetFlag(t *testing.T) {
 	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "false")
 
 	stub := stubPropagator{}
 	resetPropagatorForTest(t, stub)
 
 	EnsurePropagation()
-	if reflect.TypeOf(otel.GetTextMapPropagator()) != reflect.TypeOf(stub) {
-		t.Fatalf("expected stub propagator to remain installed when auto-set disabled")
+	if reflect.TypeOf(otel.GetTextMapPropagator()) == reflect.TypeOf(stub) {
+		t.Fatalf("expected EnsurePropagation to replace stub propagator even when auto-set disabled")
 	}
 }
 
@@ -79,9 +92,29 @@ func TestPropagatorAutoSetParsesValues(t *testing.T) {
 		t.Fatalf("propagatorAutoSetEnabled() = false, want true for TRUE")
 	}
 
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "t")
+	if !propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = false, want true for t")
+	}
+
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "1")
+	if !propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = false, want true for 1")
+	}
+
 	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "false")
 	if propagatorAutoSetEnabled() {
 		t.Fatalf("propagatorAutoSetEnabled() = true, want false for false")
+	}
+
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "F")
+	if propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = true, want false for F")
+	}
+
+	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "0")
+	if propagatorAutoSetEnabled() {
+		t.Fatalf("propagatorAutoSetEnabled() = true, want false for 0")
 	}
 
 	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "not-a-bool")

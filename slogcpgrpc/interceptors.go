@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -229,11 +230,43 @@ func statsHandlerOptions(cfg *config) []otelgrpc.Option {
 	if cfg.tracerProvider != nil {
 		opts = append(opts, otelgrpc.WithTracerProvider(cfg.tracerProvider))
 	}
-	if cfg.propagatorsSet && cfg.propagators != nil {
-		opts = append(opts, otelgrpc.WithPropagators(cfg.propagators))
+	if cfg.propagateTrace {
+		if cfg.propagatorsSet && cfg.propagators != nil {
+			opts = append(opts, otelgrpc.WithPropagators(cfg.propagators))
+		}
+	} else {
+		opts = append(opts, otelgrpc.WithPropagators(noopPropagator{}))
+	}
+	if cfg.publicEndpoint {
+		opts = append(opts, otelgrpc.WithPublicEndpoint())
+	}
+	if len(cfg.spanAttributes) > 0 {
+		opts = append(opts, otelgrpc.WithSpanAttributes(cfg.spanAttributes...))
+	}
+	for _, filter := range cfg.filters {
+		if filter != nil {
+			opts = append(opts, otelgrpc.WithFilter(filter))
+		}
 	}
 	return opts
 }
+
+// noopPropagator is a TextMapPropagator that performs no extraction or injection.
+type noopPropagator struct{}
+
+// Inject satisfies the propagation.TextMapPropagator interface while remaining a no-op.
+func (noopPropagator) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+	_ = ctx
+	_ = carrier
+}
+
+// Extract returns the provided context unchanged.
+func (noopPropagator) Extract(ctx context.Context, _ propagation.TextMapCarrier) context.Context {
+	return ctx
+}
+
+// Fields reports no carrier fields because the noop propagator does not inject anything.
+func (noopPropagator) Fields() []string { return nil }
 
 // attachLogger adds a request-scoped logger and RequestInfo to the context.
 func attachLogger(ctx context.Context, cfg *config, info *RequestInfo, projectID string) context.Context {
@@ -453,9 +486,6 @@ func loggerWithAttrs(base *slog.Logger, attrs []slog.Attr) *slog.Logger {
 	if len(attrs) == 0 {
 		return base
 	}
-	args := make([]any, len(attrs))
-	for i, attr := range attrs {
-		args[i] = attr
-	}
-	return base.With(args...)
+	handler := base.Handler().WithAttrs(attrs)
+	return slog.New(handler)
 }

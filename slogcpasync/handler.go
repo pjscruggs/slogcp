@@ -521,7 +521,7 @@ func applyAsyncEnabled(cfg *Config) {
 	if raw == "" {
 		return
 	}
-	if enabled, ok := parseAsyncBool(raw); ok {
+	if enabled, err := strconv.ParseBool(raw); err == nil {
 		cfg.Enabled = enabled
 	}
 }
@@ -574,17 +574,5 @@ func applyAsyncFlushTimeout(cfg *Config) {
 	}
 	if d, err := time.ParseDuration(raw); err == nil {
 		cfg.FlushTimeout = d
-	}
-}
-
-// parseAsyncBool mirrors slogcp's boolean env parsing for yes/on/1/true and no/off/0/false tokens.
-func parseAsyncBool(raw string) (bool, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1", "t", "true", "yes", "on":
-		return true, true
-	case "0", "f", "false", "no", "off":
-		return false, true
-	default:
-		return false, false
 	}
 }

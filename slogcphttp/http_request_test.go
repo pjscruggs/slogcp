@@ -208,7 +208,7 @@ func TestHTTPRequestFromScopeBuildsSnapshot(t *testing.T) {
 		method:      http.MethodPost,
 		target:      "/items/1",
 		query:       "q=ok",
-		scheme:      "https",
+		scheme:      schemeHTTPS,
 		host:        "api.example.com",
 		requestSize: 128,
 		clientIP:    "198.51.100.5",
@@ -241,7 +241,7 @@ func TestHTTPRequestFromScopeBuildsSnapshot(t *testing.T) {
 	if req.Latency != -1 && req.Latency >= 0 {
 		t.Fatalf("Latency should be omitted when unset, got %v", req.Latency)
 	}
-	if req.Status != 0 {
+	if req.Status != -1 {
 		t.Fatalf("Status should be suppressed for in-flight requests, got %d", req.Status)
 	}
 	if req.ResponseSize != -1 {

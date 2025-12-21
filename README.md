@@ -10,6 +10,36 @@ A "batteries included" structured logging module for Google Cloud Platform with 
 go get github.com/pjscruggs/slogcp
 ```
 
+## Quick Start
+
+```go
+package main
+
+import (
+    "log"
+    "log/slog"
+    "os"
+
+    "github.com/pjscruggs/slogcp"
+)
+
+func main() {
+    // Create a handler with default settings
+    handler, err := slogcp.NewHandler(os.Stdout)
+    if err != nil {
+        log.Fatalf("Failed to create handler: %v", err)
+    }
+
+    // No need to manually Close() when targeting stdout/stderr
+    // For other targets (e.g., WithRedirectToFile),
+    // `defer handler.Close()` to flush and release resources
+
+    logger := slog.New(handler)
+    // Log a simple message
+    logger.Info("Application started")
+}
+```
+
 ## Why Would I Use This?
 
 ### Who is this for?
@@ -28,7 +58,7 @@ slogcp will be useful to you if you're using:
 
 3. **You want to reduce the boilerplate**
 
-In a typical Go service, you'd otherwise need to hand-roll a custom `slog.Handler` (or replacer) to rename `level` to `severity`, plumb OpenTelemetry span IDs into `logging.googleapis.com/trace` / `spanId` / `trace_sampled`, detect the current GCP runtime and project ID to populate `serviceContext.service` / `.version`, write HTTP and gRPC middleware to derive request-scoped loggers and attach method/route/status/latency/size fields plus Cloud Logging `httpRequest` payloads, and capture Go stack traces with `context.reportLocation` so Error Reporting can group crashes. slogcp packages all of that into one handler and a small set of middlewares, so each service just wires `slogcp.NewHandler`, `slogcphttp.Middleware`, and/or `slogcpgrpc.ServerOptions` and the client interceptors instead of re-implementing the same JSON shapes and trace/error wiring over and over again.
+In a typical Go service, you'd otherwise need to hand-roll a custom `slog.Handler` (or replacer) to rename `level` to `severity`, plumb OpenTelemetry span IDs into `logging.googleapis.com/trace` / `spanId` / `trace_sampled`, detect the current GCP runtime and project ID to populate `serviceContext.service` / `.version`, write HTTP and gRPC middleware to derive request-scoped loggers and attach method/route/status/latency/size fields, handle proxy-derived scheme/client IP metadata (for example `X-Forwarded-Proto`/`X-Forwarded-For`) on managed runtimes, and capture Go stack traces with `context.reportLocation` so Error Reporting can group crashes. slogcp packages all of that into one handler and a small set of middlewares, so each service just wires `slogcp.NewHandler`, `slogcphttp.Middleware`, and/or `slogcpgrpc.ServerOptions` and the client interceptors instead of re-implementing the same JSON shapes and trace/error wiring over and over again.
 
 
 ### Why not just use the official logging library?
@@ -62,96 +92,24 @@ Cloud Logging and Cloud Trace correlate logs via `logging.googleapis.com/trace`,
 Error Reporting groups errors by service and stack trace, but getting the JSON shape right (`serviceContext`, `stack_trace`, and `context.reportLocation`) is tedious. slogcp can capture Go stack traces, infer service metadata from Cloud Run/Functions/App Engine, and attach Error Reporting-friendly fields either automatically (based on level and configuration) or via helpers like `ErrorReportingAttrs` and `ReportError`, so plain `ERROR` logs become rich Error Reporting events without a separate client library.
 
 ### HTTP and gRPC Interceptors
-Getting good HTTP and gRPC logs usually means hand-writing middleware and interceptors that attach method/route/status/latency/size fields, emit Cloud Logging–compatible `httpRequest` payloads, and keep logs correlated with OpenTelemetry spans and trace headers across services. slogcp ships `slogcphttp` and `slogcpgrpc` helpers that derive request-scoped loggers from context, populate structured request/RPC metadata, and handle W3C `traceparent` and legacy `X-Cloud-Trace-Context` propagation for you, so adding one middleware or `ServerOptions` call per service replaces a pile of bespoke instrumentation.
+HTTP and gRPC usually require bespoke middleware/interceptors just to get request-scoped loggers, consistent request/RPC attributes (method/route/status/duration/sizes), and trace context propagation. slogcp ships `slogcphttp` and `slogcpgrpc` helpers that do that wiring for you, so each service adds one middleware or `ServerOptions` call instead of re-implementing instrumentation.
+
+### Pub/Sub Integration
+Pub/Sub workflows usually require extra glue code: copy trace context into message attributes, recover it on the subscriber, derive a per-message logger, and remember to attach consistent subscription/topic/message fields so Logs Explorer stays queryable. slogcp’s `slogcppubsub` package (`github.com/pjscruggs/slogcp/slogcppubsub`) collapses that to a couple helpers (`Inject` and `WrapReceiveHandler`), giving you message-scoped loggers (`slogcp.Logger(ctx)`), Cloud Logging trace correlation, and OpenTelemetry messaging semantic-convention fields by default. It also supports optional consumer spans, `googclient_` trace attribute interop, and a “public endpoint” trust-boundary mode (new root + link) so you can keep end-to-end observability without blindly trusting producer trace IDs.
 
 ### Async Logging
-If you're just logging to `stdout`, you'll never need to touch this feature. But *if* you need async logging, slogcp has you covered. No need to import another library or wire it up yourself. The optional `slogcpasync` package is there for the cases where you deliberately write JSON logs to files (for example, sidecar shipping or on‑prem deployments) and want to keep hot request paths from blocking on disk I/O. It wraps any `slog.Handler` in a bounded queue with configurable drop modes and worker counts, so file targets can be drained in the background while the rest of your code keeps using normal slog APIs.
+`slogcp` writes synchronously to `stdout`/`stderr` by default. When slogcp writes to a file target (`SLOGCP_TARGET=file:...` or `slogcp.WithRedirectToFile`), it buffers writes by default so disk I/O doesn't sit on hot paths. See `docs/CONFIGURATION.md#async-logging-slogcpasync` to tune or disable buffering (or to opt into async for other targets).
 
 > [!TIP]
-> When your handler writes to `stdout`/`stderr` enabling async logging usually adds overhead without improving throughput. Prefer synchronous slogcp handlers for `stdout`/`stderr`, and reserve `slogcpasync` for file-backed or on-prem logging where disk I/O is the real bottleneck.
+> Async wrappers on `stdout`/`stderr` usually add overhead without improving throughput.
 
 ### Tested Out The Wazoo
 slogcp has 100% local test coverage. Our testing process includes making sure all of our [examples](.examples) build and that their own tests pass. We also run a series of E2E tests **in Google Cloud** that spin up real Cloud Run services wired together with slogcp’s HTTP and gRPC interceptors. Those tests drive traffic through unary and streaming RPCs, then query Cloud Logging and Cloud Trace to verify severities, resource labels/serviceContext, and log names (`run.googleapis.com/stdout`), and that trace IDs/span IDs are correctly propagated so logs and spans from downstream HTTP and gRPC services all correlate into a single end‑to‑end trace in Google Cloud’s UIs.
 
 ### Easy compatibility with other slog libraries
-Because slogcp is "just" a `slog.Handler` that writes JSON to an `io.Writer`, it slots into existing slog setups instead of replacing them. You still use `slog.New`, `slog.SetDefault`, `logger.With`, and request-scoped loggers, and you can compose slogcp with other slog-based tools like `masq` for redaction or `timberjack` (the maintained lumberjack fork) for file rotation without special adapters. When you do write logs to files, the built-in `SwitchableWriter` and `Handler.ReopenLogFile` helpers let you cooperate with external rotation tools without rebuilding handlers or changing how the rest of your code logs.
+Because slogcp is "just" a `slog.Handler` that writes JSON to an `io.Writer`, it slots into existing slog setups instead of replacing them. You still use `slog.New`, `slog.SetDefault`, `logger.With`, and request-scoped loggers, and you can compose slogcp with other slog-based tools like [masq](https://github.com/m-mizutani/masq) for redaction or [timberjack](https://github.com/DeRuina/timberjack/) (the maintained [lumberjack](https://github.com/natefinch/lumberjack) fork) for file rotation without special adapters. When you do write logs to files, the built-in `SwitchableWriter` and `Handler.ReopenLogFile` helpers let you cooperate with external rotation tools without rebuilding handlers or changing how the rest of your code logs.
 
-## Quick Start
-
-```go
-package main
-
-import (
-    "log"
-    "log/slog"
-    "os"
-
-    "github.com/pjscruggs/slogcp"
-)
-
-func main() {
-    // Create a handler with default settings
-    handler, err := slogcp.NewHandler(os.Stdout)
-    if err != nil {
-        log.Fatalf("Failed to create handler: %v", err)
-    }
-
-    // No need to manually Close() when targeting stdout/stderr
-    // For other targets (e.g., WithRedirectToFile),
-    // `defer handler.Close()` to flush and release resources
-
-    logger := slog.New(handler)
-    // Log a simple message
-    logger.Info("Application started")
-}
-```
-
-### Opt-in Async Mode
-
-`slogcp` stays fully synchronous by default. When you want to decouple callers from the write path, wrap the handler with the optional [`slogcpasync`](slogcpasync) package:
-
-```go
-handler, _ := slogcp.NewHandler(os.Stdout)
-async := slogcpasync.Wrap(handler,
-    slogcpasync.WithQueueSize(4096),
-    slogcpasync.WithDropMode(slogcpasync.DropModeDropNewest),
-)
-logger := slog.New(async)
-```
-
-You can also let slogcp wrap for you with tuned defaults:
-
-```go
-handler, _ := slogcp.NewHandler(os.Stdout,
-    slogcp.WithAsync(), // wraps with slogcpasync defaults (per-drop-mode tuning)
-)
-logger := slog.New(handler)
-```
-
-When you only want async for file targets, use `slogcp.WithAsyncOnFileTargets()` to keep stdout/stderr synchronous while files buffer asynchronously.
-
-To control async settings via environment variables instead, combine `WithEnabled(false)` with `WithEnv()`:
-
-```go
-handler, _ := slogcp.NewHandler(os.Stdout,
-    slogcp.WithMiddleware(
-        slogcpasync.Middleware(
-            slogcpasync.WithEnabled(false), // stay synchronous unless SLOGCP_ASYNC_* opts in
-            slogcpasync.WithEnv(),
-        ),
-    ),
-)
-```
-
-Supported variables:
-
-- `SLOGCP_ASYNC`: `true`/`false` to turn the wrapper on.
-- `SLOGCP_ASYNC_QUEUE_SIZE`: queue capacity (use `0` for an unbuffered queue).
-- `SLOGCP_ASYNC_DROP_MODE`: `block` (default), `drop_newest`, or `drop_oldest`.
-- `SLOGCP_ASYNC_WORKERS`: number of worker goroutines (defaults are tuned per drop mode: block=`1`, drop_newest=`5`, drop_oldest=`5`).
-- `SLOGCP_ASYNC_FLUSH_TIMEOUT`: duration string for `Close` (for example, `5s`). 
-
-### Core Configuration Options
+## Core Configuration Options
 
 If you don't want to read any more documentation right now, these are the configurations you're the most likely to care about. See [`.examples/configuration/main.go`](.examples/configuration/main.go) for a runnable demonstration that applies custom levels, source location, and default attributes.
 
@@ -175,7 +133,7 @@ Core environment variables for configuring slogcp:
 | Variable | Description | Default |
 | --- | --- | --- |
 | `SLOGCP_TARGET` | `stdout`, `stderr`, or `file:/path` | `stdout` |
-| `SLOGCP_LEVEL` | Minimum log level (`debug`, `info`, `warn`, `error`, etc.) | `info` |
+| `SLOGCP_LEVEL` (fallback: `LOG_LEVEL`) | Minimum log level (`debug`, `info`, `warn`, `error`, etc.) | `info` |
 | `SLOGCP_SOURCE_LOCATION` | Include source file/line (`true`, `false`) | `false` |
 | `SLOGCP_STACK_TRACES` | Enable stack traces (`true`, `false`) | `false` |
 | `SLOGCP_TRACE_DIAGNOSTICS` | Controls trace-correlation diagnostics: `off`, `warn`/`warn_once`, or `strict` | `warn_once` |
@@ -186,9 +144,28 @@ If slogcp determines at runtime that it is running in a GCP environment such as 
 
 ### Dynamic Level Control
 
-`slogcp.Handler` exposes runtime level tuning so you can raise or lower verbosity without redeploying. See [`.examples/dynamic-level/main.go`](.examples/dynamic-level/main.go) for a runnable example that tunes handler verbosity at runtime and shares a `slog.LevelVar` across components.
+`slogcp.Handler` exposes runtime level tuning so you can raise or lower verbosity without redeploying. See [`.examples/dynamic-level/main.go`](.examples/dynamic-level/main.go) for a runnable example.
 
-For multi-logger setups, pass a shared `*slog.LevelVar` via `slogcp.WithLevelVar` so every handler stays in sync.
+By default, each call to `slogcp.NewHandler` initializes its minimum level from `SLOGCP_LEVEL` (falling back to `LOG_LEVEL`). Override that programmatically with `slogcp.WithLevel`.
+
+To change levels at runtime, call `handler.SetLevel(...)` for a single handler. If multiple handlers (or libraries) need to move together, share a single `*slog.LevelVar` via `slogcp.WithLevelVar` and update it once:
+
+```go
+levelVar := new(slog.LevelVar)
+
+appHandler, err := slogcp.NewHandler(os.Stdout, slogcp.WithLevelVar(levelVar))
+if err != nil {
+	panic(err)
+}
+
+auditHandler, err := slogcp.NewHandler(nil, slogcp.WithRedirectToFile("audit.json"), slogcp.WithLevelVar(levelVar))
+if err != nil {
+	panic(err)
+}
+defer auditHandler.Close()
+
+levelVar.Set(slog.LevelDebug) // app + audit now allow debug
+```
 
 ### Error Reporting helpers
 
@@ -232,6 +209,10 @@ See [`.examples/http-client/main.go`](.examples/http-client/main.go) to watch th
 - `ServerOptions` bundles slogcp interceptors with OpenTelemetry instrumentation for streamlined server registration; client code can use the provided interceptors directly.
 - See [`.examples/grpc/main.go`](.examples/grpc/main.go) for a Greeter service that uses the interceptors end-to-end.
 - If you're already invested in the [gRPC Ecosystem](https://github.com/grpc-ecosystem) ecosystem framework, slogcp still fits: use the ready-made [`slogcp-grpc-adapter`](https://github.com/pjscruggs/slogcp-grpc-adapter) module to have its logging interceptors emit slogcp/Cloud Logging–friendly JSON.
+
+### Pub/Sub
+
+See [`.examples/pubsub/main.go`](.examples/pubsub/main.go) for a runnable Pub/Sub example that injects trace context and derives message-scoped loggers.
 
 ## Integration with other libraries
 

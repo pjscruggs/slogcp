@@ -112,7 +112,7 @@ def main() -> int:
     try:
         with urllib.request.urlopen(GO_RELEASES_URL, timeout=10) as response:
             releases = json.load(response)
-    except Exception as exc:  # pragma: no cover - network access is non-deterministic.
+    except Exception as exc:
         print(f"::warning::Failed to query Go releases: {exc}; using go {go_version}.")
         result = {"status": "error", "version": go_version}
     else:

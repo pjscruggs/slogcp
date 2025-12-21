@@ -16,6 +16,8 @@ package slogcp
 
 import (
 	"context"
+	"errors"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -49,7 +51,7 @@ const (
 	RuntimeEnvAppEngineStandard
 	// RuntimeEnvAppEngineFlexible indicates execution on App Engine flexible.
 	RuntimeEnvAppEngineFlexible
-	// RuntimeEnvKubernetes indicates execution on Kubernetes.
+	// RuntimeEnvKubernetes indicates execution on Kubernetes (including Google Kubernetes Engine).
 	RuntimeEnvKubernetes
 	// RuntimeEnvComputeEngine indicates execution on Compute Engine.
 	RuntimeEnvComputeEngine
@@ -138,6 +140,23 @@ func getMetadataClientFactory() func() metadataClient {
 	return metadataFactoryDefault
 }
 
+var runtimeProjectIDEnvKeys = []string{
+	"SLOGCP_TRACE_PROJECT_ID",
+	"SLOGCP_PROJECT_ID",
+	"SLOGCP_GCP_PROJECT",
+	"GOOGLE_CLOUD_PROJECT",
+	"GCLOUD_PROJECT",
+	"GCP_PROJECT",
+	"PROJECT_ID",
+}
+
+var serviceProjectIDEnvKeys = []string{
+	"SLOGCP_GCP_PROJECT",
+	"GOOGLE_CLOUD_PROJECT",
+	"GCLOUD_PROJECT",
+	"GCP_PROJECT",
+}
+
 // DetectRuntimeInfo inspects well-known environment variables to infer
 // platform-specific labels and service context. Results are cached for reuse.
 func DetectRuntimeInfo() RuntimeInfo {
@@ -161,18 +180,8 @@ func DetectRuntimeInfo() RuntimeInfo {
 
 // detectRuntimeInfo inspects environment variables and metadata endpoints to infer runtime context.
 func detectRuntimeInfo() RuntimeInfo {
-	envProject := firstNonEmpty(
-		strings.TrimSpace(os.Getenv("SLOGCP_TRACE_PROJECT_ID")),
-		strings.TrimSpace(os.Getenv("SLOGCP_PROJECT_ID")),
-		strings.TrimSpace(os.Getenv("SLOGCP_GCP_PROJECT")),
-		strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT")),
-		strings.TrimSpace(os.Getenv("GCLOUD_PROJECT")),
-		strings.TrimSpace(os.Getenv("GCP_PROJECT")),
-		strings.TrimSpace(os.Getenv("PROJECT_ID")),
-	)
-
 	info := RuntimeInfo{}
-	info.ProjectID = normalizeProjectID(envProject)
+	info.ProjectID = resolveProjectIDFromEnv("", runtimeProjectIDEnvKeys...)
 
 	md := newMetadataLookup(getMetadataClientFactory()())
 
@@ -228,10 +237,10 @@ func detectCloudFunction(info *RuntimeInfo, md *metadataLookup) bool {
 
 	revision := trimmedEnv("K_REVISION")
 	region := firstNonEmpty(
-		md.region(),
 		trimmedEnv("FUNCTION_REGION"),
 		trimmedEnv("GOOGLE_CLOUD_REGION"),
 		trimmedEnv("CLOUD_RUN_REGION"),
+		md.region(),
 	)
 
 	info.ServiceContext = map[string]string{
@@ -250,7 +259,7 @@ func detectCloudFunction(info *RuntimeInfo, md *metadataLookup) bool {
 	}
 	info.Labels = labels
 
-	info.ProjectID = normalizeProjectID(firstNonEmpty(info.ProjectID, trimmedEnv("SLOGCP_GCP_PROJECT"), trimmedEnv("GOOGLE_CLOUD_PROJECT"), trimmedEnv("GCLOUD_PROJECT"), trimmedEnv("GCP_PROJECT")))
+	info.ProjectID = resolveProjectIDFromEnv(info.ProjectID, serviceProjectIDEnvKeys...)
 	if info.ProjectID == "" {
 		info.ProjectID = md.projectID()
 	}
@@ -269,9 +278,9 @@ func detectCloudRunService(info *RuntimeInfo, md *metadataLookup) bool {
 	info.Environment = RuntimeEnvCloudRunService
 
 	region := firstNonEmpty(
-		md.region(),
 		trimmedEnv("CLOUD_RUN_REGION"),
 		trimmedEnv("GOOGLE_CLOUD_REGION"),
+		md.region(),
 	)
 
 	info.ServiceContext = map[string]string{
@@ -291,7 +300,7 @@ func detectCloudRunService(info *RuntimeInfo, md *metadataLookup) bool {
 	}
 	info.Labels = labels
 
-	info.ProjectID = normalizeProjectID(firstNonEmpty(info.ProjectID, trimmedEnv("SLOGCP_GCP_PROJECT"), trimmedEnv("GOOGLE_CLOUD_PROJECT"), trimmedEnv("GCLOUD_PROJECT"), trimmedEnv("GCP_PROJECT")))
+	info.ProjectID = resolveProjectIDFromEnv(info.ProjectID, serviceProjectIDEnvKeys...)
 	if info.ProjectID == "" {
 		info.ProjectID = md.projectID()
 	}
@@ -311,9 +320,9 @@ func detectCloudRunJob(info *RuntimeInfo, md *metadataLookup) bool {
 	info.Environment = RuntimeEnvCloudRunJob
 
 	region := firstNonEmpty(
-		md.region(),
 		trimmedEnv("CLOUD_RUN_REGION"),
 		trimmedEnv("GOOGLE_CLOUD_REGION"),
+		md.region(),
 	)
 
 	info.ServiceContext = map[string]string{
@@ -332,7 +341,7 @@ func detectCloudRunJob(info *RuntimeInfo, md *metadataLookup) bool {
 	}
 	info.Labels = labels
 
-	info.ProjectID = normalizeProjectID(firstNonEmpty(info.ProjectID, trimmedEnv("SLOGCP_GCP_PROJECT"), trimmedEnv("GOOGLE_CLOUD_PROJECT"), trimmedEnv("GCLOUD_PROJECT"), trimmedEnv("GCP_PROJECT")))
+	info.ProjectID = resolveProjectIDFromEnv(info.ProjectID, serviceProjectIDEnvKeys...)
 	if info.ProjectID == "" {
 		info.ProjectID = md.projectID()
 	}
@@ -369,8 +378,8 @@ func detectAppEngine(info *RuntimeInfo, md *metadataLookup) bool {
 	}
 	info.Labels = labels
 
-	candidate := firstNonEmpty(info.ProjectID, trimmedEnv("SLOGCP_GCP_PROJECT"), trimmedEnv("GOOGLE_CLOUD_PROJECT"), strings.TrimPrefix(trimmedEnv("GAE_APPLICATION"), "_"))
-	info.ProjectID = normalizeProjectID(candidate)
+	info.ProjectID = resolveProjectIDFromEnv(info.ProjectID, serviceProjectIDEnvKeys...)
+	info.ProjectID = firstValidProjectID(info.ProjectID, strings.TrimPrefix(trimmedEnv("GAE_APPLICATION"), "_"))
 	if info.ProjectID == "" {
 		info.ProjectID = md.projectID()
 	}
@@ -428,12 +437,10 @@ func kubernetesLabels(md *metadataLookup, clusterName string) map[string]string 
 
 // clusterLocation returns the cluster location from metadata or environment.
 func clusterLocation(md *metadataLookup) string {
-	if md != nil {
-		if location := md.clusterLocation(); location != "" {
-			return location
-		}
+	if md == nil {
+		return trimmedEnv("CLUSTER_LOCATION")
 	}
-	return trimmedEnv("CLUSTER_LOCATION")
+	return firstNonEmpty(trimmedEnv("CLUSTER_LOCATION"), md.clusterLocation())
 }
 
 // kubernetesNamespace resolves the namespace name from service account files or env.
@@ -457,7 +464,7 @@ func kubernetesPodName() string {
 
 // resolveKubernetesProject determines the project ID for Kubernetes environments.
 func resolveKubernetesProject(current string, md *metadataLookup) string {
-	project := normalizeProjectID(firstNonEmpty(current, trimmedEnv("SLOGCP_GCP_PROJECT"), trimmedEnv("GOOGLE_CLOUD_PROJECT"), trimmedEnv("GCLOUD_PROJECT"), trimmedEnv("GCP_PROJECT")))
+	project := resolveProjectIDFromEnv(current, serviceProjectIDEnvKeys...)
 	if project != "" {
 		return project
 	}
@@ -495,6 +502,16 @@ func trimmedEnv(key string) string {
 	return strings.TrimSpace(os.Getenv(key))
 }
 
+// resolveProjectIDFromEnv returns the first valid project ID from the supplied env keys.
+func resolveProjectIDFromEnv(current string, keys ...string) string {
+	candidates := make([]string, 0, len(keys)+1)
+	candidates = append(candidates, current)
+	for _, key := range keys {
+		candidates = append(candidates, trimmedEnv(key))
+	}
+	return firstValidProjectID(candidates...)
+}
+
 // firstNonEmpty returns the first non-empty string after trimming whitespace.
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
@@ -507,20 +524,44 @@ func firstNonEmpty(values ...string) string {
 
 var projectIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 
-// normalizeProjectID trims whitespace, removes "projects/" resource prefixes, and validates against
-// documented GCP project ID rules (6-30 chars, lowercase letters, digits, hyphens, starts with a letter,
-// does not end with a hyphen). Invalid inputs return an empty string to avoid propagating bad IDs.
-func normalizeProjectID(id string) string {
-	id = strings.TrimSpace(id)
-	id = strings.TrimPrefix(id, "projects/")
-	id = strings.TrimPrefix(id, "PROJECTS/")
-	if id == "" || strings.Contains(id, "/") {
-		return ""
+// normalizeProjectID normalizes and validates a Cloud project identifier.
+//
+// It trims whitespace, strips an optional "projects/" prefix, truncates at the
+// first '/', lowercases the result, and validates it against an expected GCP
+// project ID format.
+func normalizeProjectID(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
 	}
-	if !projectIDPattern.MatchString(id) {
-		return ""
+
+	// Strip "projects/" case-insensitively.
+	if strings.HasPrefix(strings.ToLower(s), "projects/") {
+		s = s[len("projects/"):]
 	}
-	return id
+	s = strings.TrimSpace(s)
+
+	// If a full resource name was passed, keep only the first segment.
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+
+	s = strings.ToLower(strings.TrimSpace(s))
+
+	if !projectIDPattern.MatchString(s) {
+		return "", false
+	}
+	return s, true
+}
+
+// firstValidProjectID returns the first valid normalized project ID from values.
+func firstValidProjectID(values ...string) string {
+	for _, v := range values {
+		if pid, ok := normalizeProjectID(v); ok {
+			return pid
+		}
+	}
+	return ""
 }
 
 // kubernetesNamespacePath points at the mounted namespace file in Kubernetes.
@@ -600,6 +641,9 @@ func (l *metadataLookup) get(path string) (string, bool) {
 	}
 	val, err := l.client.Get(path)
 	if err != nil {
+		if metadataLookupDisablesAvailability(err) {
+			l.available = false
+		}
 		l.cache[path] = metadataCacheEntry{populated: true, ok: false}
 		return "", false
 	}
@@ -609,10 +653,30 @@ func (l *metadataLookup) get(path string) (string, bool) {
 	return val, ok
 }
 
+// metadataLookupDisablesAvailability reports whether a metadata lookup error
+// suggests the metadata service is unreachable so subsequent lookups should be
+// skipped.
+func metadataLookupDisablesAvailability(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var nde metadata.NotDefinedError
+	if errors.As(err, &nde) {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
 // projectID reads and normalizes the project ID from metadata.
 func (l *metadataLookup) projectID() string {
 	if val, ok := l.get("project/project-id"); ok {
-		return normalizeProjectID(val)
+		if pid, ok := normalizeProjectID(val); ok {
+			return pid
+		}
 	}
 	return ""
 }

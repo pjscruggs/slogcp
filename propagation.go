@@ -29,14 +29,22 @@ var installPropagatorOnce sync.Once
 
 // init triggers default propagator installation when the package is imported.
 func init() {
+	autoSetPropagation()
+}
+
+// autoSetPropagation applies the default propagator when import-time auto-set is enabled.
+func autoSetPropagation() {
+	if !propagatorAutoSetEnabled() {
+		return
+	}
 	EnsurePropagation()
 }
 
 // EnsurePropagation configures a composite OpenTelemetry text map propagator that
 // prefers the W3C Trace Context headers while accepting Google Cloud's legacy
 // X-Cloud-Trace-Context header on ingress. The configuration is applied exactly
-// once per process unless the SLOGCP_PROPAGATOR_AUTOSET environment variable is
-// explicitly set to a falsy value.
+// once per process. Import-time auto-set can be disabled via
+// SLOGCP_PROPAGATOR_AUTOSET, but explicit calls to EnsurePropagation are always honored.
 //
 // The installed propagator order is:
 //  1. CloudTraceOneWayPropagator (extracts X-Cloud-Trace-Context only)
@@ -47,10 +55,6 @@ func init() {
 // calling otel.SetTextMapPropagator with their own implementation.
 func EnsurePropagation() {
 	installPropagatorOnce.Do(func() {
-		if !propagatorAutoSetEnabled() {
-			return
-		}
-
 		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 			gcppropagator.CloudTraceOneWayPropagator{},
 			propagation.TraceContext{},
@@ -67,8 +71,8 @@ func propagatorAutoSetEnabled() bool {
 		return true
 	}
 	b, err := strconv.ParseBool(raw)
-	if err != nil {
-		return true
+	if err == nil {
+		return b
 	}
-	return b
+	return true
 }

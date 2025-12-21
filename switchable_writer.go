@@ -52,12 +52,12 @@ func NewSwitchableWriter(initialWriter io.Writer) *SwitchableWriter {
 func (sw *SwitchableWriter) Write(p []byte) (n int, err error) {
 	sw.mu.Lock()
 	currentWriter := sw.w
-	sw.mu.Unlock()
-
 	if currentWriter == nil {
+		sw.mu.Unlock()
 		return 0, os.ErrClosed
 	}
 	n, err = currentWriter.Write(p)
+	sw.mu.Unlock()
 	if err != nil {
 		return n, fmt.Errorf("write via switchable writer: %w", err)
 	}

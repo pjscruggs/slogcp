@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -190,6 +191,7 @@ func newClientScope(req *http.Request, start time.Time, cfg *config) *RequestSco
 		start:       start,
 		method:      req.Method,
 		requestSize: req.ContentLength,
+		outbound:    true,
 	}
 
 	if req.URL != nil {
@@ -200,7 +202,7 @@ func newClientScope(req *http.Request, start time.Time, cfg *config) *RequestSco
 	}
 	scope.userAgent = req.Header.Get("User-Agent")
 	if cfg.includeClientIP {
-		scope.clientIP = outboundHost(req)
+		scope.clientIP, scope.peerPort = outboundHostPort(req)
 	}
 
 	scope.status.Store(http.StatusOK)
@@ -210,20 +212,32 @@ func newClientScope(req *http.Request, start time.Time, cfg *config) *RequestSco
 
 // outboundHost extracts the host name from the outbound request for logging.
 func outboundHost(req *http.Request) string {
+	host, _ := outboundHostPort(req)
+	return host
+}
+
+// outboundHostPort extracts the host and port from the outbound request for logging.
+func outboundHostPort(req *http.Request) (string, int) {
 	if req == nil {
-		return ""
+		return "", 0
 	}
-	if req.URL != nil && req.URL.Host != "" {
-		if host, _, err := net.SplitHostPort(req.URL.Host); err == nil {
-			return host
+	if req.URL != nil {
+		if host := req.URL.Hostname(); host != "" {
+			if port, err := strconv.Atoi(req.URL.Port()); err == nil {
+				return host, port
+			}
+			return host, 0
 		}
-		return req.URL.Host
 	}
 	if req.Host != "" {
-		if host, _, err := net.SplitHostPort(req.Host); err == nil {
-			return host
+		hostport := strings.TrimSpace(req.Host)
+		if host, portStr, err := net.SplitHostPort(hostport); err == nil {
+			if port, err := strconv.Atoi(portStr); err == nil {
+				return strings.Trim(host, "[]"), port
+			}
+			return strings.Trim(host, "[]"), 0
 		}
-		return req.Host
+		return strings.Trim(hostport, "[]"), 0
 	}
-	return ""
+	return "", 0
 }
