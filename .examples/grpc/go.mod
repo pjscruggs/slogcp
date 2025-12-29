@@ -3,9 +3,9 @@ module github.com/pjscruggs/slogcp/examples/grpc
 go 1.25.5
 
 require (
-	github.com/pjscruggs/slogcp v0.0.0
-	google.golang.org/grpc v1.77.0
-	google.golang.org/grpc/examples v0.0.0-20251219211321-404667696825
+	github.com/pjscruggs/slogcp v1.1.0
+	google.golang.org/grpc v1.78.0
+	google.golang.org/grpc/examples v0.0.0-20251226062409-a2a2023d2a01
 )
 
 require (
