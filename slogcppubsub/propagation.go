@@ -50,37 +50,52 @@ func InjectAttributes(ctx context.Context, attrs map[string]string, opts ...Opti
 
 // injectAttributes injects configured propagation data from ctx into attrs.
 func injectAttributes(ctx context.Context, attrs map[string]string, cfg *config) map[string]string {
-	if cfg == nil {
-		cfg = defaultConfig()
-	}
-	if !cfg.propagateTrace {
-		return attrs
-	}
-	if ctx == nil {
+	cfg = ensureConfig(cfg)
+	if !shouldInjectAttributes(ctx, cfg) {
 		return attrs
 	}
 
-	if cfg.injectOnlyIfSpanPresent {
-		if !trace.SpanContextFromContext(ctx).IsValid() {
-			return attrs
-		}
-	}
+	injectConfiguredPropagator(ctx, &attrs, cfg)
+	injectGoogClientHeaders(ctx, &attrs, cfg)
+	return attrs
+}
 
+// ensureConfig returns a non-nil configuration.
+func ensureConfig(cfg *config) *config {
+	if cfg != nil {
+		return cfg
+	}
+	return defaultConfig()
+}
+
+// shouldInjectAttributes reports whether trace propagation should occur.
+func shouldInjectAttributes(ctx context.Context, cfg *config) bool {
+	if !cfg.propagateTrace || ctx == nil {
+		return false
+	}
+	if !cfg.injectOnlyIfSpanPresent {
+		return true
+	}
+	return trace.SpanContextFromContext(ctx).IsValid()
+}
+
+// injectConfiguredPropagator injects using configured or global propagators.
+func injectConfiguredPropagator(ctx context.Context, attrs *map[string]string, cfg *config) {
 	propagator := cfg.propagators
-	if propagator == nil {
-		if !cfg.propagatorsSet {
-			propagator = otel.GetTextMapPropagator()
-		}
+	if propagator == nil && !cfg.propagatorsSet {
+		propagator = otel.GetTextMapPropagator()
 	}
 	if propagator != nil {
-		propagator.Inject(ctx, lazyCarrier{attrs: &attrs, allowBaggage: cfg.propagateBaggage})
+		propagator.Inject(ctx, lazyCarrier{attrs: attrs, allowBaggage: cfg.propagateBaggage})
 	}
+}
 
-	if cfg.googClientInjection {
-		propagation.TraceContext{}.Inject(ctx, lazyCarrier{attrs: &attrs, prefix: googclientPrefix, allowBaggage: false})
+// injectGoogClientHeaders injects legacy googclient_ headers when enabled.
+func injectGoogClientHeaders(ctx context.Context, attrs *map[string]string, cfg *config) {
+	if !cfg.googClientInjection {
+		return
 	}
-
-	return attrs
+	propagation.TraceContext{}.Inject(ctx, lazyCarrier{attrs: attrs, prefix: googclientPrefix, allowBaggage: false})
 }
 
 // Extract extracts trace context from msg.Attributes into ctx and returns the

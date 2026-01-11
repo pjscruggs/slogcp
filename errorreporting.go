@@ -80,13 +80,9 @@ func ReportError(ctx context.Context, logger *slog.Logger, err error, msg string
 // buildErrorReportingConfig applies options and runtime defaults for error reporting.
 func buildErrorReportingConfig(opts []ErrorReportingOption) errorReportingConfig {
 	cfg := errorReportingConfig{}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
-		}
-	}
+	applyErrorReportingOptions(&cfg, opts)
 
-	if cfg.service != "" && cfg.version != "" {
+	if hasServiceAndVersion(cfg) {
 		return cfg
 	}
 
@@ -95,17 +91,33 @@ func buildErrorReportingConfig(opts []ErrorReportingOption) errorReportingConfig
 		return cfg
 	}
 
-	if cfg.service == "" {
-		if v, ok := info.ServiceContext["service"]; ok {
-			cfg.service = v
-		}
-	}
-	if cfg.version == "" {
-		if v, ok := info.ServiceContext["version"]; ok {
-			cfg.version = v
-		}
-	}
+	cfg.service = firstNonEmptyString(cfg.service, info.ServiceContext["service"])
+	cfg.version = firstNonEmptyString(cfg.version, info.ServiceContext["version"])
 	return cfg
+}
+
+// applyErrorReportingOptions applies provided options to the config pointer.
+func applyErrorReportingOptions(cfg *errorReportingConfig, opts []ErrorReportingOption) {
+	for _, opt := range opts {
+		if opt != nil {
+			opt(cfg)
+		}
+	}
+}
+
+// hasServiceAndVersion reports whether the config already has explicit values.
+func hasServiceAndVersion(cfg errorReportingConfig) bool {
+	return cfg.service != "" && cfg.version != ""
+}
+
+// firstNonEmptyString returns the first non-empty string from values.
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // buildServiceContextAttrs constructs the serviceContext attribute when available.
