@@ -511,6 +511,46 @@ func TestInjectClientTraceWithNilConfigUsesGlobal(t *testing.T) {
 	}
 }
 
+// TestInjectWithPropagatorCoversNilAndInject exercises both branches.
+func TestInjectWithPropagatorCoversNilAndInject(t *testing.T) {
+	t.Parallel()
+
+	md := metadata.New(nil)
+	injectWithPropagator(context.Background(), md, nil)
+	if md.Len() != 0 {
+		t.Fatalf("expected no metadata writes when propagator nil, got %v", md)
+	}
+
+	prop := &recordingPropagator{}
+	injectWithPropagator(context.Background(), md, prop)
+	if !prop.injected {
+		t.Fatalf("expected propagator Inject to be called")
+	}
+	if got := md.Get("key"); len(got) == 0 || got[0] != "value" {
+		t.Fatalf("expected metadata injection, got %v", md)
+	}
+}
+
+type recordingPropagator struct {
+	injected bool
+}
+
+// Inject records injection and writes a sentinel key.
+func (r *recordingPropagator) Inject(_ context.Context, carrier propagation.TextMapCarrier) {
+	r.injected = true
+	carrier.Set("key", "value")
+}
+
+// Extract satisfies the TextMapPropagator interface for tests.
+func (recordingPropagator) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+	return ctx
+}
+
+// Fields reports the propagation fields used by the recorder.
+func (recordingPropagator) Fields() []string {
+	return []string{"key"}
+}
+
 // encodeTraceBin assembles a grpc-trace-bin payload for tests.
 func encodeTraceBin(traceID trace.TraceID, spanID trace.SpanID, flags trace.TraceFlags) string {
 	data := make([]byte, 0, 30)

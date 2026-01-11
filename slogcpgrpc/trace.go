@@ -149,26 +149,37 @@ func extractXCloudTraceHeader(ctx context.Context, md metadata.MD) (context.Cont
 // injectClientTrace injects tracing metadata for outbound RPCs, including optional legacy headers.
 func injectClientTrace(ctx context.Context, md metadata.MD, cfg *config) {
 	if cfg == nil {
-		propagator := otel.GetTextMapPropagator()
-		if propagator != nil {
-			propagator.Inject(ctx, metadataCarrier{md})
-		}
+		injectWithPropagator(ctx, md, otel.GetTextMapPropagator())
 		return
 	}
 	if !cfg.propagateTrace {
 		return
 	}
 
-	var propagator propagation.TextMapPropagator
-	propagator = cfg.propagators
+	injectConfiguredPropagator(ctx, md, cfg)
+	injectLegacyXCloudTrace(ctx, md, cfg)
+}
+
+// injectConfiguredPropagator injects trace metadata using configured propagators.
+func injectConfiguredPropagator(ctx context.Context, md metadata.MD, cfg *config) {
+	propagator := cfg.propagators
 	if propagator == nil && !cfg.propagatorsSet {
 		propagator = otel.GetTextMapPropagator()
 	}
-	if propagator != nil {
-		propagator.Inject(ctx, metadataCarrier{md})
-	}
+	injectWithPropagator(ctx, md, propagator)
+}
 
-	if !cfg.injectLegacyXCTC {
+// injectWithPropagator injects into metadata when a propagator is present.
+func injectWithPropagator(ctx context.Context, md metadata.MD, propagator propagation.TextMapPropagator) {
+	if propagator == nil {
+		return
+	}
+	propagator.Inject(ctx, metadataCarrier{md})
+}
+
+// injectLegacyXCloudTrace synthesizes the legacy header when requested.
+func injectLegacyXCloudTrace(ctx context.Context, md metadata.MD, cfg *config) {
+	if cfg == nil || !cfg.injectLegacyXCTC {
 		return
 	}
 

@@ -237,3 +237,15 @@ func TestBuildErrorReportingConfigSkipsEmptyRuntimeContext(t *testing.T) {
 		t.Fatalf("expected empty config when runtime service context missing, got %+v", cfg)
 	}
 }
+
+// TestFirstNonEmptyStringCoversEmptyAndValues exercises helper branches.
+func TestFirstNonEmptyStringCoversEmptyAndValues(t *testing.T) {
+	t.Parallel()
+
+	if got := firstNonEmptyString("", "fallback"); got != "fallback" {
+		t.Fatalf("firstNonEmptyString returned %q, want fallback", got)
+	}
+	if got := firstNonEmptyString("", ""); got != "" {
+		t.Fatalf("firstNonEmptyString returned %q, want empty string", got)
+	}
+}
