@@ -465,45 +465,56 @@ func closerFor(inner slog.Handler) func() error {
 
 // buildConfig applies options with defaults and clamps invalid values.
 func buildConfig(opts []Option) Config {
-	cfg := Config{
+	cfg := defaultAsyncConfig()
+	applyConfigOptions(&cfg, opts)
+
+	defaults := resolveModeDefaults(cfg.DropMode)
+	cfg.QueueSize = resolveQueueSize(cfg.QueueSize, cfg.queueSet, defaults.queue)
+	cfg.WorkerCount = clampMinimum(cfg.WorkerCount, cfg.workerCountSet, defaults.workers, 1)
+	cfg.BatchSize = clampMinimum(cfg.BatchSize, cfg.batchSizeSet, defaults.batch, 1)
+	return cfg
+}
+
+// defaultAsyncConfig returns the baseline async configuration.
+func defaultAsyncConfig() Config {
+	return Config{
 		Enabled:     true,
 		DropMode:    DropModeBlock,
 		ErrorWriter: os.Stderr,
 	}
+}
 
+// applyConfigOptions applies provided options to the config.
+func applyConfigOptions(cfg *Config, opts []Option) {
 	for _, opt := range opts {
 		if opt != nil {
-			opt(&cfg)
+			opt(cfg)
 		}
 	}
+}
 
-	defaults := modeDefaults[cfg.DropMode]
-	if defaults == (modeDefault{}) {
-		defaults = modeDefaults[DropModeBlock]
+// resolveModeDefaults returns the defaults for the selected drop mode.
+func resolveModeDefaults(mode DropMode) modeDefault {
+	if defaults := modeDefaults[mode]; defaults != (modeDefault{}) {
+		return defaults
 	}
+	return modeDefaults[DropModeBlock]
+}
 
-	if !cfg.queueSet {
-		cfg.QueueSize = defaults.queue
+// resolveQueueSize clamps queue sizing using defaults when unset or invalid.
+func resolveQueueSize(queue int, queueSet bool, fallback int) int {
+	if !queueSet || queue < 0 {
+		return fallback
 	}
-	if cfg.QueueSize < 0 {
-		cfg.QueueSize = defaults.queue
-	}
+	return queue
+}
 
-	if !cfg.workerCountSet {
-		cfg.WorkerCount = defaults.workers
+// clampMinimum clamps integers to a minimum unless explicitly set higher.
+func clampMinimum(value int, explicitlySet bool, fallback int, minValue int) int {
+	if !explicitlySet || value < minValue {
+		return fallback
 	}
-	if cfg.WorkerCount < 1 {
-		cfg.WorkerCount = defaults.workers
-	}
-
-	if !cfg.batchSizeSet {
-		cfg.BatchSize = defaults.batch
-	}
-	if cfg.BatchSize < 1 {
-		cfg.BatchSize = defaults.batch
-	}
-
-	return cfg
+	return value
 }
 
 // applyEnv overlays configuration from environment variables.
