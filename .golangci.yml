@@ -44,7 +44,7 @@ linters:
     - thelper
   settings:
     cyclop:
-      max-complexity: 40
+      max-complexity: 10
     funlen:
       lines: 200
       statements: 160
