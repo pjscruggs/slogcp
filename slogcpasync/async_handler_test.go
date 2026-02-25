@@ -727,6 +727,72 @@ func TestWrapDisabledReturnsInner(t *testing.T) {
 	}
 }
 
+// TestHandleProcessesCanceledContext ensures canceled contexts still produce records.
+func TestHandleProcessesCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	type markerKey struct{}
+
+	inner := newRecordingHandler(nil)
+	h := Wrap(inner)
+
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), markerKey{}, "present"))
+	cancel()
+
+	if err := h.Handle(ctx, slog.NewRecord(time.Now(), slog.LevelInfo, "canceled", 0)); err != nil {
+		t.Fatalf("Handle returned %v, want nil", err)
+	}
+	if err := h.(*Handler).Close(); err != nil {
+		t.Fatalf("Close() returned %v, want nil", err)
+	}
+
+	if got := len(inner.state.records); got != 1 {
+		t.Fatalf("handled records = %d, want 1", got)
+	}
+	if got := len(inner.state.contexts); got != 1 {
+		t.Fatalf("handled contexts = %d, want 1", got)
+	}
+	if err := inner.state.contexts[0].Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("context error = %v, want context.Canceled", err)
+	}
+	if got := inner.state.contexts[0].Value(markerKey{}); got != "present" {
+		t.Fatalf("context value = %v, want present", got)
+	}
+}
+
+// TestDetachedContextUsesBackground verifies detaching drops request values and cancellation.
+func TestDetachedContextUsesBackground(t *testing.T) {
+	t.Parallel()
+
+	type markerKey struct{}
+
+	inner := newRecordingHandler(nil)
+	h := Wrap(inner, WithDetachedContext(true))
+
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), markerKey{}, "present"))
+	cancel()
+
+	if err := h.Handle(ctx, slog.NewRecord(time.Now(), slog.LevelInfo, "detached", 0)); err != nil {
+		t.Fatalf("Handle returned %v, want nil", err)
+	}
+	if err := h.(*Handler).Close(); err != nil {
+		t.Fatalf("Close() returned %v, want nil", err)
+	}
+
+	if got := len(inner.state.records); got != 1 {
+		t.Fatalf("handled records = %d, want 1", got)
+	}
+	if got := len(inner.state.contexts); got != 1 {
+		t.Fatalf("handled contexts = %d, want 1", got)
+	}
+	if err := inner.state.contexts[0].Err(); err != nil {
+		t.Fatalf("detached context error = %v, want nil", err)
+	}
+	if got := inner.state.contexts[0].Value(markerKey{}); got != nil {
+		t.Fatalf("detached context value = %v, want nil", got)
+	}
+}
+
 // TestHandleDropsAfterClose exercises Handle when the handler is already closed.
 func TestHandleDropsAfterClose(t *testing.T) {
 	var dropped []string

@@ -96,14 +96,15 @@ type DropHandler func(ctx context.Context, rec slog.Record)
 
 // Config controls async handler behaviour.
 type Config struct {
-	Enabled      bool
-	QueueSize    int
-	WorkerCount  int
-	BatchSize    int
-	DropMode     DropMode
-	OnDrop       DropHandler
-	ErrorWriter  io.Writer
-	FlushTimeout time.Duration
+	Enabled       bool
+	QueueSize     int
+	WorkerCount   int
+	BatchSize     int
+	DropMode      DropMode
+	DetachContext bool
+	OnDrop        DropHandler
+	ErrorWriter   io.Writer
+	FlushTimeout  time.Duration
 
 	queueSet       bool
 	workerCountSet bool
@@ -153,6 +154,17 @@ func WithDropMode(mode DropMode) Option {
 	}
 }
 
+// WithDetachedContext controls whether queued records keep the caller's context.
+// When enabled, queued records use context.Background(), which avoids retaining
+// request-scoped context graphs while records sit in the queue. The tradeoff is
+// that downstream handlers cannot read request-scoped context values (for
+// example trace/span IDs) during async processing.
+func WithDetachedContext(detach bool) Option {
+	return func(cfg *Config) {
+		cfg.DetachContext = detach
+	}
+}
+
 // WithOnDrop registers a callback invoked when a record is dropped.
 func WithOnDrop(fn DropHandler) Option {
 	return func(cfg *Config) {
@@ -191,10 +203,11 @@ func Middleware(opts ...Option) func(slog.Handler) slog.Handler {
 
 // Handler is an async slog.Handler wrapper.
 type Handler struct {
-	inner    slog.Handler
-	dropMode DropMode
-	onDrop   DropHandler
-	state    *asyncState
+	inner         slog.Handler
+	dropMode      DropMode
+	detachContext bool
+	onDrop        DropHandler
+	state         *asyncState
 }
 
 type asyncState struct {
@@ -214,6 +227,8 @@ type asyncState struct {
 }
 
 type queuedRecord struct {
+	// ctx is carried so downstream handlers can read context values. Per the
+	// slog.Handler contract, cancellation/deadlines do not suppress processing.
 	ctx     context.Context
 	rec     slog.Record
 	handler slog.Handler
@@ -234,10 +249,11 @@ func newHandler(inner slog.Handler, cfg Config) *Handler {
 	startAsyncWorkers(state, cfg)
 
 	return &Handler{
-		inner:    inner,
-		dropMode: cfg.DropMode,
-		onDrop:   cfg.OnDrop,
-		state:    state,
+		inner:         inner,
+		dropMode:      cfg.DropMode,
+		detachContext: cfg.DetachContext,
+		onDrop:        cfg.OnDrop,
+		state:         state,
 	}
 }
 
@@ -325,8 +341,15 @@ func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 // Handle enqueues a record for async processing.
+// Context cancellation does not suppress emission: ctx is treated as a value
+// carrier for handlers, matching slog.Handler semantics.
 func (h *Handler) Handle(ctx context.Context, rec slog.Record) error {
 	rec = rec.Clone()
+	queuedCtx := ctx
+	if h.detachContext {
+		queuedCtx = context.Background()
+	}
+
 	if !h.state.beginSend() {
 		if h.onDrop != nil {
 			h.onDrop(ctx, rec)
@@ -336,7 +359,7 @@ func (h *Handler) Handle(ctx context.Context, rec slog.Record) error {
 	defer h.state.endSend()
 
 	return h.enqueue(queuedRecord{
-		ctx:     ctx,
+		ctx:     queuedCtx,
 		rec:     rec,
 		handler: h.inner,
 	})
@@ -345,20 +368,22 @@ func (h *Handler) Handle(ctx context.Context, rec slog.Record) error {
 // WithAttrs returns a child handler sharing the same async queue.
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &Handler{
-		inner:    h.inner.WithAttrs(attrs),
-		dropMode: h.dropMode,
-		onDrop:   h.onDrop,
-		state:    h.state,
+		inner:         h.inner.WithAttrs(attrs),
+		dropMode:      h.dropMode,
+		detachContext: h.detachContext,
+		onDrop:        h.onDrop,
+		state:         h.state,
 	}
 }
 
 // WithGroup returns a child handler sharing the same async queue.
 func (h *Handler) WithGroup(name string) slog.Handler {
 	return &Handler{
-		inner:    h.inner.WithGroup(name),
-		dropMode: h.dropMode,
-		onDrop:   h.onDrop,
-		state:    h.state,
+		inner:         h.inner.WithGroup(name),
+		dropMode:      h.dropMode,
+		detachContext: h.detachContext,
+		onDrop:        h.onDrop,
+		state:         h.state,
 	}
 }
 
