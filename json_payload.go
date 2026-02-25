@@ -59,12 +59,10 @@ func resolveSlogValue(v slog.Value) any {
 	return resolveSlogValueWithRaw(v, v.Resolve())
 }
 
-// resolveSlogValueWithRaw converts a resolved slog.Value, preserving access to
-// the original value for LogValuer-based httpRequest detection.
+// resolveSlogValueWithRaw converts a resolved slog.Value into a JSON-friendly
+// representation while preserving access to the original value for callers that
+// may have already used the raw value for key-specific handling.
 func resolveSlogValueWithRaw(raw, resolved slog.Value) any {
-	if req, ok := httpRequestFromValue(raw); ok {
-		return req
-	}
 	if val, handled := resolveGroupValue(resolved); handled {
 		return val
 	}
