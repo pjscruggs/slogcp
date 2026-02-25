@@ -54,7 +54,7 @@ func TestEnsurePropagationInstallsCompositePropagator(t *testing.T) {
 	resetPropagatorForTest(t, stub)
 
 	EnsurePropagation()
-	if reflect.TypeOf(otel.GetTextMapPropagator()) == reflect.TypeOf(stub) {
+	if reflect.TypeOf(otel.GetTextMapPropagator()) == reflect.TypeFor[stubPropagator]() {
 		t.Fatalf("expected EnsurePropagation to replace stub propagator")
 	}
 }
@@ -67,7 +67,7 @@ func TestAutoSetPropagationHonorsDisableFlag(t *testing.T) {
 	resetPropagatorForTest(t, stub)
 
 	autoSetPropagation()
-	if reflect.TypeOf(otel.GetTextMapPropagator()) != reflect.TypeOf(stub) {
+	if reflect.TypeOf(otel.GetTextMapPropagator()) != reflect.TypeFor[stubPropagator]() {
 		t.Fatalf("expected stub propagator to remain installed when auto-set disabled")
 	}
 }
@@ -80,7 +80,7 @@ func TestEnsurePropagationIgnoresAutoSetFlag(t *testing.T) {
 	resetPropagatorForTest(t, stub)
 
 	EnsurePropagation()
-	if reflect.TypeOf(otel.GetTextMapPropagator()) == reflect.TypeOf(stub) {
+	if reflect.TypeOf(otel.GetTextMapPropagator()) == reflect.TypeFor[stubPropagator]() {
 		t.Fatalf("expected EnsurePropagation to replace stub propagator even when auto-set disabled")
 	}
 }
