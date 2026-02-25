@@ -49,8 +49,8 @@ func HTTPRequestAttr(r *http.Request, scope *RequestScope) slog.Attr {
 				req.Status = scope.Status()
 				req.Latency = latency
 			} else {
-				// Suppress in-flight response metadata; latencyForLogging
-				// uses a sentinel so Cloud Logging omits latency.
+				// Suppress in-flight response metadata. Negative sentinel values
+				// are omitted by slogcp's HTTPRequest serializer.
 				req.ResponseSize = -1
 				req.Status = -1
 				req.Latency = latencyForLogging(scope)
@@ -97,8 +97,9 @@ func HTTPRequestFromScope(scope *RequestScope) *slogcp.HTTPRequest {
 	return req
 }
 
-// latencyForLogging returns finalized latency when available; otherwise returns a sentinel (-1s)
-// so Cloud Logging promotes httpRequest but omits latency on mid-request logs.
+// latencyForLogging returns finalized latency when available; otherwise returns
+// a negative sentinel (-1s) that slogcp omits from serialized httpRequest
+// payloads for mid-request logs.
 func latencyForLogging(scope *RequestScope) time.Duration {
 	if scope == nil {
 		return 0
