@@ -601,19 +601,52 @@ func ensureWriterFallback(cfg *handlerConfig) {
 }
 
 // Close releases any resources owned by the handler such as log files or
-// writer implementations created by options. It is safe to call multiple
-// times; only the first invocation performs work, and repeated calls return
-// the same error value as the first call.
+// writer implementations created by options. It first runs async shutdown via
+// the configured flush timeout and escalates to abort on timeout before
+// resources are closed.
 func (h *Handler) Close() error {
-	h.closeOnce.Do(func() {
-		if err := h.closeAsyncHandler(); err != nil {
-			h.closeErr = err
-		}
-		if err := h.closeResources(); err != nil && h.closeErr == nil {
-			h.closeErr = err
-		}
-	})
-	return h.closeErr
+	if h == nil {
+		return nil
+	}
+
+	// Preserve existing Close semantics (graceful timeout from async config)
+	// while escalating to abort before tearing down owned writers/files.
+	asyncErr := h.closeAsyncHandler()
+	if errors.Is(asyncErr, slogcpasync.ErrFlushTimeout) {
+		asyncErr = errors.Join(asyncErr, h.abortAsyncHandler(context.Background()))
+	}
+
+	return errors.Join(asyncErr, h.closeResourcesOnce())
+}
+
+// Shutdown performs graceful async drain bounded by ctx. On timeout it returns
+// without tearing down owned resources so callers can decide whether to abort.
+func (h *Handler) Shutdown(ctx context.Context) error {
+	if h == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if err := h.shutdownAsyncHandler(ctx); err != nil {
+		return err
+	}
+	return h.closeResourcesOnce()
+}
+
+// Abort performs forceful async shutdown (bounded by ctx) and then closes
+// owned resources.
+func (h *Handler) Abort(ctx context.Context) error {
+	if h == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	asyncErr := h.abortAsyncHandler(ctx)
+	return errors.Join(asyncErr, h.closeResourcesOnce())
 }
 
 // closeAsyncHandler drains any async wrapper so queued records are written before resources are closed.
@@ -625,6 +658,40 @@ func (h *Handler) closeAsyncHandler() error {
 		return fmt.Errorf("close async handler: %w", err)
 	}
 	return nil
+}
+
+// shutdownAsyncHandler asks the async wrapper to drain until ctx expires.
+func (h *Handler) shutdownAsyncHandler(ctx context.Context) error {
+	if h == nil || h.asyncHandler == nil {
+		return nil
+	}
+	if err := h.asyncHandler.Shutdown(ctx); err != nil {
+		return fmt.Errorf("shutdown async handler: %w", err)
+	}
+	return nil
+}
+
+// abortAsyncHandler requests forceful async shutdown and waits until either the
+// abort completes or ctx expires.
+func (h *Handler) abortAsyncHandler(ctx context.Context) error {
+	if h == nil || h.asyncHandler == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- h.asyncHandler.Abort()
+	}()
+
+	select {
+	case err := <-done:
+		return fmt.Errorf("abort async handler: %w", err)
+	case <-ctx.Done():
+		return fmt.Errorf("abort async handler: %w", ctx.Err())
+	}
 }
 
 // closeResources tears down owned writers and closers.
@@ -642,6 +709,18 @@ func (h *Handler) closeResources() error {
 		firstErr = err
 	}
 	return firstErr
+}
+
+// closeResourcesOnce tears down owned resources exactly once and returns the
+// cached result on subsequent calls.
+func (h *Handler) closeResourcesOnce() error {
+	if h == nil {
+		return nil
+	}
+	h.closeOnce.Do(func() {
+		h.closeErr = h.closeResources()
+	})
+	return h.closeErr
 }
 
 // closeSwitchableWriter closes the switchable writer and determines if the file should be closed.
