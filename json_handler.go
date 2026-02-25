@@ -604,7 +604,7 @@ func (pb *payloadBuilder) handleLeafAttr(currMap map[string]any, attr slog.Attr,
 	if attr.Key == httpRequestKey && pb.handleHTTPRequestAttr(rawValue) {
 		return
 	}
-	if val := resolveSlogValueWithRaw(rawValue, attr.Value); val != nil {
+	if val := resolveSlogValueWithRaw(attr.Value); val != nil {
 		currMap[attr.Key] = val
 	}
 }
