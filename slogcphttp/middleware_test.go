@@ -110,8 +110,53 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 	if got := entry["logging.googleapis.com/trace"]; got != "projects/proj-123/traces/105445aa7843bc8bf206b12000100000" {
 		t.Errorf("trace = %v", got)
 	}
+	if _, ok := entry["http.status_code"]; ok {
+		t.Errorf("http.status_code should be omitted before response headers are written")
+	}
+	if _, ok := entry["http.response_size"]; ok {
+		t.Errorf("http.response_size should be omitted before request finalization")
+	}
 	if _, ok := entry["http.latency"]; ok {
 		t.Errorf("http.latency should be omitted for in-flight logs")
+	}
+}
+
+// TestMiddlewareStatusAppearsAfterWriteHeader ensures status becomes available once headers are sent.
+func TestMiddlewareStatusAppearsAfterWriteHeader(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	baseLogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+
+	mw := Middleware(
+		WithLogger(baseLogger),
+		WithOTel(false),
+	)
+
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+		slogcp.Logger(r.Context()).Info("after header")
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/known-status", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 log line, got %d", len(lines))
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatalf("unmarshal log: %v", err)
+	}
+
+	if got := entry["http.status_code"]; got != float64(http.StatusTeapot) {
+		t.Fatalf("http.status_code = %v, want %d", got, http.StatusTeapot)
+	}
+	if _, ok := entry["http.response_size"]; ok {
+		t.Fatalf("http.response_size should remain omitted until request finalization")
 	}
 }
 
@@ -861,25 +906,64 @@ func TestMetricAttrsLatencyFinalization(t *testing.T) {
 
 	scope := newRequestScope(nil, time.Now(), defaultConfig())
 	inFlight := scope.metricAttrs()
+	var inFlightStatus, inFlightSize bool
 	for _, attr := range inFlight {
+		if attr.Key == "http.status_code" {
+			inFlightStatus = true
+			if got := attr.Value.Resolve(); got.Kind() != slog.KindAny || got.Any() != nil {
+				t.Fatalf("http.status_code should resolve to unknown before headers are written, got %+v", got)
+			}
+		}
+		if attr.Key == "http.response_size" {
+			inFlightSize = true
+			if got := attr.Value.Resolve(); got.Kind() != slog.KindAny || got.Any() != nil {
+				t.Fatalf("http.response_size should resolve to unknown before finalize, got %+v", got)
+			}
+		}
 		if attr.Key == "http.latency" {
 			t.Fatalf("http.latency should be omitted for in-flight metrics: %+v", attr)
 		}
 	}
+	if !inFlightStatus {
+		t.Fatalf("http.status_code metric missing")
+	}
+	if !inFlightSize {
+		t.Fatalf("http.response_size metric missing")
+	}
 
 	scope.finalize(http.StatusOK, 0, 15*time.Millisecond)
 	finalAttrs := scope.metricAttrs()
-	found := false
+	foundLatency := false
+	foundStatus := false
+	foundSize := false
 	for _, attr := range finalAttrs {
+		if attr.Key == "http.status_code" {
+			foundStatus = true
+			if got := attr.Value.Resolve(); got.Kind() != slog.KindInt64 || got.Int64() != http.StatusOK {
+				t.Fatalf("http.status_code = %+v, want %d", got, http.StatusOK)
+			}
+		}
+		if attr.Key == "http.response_size" {
+			foundSize = true
+			if got := attr.Value.Resolve(); got.Kind() != slog.KindInt64 || got.Int64() != 0 {
+				t.Fatalf("http.response_size = %+v, want 0", got)
+			}
+		}
 		if attr.Key == "http.latency" {
-			found = true
+			foundLatency = true
 			if attr.Value.Resolve().Duration() != 15*time.Millisecond {
 				t.Fatalf("http.latency = %v, want 15ms", attr.Value.Resolve().Duration())
 			}
 		}
 	}
-	if !found {
+	if !foundLatency {
 		t.Fatalf("http.latency missing after finalize")
+	}
+	if !foundStatus {
+		t.Fatalf("http.status_code missing after finalize")
+	}
+	if !foundSize {
+		t.Fatalf("http.response_size missing after finalize")
 	}
 }
 
@@ -890,6 +974,10 @@ func TestRequestScopeMetricValueLogValue(t *testing.T) {
 	scope := newRequestScope(nil, time.Now(), defaultConfig())
 	scope.setStatus(http.StatusAccepted)
 	scope.addResponseBytes(128)
+	finalized := newRequestScope(nil, time.Now(), defaultConfig())
+	finalized.setStatus(http.StatusAccepted)
+	finalized.addResponseBytes(128)
+	finalized.finalize(http.StatusAccepted, 128, 5*time.Millisecond)
 
 	tests := []struct {
 		name     string
@@ -904,8 +992,13 @@ func TestRequestScopeMetricValueLogValue(t *testing.T) {
 			wantInt:  int64(http.StatusAccepted),
 		},
 		{
-			name:     "response_size",
+			name:     "response_size_in_flight_unknown",
 			value:    requestScopeMetricValue{scope: scope, kind: requestScopeMetricResponseSize},
+			wantKind: slog.KindAny,
+		},
+		{
+			name:     "response_size_finalized",
+			value:    requestScopeMetricValue{scope: finalized, kind: requestScopeMetricResponseSize},
 			wantKind: slog.KindInt64,
 			wantInt:  128,
 		},
