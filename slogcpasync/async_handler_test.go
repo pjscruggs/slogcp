@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -611,6 +612,84 @@ func TestCloseTimesOutWhenWorkersStuck(t *testing.T) {
 	close(block)
 }
 
+// TestCloseUnblocksBlockedHandle ensures Close releases blocked block-mode senders.
+func TestCloseUnblocksBlockedHandle(t *testing.T) {
+	t.Parallel()
+
+	block := make(chan struct{})
+	inner := newRecordingHandler(block)
+
+	var (
+		dropMu  sync.Mutex
+		dropped []string
+	)
+
+	h := Wrap(inner,
+		WithQueueSize(1),
+		WithWorkerCount(1),
+		WithFlushTimeout(20*time.Millisecond),
+		WithOnDrop(func(_ context.Context, rec slog.Record) {
+			dropMu.Lock()
+			dropped = append(dropped, rec.Message)
+			dropMu.Unlock()
+		}),
+	)
+
+	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "first", 0)); err != nil {
+		t.Fatalf("Handle(first) returned %v, want nil", err)
+	}
+	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "second", 0)); err != nil {
+		t.Fatalf("Handle(second) returned %v, want nil", err)
+	}
+
+	thirdDone := make(chan error, 1)
+	go func() {
+		thirdDone <- h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "third", 0))
+	}()
+
+	select {
+	case err := <-thirdDone:
+		t.Fatalf("third Handle returned early with %v, want blocked send until Close starts", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- h.(*Handler).Close()
+	}()
+
+	select {
+	case err := <-thirdDone:
+		if err != nil {
+			t.Fatalf("third Handle returned %v, want nil", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("third Handle remained blocked after Close started")
+	}
+
+	var closeErr error
+	select {
+	case closeErr = <-closeDone:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatalf("Close did not return in time")
+	}
+
+	if !errors.Is(closeErr, ErrFlushTimeout) {
+		t.Fatalf("Close error = %v, want ErrFlushTimeout", closeErr)
+	}
+
+	close(block)
+
+	dropMu.Lock()
+	gotDropped := append([]string(nil), dropped...)
+	dropMu.Unlock()
+
+	found := slices.Contains(gotDropped, "third")
+	if !found {
+		t.Fatalf("dropped = %v, want contains third", gotDropped)
+	}
+}
+
 // TestCloseJoinsTimeoutAndCloserError ensures Close preserves both timeout and sink-close failures.
 func TestCloseJoinsTimeoutAndCloserError(t *testing.T) {
 	t.Parallel()
@@ -1116,4 +1195,76 @@ func TestDropNoCallbackIsNoop(t *testing.T) {
 		ctx: context.Background(),
 		rec: slog.NewRecord(time.Now(), slog.LevelInfo, "noop", 0),
 	})
+}
+
+// TestEnqueueDropsWhenShutdownSignalClosed verifies all enqueue modes drop immediately once shutdown begins.
+func TestEnqueueDropsWhenShutdownSignalClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mode DropMode
+	}{
+		{name: "block", mode: DropModeBlock},
+		{name: "drop_newest", mode: DropModeDropNewest},
+		{name: "drop_oldest", mode: DropModeDropOldest},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var dropped []string
+			h := &Handler{
+				dropMode: tc.mode,
+				onDrop: func(_ context.Context, rec slog.Record) {
+					dropped = append(dropped, rec.Message)
+				},
+				state: &asyncState{
+					queue:     make(chan queuedRecord, 1),
+					closingCh: make(chan struct{}),
+				},
+			}
+			h.state.gateCond = sync.NewCond(&h.state.gateMu)
+			close(h.state.closingCh)
+
+			item := queuedRecord{
+				ctx: context.Background(),
+				rec: slog.NewRecord(time.Now(), slog.LevelInfo, "shutdown", 0),
+			}
+			if err := h.enqueue(item); err != nil {
+				t.Fatalf("enqueue returned %v, want nil", err)
+			}
+			if len(dropped) != 1 || dropped[0] != "shutdown" {
+				t.Fatalf("dropped = %v, want [shutdown]", dropped)
+			}
+		})
+	}
+}
+
+// TestAsyncStateBeginCloseIdempotent verifies beginClose tolerates an already-closed shutdown signal.
+func TestAsyncStateBeginCloseIdempotent(t *testing.T) {
+	t.Parallel()
+
+	state := &asyncState{
+		queue:     make(chan queuedRecord, 1),
+		closingCh: make(chan struct{}),
+	}
+	state.gateCond = sync.NewCond(&state.gateMu)
+
+	state.beginClose()
+	state.beginClose()
+}
+
+// TestAsyncStateNilHelpersAreSafe exercises nil guard paths on helper methods.
+func TestAsyncStateNilHelpersAreSafe(t *testing.T) {
+	t.Parallel()
+
+	var nilState *asyncState
+	if nilState.beginSend() {
+		t.Fatalf("nil beginSend reported true, want false")
+	}
+	nilState.endSend()
+	nilState.endClose()
+
+	empty := &asyncState{}
+	empty.endClose()
 }

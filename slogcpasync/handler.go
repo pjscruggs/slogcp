@@ -201,6 +201,10 @@ type asyncState struct {
 	queue        chan queuedRecord
 	wg           sync.WaitGroup
 	closed       atomic.Bool
+	gateMu       sync.Mutex
+	gateCond     *sync.Cond
+	activeSends  int
+	closingCh    chan struct{}
 	flushTimeout time.Duration
 	closeOnce    sync.Once
 	closeErr     error
@@ -239,13 +243,16 @@ func newHandler(inner slog.Handler, cfg Config) *Handler {
 
 // newAsyncState initializes async queue state for the wrapper.
 func newAsyncState(inner slog.Handler, cfg Config) *asyncState {
-	return &asyncState{
+	state := &asyncState{
 		queue:        make(chan queuedRecord, cfg.QueueSize),
+		closingCh:    make(chan struct{}),
 		flushTimeout: cfg.FlushTimeout,
 		closer:       closerFor(inner),
 		errWriter:    cfg.ErrorWriter,
 		onDrop:       cfg.OnDrop,
 	}
+	state.gateCond = sync.NewCond(&state.gateMu)
+	return state
 }
 
 // startAsyncWorkers launches worker goroutines via the optional starter hook.
@@ -319,16 +326,18 @@ func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
 
 // Handle enqueues a record for async processing.
 func (h *Handler) Handle(ctx context.Context, rec slog.Record) error {
-	if h.state.closed.Load() {
+	rec = rec.Clone()
+	if !h.state.beginSend() {
 		if h.onDrop != nil {
-			h.onDrop(ctx, rec.Clone())
+			h.onDrop(ctx, rec)
 		}
 		return nil
 	}
+	defer h.state.endSend()
 
 	return h.enqueue(queuedRecord{
 		ctx:     ctx,
-		rec:     rec.Clone(),
+		rec:     rec,
 		handler: h.inner,
 	})
 }
@@ -370,13 +379,36 @@ func (h *Handler) enqueue(item queuedRecord) (err error) {
 	case DropModeDropOldest:
 		h.enqueueDropOldest(item)
 	default:
-		h.state.queue <- item
+		h.enqueueBlock(item)
 	}
 	return nil
 }
 
+// enqueueBlock blocks until the queue accepts the item or shutdown starts.
+func (h *Handler) enqueueBlock(item queuedRecord) {
+	select {
+	case <-h.state.closingCh:
+		h.drop(item)
+		return
+	default:
+	}
+
+	select {
+	case h.state.queue <- item:
+	case <-h.state.closingCh:
+		h.drop(item)
+	}
+}
+
 // enqueueDropNewest drops the incoming item when the queue is full.
 func (h *Handler) enqueueDropNewest(item queuedRecord) {
+	select {
+	case <-h.state.closingCh:
+		h.drop(item)
+		return
+	default:
+	}
+
 	select {
 	case h.state.queue <- item:
 	default:
@@ -386,6 +418,13 @@ func (h *Handler) enqueueDropNewest(item queuedRecord) {
 
 // enqueueDropOldest evicts the oldest queued record before enqueuing item.
 func (h *Handler) enqueueDropOldest(item queuedRecord) {
+	select {
+	case <-h.state.closingCh:
+		h.drop(item)
+		return
+	default:
+	}
+
 	select {
 	case h.state.queue <- item:
 		return
@@ -421,9 +460,9 @@ func (h *Handler) Close() error {
 	}
 
 	h.state.closeOnce.Do(func() {
-		if h.state.closed.CompareAndSwap(false, true) {
-			close(h.state.queue)
-		}
+		h.state.closed.Store(true)
+		h.state.beginClose()
+		h.state.endClose()
 
 		done := make(chan struct{})
 		go func() {
@@ -450,6 +489,77 @@ func (h *Handler) Close() error {
 	})
 
 	return h.state.closeErr
+}
+
+// beginSend tracks an in-flight send while the handler remains open.
+func (s *asyncState) beginSend() bool {
+	if s == nil {
+		return false
+	}
+
+	s.gateMu.Lock()
+	defer s.gateMu.Unlock()
+	s.ensureGateLocked()
+	if s.closed.Load() {
+		return false
+	}
+	s.activeSends++
+	return true
+}
+
+// endSend marks an in-flight send as complete.
+func (s *asyncState) endSend() {
+	if s == nil {
+		return
+	}
+
+	s.gateMu.Lock()
+	if s.activeSends > 0 {
+		s.activeSends--
+		if s.activeSends == 0 && s.gateCond != nil {
+			s.gateCond.Broadcast()
+		}
+	}
+	s.gateMu.Unlock()
+}
+
+// beginClose prevents new sends, unblocks blocked senders, and waits for active senders to finish.
+func (s *asyncState) beginClose() {
+	s.gateMu.Lock()
+	defer s.gateMu.Unlock()
+
+	s.ensureGateLocked()
+
+	select {
+	case <-s.closingCh:
+	default:
+		close(s.closingCh)
+	}
+
+	for s.activeSends > 0 {
+		s.gateCond.Wait()
+	}
+}
+
+// endClose closes the queue once all active senders have exited.
+func (s *asyncState) endClose() {
+	if s == nil || s.queue == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	close(s.queue)
+}
+
+// ensureGateLocked initializes coordination primitives for tests that build asyncState directly.
+func (s *asyncState) ensureGateLocked() {
+	if s.gateCond == nil {
+		s.gateCond = sync.NewCond(&s.gateMu)
+	}
+	if s.closingCh == nil {
+		s.closingCh = make(chan struct{})
+	}
 }
 
 // closerFor extracts a Close function from inner when available.
