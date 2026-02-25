@@ -252,7 +252,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	builder := collectOptions(opts)
 	internalLogger := ensureInternalLogger(builder.internalLogger)
 
-	cfg, err := cachedConfigFromEnv(internalLogger)
+	cfg, err := loadConfigFromEnv(internalLogger)
 	if err != nil {
 		return nil, err
 	}

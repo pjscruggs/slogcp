@@ -1981,6 +1981,35 @@ func TestCachedConfigFromEnvCachesResults(t *testing.T) {
 	}
 }
 
+// TestNewHandlerReadsEnvPerCall ensures each NewHandler call reads current environment values.
+func TestNewHandlerReadsEnvPerCall(t *testing.T) {
+	clearHandlerEnv(t)
+
+	t.Setenv(envLogLevel, "error")
+	h1, err := NewHandler(io.Discard)
+	if err != nil {
+		t.Fatalf("NewHandler first call returned %v", err)
+	}
+	t.Cleanup(func() {
+		_ = h1.Close()
+	})
+	if got := h1.cfg.Level; got != slog.LevelError {
+		t.Fatalf("first handler level = %v, want %v", got, slog.LevelError)
+	}
+
+	t.Setenv(envLogLevel, "debug")
+	h2, err := NewHandler(io.Discard)
+	if err != nil {
+		t.Fatalf("NewHandler second call returned %v", err)
+	}
+	t.Cleanup(func() {
+		_ = h2.Close()
+	})
+	if got := h2.cfg.Level; got != slog.LevelDebug {
+		t.Fatalf("second handler level = %v, want %v", got, slog.LevelDebug)
+	}
+}
+
 // TestCachedConfigFromEnvReturnsLocalCfgWhenCacheClearedAfterCAS verifies the fallback return when CAS fails and the cache is cleared.
 func TestCachedConfigFromEnvReturnsLocalCfgWhenCacheClearedAfterCAS(t *testing.T) {
 	clearHandlerEnv(t)
@@ -2290,6 +2319,30 @@ func TestCachedConfigFromEnvInvokesRaceHook(t *testing.T) {
 	}
 	if cfg.Level != raceWinner.Level {
 		t.Fatalf("cfg.Level = %v, want %v from existing cache", cfg.Level, raceWinner.Level)
+	}
+}
+
+// TestCachedConfigFromEnvReturnsLoaderError ensures loader failures propagate.
+func TestCachedConfigFromEnvReturnsLoaderError(t *testing.T) {
+	clearHandlerEnv(t)
+	resetHandlerConfigCache()
+
+	originalLoader := getLoadConfigFromEnv()
+	t.Cleanup(func() {
+		setLoadConfigFromEnv(originalLoader)
+		resetHandlerConfigCache()
+	})
+
+	wantErr := errors.New("loader boom")
+	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
+		return handlerConfig{}, wantErr
+	})
+
+	if _, err := cachedConfigFromEnv(newDiscardLogger()); !errors.Is(err, wantErr) {
+		t.Fatalf("cachedConfigFromEnv() error = %v, want %v", err, wantErr)
+	}
+	if cached := handlerEnvConfigCache.Load(); cached != nil {
+		t.Fatalf("handlerEnvConfigCache should remain empty after loader error, got %+v", cached)
 	}
 }
 
