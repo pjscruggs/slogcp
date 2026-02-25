@@ -690,8 +690,8 @@ func TestCloseUnblocksBlockedHandle(t *testing.T) {
 	}
 }
 
-// TestCloseJoinsTimeoutAndCloserError ensures Close preserves both timeout and sink-close failures.
-func TestCloseJoinsTimeoutAndCloserError(t *testing.T) {
+// TestCloseTimeoutDefersCloserUntilWorkersExit ensures timeout does not race downstream Close.
+func TestCloseTimeoutDefersCloserUntilWorkersExit(t *testing.T) {
 	t.Parallel()
 
 	block := make(chan struct{})
@@ -707,15 +707,28 @@ func TestCloseJoinsTimeoutAndCloserError(t *testing.T) {
 
 	err := h.(*Handler).Close()
 	if err == nil {
-		t.Fatalf("Close() returned nil, want joined error")
+		t.Fatalf("Close() returned nil, want timeout error")
 	}
 	if !errors.Is(err, ErrFlushTimeout) {
 		t.Fatalf("Close() error = %v, want ErrFlushTimeout", err)
 	}
-	if !errors.Is(err, inner.err) {
-		t.Fatalf("Close() error = %v, want sink close error %v", err, inner.err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close() error = %v, want context deadline exceeded", err)
+	}
+	if errors.Is(err, inner.err) {
+		t.Fatalf("Close() error = %v, should not include sink close error while workers are still running", err)
+	}
+	if inner.state.closeCount != 0 {
+		t.Fatalf("inner Close() invoked early (%d), want 0 before workers exit", inner.state.closeCount)
 	}
 	close(block)
+
+	if err := h.(*Handler).Shutdown(context.Background()); !errors.Is(err, inner.err) {
+		t.Fatalf("Shutdown() after worker release = %v, want sink close error %v", err, inner.err)
+	}
+	if inner.state.closeCount != 1 {
+		t.Fatalf("inner Close() invoked %d times, want 1", inner.state.closeCount)
+	}
 }
 
 // TestWrapDisabledReturnsInner ensures WithEnabled(false) bypasses async wrapping.
@@ -857,6 +870,86 @@ func (c *noErrorCloser) Close() {
 	_ = c.recordingHandler.Close()
 }
 
+type errorAborter struct {
+	*recordingHandler
+	release    chan struct{}
+	entered    chan struct{}
+	err        error
+	abortCount *atomic.Int64
+}
+
+// newErrorAborter builds a handler exposing Abort() error for abort-path tests.
+func newErrorAborter(err error) *errorAborter {
+	release := make(chan struct{})
+	return &errorAborter{
+		recordingHandler: newRecordingHandler(release),
+		release:          release,
+		entered:          make(chan struct{}, 32),
+		err:              err,
+		abortCount:       &atomic.Int64{},
+	}
+}
+
+// Handle signals entry before delegating to the blocking recorder.
+func (h *errorAborter) Handle(ctx context.Context, rec slog.Record) error {
+	select {
+	case h.entered <- struct{}{}:
+	default:
+	}
+	return h.recordingHandler.Handle(ctx, rec)
+}
+
+// Abort releases any blocked Handle call and returns the configured error.
+func (h *errorAborter) Abort() error {
+	h.abortCount.Add(1)
+	select {
+	case <-h.release:
+	default:
+		close(h.release)
+	}
+	return h.err
+}
+
+// WithAttrs preserves the abort behavior for derived handlers.
+func (h *errorAborter) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &errorAborter{
+		recordingHandler: h.recordingHandler.WithAttrs(attrs).(*recordingHandler),
+		release:          h.release,
+		entered:          h.entered,
+		err:              h.err,
+		abortCount:       h.abortCount,
+	}
+}
+
+// WithGroup preserves the abort behavior for derived handlers.
+func (h *errorAborter) WithGroup(name string) slog.Handler {
+	return &errorAborter{
+		recordingHandler: h.recordingHandler.WithGroup(name).(*recordingHandler),
+		release:          h.release,
+		entered:          h.entered,
+		err:              h.err,
+		abortCount:       h.abortCount,
+	}
+}
+
+type noErrorAborter struct {
+	*recordingHandler
+	abortCount *atomic.Int64
+}
+
+// newNoErrorAborter builds a handler exposing Abort() without an error result.
+func newNoErrorAborter() *noErrorAborter {
+	return &noErrorAborter{
+		recordingHandler: newRecordingHandler(nil),
+		abortCount:       &atomic.Int64{},
+	}
+}
+
+// Abort satisfies the non-error aborter branch used by aborterFor.
+func (h *noErrorAborter) Abort() {
+	h.abortCount.Add(1)
+}
+
 // TestClosePropagatesCloserError ensures closerFor picks the error-returning Close().
 func TestClosePropagatesCloserError(t *testing.T) {
 	inner := &closeErrorHandler{recordingHandler: newRecordingHandler(nil), err: errors.New("boom")}
@@ -880,6 +973,161 @@ func TestCloseSupportsNonErrorCloser(t *testing.T) {
 	}
 	if inner.state.closeCount != 1 {
 		t.Fatalf("Close invoked %d times, want 1", inner.state.closeCount)
+	}
+}
+
+// TestShutdownTimeoutReturnsDeadline verifies Shutdown surfaces timeout context errors.
+func TestShutdownTimeoutReturnsDeadline(t *testing.T) {
+	t.Parallel()
+
+	block := make(chan struct{})
+	inner := newRecordingHandler(block)
+	h := Wrap(inner)
+
+	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle returned %v, want nil", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := h.(*Handler).Shutdown(ctx)
+	if err == nil {
+		t.Fatalf("Shutdown returned nil, want timeout")
+	}
+	if !errors.Is(err, ErrFlushTimeout) {
+		t.Fatalf("Shutdown error = %v, want ErrFlushTimeout", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want context deadline exceeded", err)
+	}
+	if inner.state.closeCount != 0 {
+		t.Fatalf("inner Close() invoked %d times before worker completion, want 0", inner.state.closeCount)
+	}
+
+	close(block)
+	if err := h.(*Handler).Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown after release returned %v, want nil", err)
+	}
+	if inner.state.closeCount != 1 {
+		t.Fatalf("inner Close() invoked %d times after completion, want 1", inner.state.closeCount)
+	}
+}
+
+// TestAbortDropsQueuedRecords verifies Abort drops queued records and invokes the abort hook.
+func TestAbortDropsQueuedRecords(t *testing.T) {
+	t.Parallel()
+
+	inner := newErrorAborter(errors.New("abort-hook"))
+	var (
+		dropMu  sync.Mutex
+		dropped []string
+	)
+
+	h := Wrap(inner,
+		WithQueueSize(8),
+		WithWorkerCount(1),
+		WithOnDrop(func(_ context.Context, rec slog.Record) {
+			dropMu.Lock()
+			dropped = append(dropped, rec.Message)
+			dropMu.Unlock()
+		}),
+	)
+
+	for _, msg := range []string{"first", "second", "third"} {
+		rec := slog.NewRecord(time.Now(), slog.LevelInfo, msg, 0)
+		if err := h.Handle(context.Background(), rec); err != nil {
+			t.Fatalf("Handle(%q) returned %v, want nil", msg, err)
+		}
+	}
+
+	select {
+	case <-inner.entered:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("timed out waiting for worker to enter Handle")
+	}
+
+	err := h.(*Handler).Abort()
+	if !errors.Is(err, ErrAborted) {
+		t.Fatalf("Abort() error = %v, want ErrAborted", err)
+	}
+	if !errors.Is(err, inner.err) {
+		t.Fatalf("Abort() error = %v, want abort hook error %v", err, inner.err)
+	}
+	if got := inner.abortCount.Load(); got != 1 {
+		t.Fatalf("abort hook called %d times, want 1", got)
+	}
+	if got := len(inner.state.records); got != 1 {
+		t.Fatalf("handled records = %d, want 1 in-flight record", got)
+	}
+	if got := inner.state.records[0].Message; got != "first" {
+		t.Fatalf("handled message = %q, want first", got)
+	}
+	if inner.state.closeCount != 1 {
+		t.Fatalf("inner Close() invoked %d times, want 1", inner.state.closeCount)
+	}
+
+	dropMu.Lock()
+	gotDropped := append([]string(nil), dropped...)
+	dropMu.Unlock()
+	if !slices.Contains(gotDropped, "second") || !slices.Contains(gotDropped, "third") {
+		t.Fatalf("dropped = %v, want contains second and third", gotDropped)
+	}
+
+	if err := h.(*Handler).Shutdown(context.Background()); !errors.Is(err, ErrAborted) {
+		t.Fatalf("Shutdown after Abort = %v, want ErrAborted", err)
+	}
+}
+
+// TestAbortSupportsNonErrorAborter covers the Abort() interface branch without error return.
+func TestAbortSupportsNonErrorAborter(t *testing.T) {
+	t.Parallel()
+
+	inner := newNoErrorAborter()
+	h := Wrap(inner)
+
+	if err := h.(*Handler).Abort(); !errors.Is(err, ErrAborted) {
+		t.Fatalf("Abort() error = %v, want ErrAborted", err)
+	}
+	if got := inner.abortCount.Load(); got != 1 {
+		t.Fatalf("abort hook called %d times, want 1", got)
+	}
+}
+
+// TestAbortWithoutAborterStillMarksAborted ensures nil abort hooks still return ErrAborted.
+func TestAbortWithoutAborterStillMarksAborted(t *testing.T) {
+	t.Parallel()
+
+	h := Wrap(newRecordingHandler(nil))
+	if err := h.(*Handler).Abort(); !errors.Is(err, ErrAborted) {
+		t.Fatalf("Abort() error = %v, want ErrAborted", err)
+	}
+}
+
+// TestShutdownAndAbortHandleNilState covers nil guards for exported shutdown methods.
+func TestShutdownAndAbortHandleNilState(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{}
+	if err := h.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown(context.Background()) returned %v, want nil", err)
+	}
+	if err := h.Abort(); err != nil {
+		t.Fatalf("Abort() returned %v, want nil", err)
+	}
+}
+
+// TestStartWorkersDoneMonitorIdempotent ensures repeated monitor setup is safe.
+func TestStartWorkersDoneMonitorIdempotent(t *testing.T) {
+	t.Parallel()
+
+	state := &asyncState{}
+	state.startWorkersDoneMonitor()
+	state.startWorkersDoneMonitor()
+
+	select {
+	case <-state.workersDoneChannel():
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("workersDone channel did not close for zero workers")
 	}
 }
 
@@ -1252,6 +1500,16 @@ func TestBatchLoopDefaultBranch(t *testing.T) {
 	}
 }
 
+// TestDrainBatchReturnsWhenQueueEmpty covers the empty-queue default branch directly.
+func TestDrainBatchReturnsWhenQueueEmpty(t *testing.T) {
+	t.Parallel()
+
+	state := &asyncState{
+		queue: make(chan queuedRecord, 1),
+	}
+	state.drainBatch(2)
+}
+
 // TestDropNoCallbackIsNoop covers the drop helper when no onDrop callback is configured.
 func TestDropNoCallbackIsNoop(t *testing.T) {
 	t.Parallel()
@@ -1330,7 +1588,28 @@ func TestAsyncStateNilHelpersAreSafe(t *testing.T) {
 	}
 	nilState.endSend()
 	nilState.endClose()
+	nilState.startWorkersDoneMonitor()
+	nilState.startShutdown()
+	if err := nilState.waitWorkers(context.Background()); err != nil {
+		t.Fatalf("nil waitWorkers returned %v, want nil", err)
+	}
+	if err := nilState.finalizeClose(); err != nil {
+		t.Fatalf("nil finalizeClose returned %v, want nil", err)
+	}
+	if err := nilState.abortDownstream(); err != nil {
+		t.Fatalf("nil abortDownstream returned %v, want nil", err)
+	}
 
 	empty := &asyncState{}
 	empty.endClose()
+	empty.startShutdown()
+	if err := empty.waitWorkers(context.Background()); err != nil {
+		t.Fatalf("empty waitWorkers returned %v, want nil", err)
+	}
+	if err := empty.finalizeClose(); err != nil {
+		t.Fatalf("empty finalizeClose returned %v, want nil", err)
+	}
+	if err := empty.abortDownstream(); err != nil {
+		t.Fatalf("empty abortDownstream returned %v, want nil", err)
+	}
 }

@@ -91,6 +91,9 @@ const (
 // ErrFlushTimeout indicates Close returned before the queue was fully drained.
 var ErrFlushTimeout = errors.New("slogcpasync: flush timeout")
 
+// ErrAborted indicates shutdown escalated to Abort and records may be dropped.
+var ErrAborted = errors.New("slogcpasync: aborted")
+
 // DropHandler observes dropped records.
 type DropHandler func(ctx context.Context, rec slog.Record)
 
@@ -213,7 +216,9 @@ type Handler struct {
 type asyncState struct {
 	queue        chan queuedRecord
 	wg           sync.WaitGroup
+	workersDone  chan struct{}
 	closed       atomic.Bool
+	aborted      atomic.Bool
 	gateMu       sync.Mutex
 	gateCond     *sync.Cond
 	activeSends  int
@@ -221,7 +226,13 @@ type asyncState struct {
 	flushTimeout time.Duration
 	closeOnce    sync.Once
 	closeErr     error
+	shutdownOnce sync.Once
+	finalizeOnce sync.Once
+	finalizeErr  error
+	abortOnce    sync.Once
+	abortErr     error
 	closer       func() error
+	aborter      func() error
 	errWriter    io.Writer
 	onDrop       DropHandler
 }
@@ -264,6 +275,7 @@ func newAsyncState(inner slog.Handler, cfg Config) *asyncState {
 		closingCh:    make(chan struct{}),
 		flushTimeout: cfg.FlushTimeout,
 		closer:       closerFor(inner),
+		aborter:      aborterFor(inner),
 		errWriter:    cfg.ErrorWriter,
 		onDrop:       cfg.OnDrop,
 	}
@@ -278,6 +290,7 @@ func startAsyncWorkers(state *asyncState, cfg Config) {
 		for range cfg.WorkerCount {
 			go state.worker(cfg.BatchSize)
 		}
+		state.startWorkersDoneMonitor()
 	}
 
 	if cfg.workerStarter != nil {
@@ -291,18 +304,46 @@ func startAsyncWorkers(state *asyncState, cfg Config) {
 func (s *asyncState) worker(batchSize int) {
 	defer s.wg.Done()
 	for item := range s.queue {
-		s.handleItem(item)
+		s.processItem(item)
 		s.drainBatch(batchSize)
 	}
+}
+
+// startWorkersDoneMonitor closes workersDone after all workers exit.
+func (s *asyncState) startWorkersDoneMonitor() {
+	if s == nil {
+		return
+	}
+
+	s.gateMu.Lock()
+	if s.workersDone != nil {
+		s.gateMu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	s.workersDone = done
+	s.gateMu.Unlock()
+
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+}
+
+// processItem forwards or drops an item depending on abort state.
+func (s *asyncState) processItem(item queuedRecord) {
+	if s.aborted.Load() {
+		s.reportDrop(item)
+		return
+	}
+	s.handleItem(item)
 }
 
 // handleItem safely invokes the inner handler, logging panics and errors.
 func (s *asyncState) handleItem(item queuedRecord) {
 	defer func() {
 		if r := recover(); r != nil {
-			if s.onDrop != nil && item.handler != nil {
-				s.onDrop(item.ctx, item.rec)
-			}
+			s.reportDrop(item)
 			s.logError("slogcpasync: recovered panic from handler: %v\n%s", r, debug.Stack())
 		}
 	}()
@@ -320,11 +361,19 @@ func (s *asyncState) drainBatch(batchSize int) {
 			if !ok {
 				return
 			}
-			s.handleItem(next)
+			s.processItem(next)
 		default:
 			return
 		}
 	}
+}
+
+// reportDrop invokes onDrop for dropped records when configured.
+func (s *asyncState) reportDrop(item queuedRecord) {
+	if s == nil || s.onDrop == nil || item.handler == nil {
+		return
+	}
+	s.onDrop(item.ctx, item.rec)
 }
 
 // logError writes formatted errors to the configured error writer.
@@ -478,42 +527,63 @@ func (h *Handler) drop(item queuedRecord) {
 	h.onDrop(item.ctx, item.rec)
 }
 
-// Close flushes the queue then closes the inner handler if it exposes Close.
+// Close implements io.Closer by delegating to Shutdown with the configured
+// flush timeout. A timeout returns ErrFlushTimeout (joined with the context
+// deadline error) and leaves in-flight worker calls running until callers
+// explicitly Abort.
 func (h *Handler) Close() error {
 	if h.state == nil {
 		return nil
 	}
 
 	h.state.closeOnce.Do(func() {
-		h.state.closed.Store(true)
-		h.state.beginClose()
-		h.state.endClose()
-
-		done := make(chan struct{})
-		go func() {
-			h.state.wg.Wait()
-			close(done)
-		}()
-
-		var flushErr error
+		ctx := context.Background()
+		cancel := func() {}
 		if h.state.flushTimeout > 0 {
-			select {
-			case <-done:
-			case <-time.After(h.state.flushTimeout):
-				flushErr = ErrFlushTimeout
-			}
-		} else {
-			<-done
+			ctx, cancel = context.WithTimeout(context.Background(), h.state.flushTimeout)
 		}
-
-		var closeErr error
-		if h.state.closer != nil {
-			closeErr = h.state.closer()
-		}
-		h.state.closeErr = errors.Join(flushErr, closeErr)
+		defer cancel()
+		h.state.closeErr = h.Shutdown(ctx)
 	})
 
 	return h.state.closeErr
+}
+
+// Shutdown begins graceful shutdown, waits for workers until ctx expires,
+// then closes the wrapped handler (if closable) after workers exit.
+func (h *Handler) Shutdown(ctx context.Context) error {
+	if h == nil || h.state == nil {
+		return nil
+	}
+
+	h.state.startShutdown()
+
+	if err := h.state.waitWorkers(ctx); err != nil {
+		return errors.Join(ErrFlushTimeout, err)
+	}
+
+	closeErr := h.state.finalizeClose()
+	if h.state.aborted.Load() {
+		return errors.Join(ErrAborted, closeErr)
+	}
+	return closeErr
+}
+
+// Abort escalates shutdown to best-effort termination, dropping queued records
+// not yet handled. It returns ErrAborted (joined with downstream abort/close
+// errors when present).
+func (h *Handler) Abort() error {
+	if h == nil || h.state == nil {
+		return nil
+	}
+
+	h.state.aborted.Store(true)
+	h.state.startShutdown()
+
+	abortErr := h.state.abortDownstream()
+	waitErr := h.state.waitWorkers(context.Background())
+	closeErr := h.state.finalizeClose()
+	return errors.Join(ErrAborted, abortErr, waitErr, closeErr)
 }
 
 // beginSend tracks an in-flight send while the handler remains open.
@@ -577,6 +647,75 @@ func (s *asyncState) endClose() {
 	close(s.queue)
 }
 
+// startShutdown performs the one-time transition to the closing state.
+func (s *asyncState) startShutdown() {
+	if s == nil {
+		return
+	}
+	s.shutdownOnce.Do(func() {
+		s.closed.Store(true)
+		s.beginClose()
+		s.endClose()
+	})
+}
+
+// waitWorkers waits for all workers or ctx cancellation/deadline.
+func (s *asyncState) waitWorkers(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+
+	done := s.workersDoneChannel()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait workers: %w", ctx.Err())
+	}
+}
+
+// workersDoneChannel returns a channel that closes once workers exit.
+func (s *asyncState) workersDoneChannel() <-chan struct{} {
+	s.gateMu.Lock()
+	done := s.workersDone
+	s.gateMu.Unlock()
+	if done != nil {
+		return done
+	}
+
+	// When workers were never started (for example in tests), there is nothing
+	// to wait for.
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
+// finalizeClose closes the wrapped handler exactly once.
+func (s *asyncState) finalizeClose() error {
+	if s == nil {
+		return nil
+	}
+	s.finalizeOnce.Do(func() {
+		if s.closer != nil {
+			s.finalizeErr = s.closer()
+		}
+	})
+	return s.finalizeErr
+}
+
+// abortDownstream invokes an optional downstream abort hook once.
+func (s *asyncState) abortDownstream() error {
+	if s == nil {
+		return nil
+	}
+	s.abortOnce.Do(func() {
+		if s.aborter != nil {
+			s.abortErr = s.aborter()
+		}
+	})
+	return s.abortErr
+}
+
 // ensureGateLocked initializes coordination primitives for tests that build asyncState directly.
 func (s *asyncState) ensureGateLocked() {
 	if s.gateCond == nil {
@@ -599,6 +738,24 @@ func closerFor(inner slog.Handler) func() error {
 	if c, ok := inner.(interface{ Close() }); ok {
 		return func() error {
 			c.Close()
+			return nil
+		}
+	}
+	return nil
+}
+
+// aborterFor extracts an explicit abort hook from inner when available.
+func aborterFor(inner slog.Handler) func() error {
+	type errorAborter interface {
+		Abort() error
+	}
+
+	if a, ok := inner.(errorAborter); ok {
+		return a.Abort
+	}
+	if a, ok := inner.(interface{ Abort() }); ok {
+		return func() error {
+			a.Abort()
 			return nil
 		}
 	}
