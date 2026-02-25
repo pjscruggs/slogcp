@@ -42,6 +42,26 @@ func (f failingWriter) Write(p []byte) (int, error) {
 	return 0, f.err
 }
 
+// stagedMarshaler returns configured marshal outcomes per call so tests can
+// drive initial-failure/retry-success and retry-failure branches deterministically.
+type stagedMarshaler struct {
+	outcomes []error
+	calls    int
+}
+
+// MarshalJSON returns the next configured outcome or a stable JSON string.
+func (m *stagedMarshaler) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return []byte(`"nil"`), nil
+	}
+	idx := m.calls
+	m.calls++
+	if idx < len(m.outcomes) && m.outcomes[idx] != nil {
+		return nil, m.outcomes[idx]
+	}
+	return []byte(`"ok"`), nil
+}
+
 // TestResolverHooksFallbackAndCustom exercises the defaulting logic for the hook setters/getters.
 func TestResolverHooksFallbackAndCustom(t *testing.T) {
 	origSource := getRecordSourceFunc()
@@ -249,8 +269,12 @@ func TestPayloadBuilderWalkAttrBranches(t *testing.T) {
 	if got := baseMap["replaced"]; got != "base" {
 		t.Fatalf("ReplaceAttr branch not applied, got %#v", got)
 	}
-	if got := baseMap[httpRequestKey]; got != req {
-		t.Fatalf("secondary httpRequest attr should retain request, got %#v", got)
+	if got := baseMap[httpRequestKey]; got == nil {
+		t.Fatalf("secondary httpRequest attr should be retained as structured payload, got %#v", got)
+	} else if payload, ok := got.(map[string]any); !ok {
+		t.Fatalf("secondary httpRequest attr type = %T, want map[string]any", got)
+	} else if payload["requestMethod"] != http.MethodGet {
+		t.Fatalf("secondary httpRequest attr requestMethod = %v, want %q", payload["requestMethod"], http.MethodGet)
 	}
 }
 
@@ -412,7 +436,7 @@ func TestApplySeverityServiceContextAndHTTPRequest(t *testing.T) {
 	}
 }
 
-// TestWriteJSONPayloadBranches covers pooled, unpooled, and error paths.
+// TestWriteJSONPayloadBranches covers pooled, unpooled, sanitization, and write-error paths.
 func TestWriteJSONPayloadBranches(t *testing.T) {
 	baseCfg := &handlerConfig{Writer: io.Discard}
 	logger := slog.New(slog.DiscardHandler)
@@ -425,8 +449,49 @@ func TestWriteJSONPayloadBranches(t *testing.T) {
 		bufferPool:     &jsonBufferPool,
 	}
 
-	if err := handler.writeJSONPayload(map[string]any{"bad": make(chan int)}); err == nil {
-		t.Fatalf("expected encode error for unsupported value")
+	var sanitized bytes.Buffer
+	handler.writer = &sanitized
+	if err := handler.writeJSONPayload(map[string]any{"bad": make(chan int)}); err != nil {
+		t.Fatalf("writeJSONPayload sanitization path returned %v", err)
+	}
+	if !strings.Contains(sanitized.String(), `"bad":"!ERROR:`) {
+		t.Fatalf("sanitized payload missing placeholder: %q", sanitized.String())
+	}
+	if got := encodeErrorPlaceholder(nil); got != "!ERROR:unknown JSON encoding error" {
+		t.Fatalf("encodeErrorPlaceholder(nil) = %q", got)
+	}
+	if replaced := sanitizeTopLevelJSONValues(map[string]any{}); replaced {
+		t.Fatalf("sanitizeTopLevelJSONValues(empty) = true, want false")
+	}
+
+	var transientBuf bytes.Buffer
+	var transientDiag bytes.Buffer
+	transientHandler := &jsonHandler{
+		mu:             &sync.Mutex{},
+		cfg:            baseCfg,
+		writer:         &transientBuf,
+		internalLogger: slog.New(slog.NewTextHandler(&transientDiag, &slog.HandlerOptions{AddSource: false})),
+		bufferPool:     nil,
+	}
+	flakySuccess := &stagedMarshaler{outcomes: []error{errors.New("first encode failure")}}
+	if err := transientHandler.writeJSONPayload(map[string]any{"flaky": flakySuccess}); err != nil {
+		t.Fatalf("writeJSONPayload transient retry path returned %v", err)
+	}
+	if !strings.Contains(transientDiag.String(), "failed to render JSON log entry") {
+		t.Fatalf("transient retry diagnostics missing expected log entry: %q", transientDiag.String())
+	}
+
+	flakyRetryFail := &stagedMarshaler{
+		outcomes: []error{
+			errors.New("initial encode failure"),
+			nil,
+			errors.New("retry encode failure"),
+		},
+	}
+	if err := transientHandler.writeJSONPayload(map[string]any{"flaky": flakyRetryFail}); err == nil {
+		t.Fatalf("expected retry encode failure")
+	} else if !strings.Contains(err.Error(), "after retry") {
+		t.Fatalf("retry encode failure error = %v, want after retry context", err)
 	}
 
 	handler.writer = failingWriter{err: errors.New("write failed")}
@@ -1125,12 +1190,12 @@ func TestJSONHandlerEmitAndWriteJSONBranches(t *testing.T) {
 		errHandler := &jsonHandler{
 			mu:             &sync.Mutex{},
 			cfg:            &handlerConfig{},
-			writer:         io.Discard,
+			writer:         &bytes.Buffer{},
 			internalLogger: slog.New(slog.DiscardHandler),
 			bufferPool:     &jsonBufferPool,
 		}
-		if err := errHandler.writeJSONPayload(map[string]any{"bad": func() {}}); err == nil {
-			t.Fatalf("expected encoding error from writeJSONPayload")
+		if err := errHandler.writeJSONPayload(map[string]any{"bad": func() {}}); err != nil {
+			t.Fatalf("writeJSONPayload sanitization path returned %v", err)
 		}
 	})
 }

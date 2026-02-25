@@ -828,8 +828,19 @@ func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 	enc := json.NewEncoder(buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(jsonPayload); err != nil {
-		h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", err))
-		return fmt.Errorf("encode JSON payload: %w", err)
+		sanitized := sanitizeTopLevelJSONValues(jsonPayload)
+		buf.Reset()
+		enc = json.NewEncoder(buf)
+		enc.SetEscapeHTML(false)
+		if retryErr := enc.Encode(jsonPayload); retryErr != nil {
+			h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", retryErr))
+			return fmt.Errorf("encode JSON payload after retry: %w", retryErr)
+		}
+		if !sanitized {
+			h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", err))
+		} else {
+			h.internalLogger.Error("failed to render one or more JSON fields; replaced unsupported values", slog.Any("error", err))
+		}
 	}
 
 	h.mu.Lock()
@@ -840,6 +851,30 @@ func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 		return fmt.Errorf("write JSON payload: %w", err)
 	}
 	return nil
+}
+
+// sanitizeTopLevelJSONValues replaces top-level values that cannot be JSON
+// encoded with deterministic placeholder strings, preserving the overall record.
+func sanitizeTopLevelJSONValues(jsonPayload map[string]any) bool {
+	if len(jsonPayload) == 0 {
+		return false
+	}
+	replaced := false
+	for key, value := range jsonPayload {
+		if _, err := json.Marshal(value); err != nil {
+			jsonPayload[key] = encodeErrorPlaceholder(err)
+			replaced = true
+		}
+	}
+	return replaced
+}
+
+// encodeErrorPlaceholder formats unsupported JSON values as stable marker strings.
+func encodeErrorPlaceholder(err error) string {
+	if err == nil {
+		return "!ERROR:unknown JSON encoding error"
+	}
+	return fmt.Sprintf("!ERROR:%v", err)
 }
 
 // captureAndFormatFallbackStack captures the current goroutine stack as a

@@ -177,8 +177,12 @@ func TestResolveSlogValueCoversKinds(t *testing.T) {
 	}
 
 	httpAttr := &HTTPRequest{RequestMethod: http.MethodGet}
-	if got := resolveSlogValue(slog.AnyValue(httpAttr)); got != httpAttr {
-		t.Fatalf("HTTPRequest resolution returned %v, want pointer %p", got, httpAttr)
+	if got := resolveSlogValue(slog.AnyValue(httpAttr)); got == nil {
+		t.Fatalf("HTTPRequest resolution returned nil, want structured value")
+	} else if payload, ok := got.(map[string]any); !ok {
+		t.Fatalf("HTTPRequest resolution type = %T, want map[string]any", got)
+	} else if payload["requestMethod"] != http.MethodGet {
+		t.Fatalf("HTTPRequest requestMethod = %v, want %q", payload["requestMethod"], http.MethodGet)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

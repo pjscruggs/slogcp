@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -585,7 +586,8 @@ func TestHandlerLevelAccessors(t *testing.T) {
 	}
 }
 
-// TestHandlerHandleJSONEncodingFailure verifies encoding errors propagate and emit diagnostics.
+// TestHandlerHandleJSONEncodingFailure verifies encoding failures are
+// downgraded to field-level placeholders so the record still emits.
 func TestHandlerHandleJSONEncodingFailure(t *testing.T) {
 	t.Parallel()
 
@@ -613,14 +615,23 @@ func TestHandlerHandleJSONEncodingFailure(t *testing.T) {
 	record.Message = "encode failure"
 	record.AddAttrs(slog.Any("broken", failingJSONMarshaler{}))
 
-	if err := h.Handle(context.Background(), record); err == nil {
-		t.Fatalf("Handle() returned nil error, want encoding failure")
+	if err := h.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
 	}
-	if sink.Len() != 0 {
-		t.Fatalf("expected no log output, got %q", sink.String())
+
+	entries := decodeLogBuffer(t, &sink)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d (%q)", len(entries), sink.String())
 	}
-	if !strings.Contains(diagBuf.String(), "failed to render JSON log entry") {
-		t.Fatalf("diagnostic log missing encode failure, got %q", diagBuf.String())
+	broken, ok := entries[0]["broken"].(string)
+	if !ok {
+		t.Fatalf("broken field type = %T, want string placeholder", entries[0]["broken"])
+	}
+	if !strings.Contains(broken, "!ERROR:") || !strings.Contains(broken, "marshal failure") {
+		t.Fatalf("broken field = %q, want placeholder with marshal failure", broken)
+	}
+	if !strings.Contains(diagBuf.String(), "replaced unsupported values") {
+		t.Fatalf("diagnostic log missing sanitization message, got %q", diagBuf.String())
 	}
 }
 
@@ -629,6 +640,57 @@ type failingJSONMarshaler struct{}
 // MarshalJSON always fails to trigger handler encoding error paths.
 func (failingJSONMarshaler) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("marshal failure")
+}
+
+// TestHandlerHandleCustomKeyHTTPRequest ensures non-httpRequest keys with
+// HTTPRequest values are serialized via LogValue and do not break record output.
+func TestHandlerHandleCustomKeyHTTPRequest(t *testing.T) {
+	t.Parallel()
+
+	var sink bytes.Buffer
+	var diagBuf bytes.Buffer
+	internalLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
+
+	h, err := NewHandler(
+		io.Discard,
+		WithRedirectWriter(&sink),
+		WithInternalLogger(internalLogger),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/items/1", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() returned %v", err)
+	}
+
+	logger := slog.New(h)
+	logger.Info("custom key", slog.Any("custom_req", &HTTPRequest{Request: req}))
+
+	entries := decodeLogBuffer(t, &sink)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d (%q)", len(entries), sink.String())
+	}
+
+	customReq, ok := entries[0]["custom_req"].(map[string]any)
+	if !ok {
+		t.Fatalf("custom_req type = %T, want map[string]any", entries[0]["custom_req"])
+	}
+	if got := customReq["requestMethod"]; got != http.MethodGet {
+		t.Fatalf("custom_req.requestMethod = %v, want %q", got, http.MethodGet)
+	}
+	if _, exists := customReq["Request"]; exists {
+		t.Fatalf("custom_req should not include raw http.Request fields: %#v", customReq)
+	}
+	if strings.Contains(diagBuf.String(), "failed to render JSON log entry") {
+		t.Fatalf("unexpected JSON render failure diagnostics: %q", diagBuf.String())
+	}
 }
 
 // TestHandlerHandleWriterFailure verifies writer errors bubble up and trigger diagnostics.
