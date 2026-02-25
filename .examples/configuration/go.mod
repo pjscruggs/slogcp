@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/examples/configuration
 
-go 1.25.5
+go 1.26.0
 
 require github.com/pjscruggs/slogcp v0.0.0
 
