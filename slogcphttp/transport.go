@@ -205,7 +205,6 @@ func newClientScope(req *http.Request, start time.Time, cfg *config) *RequestSco
 		scope.clientIP, scope.peerPort = outboundHostPort(req)
 	}
 
-	scope.status.Store(http.StatusOK)
 	scope.latencyNS.Store(-1)
 	return scope
 }
