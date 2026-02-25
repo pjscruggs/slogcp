@@ -28,6 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/slogtest"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -2301,5 +2302,117 @@ func TestJSONHandler_LabelsGroup_InBaseAttrs(t *testing.T) {
 	}
 	if labels["label_key"] != "label_val" {
 		t.Errorf("expected label_key=label_val, got %v", labels["label_key"])
+	}
+}
+
+// TestSlogHandlerContract validates core slog.Handler behavior using slogtest.
+func TestSlogHandlerContract(t *testing.T) {
+	t.Parallel()
+
+	var sink bytes.Buffer
+	h, err := NewHandler(
+		io.Discard,
+		WithRedirectWriter(&sink),
+		WithSeverityAliases(false),
+		WithTime(true),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	results := func() []map[string]any {
+		return decodeSlogtestResults(t, sink.String())
+	}
+
+	if err := slogtest.TestHandler(h, results); err != nil {
+		t.Fatalf("slogtest.TestHandler() returned %v", err)
+	}
+}
+
+// decodeSlogtestResults converts slogcp JSON output into the key names expected by slogtest.
+func decodeSlogtestResults(t *testing.T, raw string) []map[string]any {
+	t.Helper()
+
+	content := strings.TrimSpace(raw)
+	if content == "" {
+		return nil
+	}
+
+	lines := strings.Split(content, "\n")
+	out := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		entry := make(map[string]any)
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("json.Unmarshal(%q) returned %v", line, err)
+		}
+		normalizeEntryForSlogtest(entry)
+		out = append(out, entry)
+	}
+	return out
+}
+
+// normalizeEntryForSlogtest adapts slogcp field names to slog defaults.
+func normalizeEntryForSlogtest(entry map[string]any) {
+	if msg, ok := entry[messageKey]; ok {
+		entry[slog.MessageKey] = msg
+	}
+	if ts, ok := entry["time"]; ok {
+		if isZeroSlogTime(ts) {
+			delete(entry, "time")
+		} else {
+			entry[slog.TimeKey] = ts
+		}
+	}
+	if severityRaw, ok := entry["severity"]; ok {
+		if level, ok := severityToSlogLevelText(severityRaw); ok {
+			entry[slog.LevelKey] = level
+		}
+	}
+}
+
+// isZeroSlogTime reports whether raw represents slog's zero timestamp.
+func isZeroSlogTime(raw any) bool {
+	s, ok := raw.(string)
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(s), "0001-01-01T00:00:00")
+}
+
+// severityToSlogLevelText converts slogcp severity text to slog's canonical level text.
+func severityToSlogLevelText(raw any) (string, bool) {
+	s, ok := raw.(string)
+	if !ok {
+		return "", false
+	}
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "D":
+		return "DEBUG", true
+	case "I":
+		return "INFO", true
+	case "W", "WARNING":
+		return "WARN", true
+	case "E":
+		return "ERROR", true
+	case "N":
+		return "NOTICE", true
+	case "C":
+		return "CRITICAL", true
+	case "A":
+		return "ALERT", true
+	case "EMERG":
+		return "EMERGENCY", true
+	default:
+		return strings.ToUpper(strings.TrimSpace(s)), true
 	}
 }

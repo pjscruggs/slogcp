@@ -84,7 +84,7 @@
 //
 // Use functional options such as [WithLevel], [WithSourceLocationEnabled],
 // [WithStackTraceEnabled], [WithRedirectToFile], [WithRedirectWriter],
-// [WithSeverityAliases], and [WithTraceProjectID] to adjust behaviour
+// [WithAdditionalHandlers], [WithSeverityAliases], and [WithTraceProjectID] to adjust behaviour
 // programmatically. Refer to the package documentation and configuration guide
 // in docs/CONFIGURATION.md for the complete list of options, environment
 // variables, and integration helpers. Importing slogcp automatically installs

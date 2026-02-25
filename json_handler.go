@@ -539,12 +539,12 @@ func (pb *payloadBuilder) walkAttr(groupsLen int, currMap map[string]any, attr s
 
 	attr, rawValue, kind := pb.normalizeAttr(groupsLen, attr)
 
-	if attr.Key == "" {
+	if kind == slog.KindGroup {
+		pb.walkGroupAttr(groupsLen, currMap, attr, inLabels)
 		return
 	}
 
-	if kind == slog.KindGroup {
-		pb.walkGroupAttr(groupsLen, currMap, attr, inLabels)
+	if attr.Key == "" {
 		return
 	}
 
