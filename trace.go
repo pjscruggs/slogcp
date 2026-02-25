@@ -21,7 +21,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -39,10 +38,7 @@ const (
 	SampledKey = "logging.googleapis.com/trace_sampled"
 )
 
-var (
-	traceProjectEnvOnce sync.Once
-	traceProjectEnvID   string
-)
+type traceProjectIDContextKey struct{}
 
 // ExtractTraceSpan extracts OpenTelemetry trace details from ctx and, if a
 // non-empty projectID is provided, formats a fully-qualified Cloud Trace name
@@ -141,7 +137,7 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 		return nil, false
 	}
 
-	projectID = resolveTraceProject(projectID)
+	projectID = resolveTraceProject(ctx, projectID)
 
 	fmtTrace, rawTrace, rawSpan, sampled, sc := ExtractTraceSpan(ctx, projectID)
 	if !sc.IsValid() {
@@ -152,12 +148,41 @@ func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) 
 	return attrs, true
 }
 
-// resolveTraceProject chooses a project ID from input or cached environment.
-func resolveTraceProject(projectID string) string {
+// ContextWithTraceProjectID stores a normalized trace project ID on ctx so
+// TraceAttributes can resolve project IDs without relying on process-global
+// environment caching.
+func ContextWithTraceProjectID(ctx context.Context, projectID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if normalized, _, ok := normalizeTraceProjectID(projectID); ok {
+		return context.WithValue(ctx, traceProjectIDContextKey{}, normalized)
+	}
+	return ctx
+}
+
+// TraceProjectIDFromContext returns the normalized trace project ID override
+// stored in ctx, when present.
+func TraceProjectIDFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	if value, ok := ctx.Value(traceProjectIDContextKey{}).(string); ok && value != "" {
+		return value, true
+	}
+	return "", false
+}
+
+// resolveTraceProject chooses a project ID from explicit input, then context
+// override, then environment.
+func resolveTraceProject(ctx context.Context, projectID string) string {
 	if normalized, _, ok := normalizeTraceProjectID(projectID); ok {
 		return normalized
 	}
-	return cachedTraceProjectID()
+	if fromContext, ok := TraceProjectIDFromContext(ctx); ok {
+		return fromContext
+	}
+	return detectTraceProjectIDFromEnv()
 }
 
 // buildTraceAttrSet chooses Cloud Trace or OTel style attributes based on inputs.
@@ -188,15 +213,6 @@ func buildOTelTraceAttrs(rawTrace, rawSpan string, sampled bool, ownsSpan bool) 
 	}
 	attrs = append(attrs, slog.Bool("otel.trace_sampled", sampled))
 	return attrs
-}
-
-// cachedTraceProjectID returns the Cloud project ID inferred from environment
-// variables, computing the value at most once per process.
-func cachedTraceProjectID() string {
-	traceProjectEnvOnce.Do(func() {
-		traceProjectEnvID = detectTraceProjectIDFromEnv()
-	})
-	return traceProjectEnvID
 }
 
 // detectTraceProjectIDFromEnv inspects known environment variables in

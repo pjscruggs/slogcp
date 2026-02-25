@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
@@ -98,19 +97,16 @@ func TestDetectTraceProjectIDFromEnvSkipsInvalid(t *testing.T) {
 	}
 }
 
-// TestCachedTraceProjectIDCachesFirstValue verifies the cached helper does not reread env vars.
-func TestCachedTraceProjectIDCachesFirstValue(t *testing.T) {
-	resetTraceProjectEnvCache()
-	t.Cleanup(resetTraceProjectEnvCache)
-
+// TestTraceProjectIDFromEnvReflectsUpdates verifies env fallback is resolved per call.
+func TestTraceProjectIDFromEnvReflectsUpdates(t *testing.T) {
 	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "initial-project")
-	if got := cachedTraceProjectID(); got != "initial-project" {
-		t.Fatalf("cachedTraceProjectID() = %q, want %q", got, "initial-project")
+	if got := detectTraceProjectIDFromEnv(); got != "initial-project" {
+		t.Fatalf("detectTraceProjectIDFromEnv() = %q, want %q", got, "initial-project")
 	}
 
-	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "mutated")
-	if got := cachedTraceProjectID(); got != "initial-project" {
-		t.Fatalf("cachedTraceProjectID() after env change = %q, want cached %q", got, "initial-project")
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "mutated-project")
+	if got := detectTraceProjectIDFromEnv(); got != "mutated-project" {
+		t.Fatalf("detectTraceProjectIDFromEnv() after env change = %q, want %q", got, "mutated-project")
 	}
 }
 
@@ -174,9 +170,6 @@ func TestTraceAttributesOmitsSpanForRemote(t *testing.T) {
 
 // TestTraceAttributesFallsBackToEnvProjectID validates env-derived project IDs.
 func TestTraceAttributesFallsBackToEnvProjectID(t *testing.T) {
-	resetTraceProjectEnvCache()
-	t.Cleanup(resetTraceProjectEnvCache)
-
 	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "env-project")
 
 	traceID, _ := trace.TraceIDFromHex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
@@ -199,8 +192,6 @@ func TestTraceAttributesFallsBackToEnvProjectID(t *testing.T) {
 
 // TestTraceAttributesIgnoresInvalidProjectID ensures invalid project IDs fall back to OTel attributes.
 func TestTraceAttributesIgnoresInvalidProjectID(t *testing.T) {
-	resetTraceProjectEnvCache()
-	t.Cleanup(resetTraceProjectEnvCache)
 	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "")
 	t.Setenv("SLOGCP_PROJECT_ID", "")
 	t.Setenv("SLOGCP_GCP_PROJECT", "")
@@ -231,9 +222,6 @@ func TestTraceAttributesIgnoresInvalidProjectID(t *testing.T) {
 
 // TestTraceAttributesOtelFallback covers local dev scenarios with no project ID.
 func TestTraceAttributesOtelFallback(t *testing.T) {
-	resetTraceProjectEnvCache()
-	t.Cleanup(resetTraceProjectEnvCache)
-
 	traceID, _ := trace.TraceIDFromHex("cccccccccccccccccccccccccccccccc")
 	spanID, _ := trace.SpanIDFromHex("dddddddddddddddd")
 	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
@@ -392,7 +380,7 @@ func TestTraceAttributesNilContext(t *testing.T) {
 
 // TestTraceHelperBranches covers attribute builders and project resolution helpers.
 func TestTraceHelperBranches(t *testing.T) {
-	if got := resolveTraceProject("  direct "); got != "direct" {
+	if got := resolveTraceProject(context.Background(), "  direct "); got != "direct" {
 		t.Fatalf("resolveTraceProject trimmed = %q, want %q", got, "direct")
 	}
 
@@ -414,10 +402,92 @@ func TestTraceHelperBranches(t *testing.T) {
 		t.Fatalf("otel.span_id should be omitted when span not owned")
 	}
 
-	resetTraceProjectEnvCache()
 	t.Setenv("GCLOUD_PROJECT", "fallback-proj")
-	if got := cachedTraceProjectID(); got != "fallback-proj" {
-		t.Fatalf("cachedTraceProjectID fallback = %q, want fallback-proj", got)
+	if got := detectTraceProjectIDFromEnv(); got != "fallback-proj" {
+		t.Fatalf("detectTraceProjectIDFromEnv fallback = %q, want fallback-proj", got)
+	}
+}
+
+// TestTraceProjectContextOverridePrecedence ensures context project IDs win over env fallback.
+func TestTraceProjectContextOverridePrecedence(t *testing.T) {
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "env-project")
+
+	traceID, _ := trace.TraceIDFromHex("10101010101010101010101010101010")
+	spanID, _ := trace.SpanIDFromHex("1111111111111111")
+	baseCtx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+	ctx := ContextWithTraceProjectID(baseCtx, "ctx-project")
+
+	attrs, ok := TraceAttributes(ctx, "")
+	if !ok {
+		t.Fatalf("TraceAttributes() ok = false, want true")
+	}
+	got := attrsToMap(attrs)
+	if got[TraceKey] != "projects/ctx-project/traces/10101010101010101010101010101010" {
+		t.Fatalf("trace attr = %v, want context-derived project", got[TraceKey])
+	}
+}
+
+// TestTraceProjectExplicitArgumentPrecedence ensures explicit TraceAttributes argument wins.
+func TestTraceProjectExplicitArgumentPrecedence(t *testing.T) {
+	t.Setenv("SLOGCP_TRACE_PROJECT_ID", "env-project")
+
+	traceID, _ := trace.TraceIDFromHex("20202020202020202020202020202020")
+	spanID, _ := trace.SpanIDFromHex("2222222222222222")
+	baseCtx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	}))
+	ctx := ContextWithTraceProjectID(baseCtx, "ctx-project")
+
+	attrs, ok := TraceAttributes(ctx, "arg-project")
+	if !ok {
+		t.Fatalf("TraceAttributes() ok = false, want true")
+	}
+	got := attrsToMap(attrs)
+	if got[TraceKey] != "projects/arg-project/traces/20202020202020202020202020202020" {
+		t.Fatalf("trace attr = %v, want explicit project argument", got[TraceKey])
+	}
+}
+
+// TestTraceProjectContextHelpers verifies context helper round-trip behavior.
+func TestTraceProjectContextHelpers(t *testing.T) {
+	ctx := ContextWithTraceProjectID(context.Background(), "projects/My-Project")
+	got, ok := TraceProjectIDFromContext(ctx)
+	if !ok {
+		t.Fatalf("TraceProjectIDFromContext() ok = false, want true")
+	}
+	if got != "my-project" {
+		t.Fatalf("TraceProjectIDFromContext() = %q, want my-project", got)
+	}
+
+	invalid := ContextWithTraceProjectID(context.Background(), "projects/invalid/extra")
+	if _, ok := TraceProjectIDFromContext(invalid); ok {
+		t.Fatalf("TraceProjectIDFromContext() unexpectedly returned value for invalid project")
+	}
+}
+
+// TestContextWithTraceProjectIDNilContext ensures nil contexts are normalized
+// to a non-nil context when setting a trace project override.
+func TestContextWithTraceProjectIDNilContext(t *testing.T) {
+	var nilCtx context.Context
+	ctx := ContextWithTraceProjectID(nilCtx, "ctx-project")
+	if ctx == nil {
+		t.Fatalf("ContextWithTraceProjectID(nilCtx, ...) returned nil context")
+	}
+	if got, ok := TraceProjectIDFromContext(ctx); !ok || got != "ctx-project" {
+		t.Fatalf("TraceProjectIDFromContext() = (%q,%v), want (ctx-project,true)", got, ok)
+	}
+}
+
+// TestTraceProjectContextHelpersNilContext ensures nil context lookups return no project.
+func TestTraceProjectContextHelpersNilContext(t *testing.T) {
+	if got, ok := TraceProjectIDFromContext(nil); ok || got != "" {
+		t.Fatalf("TraceProjectIDFromContext(nil) = (%q,%v), want (\"\",false)", got, ok)
 	}
 }
 
@@ -434,12 +504,6 @@ func decodeSingleLogLine(t *testing.T, raw string) map[string]any {
 		t.Fatalf("json.Unmarshal() returned %v", err)
 	}
 	return entry
-}
-
-// resetTraceProjectEnvCache clears the cached project ID for trace tests.
-func resetTraceProjectEnvCache() {
-	traceProjectEnvOnce = sync.Once{}
-	traceProjectEnvID = ""
 }
 
 // attrsToMap flattens attribute slices into a key/value map for assertions.

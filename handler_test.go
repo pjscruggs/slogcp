@@ -3289,6 +3289,259 @@ func TestHandlerCloseReturnsAsyncHandlerError(t *testing.T) {
 	}
 }
 
+// TestHandlerCloseEscalatesAsyncTimeout verifies Close escalates graceful async
+// timeouts to abort before owned resources are torn down.
+func TestHandlerCloseEscalatesAsyncTimeout(t *testing.T) {
+	t.Parallel()
+
+	abortErr := errors.New("abort-sentinel")
+	inner := newBlockingAbortHandler(abortErr)
+	wrapped := slogcpasync.Wrap(inner,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+		slogcpasync.WithFlushTimeout(20*time.Millisecond),
+	)
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	if err := asyncHandler.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+
+	switchWriter := &writeCloseSpy{}
+	h := &Handler{
+		asyncHandler:     asyncHandler,
+		switchableWriter: NewSwitchableWriter(switchWriter),
+		internalLogger:   slog.New(slog.DiscardHandler),
+	}
+
+	err := h.Close()
+	if err == nil {
+		t.Fatalf("Handler.Close() = nil, want timeout/abort error")
+	}
+	if !errors.Is(err, slogcpasync.ErrFlushTimeout) {
+		t.Fatalf("Handler.Close() error = %v, want ErrFlushTimeout", err)
+	}
+	if !errors.Is(err, slogcpasync.ErrAborted) {
+		t.Fatalf("Handler.Close() error = %v, want ErrAborted", err)
+	}
+	if !errors.Is(err, abortErr) {
+		t.Fatalf("Handler.Close() error = %v, want abort sentinel %v", err, abortErr)
+	}
+	if switchWriter.closed != 1 {
+		t.Fatalf("switch writer close count = %d, want 1", switchWriter.closed)
+	}
+}
+
+// TestHandlerShutdownTimeoutKeepsOwnedResourcesOpen verifies graceful shutdown
+// timeout returns without closing owned resources.
+func TestHandlerShutdownTimeoutKeepsOwnedResourcesOpen(t *testing.T) {
+	t.Parallel()
+
+	abortErr := errors.New("abort-sentinel")
+	inner := newBlockingAbortHandler(abortErr)
+	wrapped := slogcpasync.Wrap(inner,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+	)
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	if err := asyncHandler.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+
+	switchWriter := &writeCloseSpy{}
+	h := &Handler{
+		asyncHandler:     asyncHandler,
+		switchableWriter: NewSwitchableWriter(switchWriter),
+		internalLogger:   slog.New(slog.DiscardHandler),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := h.Shutdown(ctx)
+	if err == nil {
+		t.Fatalf("Shutdown() = nil, want timeout error")
+	}
+	if !errors.Is(err, slogcpasync.ErrFlushTimeout) {
+		t.Fatalf("Shutdown() error = %v, want ErrFlushTimeout", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown() error = %v, want context.DeadlineExceeded", err)
+	}
+	if switchWriter.closed != 0 {
+		t.Fatalf("switch writer close count = %d, want 0", switchWriter.closed)
+	}
+
+	abortResult := h.Abort(context.Background())
+	if !errors.Is(abortResult, slogcpasync.ErrAborted) {
+		t.Fatalf("Abort() error = %v, want ErrAborted", abortResult)
+	}
+	if !errors.Is(abortResult, abortErr) {
+		t.Fatalf("Abort() error = %v, want abort sentinel %v", abortResult, abortErr)
+	}
+	if switchWriter.closed != 1 {
+		t.Fatalf("switch writer close count = %d, want 1", switchWriter.closed)
+	}
+}
+
+// TestHandlerAbortRespectsContext verifies Abort returns on caller deadlines
+// when the downstream abort hook does not complete.
+func TestHandlerAbortRespectsContext(t *testing.T) {
+	t.Parallel()
+
+	inner := newSlowAbortHandler()
+	wrapped := slogcpasync.Wrap(inner,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+	)
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	if err := asyncHandler.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+
+	switchWriter := &writeCloseSpy{}
+	h := &Handler{
+		asyncHandler:     asyncHandler,
+		switchableWriter: NewSwitchableWriter(switchWriter),
+		internalLogger:   slog.New(slog.DiscardHandler),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := h.Abort(ctx)
+	if err == nil {
+		t.Fatalf("Abort() = nil, want context deadline error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Abort() error = %v, want context deadline exceeded", err)
+	}
+	if switchWriter.closed != 1 {
+		t.Fatalf("switch writer close count = %d, want 1", switchWriter.closed)
+	}
+
+	// Release the delayed abort path so helper goroutines can exit cleanly.
+	close(inner.abortGate)
+}
+
+// TestHandlerLifecycleNilAndNoAsyncPaths covers nil receiver and no-async
+// branches in lifecycle helpers.
+func TestHandlerLifecycleNilAndNoAsyncPaths(t *testing.T) {
+	t.Parallel()
+
+	var nilHandler *Handler
+	if err := nilHandler.Close(); err != nil {
+		t.Fatalf("nil Close() returned %v, want nil", err)
+	}
+	if err := nilHandler.Shutdown(nil); err != nil {
+		t.Fatalf("nil Shutdown(nil) returned %v, want nil", err)
+	}
+	if err := nilHandler.Abort(nil); err != nil {
+		t.Fatalf("nil Abort(nil) returned %v, want nil", err)
+	}
+	if err := nilHandler.shutdownAsyncHandler(context.Background()); err != nil {
+		t.Fatalf("nil shutdownAsyncHandler returned %v, want nil", err)
+	}
+	if err := nilHandler.abortAsyncHandler(nil); err != nil {
+		t.Fatalf("nil abortAsyncHandler(nil) returned %v, want nil", err)
+	}
+	if err := nilHandler.closeResourcesOnce(); err != nil {
+		t.Fatalf("nil closeResourcesOnce() returned %v, want nil", err)
+	}
+
+	h := &Handler{internalLogger: slog.New(slog.DiscardHandler)}
+	if err := h.Shutdown(nil); err != nil {
+		t.Fatalf("Shutdown(nil) without async returned %v, want nil", err)
+	}
+	if err := h.Abort(nil); err != nil {
+		t.Fatalf("Abort(nil) without async returned %v, want nil", err)
+	}
+}
+
+// TestHandlerAsyncHelperBranches exercises helper error and nil-context paths.
+func TestHandlerAsyncHelperBranches(t *testing.T) {
+	t.Parallel()
+
+	blocking := newBlockingAbortHandler(nil)
+	wrapped := slogcpasync.Wrap(blocking,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+	)
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	h := &Handler{
+		asyncHandler:   asyncHandler,
+		internalLogger: slog.New(slog.DiscardHandler),
+	}
+
+	abortErr := h.abortAsyncHandler(nil)
+	if !errors.Is(abortErr, slogcpasync.ErrAborted) {
+		t.Fatalf("abortAsyncHandler(nil) error = %v, want ErrAborted", abortErr)
+	}
+
+	inner := newBlockingAbortHandler(nil)
+	wrappedTimeout := slogcpasync.Wrap(inner,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+	)
+	asyncTimeout, ok := wrappedTimeout.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrappedTimeout)
+	}
+	if err := asyncTimeout.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+
+	hTimeout := &Handler{
+		asyncHandler:   asyncTimeout,
+		internalLogger: slog.New(slog.DiscardHandler),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := hTimeout.shutdownAsyncHandler(ctx)
+	if err == nil {
+		t.Fatalf("shutdownAsyncHandler() = nil, want timeout error")
+	}
+	if !errors.Is(err, slogcpasync.ErrFlushTimeout) {
+		t.Fatalf("shutdownAsyncHandler() error = %v, want ErrFlushTimeout", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdownAsyncHandler() error = %v, want context.DeadlineExceeded", err)
+	}
+
+	if abort := hTimeout.abortAsyncHandler(context.Background()); !errors.Is(abort, slogcpasync.ErrAborted) {
+		t.Fatalf("abortAsyncHandler() error = %v, want ErrAborted", abort)
+	}
+
+	fastWrapped := slogcpasync.Wrap(slog.NewJSONHandler(io.Discard, nil))
+	fastAsync, ok := fastWrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", fastWrapped)
+	}
+	hFast := &Handler{
+		asyncHandler:   fastAsync,
+		internalLogger: slog.New(slog.DiscardHandler),
+	}
+	if err := hFast.shutdownAsyncHandler(context.Background()); err != nil {
+		t.Fatalf("shutdownAsyncHandler() returned %v, want nil", err)
+	}
+	if err := hFast.abortAsyncHandler(context.Background()); !errors.Is(err, slogcpasync.ErrAborted) {
+		t.Fatalf("abortAsyncHandler() on fast handler error = %v, want ErrAborted", err)
+	}
+}
+
 // TestHandlerCloseReportsOwnedFileErrors exercises the log file close error branch.
 func TestHandlerCloseReportsOwnedFileErrors(t *testing.T) {
 	t.Parallel()
@@ -3457,6 +3710,82 @@ type closeErrorHandler struct {
 // Close implements io.Closer and returns the configured error.
 func (h closeErrorHandler) Close() error {
 	return h.err
+}
+
+type blockingAbortHandler struct {
+	release   chan struct{}
+	abortErr  error
+	abortOnce sync.Once
+}
+
+// newBlockingAbortHandler returns a handler whose Handle blocks until Abort is called.
+func newBlockingAbortHandler(abortErr error) *blockingAbortHandler {
+	return &blockingAbortHandler{
+		release:  make(chan struct{}),
+		abortErr: abortErr,
+	}
+}
+
+// Enabled always reports loggable records for testing.
+func (h *blockingAbortHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle blocks until Abort signals release.
+func (h *blockingAbortHandler) Handle(context.Context, slog.Record) error {
+	<-h.release
+	return nil
+}
+
+// WithAttrs preserves the blocking abort test behavior.
+func (h *blockingAbortHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+// WithGroup preserves the blocking abort test behavior.
+func (h *blockingAbortHandler) WithGroup(string) slog.Handler { return h }
+
+// Abort releases any blocked Handle call and returns the configured sentinel.
+func (h *blockingAbortHandler) Abort() error {
+	h.abortOnce.Do(func() {
+		close(h.release)
+	})
+	return h.abortErr
+}
+
+type slowAbortHandler struct {
+	release   chan struct{}
+	abortGate chan struct{}
+}
+
+// newSlowAbortHandler returns a handler whose Abort blocks until abortGate is closed.
+func newSlowAbortHandler() *slowAbortHandler {
+	return &slowAbortHandler{
+		release:   make(chan struct{}),
+		abortGate: make(chan struct{}),
+	}
+}
+
+// Enabled always reports loggable records for testing.
+func (h *slowAbortHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle blocks until release closes.
+func (h *slowAbortHandler) Handle(context.Context, slog.Record) error {
+	<-h.release
+	return nil
+}
+
+// WithAttrs preserves the slow-abort test behavior.
+func (h *slowAbortHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+// WithGroup preserves the slow-abort test behavior.
+func (h *slowAbortHandler) WithGroup(string) slog.Handler { return h }
+
+// Abort waits for abortGate to close before unblocking Handle.
+func (h *slowAbortHandler) Abort() error {
+	<-h.abortGate
+	select {
+	case <-h.release:
+	default:
+		close(h.release)
+	}
+	return nil
 }
 
 // TestHandlerReopenLogFileNoopWithoutFile ensures file rotation is a no-op when no file is configured.
