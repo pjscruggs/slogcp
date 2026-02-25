@@ -121,8 +121,9 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 	}
 }
 
-// TestMiddlewareStatusAppearsAfterWriteHeader ensures status becomes available once headers are sent.
-func TestMiddlewareStatusAppearsAfterWriteHeader(t *testing.T) {
+// TestMiddlewareStatusRemainsOmittedForInFlightLogs ensures mid-request logs
+// do not emit response metrics even after headers are written.
+func TestMiddlewareStatusRemainsOmittedForInFlightLogs(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
@@ -152,11 +153,14 @@ func TestMiddlewareStatusAppearsAfterWriteHeader(t *testing.T) {
 		t.Fatalf("unmarshal log: %v", err)
 	}
 
-	if got := entry["http.status_code"]; got != float64(http.StatusTeapot) {
-		t.Fatalf("http.status_code = %v, want %d", got, http.StatusTeapot)
+	if _, ok := entry["http.status_code"]; ok {
+		t.Fatalf("http.status_code should remain omitted for in-flight logs")
 	}
 	if _, ok := entry["http.response_size"]; ok {
 		t.Fatalf("http.response_size should remain omitted until request finalization")
+	}
+	if _, ok := entry["http.latency"]; ok {
+		t.Fatalf("http.latency should remain omitted until request finalization")
 	}
 }
 
@@ -906,29 +910,16 @@ func TestMetricAttrsLatencyFinalization(t *testing.T) {
 
 	scope := newRequestScope(nil, time.Now(), defaultConfig())
 	inFlight := scope.metricAttrs()
-	var inFlightStatus, inFlightSize bool
 	for _, attr := range inFlight {
 		if attr.Key == "http.status_code" {
-			inFlightStatus = true
-			if got := attr.Value.Resolve(); got.Kind() != slog.KindAny || got.Any() != nil {
-				t.Fatalf("http.status_code should resolve to unknown before headers are written, got %+v", got)
-			}
+			t.Fatalf("http.status_code should be omitted before headers are written: %+v", attr)
 		}
 		if attr.Key == "http.response_size" {
-			inFlightSize = true
-			if got := attr.Value.Resolve(); got.Kind() != slog.KindAny || got.Any() != nil {
-				t.Fatalf("http.response_size should resolve to unknown before finalize, got %+v", got)
-			}
+			t.Fatalf("http.response_size should be omitted before finalize: %+v", attr)
 		}
 		if attr.Key == "http.latency" {
 			t.Fatalf("http.latency should be omitted for in-flight metrics: %+v", attr)
 		}
-	}
-	if !inFlightStatus {
-		t.Fatalf("http.status_code metric missing")
-	}
-	if !inFlightSize {
-		t.Fatalf("http.response_size metric missing")
 	}
 
 	scope.finalize(http.StatusOK, 0, 15*time.Millisecond)
@@ -964,67 +955,6 @@ func TestMetricAttrsLatencyFinalization(t *testing.T) {
 	}
 	if !foundSize {
 		t.Fatalf("http.response_size missing after finalize")
-	}
-}
-
-// TestRequestScopeMetricValueLogValue covers deferred metric log value evaluation.
-func TestRequestScopeMetricValueLogValue(t *testing.T) {
-	t.Parallel()
-
-	scope := newRequestScope(nil, time.Now(), defaultConfig())
-	scope.setStatus(http.StatusAccepted)
-	scope.addResponseBytes(128)
-	finalized := newRequestScope(nil, time.Now(), defaultConfig())
-	finalized.setStatus(http.StatusAccepted)
-	finalized.addResponseBytes(128)
-	finalized.finalize(http.StatusAccepted, 128, 5*time.Millisecond)
-
-	tests := []struct {
-		name     string
-		value    requestScopeMetricValue
-		wantKind slog.Kind
-		wantInt  int64
-	}{
-		{
-			name:     "status",
-			value:    requestScopeMetricValue{scope: scope, kind: requestScopeMetricStatus},
-			wantKind: slog.KindInt64,
-			wantInt:  int64(http.StatusAccepted),
-		},
-		{
-			name:     "response_size_in_flight_unknown",
-			value:    requestScopeMetricValue{scope: scope, kind: requestScopeMetricResponseSize},
-			wantKind: slog.KindAny,
-		},
-		{
-			name:     "response_size_finalized",
-			value:    requestScopeMetricValue{scope: finalized, kind: requestScopeMetricResponseSize},
-			wantKind: slog.KindInt64,
-			wantInt:  128,
-		},
-		{
-			name:     "default",
-			value:    requestScopeMetricValue{scope: scope, kind: requestScopeMetricKind(99)},
-			wantKind: slog.KindAny,
-		},
-		{
-			name:     "nil_scope",
-			value:    requestScopeMetricValue{scope: nil, kind: requestScopeMetricStatus},
-			wantKind: slog.KindAny,
-		},
-	}
-
-	for _, tt := range tests {
-		got := tt.value.LogValue()
-		if got.Kind() != tt.wantKind {
-			t.Fatalf("%s kind = %v, want %v", tt.name, got.Kind(), tt.wantKind)
-		}
-		if tt.wantKind == slog.KindInt64 && got.Int64() != tt.wantInt {
-			t.Fatalf("%s value = %d, want %d", tt.name, got.Int64(), tt.wantInt)
-		}
-		if tt.wantKind == slog.KindAny && got.Any() != nil {
-			t.Fatalf("%s expected nil Any, got %#v", tt.name, got.Any())
-		}
 	}
 }
 

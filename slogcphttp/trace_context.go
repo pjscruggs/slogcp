@@ -67,11 +67,20 @@ func contextWithXCloudTrace(ctx context.Context, header string) (context.Context
 
 // parseXCloudTrace decodes an X-Cloud-Trace-Context header into a span context.
 func parseXCloudTrace(header string) (trace.SpanContext, bool) {
+	for candidate := range strings.SplitSeq(header, ",") {
+		if sc, ok := parseSingleXCloudTraceValue(candidate); ok {
+			return sc, true
+		}
+	}
+	return trace.SpanContext{}, false
+}
+
+// parseSingleXCloudTraceValue parses a single X-Cloud-Trace-Context value.
+func parseSingleXCloudTraceValue(header string) (trace.SpanContext, bool) {
 	parts, ok := splitXCloudTraceHeader(header)
 	if !ok {
 		return trace.SpanContext{}, false
 	}
-
 	traceID, err := trace.TraceIDFromHex(parts.traceID)
 	if err != nil || !traceID.IsValid() {
 		return trace.SpanContext{}, false
@@ -138,10 +147,43 @@ func parseSpanID(spanDecimal string) (trace.SpanID, bool) {
 
 // traceFlagsFromOptions extracts sampling flags from the options suffix.
 func traceFlagsFromOptions(options string) trace.TraceFlags {
-	if strings.Contains(options, "o=1") {
+	sampled, hasSampled := sampledFlagFromOptions(options)
+	if hasSampled && sampled {
 		return trace.FlagsSampled
 	}
 	return 0
+}
+
+// sampledFlagFromOptions parses semicolon-delimited options and returns the
+// parsed sampling decision when an "o" option is present.
+func sampledFlagFromOptions(options string) (sampled bool, ok bool) {
+	options = strings.TrimSpace(options)
+	if options == "" {
+		return false, false
+	}
+	for token := range strings.SplitSeq(options, ";") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		key, value, hasValue := strings.Cut(token, "=")
+		if !hasValue {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(key), "o") {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		n, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			continue
+		}
+		return n != 0, true
+	}
+	return false, false
 }
 
 // buildSpanContext validates and constructs a remote span context.
