@@ -87,8 +87,8 @@
 // [WithAdditionalHandlers], [WithSeverityAliases], and [WithTraceProjectID] to adjust behaviour
 // programmatically. Refer to the package documentation and configuration guide
 // in docs/CONFIGURATION.md for the complete list of options, environment
-// variables, and integration helpers. Importing slogcp automatically installs
-// a composite OpenTelemetry propagator; call [EnsurePropagation] explicitly if
-// you disable the automatic behaviour by setting the `SLOGCP_PROPAGATOR_AUTOSET`
-// environment variable to a falsy value.
+// variables, and integration helpers. For trace propagation, applications can
+// install slogcp's recommended composite propagator globally via
+// [EnsurePropagation], or construct it directly with [NewCompositePropagator]
+// and pass it where needed.
 package slogcp

@@ -2054,19 +2054,29 @@ func TestLogDiagnosticHandlesNilLogger(t *testing.T) {
 	}
 }
 
-// TestNewTraceDiagnosticsFallbacks ensures a default logger is created when the global logger is nil.
-func TestNewTraceDiagnosticsFallbacks(t *testing.T) {
-	original := traceDiagnosticLogger
-	t.Cleanup(func() {
-		traceDiagnosticLogger = original
-	})
-	traceDiagnosticLogger = nil
+// TestTraceDiagnosticsLoggerPrintfHandlesNilLogger ensures trace diagnostic writes tolerate nil loggers.
+func TestTraceDiagnosticsLoggerPrintfHandlesNilLogger(t *testing.T) {
+	t.Parallel()
 
-	if td := newTraceDiagnostics(TraceDiagnosticsOff); td != nil {
+	traceDiagnosticsLogger{}.Printf("suppressed %d", 1)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+	traceDiagnosticsLogger{logger: logger}.Printf("trace %s", "warning")
+
+	output := buf.String()
+	if !strings.Contains(output, "trace warning") {
+		t.Fatalf("diagnostic output = %q, want trace warning message", output)
+	}
+}
+
+// TestNewTraceDiagnosticsFallbacks ensures diagnostics helpers are initialized when enabled.
+func TestNewTraceDiagnosticsFallbacks(t *testing.T) {
+	if td := newTraceDiagnostics(TraceDiagnosticsOff, nil); td != nil {
 		t.Fatalf("newTraceDiagnostics(off) = %v, want nil", td)
 	}
 
-	td := newTraceDiagnostics(TraceDiagnosticsWarnOnce)
+	td := newTraceDiagnostics(TraceDiagnosticsWarnOnce, nil)
 	if td == nil {
 		t.Fatalf("newTraceDiagnostics returned nil in warn once mode")
 	}
@@ -2128,10 +2138,8 @@ func TestPrepareRuntimeConfigNormalizesExplicitTraceProjectID(t *testing.T) {
 	t.Cleanup(resetRuntimeInfoCache)
 	stubRuntimeInfo(RuntimeInfo{ProjectID: "runtime-project"})
 
-	recorder := &diagRecorder{}
-	original := traceDiagnosticLogger
-	traceDiagnosticLogger = recorder
-	t.Cleanup(func() { traceDiagnosticLogger = original })
+	var diagBuf bytes.Buffer
+	internalLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
 
 	cfg := handlerConfig{
 		TraceDiagnostics:     TraceDiagnosticsWarnOnce,
@@ -2139,17 +2147,21 @@ func TestPrepareRuntimeConfigNormalizesExplicitTraceProjectID(t *testing.T) {
 		traceProjectExplicit: true,
 		traceProjectSource:   traceProjectSourceOption,
 	}
-	if err := prepareRuntimeConfig(&cfg); err != nil {
+	if err := prepareRuntimeConfig(&cfg, internalLogger); err != nil {
 		t.Fatalf("prepareRuntimeConfig returned %v", err)
 	}
 	if cfg.TraceProjectID != "proj-123" {
 		t.Fatalf("TraceProjectID = %q, want proj-123", cfg.TraceProjectID)
 	}
-	if len(recorder.messages) != 1 {
-		t.Fatalf("normalized TraceProjectID warning count = %d, want 1", len(recorder.messages))
+	diagOutput := strings.TrimSpace(diagBuf.String())
+	if diagOutput == "" {
+		t.Fatalf("expected normalization diagnostic output, got none")
 	}
-	if !strings.Contains(recorder.messages[0], "normalized TraceProjectID") {
-		t.Fatalf("normalized warning = %q, want normalized TraceProjectID", recorder.messages[0])
+	if !strings.Contains(diagOutput, "normalized TraceProjectID") {
+		t.Fatalf("normalized warning output = %q, want normalized TraceProjectID", diagOutput)
+	}
+	if strings.Count(diagOutput, "\n") != 0 {
+		t.Fatalf("expected one normalization warning line, got %q", diagOutput)
 	}
 }
 
@@ -2159,10 +2171,8 @@ func TestPrepareRuntimeConfigInvalidExplicitTraceProjectIDWarnsAndFallsBack(t *t
 	t.Cleanup(resetRuntimeInfoCache)
 	stubRuntimeInfo(RuntimeInfo{ProjectID: "runtime-project"})
 
-	recorder := &diagRecorder{}
-	original := traceDiagnosticLogger
-	traceDiagnosticLogger = recorder
-	t.Cleanup(func() { traceDiagnosticLogger = original })
+	var diagBuf bytes.Buffer
+	internalLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
 
 	cfg := handlerConfig{
 		TraceDiagnostics:     TraceDiagnosticsWarnOnce,
@@ -2170,17 +2180,21 @@ func TestPrepareRuntimeConfigInvalidExplicitTraceProjectIDWarnsAndFallsBack(t *t
 		traceProjectExplicit: true,
 		traceProjectSource:   traceProjectSourceOption,
 	}
-	if err := prepareRuntimeConfig(&cfg); err != nil {
+	if err := prepareRuntimeConfig(&cfg, internalLogger); err != nil {
 		t.Fatalf("prepareRuntimeConfig returned %v", err)
 	}
 	if cfg.TraceProjectID != "runtime-project" {
 		t.Fatalf("TraceProjectID = %q, want runtime-project", cfg.TraceProjectID)
 	}
-	if len(recorder.messages) != 1 {
-		t.Fatalf("invalid TraceProjectID warning count = %d, want 1", len(recorder.messages))
+	diagOutput := strings.TrimSpace(diagBuf.String())
+	if diagOutput == "" {
+		t.Fatalf("expected invalid TraceProjectID diagnostic output, got none")
 	}
-	if !strings.Contains(recorder.messages[0], "invalid TraceProjectID") {
-		t.Fatalf("invalid warning = %q, want invalid TraceProjectID", recorder.messages[0])
+	if !strings.Contains(diagOutput, "invalid TraceProjectID") {
+		t.Fatalf("invalid warning output = %q, want invalid TraceProjectID", diagOutput)
+	}
+	if strings.Count(diagOutput, "\n") != 0 {
+		t.Fatalf("expected one invalid TraceProjectID warning line, got %q", diagOutput)
 	}
 }
 
@@ -3186,8 +3200,8 @@ func TestHandlerCloseClosesOwnedResources(t *testing.T) {
 	} else if !errors.Is(err, os.ErrClosed) && !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("write error = %v, want os.ErrClosed or os.ErrInvalid", err)
 	}
-	if err := h.Close(); err != nil {
-		t.Fatalf("second Handler.Close() returned %v, want nil", err)
+	if err := h.Close(); !errors.Is(err, switchWriter.err) {
+		t.Fatalf("second Handler.Close() error = %v, want %v", err, switchWriter.err)
 	}
 }
 
@@ -3217,8 +3231,8 @@ func TestHandlerCloseReturnsAsyncHandlerError(t *testing.T) {
 	if !strings.Contains(err.Error(), "close async handler") {
 		t.Fatalf("Handler.Close() error = %q, want close async handler prefix", err.Error())
 	}
-	if err := h.Close(); err != nil {
-		t.Fatalf("second Handler.Close() = %v, want nil", err)
+	if err := h.Close(); !errors.Is(err, sentinel) {
+		t.Fatalf("second Handler.Close() error = %v, want %v", err, sentinel)
 	}
 }
 
@@ -3443,7 +3457,7 @@ func TestHandlerSetupHelpers(t *testing.T) {
 		TraceDiagnostics: TraceDiagnosticsWarnOnce,
 		TraceProjectID:   "runtime-project",
 	}
-	if err := prepareRuntimeConfig(&cfg); err != nil {
+	if err := prepareRuntimeConfig(&cfg, newDiscardLogger()); err != nil {
 		t.Fatalf("prepareRuntimeConfig returned %v", err)
 	}
 	if cfg.TraceProjectID != "runtime-project" {
@@ -3454,7 +3468,7 @@ func TestHandlerSetupHelpers(t *testing.T) {
 	}
 
 	strictCfg := handlerConfig{TraceDiagnostics: TraceDiagnosticsStrict}
-	if err := prepareRuntimeConfig(&strictCfg); err == nil {
+	if err := prepareRuntimeConfig(&strictCfg, newDiscardLogger()); err == nil {
 		t.Fatalf("prepareRuntimeConfig strict mode without project should error")
 	}
 

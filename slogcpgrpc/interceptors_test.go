@@ -132,6 +132,7 @@ func TestUnaryClientInterceptorInjectsTrace(t *testing.T) {
 	interceptor := UnaryClientInterceptor(
 		WithLogger(logger),
 		WithProjectID("proj-123"),
+		WithPropagators(propagation.TraceContext{}),
 		WithLegacyXCloudInjection(true),
 	)
 

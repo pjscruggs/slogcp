@@ -225,6 +225,7 @@ func TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled(t *testi
 			WithOTel(false),
 			WithPublicEndpoint(true),
 			WithRemoteTrace(true),
+			WithPropagators(propagation.TraceContext{}),
 		)
 
 		handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

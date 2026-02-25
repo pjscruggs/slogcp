@@ -35,23 +35,50 @@ func init() {
 
 // resetRuntimeInfoCache clears cached runtime inspection state for isolated tests.
 func resetRuntimeInfoCache() {
-	runtimeInfoMu.Lock()
-	runtimeInfoOnce = sync.Once{}
-	runtimeInfo = RuntimeInfo{}
-	runtimeInfoPreset.Store(false)
-	runtimeInfoMu.Unlock()
+	setRuntimeInfoGetter(sync.OnceValue(detectRuntimeInfo))
+	runtimeInfoOverride.Store(nil)
 	resetHandlerConfigCache()
 }
 
 // stubRuntimeInfo seeds cached runtime info for tests that need deterministic values.
 func stubRuntimeInfo(info RuntimeInfo) {
-	runtimeInfoMu.Lock()
-	runtimeInfoOnce = sync.Once{}
-	runtimeInfoOnce.Do(func() {
-		runtimeInfo = info
-	})
-	runtimeInfoPreset.Store(true)
-	runtimeInfoMu.Unlock()
+	stub := RuntimeInfo{
+		ProjectID:      info.ProjectID,
+		Labels:         cloneStringMap(info.Labels),
+		ServiceContext: cloneStringMap(info.ServiceContext),
+		Environment:    info.Environment,
+	}
+	runtimeInfoOverride.Store(&stub)
+}
+
+// TestSetRuntimeInfoGetterNilUsesDefault ensures nil setters restore default detection.
+func TestSetRuntimeInfoGetterNilUsesDefault(t *testing.T) {
+	resetRuntimeInfoCache()
+	t.Cleanup(resetRuntimeInfoCache)
+
+	setRuntimeInfoGetter(nil)
+	if getter := getRuntimeInfoGetter(); getter == nil {
+		t.Fatalf("getRuntimeInfoGetter() returned nil after nil setter")
+	}
+}
+
+// TestGetRuntimeInfoGetterRepairsNilStoredGetter verifies nil stored getters are repaired.
+func TestGetRuntimeInfoGetterRepairsNilStoredGetter(t *testing.T) {
+	resetRuntimeInfoCache()
+	t.Cleanup(resetRuntimeInfoCache)
+
+	var nilGetter func() RuntimeInfo
+	runtimeInfoGet.Store(nilGetter)
+
+	getter := getRuntimeInfoGetter()
+	if getter == nil {
+		t.Fatalf("getRuntimeInfoGetter() returned nil")
+	}
+
+	loaded, ok := runtimeInfoGet.Load().(func() RuntimeInfo)
+	if !ok || loaded == nil {
+		t.Fatalf("runtimeInfoGet should be repaired to non-nil getter, got (%T, nil=%t)", runtimeInfoGet.Load(), loaded == nil)
+	}
 }
 
 type stubMetadataClient struct {

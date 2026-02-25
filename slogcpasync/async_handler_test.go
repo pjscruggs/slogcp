@@ -345,6 +345,46 @@ func TestDropOldestInvokesOnDropForEvictedRecord(t *testing.T) {
 	}
 }
 
+// TestWorkerBatchDrainProcessesBufferedRecords verifies workers drain additional
+// queued records in the same wake-up when BatchSize > 1.
+func TestWorkerBatchDrainProcessesBufferedRecords(t *testing.T) {
+	t.Parallel()
+
+	start := make(chan func(), 1)
+	inner := newRecordingHandler(nil)
+	h := Wrap(inner,
+		WithQueueSize(4),
+		WithBatchSize(3),
+		withWorkerStarter(func(run func()) {
+			start <- run
+		}),
+	)
+
+	for _, msg := range []string{"first", "second", "third"} {
+		rec := slog.NewRecord(time.Now(), slog.LevelInfo, msg, 0)
+		if err := h.Handle(context.Background(), rec); err != nil {
+			t.Fatalf("Handle(%q) returned %v, want nil", msg, err)
+		}
+	}
+
+	run := <-start
+	run()
+	waitForCalls(t, inner.state.calls, 3)
+
+	if err := h.(*Handler).Close(); err != nil {
+		t.Fatalf("Close() returned %v, want nil", err)
+	}
+
+	if got := len(inner.state.records); got != 3 {
+		t.Fatalf("inner handled %d records, want 3", got)
+	}
+	for i, want := range []string{"first", "second", "third"} {
+		if got := inner.state.records[i].Message; got != want {
+			t.Fatalf("record %d message = %q, want %q", i, got, want)
+		}
+	}
+}
+
 // TestHandleTracksDropsUnderBackpressure counts handled vs dropped when writers overwhelm the queue.
 func TestHandleTracksDropsUnderBackpressure(t *testing.T) {
 	t.Parallel()
@@ -533,6 +573,34 @@ func TestCloseTimesOutWhenWorkersStuck(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < 15*time.Millisecond {
 		t.Fatalf("Close returned too quickly: %v", elapsed)
+	}
+	close(block)
+}
+
+// TestCloseJoinsTimeoutAndCloserError ensures Close preserves both timeout and sink-close failures.
+func TestCloseJoinsTimeoutAndCloserError(t *testing.T) {
+	t.Parallel()
+
+	block := make(chan struct{})
+	inner := &closeErrorHandler{
+		recordingHandler: newRecordingHandler(block),
+		err:              errors.New("sink-close"),
+	}
+	h := Wrap(inner, WithFlushTimeout(20*time.Millisecond))
+
+	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle returned %v, want nil", err)
+	}
+
+	err := h.(*Handler).Close()
+	if err == nil {
+		t.Fatalf("Close() returned nil, want joined error")
+	}
+	if !errors.Is(err, ErrFlushTimeout) {
+		t.Fatalf("Close() error = %v, want ErrFlushTimeout", err)
+	}
+	if !errors.Is(err, inner.err) {
+		t.Fatalf("Close() error = %v, want sink close error %v", err, inner.err)
 	}
 	close(block)
 }
