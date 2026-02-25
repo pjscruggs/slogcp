@@ -2,7 +2,7 @@
 
 <img src="logo.svg" width="50%" alt="slogcp logo">
 
-A "batteries included" structured logging module for Google Cloud Platform with built-in HTTP and gRPC interceptors.
+A "batteries included" structured logging module for Google Cloud Platform with built-in HTTP and gRPC interceptors. Built on `log/slog`, `slogcp` turns application events into observability-ready telemetry by aligning logs, traces, and error data for Cloud Logging, Cloud Trace, and Error Reporting. Its HTTP and gRPC integrations are OpenTelemetry-aware by default (via `otelhttp`/`otelgrpc` and propagators), automatically propagating trace context and attaching request-scoped metadata so you get end-to-end service visibility without custom observability plumbing.
 
 ## Installation
 
@@ -54,7 +54,7 @@ slogcp will be useful to you if you're using:
   - Google Kubernetes Engine
 
 2. **Google Cloud's native observability stack**  
-  You rely on Cloud Logging, Cloud Trace, and Error Reporting to understand your services. So, you want logs, traces, and errors to line up cleanly in those UIs with correct severities, structured fields, trace IDs, and stack traces—without wiring all of that by hand in every service.
+  You rely on Cloud Logging, Cloud Trace, and Error Reporting to understand your services. So, you want logs, traces, and errors to line up cleanly in those UIs with correct severities, structured fields, trace IDs, and stack traces, without wiring all of that by hand in every service.
 
 3. **You want to reduce the boilerplate**
 
@@ -72,7 +72,7 @@ CPU time is money. When you use a Cloud Logging client library and let it send l
 
 If it determines that it is running in a GCP environment, slogcp further reduces the billable CPU cycles spent on JSON marshalling by:
  - **suppressing `log/slog`'s automatic timestamping** for stdout/stderr handlers since the logging ingester will automatically timestamp those entries (file targets keep timestamps so rotated/shipped logs stay annotated)
- - **using shorter, single-letter aliases for `severity`**, which the logging ingester will recognize and convert to their standard values
+ - **using shorter, aliases for `severity`**, which the logging ingester will recognize and convert to their standard values
 
 #### Why not just use `cloud.google.com/go/logging` with `logging.RedirectAsJSON(os.Stdout)`?
 
