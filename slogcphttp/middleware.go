@@ -262,7 +262,6 @@ func newRequestScope(r *http.Request, start time.Time, cfg *config) *RequestScop
 		scope.populateFromRequest(r, cfg)
 	}
 
-	scope.status.Store(http.StatusOK)
 	scope.latencyNS.Store(unsetLatencySentinel)
 	return scope
 }
@@ -373,8 +372,17 @@ func (v requestScopeMetricValue) LogValue() slog.Value {
 	}
 	switch v.kind {
 	case requestScopeMetricStatus:
-		return slog.IntValue(v.scope.Status())
+		code := v.scope.status.Load()
+		if code <= 0 {
+			// Status is unknown until headers are written (or request finalization).
+			return slog.Value{}
+		}
+		return slog.Int64Value(code)
 	case requestScopeMetricResponseSize:
+		if v.scope.latencyNS.Load() == unsetLatencySentinel {
+			// Response size is only final once the request has completed.
+			return slog.Value{}
+		}
 		return slog.Int64Value(v.scope.ResponseSize())
 	default:
 		return slog.Value{}
@@ -614,9 +622,7 @@ func wrapResponseWriter(w http.ResponseWriter, scope *RequestScope) (http.Respon
 	rec := &responseRecorder{
 		ResponseWriter: w,
 		scope:          scope,
-		status:         http.StatusOK,
 	}
-	scope.setStatus(http.StatusOK)
 	return rec, rec
 }
 
