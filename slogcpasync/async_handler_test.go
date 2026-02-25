@@ -486,8 +486,42 @@ func TestWorkerRecoversFromPanic(t *testing.T) {
 	if inner.state.records[0].Message != "second" {
 		t.Fatalf("handled message = %q, want %q", inner.state.records[0].Message, "second")
 	}
-	if out := buf.String(); !strings.Contains(out, "recovered panic") || !strings.Contains(out, "boom") {
-		t.Fatalf("panic output = %q, want recovered panic notice", out)
+	if out := buf.String(); !strings.Contains(out, "recovered panic") || !strings.Contains(out, "boom") || !strings.Contains(out, "goroutine ") {
+		t.Fatalf("panic output = %q, want recovered panic notice with stack trace", out)
+	}
+}
+
+// TestWorkerPanicInvokesOnDrop ensures panic-recovered records are reported through OnDrop.
+func TestWorkerPanicInvokesOnDrop(t *testing.T) {
+	t.Parallel()
+
+	inner := &panicOnceHandler{recordingHandler: newRecordingHandler(nil)}
+	var dropped []string
+	h := Wrap(inner,
+		WithQueueSize(2),
+		WithOnDrop(func(_ context.Context, rec slog.Record) {
+			dropped = append(dropped, rec.Message)
+		}),
+	)
+
+	first := slog.NewRecord(time.Now(), slog.LevelInfo, "first", 0)
+	second := slog.NewRecord(time.Now(), slog.LevelInfo, "second", 0)
+
+	if err := h.Handle(context.Background(), first); err != nil {
+		t.Fatalf("Handle(first) returned %v, want nil", err)
+	}
+	if err := h.Handle(context.Background(), second); err != nil {
+		t.Fatalf("Handle(second) returned %v, want nil", err)
+	}
+	if err := h.(*Handler).Close(); err != nil {
+		t.Fatalf("Close returned %v, want nil", err)
+	}
+
+	if len(dropped) != 1 || dropped[0] != "first" {
+		t.Fatalf("dropped = %v, want [first]", dropped)
+	}
+	if got := len(inner.state.records); got != 1 || inner.state.records[0].Message != "second" {
+		t.Fatalf("handled records = %v, want only [second]", inner.state.records)
 	}
 }
 

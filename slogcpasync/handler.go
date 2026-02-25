@@ -21,6 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -205,6 +206,7 @@ type asyncState struct {
 	closeErr     error
 	closer       func() error
 	errWriter    io.Writer
+	onDrop       DropHandler
 }
 
 type queuedRecord struct {
@@ -242,6 +244,7 @@ func newAsyncState(inner slog.Handler, cfg Config) *asyncState {
 		flushTimeout: cfg.FlushTimeout,
 		closer:       closerFor(inner),
 		errWriter:    cfg.ErrorWriter,
+		onDrop:       cfg.OnDrop,
 	}
 }
 
@@ -274,7 +277,10 @@ func (s *asyncState) worker(batchSize int) {
 func (s *asyncState) handleItem(item queuedRecord) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logError("slogcpasync: recovered panic from handler: %v\n", r)
+			if s.onDrop != nil && item.handler != nil {
+				s.onDrop(item.ctx, item.rec)
+			}
+			s.logError("slogcpasync: recovered panic from handler: %v\n%s", r, debug.Stack())
 		}
 	}()
 

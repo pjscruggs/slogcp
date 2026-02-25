@@ -92,7 +92,7 @@ defer handler.Close()
 | `WithBatchSize(int)` | (none) | `1` | Records a worker drains per wake-up; values `< 1` clamp to the mode default. |
 | `WithDropMode(DropMode)` | `SLOGCP_ASYNC_DROP_MODE` | `block` | Overflow policy: `block`, `drop_newest`, or `drop_oldest` (hyphenated forms are also accepted). |
 | `WithFlushTimeout(time.Duration)` | `SLOGCP_ASYNC_FLUSH_TIMEOUT` | (none) | Optional timeout for `Close`; returns `ErrFlushTimeout` if workers never finish. |
-| `WithOnDrop(func(context.Context, slog.Record))` | (none) | (none) | Callback invoked when a record is dropped (or logged after `Close`). |
+| `WithOnDrop(func(context.Context, slog.Record))` | (none) | (none) | Callback invoked when a record is dropped (queue pressure, panic-recovered handler call, or logged after `Close`). |
 | `WithErrorWriter(io.Writer)` | (none) | `os.Stderr` | Destination for worker errors/panic reports; `nil` silences them. |
 | `WithEnv()` | (reads all of the above) | (none) | Overlays any `SLOGCP_ASYNC_*` values onto the config. |
 
@@ -100,6 +100,7 @@ defer handler.Close()
 
 - `DropModeBlock` can still block callers under sustained log throughput if the queue fills.
 - Worker errors and panics are not returned from `Handle`; they are reported via `WithErrorWriter` to avoid silent failure.
+- Panic reports include a stack trace from the worker goroutine.
 - Whenever the async wrapper is in play, call `Close()` on shutdown to flush queued records.
 
 ## More

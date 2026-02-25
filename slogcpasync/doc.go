@@ -46,4 +46,6 @@
 //
 // Worker errors and panics are reported to stderr by default to avoid silent
 // failure; configure [WithErrorWriter] to redirect or silence those messages.
+// Panic diagnostics include a worker stack trace, and panic-recovered records
+// are reported through [WithOnDrop] when configured.
 package slogcpasync
