@@ -48,13 +48,16 @@ Key options:
 | `WithRedirectToFile(path)` | `SLOGCP_TARGET` (`file:<path>`) | (disabled) | Writes structured logs to a file (append mode); slogcp trims whitespace and uses the path verbatim. |
 | `WithRedirectWriter(io.Writer)` | (none) | constructor writer | Uses any writer you supply without taking ownership; path parsing is left to the writer. |
 | `WithReplaceAttr(func)` | (none) | (none) | Mutates or removes attributes before encoding. |
-| `WithMiddleware(slogcp.Middleware)` | (none) | (none) | Wraps the handler with custom middleware. |
+| `WithMiddleware(slogcp.Middleware)` | (none) | (none) | Wraps slogcp's shared processing pipeline with custom middleware. |
+| `WithAdditionalHandlers(...slog.Handler)` | (none) | (none) | Adds fan-out sinks via `slog.NewMultiHandler` so accepted records are emitted to slogcp plus extra handlers. |
 | `WithAttrs([]slog.Attr)` / `WithGroup(string)` | (none) | (none) | Adds fixed attributes or an initial group. |
 | `WithInternalLogger(*slog.Logger)` | (none) | discarding text logger | Receives configuration warnings. |
 
 Additional notes:
 - File targets: use `SLOGCP_TARGET=file:<path>` (for example, `file:/var/log/app.json` on Linux/macOS or `file:C:\\logs\\app.json` on Windows). slogcp trims surrounding whitespace and passes the remaining path directly to `os.OpenFile` in append mode; it does not create parent directories or rewrite the string. Invalid values still trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
 - When you choose `WithRedirectWriter`, slogcp does not look at file paths at all; configure any file destination on the writer itself (for example, `*os.File` or a rotation helper like timberjack).
+- `WithAdditionalHandlers` does not transfer ownership of the extra handlers. If those handlers need shutdown (for example async wrappers), close them explicitly.
+- Level filtering (`WithLevel`/`WithLevelVar`) and middleware run before fan-out dispatch, so every configured sink receives the same filtered and transformed records.
 - When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor after external tools move the file. Always call `Close` during shutdown to flush buffers and release writers.
 - `SLOGCP_LEVEL` is the preferred knob for minimum severity. When it is empty, slogcp also honours `LOG_LEVEL` so shared conventions still work. When you supply `WithLevelVar`, slogcp seeds the shared var using the same resolution rules.
 - `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust levels at runtime via `SetLevel` or share the var with other handlers.

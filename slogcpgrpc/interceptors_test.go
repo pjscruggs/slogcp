@@ -1302,7 +1302,7 @@ func copyMessage(dst any, src any) error {
 		}
 	}
 	rdst := reflect.ValueOf(dst)
-	if rdst.Kind() != reflect.Ptr {
+	if rdst.Kind() != reflect.Pointer {
 		return errors.New("destination not pointer")
 	}
 	rdst.Elem().Set(reflect.ValueOf(src).Elem())

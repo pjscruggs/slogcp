@@ -79,7 +79,8 @@ type Option func(*options)
 
 // Middleware adapts a [slog.Handler] before it is exposed by [Handler].
 // Middleware functions run in the order they are supplied, wrapping the core
-// handler from last to first to mirror idiomatic HTTP middleware composition.
+// handler pipeline from last to first to mirror idiomatic HTTP middleware
+// composition.
 type Middleware func(slog.Handler) slog.Handler
 
 // Handler routes slog records to Google Cloud Logging with optional
@@ -220,6 +221,7 @@ type options struct {
 	asyncEnabled          bool
 	asyncOnFileTargets    bool
 	asyncOpts             []slogcpasync.Option
+	additionalHandlers    []slog.Handler
 }
 
 // NewHandler builds a Google Cloud aware slog [Handler]. It inspects the
@@ -399,11 +401,9 @@ func validateTraceProjectAvailability(cfg *handlerConfig) error {
 
 // buildPipeline assembles the handler stack with middlewares and async wrapper.
 func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *slog.Logger, builder *options) (slog.Handler, *slogcpasync.Handler) {
-	core := newJSONHandler(cfg, levelVar, internalLogger)
-	handler := slog.Handler(core)
-	for i := len(cfg.Middlewares) - 1; i >= 0; i-- {
-		handler = cfg.Middlewares[i](handler)
-	}
+	core := slog.Handler(newJSONHandler(cfg, levelVar, internalLogger))
+	handler := composeFanout(core, builder.additionalHandlers, levelVar)
+	handler = applyMiddlewares(handler, cfg.Middlewares)
 
 	isFileTarget := hasFileTarget(cfg)
 	asyncEnabled, asyncOnFileTargets := resolveAsyncConfig(isFileTarget, builder)
@@ -420,6 +420,75 @@ func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *
 		handler = sourceAwareHandler{Handler: handler}
 	}
 	return handler, asyncHandler
+}
+
+// composeFanout composes the primary handler with optional additional sinks.
+func composeFanout(primary slog.Handler, additional []slog.Handler, leveler slog.Leveler) slog.Handler {
+	if len(additional) == 0 {
+		return primary
+	}
+	handlers := make([]slog.Handler, 0, len(additional)+1)
+	handlers = append(handlers, primary)
+	for _, h := range additional {
+		if h != nil {
+			handlers = append(handlers, sharedLevelHandler{Handler: h, leveler: leveler})
+		}
+	}
+	if len(handlers) == 1 {
+		return primary
+	}
+	return slog.NewMultiHandler(handlers...)
+}
+
+// applyMiddlewares wraps handler with supplied middlewares from last to first.
+func applyMiddlewares(handler slog.Handler, middlewares []Middleware) slog.Handler {
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		handler = middlewares[i](handler)
+	}
+	return handler
+}
+
+// sharedLevelHandler applies slogcp's shared level threshold to wrapped sinks.
+type sharedLevelHandler struct {
+	slog.Handler
+	leveler slog.Leveler
+}
+
+// Enabled reports whether the level satisfies slogcp's shared threshold and the wrapped handler.
+func (h sharedLevelHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	if h.leveler != nil && level < h.leveler.Level() {
+		return false
+	}
+	return h.Handler.Enabled(ctx, level)
+}
+
+// Handle drops records below the shared level before forwarding.
+func (h sharedLevelHandler) Handle(ctx context.Context, r slog.Record) error {
+	if !h.Enabled(ctx, r.Level) {
+		return nil
+	}
+	if err := h.Handler.Handle(ctx, r); err != nil {
+		return fmt.Errorf("shared level handler: %w", err)
+	}
+	return nil
+}
+
+// WithAttrs propagates attribute state while preserving shared level gating.
+func (h sharedLevelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	child := h.Handler.WithAttrs(attrs)
+	if child == nil {
+		return nil
+	}
+	return sharedLevelHandler{Handler: child, leveler: h.leveler}
+}
+
+// WithGroup propagates groups while preserving shared level gating.
+func (h sharedLevelHandler) WithGroup(name string) slog.Handler {
+	child := h.Handler.WithGroup(name)
+	if child == nil {
+		return nil
+	}
+	return sharedLevelHandler{Handler: child, leveler: h.leveler}
 }
 
 // resolveAsyncConfig determines async wrapper defaults for file targets when no explicit option is set.
@@ -916,6 +985,21 @@ func WithMiddleware(mw Middleware) Option {
 	return func(o *options) {
 		if mw != nil {
 			o.middlewares = append(o.middlewares, mw)
+		}
+	}
+}
+
+// WithAdditionalHandlers fans out accepted records to additional handlers using
+// [slog.NewMultiHandler]. Nil handlers are ignored.
+//
+// Additional handlers are not owned by slogcp. If they require shutdown
+// (for example, async wrappers), close them explicitly.
+func WithAdditionalHandlers(handlers ...slog.Handler) Option {
+	return func(o *options) {
+		for _, h := range handlers {
+			if h != nil {
+				o.additionalHandlers = append(o.additionalHandlers, h)
+			}
 		}
 	}
 }
