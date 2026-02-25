@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/benchmarks/slogcp-v-google/google
 
-go 1.25.5
+go 1.26.0
 
 require (
 	cloud.google.com/go/logging v1.13.1
