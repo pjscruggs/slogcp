@@ -200,6 +200,7 @@ type sourceLocation struct {
 }
 
 type jsonHandler struct {
+	// mu serializes writes to the shared output sink across handler clones.
 	mu *sync.Mutex
 
 	cfg            *handlerConfig
@@ -333,14 +334,8 @@ func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		return h
 	}
 
-	h.mu.Lock()
 	baseGrouped := append([]groupedAttr(nil), h.groupedAttrs...)
 	baseGroups := append([]string(nil), h.groups...)
-	cfg := h.cfg
-	leveler := h.leveler
-	writer := h.writer
-	internalLogger := h.internalLogger
-	h.mu.Unlock()
 
 	grouped := make([]groupedAttr, len(baseGrouped), len(baseGrouped)+len(attrs))
 	copy(grouped, baseGrouped)
@@ -353,10 +348,10 @@ func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 	return &jsonHandler{
 		mu:             h.mu,
-		cfg:            cfg,
-		leveler:        leveler,
-		writer:         writer,
-		internalLogger: internalLogger,
+		cfg:            h.cfg,
+		leveler:        h.leveler,
+		writer:         h.writer,
+		internalLogger: h.internalLogger,
 		bufferPool:     h.bufferPool,
 		groupedAttrs:   grouped,
 		groups:         baseGroups,
@@ -369,23 +364,16 @@ func (h *jsonHandler) WithGroup(name string) slog.Handler {
 		return h
 	}
 
-	h.mu.Lock()
 	baseGrouped := append([]groupedAttr(nil), h.groupedAttrs...)
 	baseGroups := append([]string(nil), h.groups...)
-	cfg := h.cfg
-	leveler := h.leveler
-	writer := h.writer
-	internalLogger := h.internalLogger
-	h.mu.Unlock()
-
 	baseGroups = append(baseGroups, name)
 
 	return &jsonHandler{
 		mu:             h.mu,
-		cfg:            cfg,
-		leveler:        leveler,
-		writer:         writer,
-		internalLogger: internalLogger,
+		cfg:            h.cfg,
+		leveler:        h.leveler,
+		writer:         h.writer,
+		internalLogger: h.internalLogger,
 		bufferPool:     h.bufferPool,
 		groupedAttrs:   baseGrouped,
 		groups:         baseGroups,
@@ -437,12 +425,10 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	return builder.build()
 }
 
-// snapshotBaseState captures grouped attributes and groups under lock.
+// snapshotBaseState captures immutable grouped attributes and groups.
 func (h *jsonHandler) snapshotBaseState() ([]groupedAttr, []string) {
-	h.mu.Lock()
 	baseAttrs := h.groupedAttrs
 	baseGroups := h.groups
-	h.mu.Unlock()
 	return baseAttrs, baseGroups
 }
 

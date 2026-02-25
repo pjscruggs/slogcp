@@ -58,11 +58,9 @@ const (
 )
 
 var (
-	runtimeInfo              RuntimeInfo
-	runtimeInfoOnce          sync.Once
-	runtimeInfoMu            sync.Mutex
+	runtimeInfoGet           atomic.Value // func() RuntimeInfo
 	runtimeInfoCacheDisabled atomic.Bool
-	runtimeInfoPreset        atomic.Bool
+	runtimeInfoOverride      atomic.Pointer[RuntimeInfo]
 )
 
 var (
@@ -79,6 +77,7 @@ var (
 
 // init seeds the metadata hooks used for runtime detection.
 func init() {
+	setRuntimeInfoGetter(sync.OnceValue(detectRuntimeInfo))
 	setMetadataOnGCEFunc(func() bool {
 		return metadataOnGCEWrapper()
 	})
@@ -86,6 +85,24 @@ func init() {
 		return metadataGetWithContextWrapper(ctx, path)
 	})
 	setMetadataClientFactory(metadataFactoryDefault)
+}
+
+// setRuntimeInfoGetter overrides the cached runtime info accessor.
+func setRuntimeInfoGetter(getter func() RuntimeInfo) {
+	if getter == nil {
+		getter = sync.OnceValue(detectRuntimeInfo)
+	}
+	runtimeInfoGet.Store(getter)
+}
+
+// getRuntimeInfoGetter returns the cached runtime info accessor.
+func getRuntimeInfoGetter() func() RuntimeInfo {
+	if getter, ok := runtimeInfoGet.Load().(func() RuntimeInfo); ok && getter != nil {
+		return getter
+	}
+	getter := sync.OnceValue(detectRuntimeInfo)
+	runtimeInfoGet.Store(getter)
+	return getter
 }
 
 // setMetadataOnGCEFunc overrides the metadata availability probe.
@@ -160,22 +177,15 @@ var serviceProjectIDEnvKeys = []string{
 // DetectRuntimeInfo inspects well-known environment variables to infer
 // platform-specific labels and service context. Results are cached for reuse.
 func DetectRuntimeInfo() RuntimeInfo {
+	if override := runtimeInfoOverride.Load(); override != nil {
+		return *override
+	}
+
 	if runtimeInfoCacheDisabled.Load() {
-		if runtimeInfoPreset.Load() {
-			runtimeInfoMu.Lock()
-			defer runtimeInfoMu.Unlock()
-			return runtimeInfo
-		}
 		return detectRuntimeInfo()
 	}
 
-	runtimeInfoMu.Lock()
-	defer runtimeInfoMu.Unlock()
-
-	runtimeInfoOnce.Do(func() {
-		runtimeInfo = detectRuntimeInfo()
-	})
-	return runtimeInfo
+	return getRuntimeInfoGetter()()
 }
 
 // detectRuntimeInfo inspects environment variables and metadata endpoints to infer runtime context.

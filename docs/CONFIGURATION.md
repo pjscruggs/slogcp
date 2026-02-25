@@ -282,4 +282,18 @@ Helpers:
 
 ## Trace Propagation Defaults
 
-Importing `slogcp` installs a composite OpenTelemetry propagator that understands both W3C Trace Context and Google's legacy `X-Cloud-Trace-Context` header (read-only). Set `SLOGCP_PROPAGATOR_AUTOSET=false` before importing the package if you prefer to manage `otel.SetTextMapPropagator` yourself; explicit calls to `slogcp.EnsurePropagation()` remain available during startup. Call `EnsurePropagation` before constructing `otelhttp` transports or gRPC clients/servers that rely on the global propagator, since some instrumentation snapshots the global value during initialization.
+Configure OpenTelemetry propagators during application bootstrap.
+
+When you want slogcp's recommended composite propagator (Google's legacy `X-Cloud-Trace-Context` extraction + W3C Trace Context + Baggage), install it explicitly during application startup:
+
+```go
+slogcp.EnsurePropagation()
+```
+
+Or construct it directly and wire it yourself:
+
+```go
+otel.SetTextMapPropagator(slogcp.NewCompositePropagator())
+```
+
+Call one of these before constructing `otelhttp` transports or gRPC clients/servers that rely on the global propagator, since some instrumentation snapshots the global value during initialization.

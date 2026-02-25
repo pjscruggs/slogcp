@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"os"
 	"strconv"
@@ -97,13 +96,24 @@ type Handler struct {
 
 	mu        sync.Mutex
 	closeOnce sync.Once
+	closeErr  error
 }
 
 type diagLogger interface {
 	Printf(format string, args ...any)
 }
 
-var traceDiagnosticLogger diagLogger = log.New(os.Stderr, "slogcp: ", log.LstdFlags)
+type traceDiagnosticsLogger struct {
+	logger *slog.Logger
+}
+
+// Printf writes trace diagnostics through the configured internal logger.
+func (l traceDiagnosticsLogger) Printf(format string, args ...any) {
+	if l.logger == nil {
+		return
+	}
+	logDiagnostic(l.logger, slog.LevelWarn, fmt.Sprintf(format, args...))
+}
 
 type traceDiagnostics struct {
 	mode         TraceDiagnosticsMode
@@ -114,15 +124,14 @@ type traceDiagnostics struct {
 }
 
 // newTraceDiagnostics constructs a traceDiagnostics helper unless tracing is disabled.
-func newTraceDiagnostics(mode TraceDiagnosticsMode) *traceDiagnostics {
+func newTraceDiagnostics(mode TraceDiagnosticsMode, logger *slog.Logger) *traceDiagnostics {
 	if mode == TraceDiagnosticsOff {
 		return nil
 	}
-	logger := traceDiagnosticLogger
-	if logger == nil {
-		logger = log.New(io.Discard, "slogcp: ", log.LstdFlags)
+	return &traceDiagnostics{
+		mode:   mode,
+		logger: traceDiagnosticsLogger{logger: ensureInternalLogger(logger)},
 	}
-	return &traceDiagnostics{mode: mode, logger: logger}
 }
 
 // warnUnknownProject emits a single warning when we cannot resolve the Cloud project ID.
@@ -262,7 +271,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 
 	levelVar := resolveLevelVar(builder.levelVar, cfg.Level)
 
-	if err := prepareRuntimeConfig(&cfg); err != nil {
+	if err := prepareRuntimeConfig(&cfg, internalLogger); err != nil {
 		return nil, err
 	}
 
@@ -335,11 +344,11 @@ func resolveLevelVar(levelVar *slog.LevelVar, level slog.Level) *slog.LevelVar {
 }
 
 // prepareRuntimeConfig populates runtime-derived fields and validates tracing.
-func prepareRuntimeConfig(cfg *handlerConfig) error {
+func prepareRuntimeConfig(cfg *handlerConfig, internalLogger *slog.Logger) error {
 	runtimeInfo := DetectRuntimeInfo()
 	cfg.runtimeServiceContext = cloneStringMap(runtimeInfo.ServiceContext)
 	cfg.runtimeServiceContextAny = stringMapToAny(cfg.runtimeServiceContext)
-	cfg.traceDiagnosticsState = newTraceDiagnostics(cfg.TraceDiagnostics)
+	cfg.traceDiagnosticsState = newTraceDiagnostics(cfg.TraceDiagnostics, internalLogger)
 
 	if err := normalizeTraceProjectConfig(cfg); err != nil {
 		return err
@@ -585,18 +594,18 @@ func ensureWriterFallback(cfg *handlerConfig) {
 
 // Close releases any resources owned by the handler such as log files or
 // writer implementations created by options. It is safe to call multiple
-// times; only the first invocation performs work.
+// times; only the first invocation performs work, and repeated calls return
+// the same error value as the first call.
 func (h *Handler) Close() error {
-	var firstErr error
 	h.closeOnce.Do(func() {
 		if err := h.closeAsyncHandler(); err != nil {
-			firstErr = err
+			h.closeErr = err
 		}
-		if err := h.closeResources(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := h.closeResources(); err != nil && h.closeErr == nil {
+			h.closeErr = err
 		}
 	})
-	return firstErr
+	return h.closeErr
 }
 
 // closeAsyncHandler drains any async wrapper so queued records are written before resources are closed.

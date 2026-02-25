@@ -425,21 +425,22 @@ func (h *Handler) Close() error {
 			close(done)
 		}()
 
+		var flushErr error
 		if h.state.flushTimeout > 0 {
 			select {
 			case <-done:
 			case <-time.After(h.state.flushTimeout):
-				h.state.closeErr = ErrFlushTimeout
+				flushErr = ErrFlushTimeout
 			}
 		} else {
 			<-done
 		}
 
+		var closeErr error
 		if h.state.closer != nil {
-			if err := h.state.closer(); err != nil && h.state.closeErr == nil {
-				h.state.closeErr = err
-			}
+			closeErr = h.state.closer()
 		}
+		h.state.closeErr = errors.Join(flushErr, closeErr)
 	})
 
 	return h.state.closeErr

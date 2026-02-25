@@ -586,7 +586,7 @@ func TestJSONHandlerHandleBuildsComplexPayload(t *testing.T) {
 			"version": "v1",
 		},
 		traceAllowAutoformat:  true,
-		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce, newDiscardLogger()),
 		InitialGroupedAttrs: []groupedAttr{
 			{attr: slog.String("init", "yes")},
 			{groups: []string{"grouped"}, attr: slog.String("inside", "value")},
@@ -748,7 +748,7 @@ func TestJSONHandlerBranchSweep(t *testing.T) {
 		},
 		runtimeServiceContextAny: map[string]any{"service": "override"},
 		traceAllowAutoformat:     true,
-		traceDiagnosticsState:    newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+		traceDiagnosticsState:    newTraceDiagnostics(TraceDiagnosticsWarnOnce, newDiscardLogger()),
 		InitialGroups:            []string{"base"},
 		InitialAttrs:             []slog.Attr{slog.String("init", "yes")},
 		InitialGroupedAttrs: []groupedAttr{
@@ -896,7 +896,7 @@ func TestJSONHandlerHelperBranchesExplicit(t *testing.T) {
 				runtimeServiceContext:    map[string]string{"service": "svc"},
 				runtimeServiceContextAny: map[string]any{"service": "svc-any"},
 				traceAllowAutoformat:     true,
-				traceDiagnosticsState:    newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+				traceDiagnosticsState:    newTraceDiagnostics(TraceDiagnosticsWarnOnce, newDiscardLogger()),
 			},
 			writer:         &buf,
 			internalLogger: slog.New(slog.DiscardHandler),
@@ -1123,7 +1123,7 @@ func TestJSONHandlerEmitAndWriteJSONBranches(t *testing.T) {
 			EmitTimeField:         false,
 			UseShortSeverityNames: true,
 			traceAllowAutoformat:  true,
-			traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+			traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce, newDiscardLogger()),
 			runtimeServiceContextAny: map[string]any{
 				"service": "svc-any",
 			},
@@ -1565,26 +1565,14 @@ func TestJSONHandlerWithGroupAndAttrsExtendState(t *testing.T) {
 	}
 }
 
-type recordingDiagLogger struct {
-	messages []string
-}
-
-// Printf records a formatted diagnostic message so tests can assert on warnings.
-func (r *recordingDiagLogger) Printf(format string, args ...any) {
-	r.messages = append(r.messages, fmt.Sprintf(format, args...))
-}
-
 // TestJSONHandlerWarnsOnceWhenProjectUnknown ensures diagnostics fire once per process.
 func TestJSONHandlerWarnsOnceWhenProjectUnknown(t *testing.T) {
-	var diag recordingDiagLogger
-	origLogger := traceDiagnosticLogger
-	traceDiagnosticLogger = &diag
-	t.Cleanup(func() { traceDiagnosticLogger = origLogger })
-
 	var buf bytes.Buffer
+	var diagBuf bytes.Buffer
+	diagLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
 	cfg := &handlerConfig{
 		Writer:                &buf,
-		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce, diagLogger),
 	}
 	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
@@ -1608,31 +1596,35 @@ func TestJSONHandlerWarnsOnceWhenProjectUnknown(t *testing.T) {
 	if got := entry["otel.trace_id"]; got != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Fatalf("otel.trace_id = %v, want trace id", got)
 	}
-	if len(diag.messages) != 1 {
-		t.Fatalf("expected single diagnostic message, got %d (%v)", len(diag.messages), diag.messages)
+	diagOutput := strings.TrimSpace(diagBuf.String())
+	if diagOutput == "" {
+		t.Fatalf("expected trace diagnostic output, got none")
+	}
+	if !strings.Contains(diagOutput, "trace correlation disabled: unable to determine Cloud project ID") {
+		t.Fatalf("diagnostic output = %q, want missing project warning", diagOutput)
+	}
+	if strings.Count(diagOutput, "\n") != 0 {
+		t.Fatalf("expected one diagnostic warning line, got %q", diagOutput)
 	}
 
 	buf.Reset()
 	if err := handler.Handle(ctx, record); err != nil {
 		t.Fatalf("Handle() second call returned %v", err)
 	}
-	if len(diag.messages) != 1 {
-		t.Fatalf("diagnostics should warn once, got %d", len(diag.messages))
+	if strings.Count(strings.TrimSpace(diagBuf.String()), "\n") != 0 {
+		t.Fatalf("diagnostics should warn once, got %q", diagBuf.String())
 	}
 }
 
 // TestJSONHandlerAutoformatTraceFallback ensures raw trace IDs populate Cloud Logging keys when autoformat is allowed.
 func TestJSONHandlerAutoformatTraceFallback(t *testing.T) {
-	var diag recordingDiagLogger
-	origLogger := traceDiagnosticLogger
-	traceDiagnosticLogger = &diag
-	t.Cleanup(func() { traceDiagnosticLogger = origLogger })
-
 	var buf bytes.Buffer
+	var diagBuf bytes.Buffer
+	diagLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
 	cfg := &handlerConfig{
 		Writer:                &buf,
 		traceAllowAutoformat:  true,
-		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce, diagLogger),
 	}
 	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
@@ -1662,8 +1654,8 @@ func TestJSONHandlerAutoformatTraceFallback(t *testing.T) {
 	if _, exists := entry["otel.trace_id"]; exists {
 		t.Fatalf("otel.trace_id should be omitted when Cloud Logging fields are emitted: %v", entry)
 	}
-	if len(diag.messages) != 0 {
-		t.Fatalf("autoformat path should not emit diagnostics, got %d", len(diag.messages))
+	if strings.TrimSpace(diagBuf.String()) != "" {
+		t.Fatalf("autoformat path should not emit diagnostics, got %q", diagBuf.String())
 	}
 }
 

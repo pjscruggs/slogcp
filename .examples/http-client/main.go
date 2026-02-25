@@ -27,6 +27,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/pjscruggs/slogcp/slogcphttp"
 )
 
@@ -40,7 +42,9 @@ func main() {
 	}))
 	defer server.Close()
 
-	client := &http.Client{Transport: slogcphttp.Transport(nil)}
+	client := &http.Client{
+		Transport: slogcphttp.Transport(nil, slogcphttp.WithPropagators(propagation.TraceContext{})),
+	}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
 	if err != nil {
