@@ -432,6 +432,8 @@ func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *
 }
 
 // composeFanout composes the primary handler with optional additional sinks.
+// Fan-out dispatch and error aggregation are delegated to slog.NewMultiHandler,
+// which invokes all enabled sinks and returns errors.Join of sink failures.
 func composeFanout(primary slog.Handler, additional []slog.Handler, leveler slog.Leveler) slog.Handler {
 	if len(additional) == 0 {
 		return primary
@@ -458,6 +460,8 @@ func applyMiddlewares(handler slog.Handler, middlewares []Middleware) slog.Handl
 }
 
 // sharedLevelHandler applies slogcp's shared level threshold to wrapped sinks.
+// It preserves the full slog.Handler contract (Enabled/Handle/WithAttrs/WithGroup)
+// while adding level gating for additional fan-out handlers.
 type sharedLevelHandler struct {
 	slog.Handler
 	leveler slog.Leveler
@@ -472,6 +476,8 @@ func (h sharedLevelHandler) Enabled(ctx context.Context, level slog.Level) bool 
 }
 
 // Handle drops records below the shared level before forwarding.
+// Errors from wrapped handlers are returned with context using %w so callers
+// can still match concrete sink errors via errors.Is/errors.As.
 func (h sharedLevelHandler) Handle(ctx context.Context, r slog.Record) error {
 	if !h.Enabled(ctx, r.Level) {
 		return nil
@@ -483,6 +489,7 @@ func (h sharedLevelHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 // WithAttrs propagates attribute state while preserving shared level gating.
+// Returning sharedLevelHandler ensures derived fan-out handlers remain level-aware.
 func (h sharedLevelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	child := h.Handler.WithAttrs(attrs)
 	if child == nil {
@@ -492,6 +499,7 @@ func (h sharedLevelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 // WithGroup propagates groups while preserving shared level gating.
+// Returning sharedLevelHandler ensures derived fan-out handlers remain level-aware.
 func (h sharedLevelHandler) WithGroup(name string) slog.Handler {
 	child := h.Handler.WithGroup(name)
 	if child == nil {
@@ -1003,6 +1011,9 @@ func WithMiddleware(mw Middleware) Option {
 //
 // Additional handlers are not owned by slogcp. If they require shutdown
 // (for example, async wrappers), close them explicitly.
+// Additional sinks are wrapped with sharedLevelHandler so they use slogcp's
+// shared level threshold. When a sink fails, the wrapped error remains
+// unwrappable (errors.Is/errors.As) and MultiHandler aggregates sink failures.
 func WithAdditionalHandlers(handlers ...slog.Handler) Option {
 	return func(o *options) {
 		for _, h := range handlers {
