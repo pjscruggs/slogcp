@@ -346,6 +346,81 @@ func TestDropOldestInvokesOnDropForEvictedRecord(t *testing.T) {
 	}
 }
 
+// TestDropOldestContentionInvariants validates queue/drop accounting under
+// producer contention without asserting deterministic eviction identity/order.
+func TestDropOldestContentionInvariants(t *testing.T) {
+	var dropped atomic.Int64
+	block := make(chan struct{})
+	inner := newRecordingHandler(block)
+	handler := Wrap(inner,
+		WithQueueSize(8),
+		WithWorkerCount(1),
+		WithDropMode(DropModeDropOldest),
+		WithOnDrop(func(_ context.Context, rec slog.Record) {
+			dropped.Add(1)
+			_ = rec // ensure rec.Clone() is exercised on the drop path
+		}),
+	)
+
+	const (
+		producers   = 16
+		perProducer = 40
+	)
+	total := producers * perProducer
+
+	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "contended", 0)
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(producers)
+	for range producers {
+		go func() {
+			defer wg.Done()
+			for range perProducer {
+				if err := handler.Handle(context.Background(), rec); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Handle blocked unexpectedly under DropModeDropOldest contention")
+	}
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("Handle returned %v, want nil", err)
+	default:
+	}
+
+	close(block)
+	if err := handler.(*Handler).Close(); err != nil {
+		t.Fatalf("Close returned %v, want nil", err)
+	}
+
+	handled := len(inner.state.records)
+	droppedCount := int(dropped.Load())
+
+	if handled+droppedCount != total {
+		t.Fatalf("handled+dropped = %d, total = %d", handled+droppedCount, total)
+	}
+	if droppedCount == 0 {
+		t.Fatalf("expected dropped records under DropModeDropOldest contention")
+	}
+}
+
 // TestWorkerBatchDrainProcessesBufferedRecords verifies workers drain additional
 // queued records in the same wake-up when BatchSize > 1.
 func TestWorkerBatchDrainProcessesBufferedRecords(t *testing.T) {
