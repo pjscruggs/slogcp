@@ -84,7 +84,9 @@ const (
 	DropModeBlock DropMode = iota
 	// DropModeDropNewest drops the incoming record when the queue is full.
 	DropModeDropNewest
-	// DropModeDropOldest drops the oldest queued record when the queue is full.
+	// DropModeDropOldest best-effort drops a queued record to make room for the
+	// incoming record when the queue is full. Under contention, eviction and
+	// re-enqueue are not atomic, so this mode may still drop the incoming record.
 	DropModeDropOldest
 )
 
@@ -95,6 +97,7 @@ var ErrFlushTimeout = errors.New("slogcpasync: flush timeout")
 var ErrAborted = errors.New("slogcpasync: aborted")
 
 // DropHandler observes dropped records.
+// Callbacks may run concurrently and should remain fast/non-blocking.
 type DropHandler func(ctx context.Context, rec slog.Record)
 
 // Config controls async handler behaviour.
@@ -151,6 +154,10 @@ func WithBatchSize(size int) Option {
 }
 
 // WithDropMode sets the queue overflow strategy.
+//
+// DropModeDropOldest is best-effort under concurrency: it attempts to evict a
+// queued record before enqueuing the incoming record, but competing goroutines
+// may refill the queue between those steps.
 func WithDropMode(mode DropMode) Option {
 	return func(cfg *Config) {
 		cfg.DropMode = mode
@@ -511,6 +518,9 @@ func (h *Handler) enqueueDropOldest(item queuedRecord) {
 	case h.state.queue <- item:
 		return
 	default:
+		// This two-step path is intentionally non-atomic. Under contention another
+		// sender can win the slot between eviction and retry, so DropOldest is
+		// best-effort and may degrade to dropping the incoming item.
 		h.dropOldest()
 		h.enqueueDropNewest(item)
 	}
