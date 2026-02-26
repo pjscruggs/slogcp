@@ -2842,7 +2842,7 @@ func TestSourceAwareHandlerHandlesNilChildren(t *testing.T) {
 func TestComposeFanoutHandlesNilAdditional(t *testing.T) {
 	t.Parallel()
 
-	primary := slog.NewJSONHandler(io.Discard, nil)
+	primary := slog.DiscardHandler
 	got := composeFanout(primary, []slog.Handler{nil, nil}, nil)
 	if got != primary {
 		t.Fatalf("composeFanout should fall back to primary when all additional handlers are nil")
@@ -3378,28 +3378,28 @@ func TestHandlerLifecycleNilAndNoAsyncPaths(t *testing.T) {
 	if err := nilHandler.Close(); err != nil {
 		t.Fatalf("nil Close() returned %v, want nil", err)
 	}
-	if err := nilHandler.Shutdown(nil); err != nil {
-		t.Fatalf("nil Shutdown(nil) returned %v, want nil", err)
+	if err := nilHandler.Shutdown(context.TODO()); err != nil {
+		t.Fatalf("nil Shutdown(context.TODO()) returned %v, want nil", err)
 	}
-	if err := nilHandler.Abort(nil); err != nil {
-		t.Fatalf("nil Abort(nil) returned %v, want nil", err)
+	if err := nilHandler.Abort(context.TODO()); err != nil {
+		t.Fatalf("nil Abort(context.TODO()) returned %v, want nil", err)
 	}
 	if err := nilHandler.shutdownAsyncHandler(context.Background()); err != nil {
 		t.Fatalf("nil shutdownAsyncHandler returned %v, want nil", err)
 	}
-	if err := nilHandler.abortAsyncHandler(nil); err != nil {
-		t.Fatalf("nil abortAsyncHandler(nil) returned %v, want nil", err)
+	if err := nilHandler.abortAsyncHandler(context.TODO()); err != nil {
+		t.Fatalf("nil abortAsyncHandler(context.TODO()) returned %v, want nil", err)
 	}
 	if err := nilHandler.closeResourcesOnce(); err != nil {
 		t.Fatalf("nil closeResourcesOnce() returned %v, want nil", err)
 	}
 
 	h := &Handler{internalLogger: slog.New(slog.DiscardHandler)}
-	if err := h.Shutdown(nil); err != nil {
-		t.Fatalf("Shutdown(nil) without async returned %v, want nil", err)
+	if err := h.Shutdown(context.TODO()); err != nil {
+		t.Fatalf("Shutdown(context.TODO()) without async returned %v, want nil", err)
 	}
-	if err := h.Abort(nil); err != nil {
-		t.Fatalf("Abort(nil) without async returned %v, want nil", err)
+	if err := h.Abort(context.TODO()); err != nil {
+		t.Fatalf("Abort(context.TODO()) without async returned %v, want nil", err)
 	}
 }
 
@@ -3422,9 +3422,9 @@ func TestHandlerAsyncHelperBranches(t *testing.T) {
 		internalLogger: slog.New(slog.DiscardHandler),
 	}
 
-	abortErr := h.abortAsyncHandler(nil)
+	abortErr := h.abortAsyncHandler(context.TODO())
 	if !errors.Is(abortErr, slogcpasync.ErrAborted) {
-		t.Fatalf("abortAsyncHandler(nil) error = %v, want ErrAborted", abortErr)
+		t.Fatalf("abortAsyncHandler(context.TODO()) error = %v, want ErrAborted", abortErr)
 	}
 
 	inner := newBlockingAbortHandler(nil)
@@ -3461,7 +3461,7 @@ func TestHandlerAsyncHelperBranches(t *testing.T) {
 		t.Fatalf("abortAsyncHandler() error = %v, want ErrAborted", abort)
 	}
 
-	fastWrapped := slogcpasync.Wrap(slog.NewJSONHandler(io.Discard, nil))
+	fastWrapped := slogcpasync.Wrap(slog.DiscardHandler)
 	fastAsync, ok := fastWrapped.(*slogcpasync.Handler)
 	if !ok {
 		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", fastWrapped)

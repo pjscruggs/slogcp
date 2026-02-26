@@ -486,8 +486,9 @@ func TestContextWithTraceProjectIDNilContext(t *testing.T) {
 
 // TestTraceProjectContextHelpersNilContext ensures nil context lookups return no project.
 func TestTraceProjectContextHelpersNilContext(t *testing.T) {
-	if got, ok := TraceProjectIDFromContext(nil); ok || got != "" {
-		t.Fatalf("TraceProjectIDFromContext(nil) = (%q,%v), want (\"\",false)", got, ok)
+	var nilCtx context.Context
+	if got, ok := TraceProjectIDFromContext(nilCtx); ok || got != "" {
+		t.Fatalf("TraceProjectIDFromContext(nilCtx) = (%q,%v), want (\"\",false)", got, ok)
 	}
 }
 
