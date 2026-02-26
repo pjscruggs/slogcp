@@ -814,6 +814,11 @@ func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 	enc := json.NewEncoder(buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(jsonPayload); err != nil {
+		// Fallback intentionally works at top-level field granularity. Each probe
+		// uses json.Marshal(value), which recursively validates nested content.
+		// That catches nested unsupported values while keeping retry logic simple.
+		// If retry still fails, common causes are non-deterministic marshalers or
+		// concurrent mutation, not missed nested validation.
 		sanitized := sanitizeTopLevelJSONValues(jsonPayload)
 		buf.Reset()
 		enc = json.NewEncoder(buf)
@@ -841,6 +846,10 @@ func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 
 // sanitizeTopLevelJSONValues replaces top-level values that cannot be JSON
 // encoded with deterministic placeholder strings, preserving the overall record.
+//
+// This function intentionally operates at top-level field granularity. Each
+// probe uses json.Marshal(value), which recursively validates nested content.
+// If any nested value is unsupported, the entire top-level field is replaced.
 func sanitizeTopLevelJSONValues(jsonPayload map[string]any) bool {
 	if len(jsonPayload) == 0 {
 		return false
