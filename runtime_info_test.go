@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,7 +36,6 @@ func init() {
 func resetRuntimeInfoCache() {
 	setRuntimeInfoGetter(sync.OnceValue(detectRuntimeInfo))
 	runtimeInfoOverride.Store(nil)
-	resetHandlerConfigCache()
 }
 
 // stubRuntimeInfo seeds cached runtime info for tests that need deterministic values.
@@ -730,57 +728,6 @@ func TestMetadataLookupCachesEntries(t *testing.T) {
 	}
 	if client.getCalls != 1 {
 		t.Fatalf("cached lookup should not invoke metadata client; got %d calls", client.getCalls)
-	}
-}
-
-// TestCachedConfigFromEnvHandlesClearedCache exercises the fallback path when the cache is cleared mid-race.
-func TestCachedConfigFromEnvHandlesClearedCache(t *testing.T) {
-	t.Parallel()
-
-	resetHandlerConfigCache()
-	origLoader := getLoadConfigFromEnv()
-	origHook := getCachedConfigRaceHook()
-	t.Cleanup(func() {
-		setLoadConfigFromEnv(origLoader)
-		setCachedConfigRaceHook(origHook)
-		resetHandlerConfigCache()
-	})
-
-	start := make(chan struct{}, 2)
-	release := make(chan struct{})
-	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
-		start <- struct{}{}
-		<-release
-		return handlerConfig{Writer: io.Discard}, nil
-	})
-	setCachedConfigRaceHook(func() {
-		resetHandlerConfigCache()
-	})
-
-	logger := slog.New(slog.DiscardHandler)
-
-	var wg sync.WaitGroup
-	results := make(chan error, 2)
-	worker := func() {
-		defer wg.Done()
-		_, err := cachedConfigFromEnv(logger)
-		results <- err
-	}
-
-	wg.Add(2)
-	go worker()
-	go worker()
-
-	<-start
-	<-start
-	close(release)
-
-	wg.Wait()
-	close(results)
-	for err := range results {
-		if err != nil {
-			t.Fatalf("cachedConfigFromEnv returned %v", err)
-		}
 	}
 }
 

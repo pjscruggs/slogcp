@@ -483,7 +483,6 @@ func TestHandlerWithLevelVarSeedsFromEnv(t *testing.T) {
 // default but can emit it when explicitly enabled.
 func TestHandlerTimeFieldEmission(t *testing.T) {
 	t.Setenv("SLOGCP_TIME", "")
-	ResetHandlerConfigCacheForTest()
 	ResetRuntimeInfoCacheForTest()
 
 	t.Run("disabled_by_default", func(t *testing.T) {
@@ -830,7 +829,6 @@ func (h *handlerRecordingHandler) WithGroup(string) slog.Handler { return h }
 
 // TestHandlerStackTraceLevelEmitsStacks verifies the stack trace level option triggers capture.
 func TestHandlerStackTraceLevelEmitsStacks(t *testing.T) {
-	ResetHandlerConfigCacheForTest()
 	ResetRuntimeInfoCacheForTest()
 	t.Setenv("SLOGCP_TARGET", "")
 
@@ -863,7 +861,6 @@ func TestHandlerStackTraceLevelEmitsStacks(t *testing.T) {
 // TestHandlerDefaultSeverityDoesNotTriggerStack ensures LevelDefault does not
 // outrank error thresholds for stack trace capture.
 func TestHandlerDefaultSeverityDoesNotTriggerStack(t *testing.T) {
-	ResetHandlerConfigCacheForTest()
 	ResetRuntimeInfoCacheForTest()
 	t.Setenv("SLOGCP_TARGET", "")
 
@@ -895,7 +892,6 @@ func TestHandlerDefaultSeverityDoesNotTriggerStack(t *testing.T) {
 
 // TestHandlerMiddlewareInvokesHooks ensures WithMiddleware attaches middleware correctly.
 func TestHandlerMiddlewareInvokesHooks(t *testing.T) {
-	ResetHandlerConfigCacheForTest()
 	ResetRuntimeInfoCacheForTest()
 	t.Setenv("SLOGCP_TARGET", "")
 
@@ -1180,7 +1176,6 @@ func clearHandlerEnv(t *testing.T) {
 	t.Setenv(envTarget, "")
 	t.Setenv(envAsyncOnFile, "")
 	resetRuntimeInfoCache()
-	resetHandlerConfigCache()
 }
 
 // TestWithAsyncWrapsHandler ensures WithAsync applies the async wrapper.
@@ -1956,31 +1951,6 @@ func TestParseLevelEnvCoversAliases(t *testing.T) {
 	}
 }
 
-// TestCachedConfigFromEnvCachesResults ensures the first successful load is reused.
-func TestCachedConfigFromEnvCachesResults(t *testing.T) {
-	clearHandlerEnv(t)
-	t.Cleanup(resetHandlerConfigCache)
-
-	t.Setenv(envLogLevel, "error")
-	cfg, err := cachedConfigFromEnv(newDiscardLogger())
-	if err != nil {
-		t.Fatalf("cachedConfigFromEnv() returned %v", err)
-	}
-	if cfg.Level != slog.LevelError {
-		t.Fatalf("cached level = %v, want %v", cfg.Level, slog.LevelError)
-	}
-
-	// Changing the environment without resetting the cache should not affect the result.
-	t.Setenv(envLogLevel, "debug")
-	cfgAgain, err := cachedConfigFromEnv(newDiscardLogger())
-	if err != nil {
-		t.Fatalf("cachedConfigFromEnv() second call returned %v", err)
-	}
-	if cfgAgain.Level != slog.LevelError {
-		t.Fatalf("cached level after env change = %v, want %v", cfgAgain.Level, slog.LevelError)
-	}
-}
-
 // TestNewHandlerReadsEnvPerCall ensures each NewHandler call reads current environment values.
 func TestNewHandlerReadsEnvPerCall(t *testing.T) {
 	clearHandlerEnv(t)
@@ -2007,42 +1977,6 @@ func TestNewHandlerReadsEnvPerCall(t *testing.T) {
 	})
 	if got := h2.cfg.Level; got != slog.LevelDebug {
 		t.Fatalf("second handler level = %v, want %v", got, slog.LevelDebug)
-	}
-}
-
-// TestCachedConfigFromEnvReturnsLocalCfgWhenCacheClearedAfterCAS verifies the fallback return when CAS fails and the cache is cleared.
-func TestCachedConfigFromEnvReturnsLocalCfgWhenCacheClearedAfterCAS(t *testing.T) {
-	clearHandlerEnv(t)
-	resetHandlerConfigCache()
-
-	origLoader := getLoadConfigFromEnv()
-	origHook := getCachedConfigRaceHook()
-	t.Cleanup(func() {
-		setLoadConfigFromEnv(origLoader)
-		setCachedConfigRaceHook(origHook)
-		resetHandlerConfigCache()
-	})
-
-	// Loader simulates a concurrent cache population before CompareAndSwap runs.
-	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
-		handlerEnvConfigCache.Store(&handlerConfig{Level: slog.LevelWarn})
-		return handlerConfig{Level: slog.LevelDebug}, nil
-	})
-
-	// Hook clears the cache so the function must return the locally loaded cfg.
-	setCachedConfigRaceHook(func() {
-		resetHandlerConfigCache()
-	})
-
-	cfg, err := cachedConfigFromEnv(newDiscardLogger())
-	if err != nil {
-		t.Fatalf("cachedConfigFromEnv() returned %v", err)
-	}
-	if cfg.Level != slog.LevelDebug {
-		t.Fatalf("cfg.Level = %v, want %v (local cfg)", cfg.Level, slog.LevelDebug)
-	}
-	if cached := handlerEnvConfigCache.Load(); cached != nil {
-		t.Fatalf("handlerEnvConfigCache should be cleared, got %+v", cached)
 	}
 }
 
@@ -2265,84 +2199,6 @@ func TestParseTraceDiagnosticsEnvCoversModes(t *testing.T) {
 				t.Fatalf("parseTraceDiagnosticsEnv(%q) = %v, want %v", tt.value, got, tt.want)
 			}
 		})
-	}
-}
-
-// TestLoadConfigFromEnvHelpersFallback exercises the helper accessors and defaulting paths.
-func TestLoadConfigFromEnvHelpersFallback(t *testing.T) {
-	originalLoader := getLoadConfigFromEnv()
-	defer setLoadConfigFromEnv(originalLoader)
-
-	setLoadConfigFromEnv(nil)
-	if fn := getLoadConfigFromEnv(); fn == nil {
-		t.Fatalf("getLoadConfigFromEnv returned nil after nil setter")
-	}
-
-	loadConfigFromEnvFunc = atomic.Value{}
-	if fn := getLoadConfigFromEnv(); fn == nil {
-		t.Fatalf("getLoadConfigFromEnv returned nil after zeroing atomic value")
-	}
-
-	setLoadConfigFromEnv(originalLoader)
-}
-
-// TestCachedConfigFromEnvInvokesRaceHook simulates a concurrent cache fill to ensure the hook fires.
-func TestCachedConfigFromEnvInvokesRaceHook(t *testing.T) {
-	clearHandlerEnv(t)
-	resetHandlerConfigCache()
-
-	originalLoader := getLoadConfigFromEnv()
-	originalHook := getCachedConfigRaceHook()
-	t.Cleanup(func() {
-		setLoadConfigFromEnv(originalLoader)
-		setCachedConfigRaceHook(originalHook)
-		resetHandlerConfigCache()
-	})
-
-	raceWinner := &handlerConfig{Level: slog.LevelWarn}
-	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
-		handlerEnvConfigCache.Store(raceWinner)
-		return handlerConfig{Level: slog.LevelInfo}, nil
-	})
-
-	hookCalled := false
-	setCachedConfigRaceHook(func() {
-		hookCalled = true
-	})
-
-	cfg, err := cachedConfigFromEnv(newDiscardLogger())
-	if err != nil {
-		t.Fatalf("cachedConfigFromEnv() returned %v, want nil", err)
-	}
-	if !hookCalled {
-		t.Fatalf("cachedConfigRaceHook was not invoked")
-	}
-	if cfg.Level != raceWinner.Level {
-		t.Fatalf("cfg.Level = %v, want %v from existing cache", cfg.Level, raceWinner.Level)
-	}
-}
-
-// TestCachedConfigFromEnvReturnsLoaderError ensures loader failures propagate.
-func TestCachedConfigFromEnvReturnsLoaderError(t *testing.T) {
-	clearHandlerEnv(t)
-	resetHandlerConfigCache()
-
-	originalLoader := getLoadConfigFromEnv()
-	t.Cleanup(func() {
-		setLoadConfigFromEnv(originalLoader)
-		resetHandlerConfigCache()
-	})
-
-	wantErr := errors.New("loader boom")
-	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
-		return handlerConfig{}, wantErr
-	})
-
-	if _, err := cachedConfigFromEnv(newDiscardLogger()); !errors.Is(err, wantErr) {
-		t.Fatalf("cachedConfigFromEnv() error = %v, want %v", err, wantErr)
-	}
-	if cached := handlerEnvConfigCache.Load(); cached != nil {
-		t.Fatalf("handlerEnvConfigCache should remain empty after loader error, got %+v", cached)
 	}
 }
 

@@ -129,9 +129,10 @@ func BuildXCloudTraceContext(rawTraceID, spanIDHex string, sampled bool) string 
 // When no project ID can be determined it falls back to OpenTelemetry-style
 // keys (`otel.trace_id`, `otel.span_id`, and `otel.trace_sampled`).
 //
-// When projectID is empty, the helper falls back to environment variables in
-// the following order: SLOGCP_TRACE_PROJECT_ID, SLOGCP_PROJECT_ID, and
-// GOOGLE_CLOUD_PROJECT.
+// When projectID is empty, the helper resolves project IDs in this order:
+// explicit argument, context override, then environment variables in the
+// following order: SLOGCP_TRACE_PROJECT_ID, SLOGCP_PROJECT_ID,
+// SLOGCP_GCP_PROJECT, GOOGLE_CLOUD_PROJECT, GCLOUD_PROJECT, and GCP_PROJECT.
 func TraceAttributes(ctx context.Context, projectID string) ([]slog.Attr, bool) {
 	if ctx == nil {
 		return nil, false

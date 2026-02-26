@@ -14,12 +14,6 @@
 
 package slogcp
 
-// ResetHandlerConfigCacheForTest clears the handler config cache to let tests
-// observe fresh environment settings.
-func ResetHandlerConfigCacheForTest() {
-	resetHandlerConfigCache()
-}
-
 // ResetRuntimeInfoCacheForTest clears runtime detection state so tests can
 // control environment-derived defaults.
 func ResetRuntimeInfoCacheForTest() {

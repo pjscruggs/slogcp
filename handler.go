@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/pjscruggs/slogcp/slogcpasync"
 )
@@ -66,8 +65,6 @@ const (
 var (
 	// ErrInvalidRedirectTarget indicates an unsupported value for SLOGCP_TARGET or redirect options.
 	ErrInvalidRedirectTarget = errors.New("slogcp: invalid redirect target")
-
-	handlerEnvConfigCache atomic.Pointer[handlerConfig]
 )
 
 // Option mutates Handler construction behaviour when supplied to [NewHandler].
@@ -1181,77 +1178,6 @@ func defaultUseShortSeverityNames() bool {
 // field without any explicit configuration from the caller.
 func defaultEmitTimeField() bool {
 	return !prefersManagedGCPDefaults(DetectRuntimeInfo())
-}
-
-var (
-	loadConfigFromEnvFunc atomic.Value // func(*slog.Logger) (handlerConfig, error)
-	cachedConfigRaceHook  atomic.Value // func()
-)
-
-// init seeds the handler configuration loader defaults.
-func init() {
-	setLoadConfigFromEnv(loadConfigFromEnv)
-}
-
-// setLoadConfigFromEnv overrides the function used to load handler configuration from environment variables.
-func setLoadConfigFromEnv(fn func(*slog.Logger) (handlerConfig, error)) {
-	if fn == nil {
-		fn = loadConfigFromEnv
-	}
-	loadConfigFromEnvFunc.Store(fn)
-}
-
-// getLoadConfigFromEnv returns the current handler configuration loader, defaulting to the built-in implementation.
-func getLoadConfigFromEnv() func(*slog.Logger) (handlerConfig, error) {
-	if fn, ok := loadConfigFromEnvFunc.Load().(func(*slog.Logger) (handlerConfig, error)); ok && fn != nil {
-		return fn
-	}
-	return loadConfigFromEnv
-}
-
-// setCachedConfigRaceHook installs a hook invoked when cachedConfigFromEnv observes a concurrent cache fill.
-func setCachedConfigRaceHook(fn func()) {
-	cachedConfigRaceHook.Store(fn)
-}
-
-// getCachedConfigRaceHook returns the currently configured cache race hook, if any.
-func getCachedConfigRaceHook() func() {
-	if fn, ok := cachedConfigRaceHook.Load().(func()); ok {
-		return fn
-	}
-	return nil
-}
-
-// loadConfigFromEnv reads handler configuration overrides from environment
-// variables, logging validation issues to logger.
-func cachedConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
-	if cached := handlerEnvConfigCache.Load(); cached != nil {
-		return *cached, nil
-	}
-
-	cfg, err := getLoadConfigFromEnv()(logger)
-	if err != nil {
-		return handlerConfig{}, err
-	}
-
-	entry := new(handlerConfig)
-	*entry = cfg
-	if handlerEnvConfigCache.CompareAndSwap(nil, entry) {
-		return cfg, nil
-	}
-	if hook := getCachedConfigRaceHook(); hook != nil {
-		hook()
-	}
-	if cached := handlerEnvConfigCache.Load(); cached != nil {
-		return *cached, nil
-	}
-	return cfg, nil
-}
-
-// resetHandlerConfigCache clears the cached handler configuration derived from
-// environment variables, forcing the next handler to re-read the environment.
-func resetHandlerConfigCache() {
-	handlerEnvConfigCache.Store(nil)
 }
 
 // resolveTraceProjectFromEnv returns the highest-priority trace project ID and its source.
