@@ -62,6 +62,21 @@ const (
 	TraceDiagnosticsStrict
 )
 
+// CloseTimeoutPolicy controls what [Handler.Close] does when async graceful
+// shutdown reaches its flush timeout.
+type CloseTimeoutPolicy int
+
+const (
+	// CloseTimeoutAutoAbort keeps backward-compatible Close behavior: if
+	// graceful async close times out, Close escalates to forceful abort before
+	// closing owned resources.
+	CloseTimeoutAutoAbort CloseTimeoutPolicy = iota
+	// CloseTimeoutReturn keeps Close in graceful-only mode on timeout. Close
+	// returns the timeout error and leaves owned resources open so in-flight
+	// async workers are not interrupted by a concurrent sink close.
+	CloseTimeoutReturn
+)
+
 var (
 	// ErrInvalidRedirectTarget indicates an unsupported value for SLOGCP_TARGET or redirect options.
 	ErrInvalidRedirectTarget = errors.New("slogcp: invalid redirect target")
@@ -207,6 +222,7 @@ type handlerConfig struct {
 	runtimeServiceContextAny map[string]any
 	traceAllowAutoformat     bool
 	traceDiagnosticsState    *traceDiagnostics
+	CloseTimeoutPolicy       CloseTimeoutPolicy
 }
 
 type options struct {
@@ -233,6 +249,7 @@ type options struct {
 	asyncOnFileTargets    bool
 	asyncOpts             []slogcpasync.Option
 	additionalHandlers    []slog.Handler
+	closeTimeoutPolicy    *CloseTimeoutPolicy
 }
 
 // NewHandler builds a Google Cloud aware slog [Handler]. It inspects the
@@ -605,21 +622,40 @@ func ensureWriterFallback(cfg *handlerConfig) {
 
 // Close releases any resources owned by the handler such as log files or
 // writer implementations created by options. It first runs async shutdown via
-// the configured flush timeout and escalates to abort on timeout before
-// resources are closed.
+// the configured flush timeout.
+//
+// On timeout, behavior depends on [CloseTimeoutPolicy]:
+//   - [CloseTimeoutAutoAbort] (default): Close escalates to abort, then closes
+//     owned resources.
+//   - [CloseTimeoutReturn]: Close returns timeout errors without aborting and
+//     leaves owned resources open.
 func (h *Handler) Close() error {
 	if h == nil {
 		return nil
 	}
 
-	// Preserve existing Close semantics (graceful timeout from async config)
-	// while escalating to abort before tearing down owned writers/files.
 	asyncErr := h.closeAsyncHandler()
 	if errors.Is(asyncErr, slogcpasync.ErrFlushTimeout) {
-		asyncErr = errors.Join(asyncErr, h.abortAsyncHandler(context.Background()))
+		if h.closeTimeoutPolicy() == CloseTimeoutAutoAbort {
+			asyncErr = errors.Join(asyncErr, h.abortAsyncHandler(context.Background()))
+			return errors.Join(asyncErr, h.closeResourcesOnce())
+		}
+		// Do not close owned resources here: async workers may still be in
+		// downstream writes, and closing sinks underneath them can corrupt output
+		// or trigger avoidable write/close races in custom writers.
+		return asyncErr
 	}
 
 	return errors.Join(asyncErr, h.closeResourcesOnce())
+}
+
+// closeTimeoutPolicy resolves Close timeout behavior, defaulting invalid or
+// unspecified values to CloseTimeoutAutoAbort for backward compatibility.
+func (h *Handler) closeTimeoutPolicy() CloseTimeoutPolicy {
+	if h == nil || h.cfg == nil {
+		return CloseTimeoutAutoAbort
+	}
+	return normalizeCloseTimeoutPolicy(h.cfg.CloseTimeoutPolicy)
 }
 
 // Shutdown performs graceful async drain bounded by ctx. On timeout it returns
@@ -1124,6 +1160,18 @@ func WithAsyncOnFile(opts ...slogcpasync.Option) Option {
 	}
 }
 
+// WithCloseTimeoutPolicy configures how [Handler.Close] behaves when async
+// graceful shutdown reaches its flush timeout.
+//
+// The default is [CloseTimeoutAutoAbort]. Use [CloseTimeoutReturn] to make
+// Close return timeout errors without aborting or closing owned resources.
+func WithCloseTimeoutPolicy(policy CloseTimeoutPolicy) Option {
+	normalized := normalizeCloseTimeoutPolicy(policy)
+	return func(o *options) {
+		o.closeTimeoutPolicy = &normalized
+	}
+}
+
 // WithAttrs preloads static attributes to be attached to every record emitted
 // by the handler.
 func WithAttrs(attrs []slog.Attr) Option {
@@ -1209,6 +1257,7 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 		EmitTimeField:         defaultEmitTimeField(),
 		TraceDiagnostics:      TraceDiagnosticsWarnOnce,
 		UseShortSeverityNames: defaultUseShortSeverityNames(),
+		CloseTimeoutPolicy:    CloseTimeoutAutoAbort,
 	}
 
 	cfg.Level = resolveLevelFromEnv(cfg.Level, logger)
@@ -1268,6 +1317,20 @@ func applyLevelAndTraceOptions(cfg *handlerConfig, o *options) {
 	}
 	if o.useShortSeverity != nil {
 		cfg.UseShortSeverityNames = *o.useShortSeverity
+	}
+	if o.closeTimeoutPolicy != nil {
+		cfg.CloseTimeoutPolicy = normalizeCloseTimeoutPolicy(*o.closeTimeoutPolicy)
+	}
+}
+
+// normalizeCloseTimeoutPolicy maps unknown values to the default
+// backward-compatible behavior.
+func normalizeCloseTimeoutPolicy(policy CloseTimeoutPolicy) CloseTimeoutPolicy {
+	switch policy {
+	case CloseTimeoutAutoAbort, CloseTimeoutReturn:
+		return policy
+	default:
+		return CloseTimeoutAutoAbort
 	}
 }
 
