@@ -633,7 +633,8 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 }
 
 // Abort performs forceful async shutdown (bounded by ctx) and then closes
-// owned resources.
+// owned resources. When ctx expires first, Abort returns promptly while the
+// underlying async abort may still be finishing in the background.
 func (h *Handler) Abort(ctx context.Context) error {
 	if h == nil {
 		return nil
@@ -670,6 +671,10 @@ func (h *Handler) shutdownAsyncHandler(ctx context.Context) error {
 
 // abortAsyncHandler requests forceful async shutdown and waits until either the
 // abort completes or ctx expires.
+//
+// This intentionally delegates bounded waiting to slogcpasync.AbortContext so
+// repeated timeout callers share one abort coordinator instead of spawning a
+// helper goroutine per call.
 func (h *Handler) abortAsyncHandler(ctx context.Context) error {
 	if h == nil || h.asyncHandler == nil {
 		return nil
@@ -678,17 +683,10 @@ func (h *Handler) abortAsyncHandler(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	done := make(chan error, 1)
-	go func() {
-		done <- h.asyncHandler.Abort()
-	}()
-
-	select {
-	case err := <-done:
+	if err := h.asyncHandler.AbortContext(ctx); err != nil {
 		return fmt.Errorf("abort async handler: %w", err)
-	case <-ctx.Done():
-		return fmt.Errorf("abort async handler: %w", ctx.Err())
 	}
+	return nil
 }
 
 // closeResources tears down owned writers and closers.

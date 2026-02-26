@@ -231,10 +231,18 @@ type asyncState struct {
 	finalizeErr  error
 	abortOnce    sync.Once
 	abortErr     error
-	closer       func() error
-	aborter      func() error
-	errWriter    io.Writer
-	onDrop       DropHandler
+	// abortStartOnce guarantees at most one background abort coordinator starts.
+	// This avoids per-call helper goroutine accumulation when callers repeatedly
+	// invoke AbortContext with short deadlines.
+	abortStartOnce sync.Once
+	// abortDone closes once the single abort coordinator finishes.
+	abortDone chan struct{}
+	// abortResult stores the final joined abort outcome once abortDone closes.
+	abortResult error
+	closer      func() error
+	aborter     func() error
+	errWriter   io.Writer
+	onDrop      DropHandler
 }
 
 type queuedRecord struct {
@@ -570,20 +578,35 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 }
 
 // Abort escalates shutdown to best-effort termination, dropping queued records
-// not yet handled. It returns ErrAborted (joined with downstream abort/close
-// errors when present).
+// not yet handled. Abort blocks until the abort sequence completes.
+//
+// For bounded waits, use [AbortContext].
 func (h *Handler) Abort() error {
+	return h.AbortContext(context.Background())
+}
+
+// AbortContext initiates the forceful abort sequence and waits until completion
+// or ctx expiry.
+//
+// Cancellation only bounds the caller's wait; abort continues in the background
+// once started. This method intentionally starts at most one abort coordinator
+// goroutine and reuses its completion signal across calls so repeated short
+// timeouts do not accumulate helper goroutines.
+func (h *Handler) AbortContext(ctx context.Context) error {
 	if h == nil || h.state == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	h.state.aborted.Store(true)
-	h.state.startShutdown()
-
-	abortErr := h.state.abortDownstream()
-	waitErr := h.state.waitWorkers(context.Background())
-	closeErr := h.state.finalizeClose()
-	return errors.Join(ErrAborted, abortErr, waitErr, closeErr)
+	done := h.state.startAbort()
+	select {
+	case <-done:
+		return h.state.abortOutcome()
+	case <-ctx.Done():
+		return errors.Join(ErrAborted, ctx.Err())
+	}
 }
 
 // beginSend tracks an in-flight send while the handler remains open.
@@ -714,6 +737,48 @@ func (s *asyncState) abortDownstream() error {
 		}
 	})
 	return s.abortErr
+}
+
+// startAbort transitions to abort mode once and runs abort/close orchestration
+// in a single background coordinator.
+func (s *asyncState) startAbort() <-chan struct{} {
+	if s == nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+
+	s.abortStartOnce.Do(func() {
+		s.abortDone = make(chan struct{})
+		s.aborted.Store(true)
+		s.startShutdown()
+
+		go func() {
+			abortErr := s.abortDownstream()
+			waitErr := s.waitWorkers(context.Background())
+			closeErr := s.finalizeClose()
+			s.abortResult = errors.Join(ErrAborted, abortErr, waitErr, closeErr)
+			close(s.abortDone)
+		}()
+	})
+
+	if s.abortDone == nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	return s.abortDone
+}
+
+// abortOutcome returns the final abort result after startAbort completion.
+func (s *asyncState) abortOutcome() error {
+	if s == nil {
+		return nil
+	}
+	if s.abortResult != nil {
+		return s.abortResult
+	}
+	return ErrAborted
 }
 
 // ensureGateLocked initializes coordination primitives for tests that build asyncState directly.

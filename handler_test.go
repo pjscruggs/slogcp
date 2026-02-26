@@ -3247,7 +3247,8 @@ func TestHandlerShutdownTimeoutKeepsOwnedResourcesOpen(t *testing.T) {
 }
 
 // TestHandlerAbortRespectsContext verifies Abort returns on caller deadlines
-// when the downstream abort hook does not complete.
+// when the downstream abort hook does not complete, and repeated timeout
+// callers share one downstream abort attempt.
 func TestHandlerAbortRespectsContext(t *testing.T) {
 	t.Parallel()
 
@@ -3272,17 +3273,25 @@ func TestHandlerAbortRespectsContext(t *testing.T) {
 		internalLogger:   slog.New(slog.DiscardHandler),
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	err := h.Abort(ctx)
-	if err == nil {
-		t.Fatalf("Abort() = nil, want context deadline error")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Abort() error = %v, want context deadline exceeded", err)
+	for range 3 {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		err := h.Abort(ctx)
+		cancel()
+		if err == nil {
+			t.Fatalf("Abort() = nil, want context deadline error")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Abort() error = %v, want context deadline exceeded", err)
+		}
+		if !errors.Is(err, slogcpasync.ErrAborted) {
+			t.Fatalf("Abort() error = %v, want ErrAborted", err)
+		}
 	}
 	if switchWriter.closed != 1 {
 		t.Fatalf("switch writer close count = %d, want 1", switchWriter.closed)
+	}
+	if got := inner.abortHits.Load(); got != 1 {
+		t.Fatalf("downstream abort invoked %d times, want 1", got)
 	}
 
 	// Release the delayed abort path so helper goroutines can exit cleanly.
@@ -3395,6 +3404,16 @@ func TestHandlerAsyncHelperBranches(t *testing.T) {
 	}
 	if err := hFast.abortAsyncHandler(context.Background()); !errors.Is(err, slogcpasync.ErrAborted) {
 		t.Fatalf("abortAsyncHandler() on fast handler error = %v, want ErrAborted", err)
+	}
+
+	// Defensive guard: malformed async handlers with nil internal state should
+	// still let abortAsyncHandler return nil without panicking.
+	hNilState := &Handler{
+		asyncHandler:   &slogcpasync.Handler{},
+		internalLogger: slog.New(slog.DiscardHandler),
+	}
+	if err := hNilState.abortAsyncHandler(context.Background()); err != nil {
+		t.Fatalf("abortAsyncHandler() with nil async state returned %v, want nil", err)
 	}
 }
 
@@ -3608,6 +3627,7 @@ func (h *blockingAbortHandler) Abort() error {
 type slowAbortHandler struct {
 	release   chan struct{}
 	abortGate chan struct{}
+	abortHits atomic.Int64
 }
 
 // newSlowAbortHandler returns a handler whose Abort blocks until abortGate is closed.
@@ -3635,6 +3655,7 @@ func (h *slowAbortHandler) WithGroup(string) slog.Handler { return h }
 
 // Abort waits for abortGate to close before unblocking Handle.
 func (h *slowAbortHandler) Abort() error {
+	h.abortHits.Add(1)
 	<-h.abortGate
 	select {
 	case <-h.release:
