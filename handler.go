@@ -81,6 +81,11 @@ type Middleware func(slog.Handler) slog.Handler
 
 // Handler routes slog records to Google Cloud Logging with optional
 // middlewares, stack traces and trace correlation.
+//
+// JSON payload emission is best-effort. If a field value cannot be encoded by
+// encoding/json, slogcp replaces the failing top-level field with a stable
+// "!ERROR:<cause>" placeholder and retries once so one unsupported value does
+// not drop the entire entry.
 type Handler struct {
 	slog.Handler
 
@@ -233,7 +238,8 @@ type options struct {
 // NewHandler builds a Google Cloud aware slog [Handler]. It inspects the
 // environment for configuration overrides and then applies any provided
 // [Option] values. The handler writes to defaultWriter unless a redirect
-// option or environment override is provided.
+// option or environment override is provided. Encoding failures are handled
+// with a single sanitize-and-retry pass described in [Handler].
 //
 // Example:
 //
