@@ -950,6 +950,34 @@ func (h *noErrorAborter) Abort() {
 	h.abortCount.Add(1)
 }
 
+type blockingAborter struct {
+	*recordingHandler
+	entered    chan struct{}
+	release    chan struct{}
+	abortCount *atomic.Int64
+}
+
+// newBlockingAborter builds a handler whose Abort blocks until release closes.
+func newBlockingAborter() *blockingAborter {
+	return &blockingAborter{
+		recordingHandler: newRecordingHandler(nil),
+		entered:          make(chan struct{}, 1),
+		release:          make(chan struct{}),
+		abortCount:       &atomic.Int64{},
+	}
+}
+
+// Abort records invocation, signals entry, and blocks until explicitly released.
+func (h *blockingAborter) Abort() error {
+	h.abortCount.Add(1)
+	select {
+	case h.entered <- struct{}{}:
+	default:
+	}
+	<-h.release
+	return nil
+}
+
 // TestClosePropagatesCloserError ensures closerFor picks the error-returning Close().
 func TestClosePropagatesCloserError(t *testing.T) {
 	inner := &closeErrorHandler{recordingHandler: newRecordingHandler(nil), err: errors.New("boom")}
@@ -1100,6 +1128,92 @@ func TestAbortWithoutAborterStillMarksAborted(t *testing.T) {
 	h := Wrap(newRecordingHandler(nil))
 	if err := h.(*Handler).Abort(); !errors.Is(err, ErrAborted) {
 		t.Fatalf("Abort() error = %v, want ErrAborted", err)
+	}
+}
+
+// TestAbortContextTimeoutStartsAbortOnce ensures repeated bounded abort waits
+// do not spawn repeated downstream abort attempts.
+func TestAbortContextTimeoutStartsAbortOnce(t *testing.T) {
+	t.Parallel()
+
+	inner := newBlockingAborter()
+	h := Wrap(inner)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	for range 5 {
+		err := h.(*Handler).AbortContext(ctx)
+		if err == nil {
+			t.Fatalf("AbortContext() returned nil, want timeout")
+		}
+		if !errors.Is(err, ErrAborted) {
+			t.Fatalf("AbortContext() error = %v, want ErrAborted", err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("AbortContext() error = %v, want context deadline exceeded", err)
+		}
+	}
+
+	select {
+	case <-inner.entered:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("timed out waiting for downstream abort to start")
+	}
+	if got := inner.abortCount.Load(); got != 1 {
+		t.Fatalf("downstream abort invoked %d times, want 1", got)
+	}
+
+	close(inner.release)
+	if err := h.(*Handler).AbortContext(context.Background()); !errors.Is(err, ErrAborted) {
+		t.Fatalf("AbortContext(background) error = %v, want ErrAborted", err)
+	}
+}
+
+// TestAbortContextNilContextUsesBackground verifies nil contexts are accepted
+// and treated as an unbounded wait for the caller.
+func TestAbortContextNilContextUsesBackground(t *testing.T) {
+	t.Parallel()
+
+	inner := newNoErrorAborter()
+	h := Wrap(inner)
+
+	if err := h.(*Handler).AbortContext(nil); !errors.Is(err, ErrAborted) {
+		t.Fatalf("AbortContext(nil) error = %v, want ErrAborted", err)
+	}
+	if got := inner.abortCount.Load(); got != 1 {
+		t.Fatalf("abort hook called %d times, want 1", got)
+	}
+}
+
+// TestAbortCoordinationDefensiveBranches exercises guard rails that are only
+// reachable in malformed/internal states.
+func TestAbortCoordinationDefensiveBranches(t *testing.T) {
+	t.Parallel()
+
+	// Nil state: startAbort returns an already-closed done channel and
+	// abortOutcome reports nil to match other nil-receiver helpers.
+	var nilState *asyncState
+	select {
+	case <-nilState.startAbort():
+	default:
+		t.Fatalf("nil startAbort should return closed channel")
+	}
+	if err := nilState.abortOutcome(); err != nil {
+		t.Fatalf("nil abortOutcome = %v, want nil", err)
+	}
+
+	// If abortStartOnce is already consumed (unexpected/malformed), startAbort
+	// must still return a closed channel instead of blocking forever.
+	malformed := &asyncState{}
+	malformed.abortStartOnce.Do(func() {})
+	select {
+	case <-malformed.startAbort():
+	default:
+		t.Fatalf("malformed startAbort should return closed channel")
+	}
+	if err := malformed.abortOutcome(); !errors.Is(err, ErrAborted) {
+		t.Fatalf("malformed abortOutcome = %v, want ErrAborted", err)
 	}
 }
 
