@@ -2,7 +2,7 @@
 
 <img src="logo.svg" width="50%" alt="slogcp logo">
 
-A "batteries included" structured logging module for Google Cloud Platform with built-in HTTP and gRPC interceptors. Built on `log/slog`, `slogcp` turns application events into observability-ready telemetry by aligning logs, traces, and error data for Cloud Logging, Cloud Trace, and Error Reporting. Its HTTP and gRPC integrations are OpenTelemetry-aware by default, automatically propagating trace context and attaching request-scoped metadata so you get end-to-end service visibility without custom observability plumbing.
+A "batteries included" `slog.Handler` for Google Cloud Platform with built-in HTTP, gRPC, and Pub/Sub integrations. `slogcp` turns application events into observability-ready telemetry by aligning logs, traces, and error data for Cloud Logging, Cloud Trace, and Error Reporting. It writes structured JSON to stdout/stderr so GCP's logging agent handles ingestion without the overhead of managing gRPC streams, retries, or batching. Its middleware is OpenTelemetry-aware by default, automatically propagating trace context and attaching request-scoped metadata across service boundaries, while the handler auto-detects your GCP runtime and adapts its defaults so you get end-to-end visibility with minimal configuration.
 
 ## Installation
 
