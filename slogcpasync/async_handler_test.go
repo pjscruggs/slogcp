@@ -1245,16 +1245,16 @@ func TestAbortContextTimeoutStartsAbortOnce(t *testing.T) {
 	}
 }
 
-// TestAbortContextNilContextUsesBackground verifies nil contexts are accepted
-// and treated as an unbounded wait for the caller.
-func TestAbortContextNilContextUsesBackground(t *testing.T) {
+// TestAbortContextWithoutDeadlineUsesCallerAbort verifies contexts without a
+// deadline are treated as an unbounded wait for the caller.
+func TestAbortContextWithoutDeadlineUsesCallerAbort(t *testing.T) {
 	t.Parallel()
 
 	inner := newNoErrorAborter()
 	h := Wrap(inner)
 
-	if err := h.(*Handler).AbortContext(nil); !errors.Is(err, ErrAborted) {
-		t.Fatalf("AbortContext(nil) error = %v, want ErrAborted", err)
+	if err := h.(*Handler).AbortContext(context.TODO()); !errors.Is(err, ErrAborted) {
+		t.Fatalf("AbortContext(context.TODO()) error = %v, want ErrAborted", err)
 	}
 	if got := inner.abortCount.Load(); got != 1 {
 		t.Fatalf("abort hook called %d times, want 1", got)
