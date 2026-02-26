@@ -2977,6 +2977,19 @@ func TestOptionHelpersMutateOptions(t *testing.T) {
 			t.Fatalf("blank group should reset groups slice, got %+v", opts.groups)
 		}
 	})
+
+	t.Run("WithCloseTimeoutPolicy", func(t *testing.T) {
+		var opts options
+		WithCloseTimeoutPolicy(CloseTimeoutReturn)(&opts)
+		if opts.closeTimeoutPolicy == nil || *opts.closeTimeoutPolicy != CloseTimeoutReturn {
+			t.Fatalf("closeTimeoutPolicy = %v, want CloseTimeoutReturn", opts.closeTimeoutPolicy)
+		}
+
+		WithCloseTimeoutPolicy(CloseTimeoutPolicy(99))(&opts)
+		if opts.closeTimeoutPolicy == nil || *opts.closeTimeoutPolicy != CloseTimeoutAutoAbort {
+			t.Fatalf("invalid close timeout policy should normalize to CloseTimeoutAutoAbort, got %v", opts.closeTimeoutPolicy)
+		}
+	})
 }
 
 // TestNewHandlerPropagatesEnvErrors ensures invalid environment overrides bubble up to the caller.
@@ -3188,6 +3201,64 @@ func TestHandlerCloseEscalatesAsyncTimeout(t *testing.T) {
 	}
 	if switchWriter.closed != 1 {
 		t.Fatalf("switch writer close count = %d, want 1", switchWriter.closed)
+	}
+}
+
+// TestHandlerCloseTimeoutReturnSkipsAbort verifies Close can be configured to
+// return graceful timeout errors without forceful abort or owned resource close.
+func TestHandlerCloseTimeoutReturnSkipsAbort(t *testing.T) {
+	t.Parallel()
+
+	abortErr := errors.New("abort-sentinel")
+	inner := newBlockingAbortHandler(abortErr)
+	wrapped := slogcpasync.Wrap(inner,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+		slogcpasync.WithFlushTimeout(20*time.Millisecond),
+	)
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	if err := asyncHandler.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+
+	switchWriter := &writeCloseSpy{}
+	h := &Handler{
+		cfg:              &handlerConfig{CloseTimeoutPolicy: CloseTimeoutReturn},
+		asyncHandler:     asyncHandler,
+		switchableWriter: NewSwitchableWriter(switchWriter),
+		internalLogger:   slog.New(slog.DiscardHandler),
+	}
+
+	err := h.Close()
+	if err == nil {
+		t.Fatalf("Handler.Close() = nil, want timeout error")
+	}
+	if !errors.Is(err, slogcpasync.ErrFlushTimeout) {
+		t.Fatalf("Handler.Close() error = %v, want ErrFlushTimeout", err)
+	}
+	if errors.Is(err, slogcpasync.ErrAborted) {
+		t.Fatalf("Handler.Close() error = %v, want no ErrAborted when CloseTimeoutReturn is configured", err)
+	}
+	if errors.Is(err, abortErr) {
+		t.Fatalf("Handler.Close() error = %v, unexpected abort sentinel %v", err, abortErr)
+	}
+	if switchWriter.closed != 0 {
+		t.Fatalf("switch writer close count = %d, want 0", switchWriter.closed)
+	}
+
+	abortResult := h.Abort(context.Background())
+	if !errors.Is(abortResult, slogcpasync.ErrAborted) {
+		t.Fatalf("Abort() error = %v, want ErrAborted", abortResult)
+	}
+	if !errors.Is(abortResult, abortErr) {
+		t.Fatalf("Abort() error = %v, want abort sentinel %v", abortResult, abortErr)
+	}
+	if switchWriter.closed != 1 {
+		t.Fatalf("switch writer close count = %d, want 1 after Abort()", switchWriter.closed)
 	}
 }
 
@@ -3702,6 +3773,18 @@ func TestHandlerSetupHelpers(t *testing.T) {
 	builder := collectOptions([]Option{WithLevel(slog.LevelWarn), nil})
 	if builder.level == nil || *builder.level != slog.LevelWarn {
 		t.Fatalf("collectOptions level = %v, want LevelWarn", builder.level)
+	}
+
+	cfgWithPolicy := handlerConfig{CloseTimeoutPolicy: CloseTimeoutAutoAbort}
+	policy := CloseTimeoutReturn
+	applyLevelAndTraceOptions(&cfgWithPolicy, &options{closeTimeoutPolicy: &policy})
+	if cfgWithPolicy.CloseTimeoutPolicy != CloseTimeoutReturn {
+		t.Fatalf("CloseTimeoutPolicy = %v, want CloseTimeoutReturn", cfgWithPolicy.CloseTimeoutPolicy)
+	}
+	invalidPolicy := CloseTimeoutPolicy(42)
+	applyLevelAndTraceOptions(&cfgWithPolicy, &options{closeTimeoutPolicy: &invalidPolicy})
+	if cfgWithPolicy.CloseTimeoutPolicy != CloseTimeoutAutoAbort {
+		t.Fatalf("invalid CloseTimeoutPolicy should normalize to CloseTimeoutAutoAbort, got %v", cfgWithPolicy.CloseTimeoutPolicy)
 	}
 
 	custom := slog.New(slog.DiscardHandler)
