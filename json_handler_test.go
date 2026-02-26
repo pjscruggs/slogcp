@@ -458,6 +458,18 @@ func TestWriteJSONPayloadBranches(t *testing.T) {
 	if !strings.Contains(sanitized.String(), `"bad":"!ERROR:`) {
 		t.Fatalf("sanitized payload missing placeholder: %q", sanitized.String())
 	}
+	sanitized.Reset()
+	nestedUnsupported := map[string]any{
+		"outer": map[string]any{
+			"inner": make(chan int),
+		},
+	}
+	if err := handler.writeJSONPayload(nestedUnsupported); err != nil {
+		t.Fatalf("writeJSONPayload nested sanitization path returned %v", err)
+	}
+	if !strings.Contains(sanitized.String(), `"outer":"!ERROR:`) {
+		t.Fatalf("nested unsupported payload missing top-level placeholder: %q", sanitized.String())
+	}
 	if got := encodeErrorPlaceholder(nil); got != "!ERROR:unknown JSON encoding error" {
 		t.Fatalf("encodeErrorPlaceholder(nil) = %q", got)
 	}
