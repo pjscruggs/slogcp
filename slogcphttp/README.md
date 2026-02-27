@@ -43,7 +43,7 @@ _ = http.ListenAndServe(":8080", wrapped)
 
 By default:
 
-- The derived logger includes trace correlation fields (when a span is present) plus request metadata like `http.method`, `http.target`, `http.scheme`, `http.host`, `http.status_code`, and `http.response_size`.
+- The derived logger includes trace correlation fields (when a span is present) plus request metadata like `http.method`, `http.target`, `http.scheme`, and `http.host`. Response metadata (`http.status_code`, `http.response_size`, `http.latency`) is omitted from in-flight logs.
 - `http.route` is omitted unless you provide `WithRouteGetter`.
 - Query strings are omitted (`WithIncludeQuery(true)` opts in).
 - `User-Agent` is omitted (`WithUserAgent(true)` opts in).

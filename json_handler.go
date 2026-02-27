@@ -200,6 +200,7 @@ type sourceLocation struct {
 }
 
 type jsonHandler struct {
+	// mu serializes writes to the shared output sink across handler clones.
 	mu *sync.Mutex
 
 	cfg            *handlerConfig
@@ -333,14 +334,8 @@ func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		return h
 	}
 
-	h.mu.Lock()
 	baseGrouped := append([]groupedAttr(nil), h.groupedAttrs...)
 	baseGroups := append([]string(nil), h.groups...)
-	cfg := h.cfg
-	leveler := h.leveler
-	writer := h.writer
-	internalLogger := h.internalLogger
-	h.mu.Unlock()
 
 	grouped := make([]groupedAttr, len(baseGrouped), len(baseGrouped)+len(attrs))
 	copy(grouped, baseGrouped)
@@ -353,10 +348,10 @@ func (h *jsonHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 	return &jsonHandler{
 		mu:             h.mu,
-		cfg:            cfg,
-		leveler:        leveler,
-		writer:         writer,
-		internalLogger: internalLogger,
+		cfg:            h.cfg,
+		leveler:        h.leveler,
+		writer:         h.writer,
+		internalLogger: h.internalLogger,
 		bufferPool:     h.bufferPool,
 		groupedAttrs:   grouped,
 		groups:         baseGroups,
@@ -369,23 +364,16 @@ func (h *jsonHandler) WithGroup(name string) slog.Handler {
 		return h
 	}
 
-	h.mu.Lock()
 	baseGrouped := append([]groupedAttr(nil), h.groupedAttrs...)
 	baseGroups := append([]string(nil), h.groups...)
-	cfg := h.cfg
-	leveler := h.leveler
-	writer := h.writer
-	internalLogger := h.internalLogger
-	h.mu.Unlock()
-
 	baseGroups = append(baseGroups, name)
 
 	return &jsonHandler{
 		mu:             h.mu,
-		cfg:            cfg,
-		leveler:        leveler,
-		writer:         writer,
-		internalLogger: internalLogger,
+		cfg:            h.cfg,
+		leveler:        h.leveler,
+		writer:         h.writer,
+		internalLogger: h.internalLogger,
 		bufferPool:     h.bufferPool,
 		groupedAttrs:   baseGrouped,
 		groups:         baseGroups,
@@ -437,12 +425,10 @@ func (h *jsonHandler) buildPayload(r slog.Record, state *payloadState) (
 	return builder.build()
 }
 
-// snapshotBaseState captures grouped attributes and groups under lock.
+// snapshotBaseState captures immutable grouped attributes and groups.
 func (h *jsonHandler) snapshotBaseState() ([]groupedAttr, []string) {
-	h.mu.Lock()
 	baseAttrs := h.groupedAttrs
 	baseGroups := h.groups
-	h.mu.Unlock()
 	return baseAttrs, baseGroups
 }
 
@@ -539,12 +525,12 @@ func (pb *payloadBuilder) walkAttr(groupsLen int, currMap map[string]any, attr s
 
 	attr, rawValue, kind := pb.normalizeAttr(groupsLen, attr)
 
-	if attr.Key == "" {
+	if kind == slog.KindGroup {
+		pb.walkGroupAttr(groupsLen, currMap, attr, inLabels)
 		return
 	}
 
-	if kind == slog.KindGroup {
-		pb.walkGroupAttr(groupsLen, currMap, attr, inLabels)
+	if attr.Key == "" {
 		return
 	}
 
@@ -604,7 +590,7 @@ func (pb *payloadBuilder) handleLeafAttr(currMap map[string]any, attr slog.Attr,
 	if attr.Key == httpRequestKey && pb.handleHTTPRequestAttr(rawValue) {
 		return
 	}
-	if val := resolveSlogValueWithRaw(rawValue, attr.Value); val != nil {
+	if val := resolveSlogValueWithRaw(attr.Value); val != nil {
 		currMap[attr.Key] = val
 	}
 }
@@ -828,8 +814,24 @@ func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 	enc := json.NewEncoder(buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(jsonPayload); err != nil {
-		h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", err))
-		return fmt.Errorf("encode JSON payload: %w", err)
+		// Fallback intentionally works at top-level field granularity. Each probe
+		// uses json.Marshal(value), which recursively validates nested content.
+		// That catches nested unsupported values while keeping retry logic simple.
+		// If retry still fails, common causes are non-deterministic marshalers or
+		// concurrent mutation, not missed nested validation.
+		sanitized := sanitizeTopLevelJSONValues(jsonPayload)
+		buf.Reset()
+		enc = json.NewEncoder(buf)
+		enc.SetEscapeHTML(false)
+		if retryErr := enc.Encode(jsonPayload); retryErr != nil {
+			h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", retryErr))
+			return fmt.Errorf("encode JSON payload after retry: %w", retryErr)
+		}
+		if !sanitized {
+			h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", err))
+		} else {
+			h.internalLogger.Error("failed to render one or more JSON fields; replaced unsupported values", slog.Any("error", err))
+		}
 	}
 
 	h.mu.Lock()
@@ -840,6 +842,34 @@ func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 		return fmt.Errorf("write JSON payload: %w", err)
 	}
 	return nil
+}
+
+// sanitizeTopLevelJSONValues replaces top-level values that cannot be JSON
+// encoded with deterministic placeholder strings, preserving the overall record.
+//
+// This function intentionally operates at top-level field granularity. Each
+// probe uses json.Marshal(value), which recursively validates nested content.
+// If any nested value is unsupported, the entire top-level field is replaced.
+func sanitizeTopLevelJSONValues(jsonPayload map[string]any) bool {
+	if len(jsonPayload) == 0 {
+		return false
+	}
+	replaced := false
+	for key, value := range jsonPayload {
+		if _, err := json.Marshal(value); err != nil {
+			jsonPayload[key] = encodeErrorPlaceholder(err)
+			replaced = true
+		}
+	}
+	return replaced
+}
+
+// encodeErrorPlaceholder formats unsupported JSON values as stable marker strings.
+func encodeErrorPlaceholder(err error) string {
+	if err == nil {
+		return "!ERROR:unknown JSON encoding error"
+	}
+	return fmt.Sprintf("!ERROR:%v", err)
 }
 
 // captureAndFormatFallbackStack captures the current goroutine stack as a

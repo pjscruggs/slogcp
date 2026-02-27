@@ -28,6 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/slogtest"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -40,6 +41,26 @@ type failingWriter struct {
 // Write implements io.Writer for failingWriter and always returns the preset error.
 func (f failingWriter) Write(p []byte) (int, error) {
 	return 0, f.err
+}
+
+// stagedMarshaler returns configured marshal outcomes per call so tests can
+// drive initial-failure/retry-success and retry-failure branches deterministically.
+type stagedMarshaler struct {
+	outcomes []error
+	calls    int
+}
+
+// MarshalJSON returns the next configured outcome or a stable JSON string.
+func (m *stagedMarshaler) MarshalJSON() ([]byte, error) {
+	if m == nil {
+		return []byte(`"nil"`), nil
+	}
+	idx := m.calls
+	m.calls++
+	if idx < len(m.outcomes) && m.outcomes[idx] != nil {
+		return nil, m.outcomes[idx]
+	}
+	return []byte(`"ok"`), nil
 }
 
 // TestResolverHooksFallbackAndCustom exercises the defaulting logic for the hook setters/getters.
@@ -249,8 +270,12 @@ func TestPayloadBuilderWalkAttrBranches(t *testing.T) {
 	if got := baseMap["replaced"]; got != "base" {
 		t.Fatalf("ReplaceAttr branch not applied, got %#v", got)
 	}
-	if got := baseMap[httpRequestKey]; got != req {
-		t.Fatalf("secondary httpRequest attr should retain request, got %#v", got)
+	if got := baseMap[httpRequestKey]; got == nil {
+		t.Fatalf("secondary httpRequest attr should be retained as structured payload, got %#v", got)
+	} else if payload, ok := got.(map[string]any); !ok {
+		t.Fatalf("secondary httpRequest attr type = %T, want map[string]any", got)
+	} else if payload["requestMethod"] != http.MethodGet {
+		t.Fatalf("secondary httpRequest attr requestMethod = %v, want %q", payload["requestMethod"], http.MethodGet)
 	}
 }
 
@@ -412,7 +437,7 @@ func TestApplySeverityServiceContextAndHTTPRequest(t *testing.T) {
 	}
 }
 
-// TestWriteJSONPayloadBranches covers pooled, unpooled, and error paths.
+// TestWriteJSONPayloadBranches covers pooled, unpooled, sanitization, and write-error paths.
 func TestWriteJSONPayloadBranches(t *testing.T) {
 	baseCfg := &handlerConfig{Writer: io.Discard}
 	logger := slog.New(slog.DiscardHandler)
@@ -425,8 +450,61 @@ func TestWriteJSONPayloadBranches(t *testing.T) {
 		bufferPool:     &jsonBufferPool,
 	}
 
-	if err := handler.writeJSONPayload(map[string]any{"bad": make(chan int)}); err == nil {
-		t.Fatalf("expected encode error for unsupported value")
+	var sanitized bytes.Buffer
+	handler.writer = &sanitized
+	if err := handler.writeJSONPayload(map[string]any{"bad": make(chan int)}); err != nil {
+		t.Fatalf("writeJSONPayload sanitization path returned %v", err)
+	}
+	if !strings.Contains(sanitized.String(), `"bad":"!ERROR:`) {
+		t.Fatalf("sanitized payload missing placeholder: %q", sanitized.String())
+	}
+	sanitized.Reset()
+	nestedUnsupported := map[string]any{
+		"outer": map[string]any{
+			"inner": make(chan int),
+		},
+	}
+	if err := handler.writeJSONPayload(nestedUnsupported); err != nil {
+		t.Fatalf("writeJSONPayload nested sanitization path returned %v", err)
+	}
+	if !strings.Contains(sanitized.String(), `"outer":"!ERROR:`) {
+		t.Fatalf("nested unsupported payload missing top-level placeholder: %q", sanitized.String())
+	}
+	if got := encodeErrorPlaceholder(nil); got != "!ERROR:unknown JSON encoding error" {
+		t.Fatalf("encodeErrorPlaceholder(nil) = %q", got)
+	}
+	if replaced := sanitizeTopLevelJSONValues(map[string]any{}); replaced {
+		t.Fatalf("sanitizeTopLevelJSONValues(empty) = true, want false")
+	}
+
+	var transientBuf bytes.Buffer
+	var transientDiag bytes.Buffer
+	transientHandler := &jsonHandler{
+		mu:             &sync.Mutex{},
+		cfg:            baseCfg,
+		writer:         &transientBuf,
+		internalLogger: slog.New(slog.NewTextHandler(&transientDiag, &slog.HandlerOptions{AddSource: false})),
+		bufferPool:     nil,
+	}
+	flakySuccess := &stagedMarshaler{outcomes: []error{errors.New("first encode failure")}}
+	if err := transientHandler.writeJSONPayload(map[string]any{"flaky": flakySuccess}); err != nil {
+		t.Fatalf("writeJSONPayload transient retry path returned %v", err)
+	}
+	if !strings.Contains(transientDiag.String(), "failed to render JSON log entry") {
+		t.Fatalf("transient retry diagnostics missing expected log entry: %q", transientDiag.String())
+	}
+
+	flakyRetryFail := &stagedMarshaler{
+		outcomes: []error{
+			errors.New("initial encode failure"),
+			nil,
+			errors.New("retry encode failure"),
+		},
+	}
+	if err := transientHandler.writeJSONPayload(map[string]any{"flaky": flakyRetryFail}); err == nil {
+		t.Fatalf("expected retry encode failure")
+	} else if !strings.Contains(err.Error(), "after retry") {
+		t.Fatalf("retry encode failure error = %v, want after retry context", err)
 	}
 
 	handler.writer = failingWriter{err: errors.New("write failed")}
@@ -520,7 +598,7 @@ func TestJSONHandlerHandleBuildsComplexPayload(t *testing.T) {
 			"version": "v1",
 		},
 		traceAllowAutoformat:  true,
-		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce, newDiscardLogger()),
 		InitialGroupedAttrs: []groupedAttr{
 			{attr: slog.String("init", "yes")},
 			{groups: []string{"grouped"}, attr: slog.String("inside", "value")},
@@ -682,7 +760,7 @@ func TestJSONHandlerBranchSweep(t *testing.T) {
 		},
 		runtimeServiceContextAny: map[string]any{"service": "override"},
 		traceAllowAutoformat:     true,
-		traceDiagnosticsState:    newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+		traceDiagnosticsState:    newTraceDiagnostics(TraceDiagnosticsWarnOnce, newDiscardLogger()),
 		InitialGroups:            []string{"base"},
 		InitialAttrs:             []slog.Attr{slog.String("init", "yes")},
 		InitialGroupedAttrs: []groupedAttr{
@@ -830,7 +908,7 @@ func TestJSONHandlerHelperBranchesExplicit(t *testing.T) {
 				runtimeServiceContext:    map[string]string{"service": "svc"},
 				runtimeServiceContextAny: map[string]any{"service": "svc-any"},
 				traceAllowAutoformat:     true,
-				traceDiagnosticsState:    newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+				traceDiagnosticsState:    newTraceDiagnostics(TraceDiagnosticsWarnOnce, newDiscardLogger()),
 			},
 			writer:         &buf,
 			internalLogger: slog.New(slog.DiscardHandler),
@@ -1057,7 +1135,7 @@ func TestJSONHandlerEmitAndWriteJSONBranches(t *testing.T) {
 			EmitTimeField:         false,
 			UseShortSeverityNames: true,
 			traceAllowAutoformat:  true,
-			traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+			traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce, newDiscardLogger()),
 			runtimeServiceContextAny: map[string]any{
 				"service": "svc-any",
 			},
@@ -1125,12 +1203,12 @@ func TestJSONHandlerEmitAndWriteJSONBranches(t *testing.T) {
 		errHandler := &jsonHandler{
 			mu:             &sync.Mutex{},
 			cfg:            &handlerConfig{},
-			writer:         io.Discard,
+			writer:         &bytes.Buffer{},
 			internalLogger: slog.New(slog.DiscardHandler),
 			bufferPool:     &jsonBufferPool,
 		}
-		if err := errHandler.writeJSONPayload(map[string]any{"bad": func() {}}); err == nil {
-			t.Fatalf("expected encoding error from writeJSONPayload")
+		if err := errHandler.writeJSONPayload(map[string]any{"bad": func() {}}); err != nil {
+			t.Fatalf("writeJSONPayload sanitization path returned %v", err)
 		}
 	})
 }
@@ -1499,26 +1577,14 @@ func TestJSONHandlerWithGroupAndAttrsExtendState(t *testing.T) {
 	}
 }
 
-type recordingDiagLogger struct {
-	messages []string
-}
-
-// Printf records a formatted diagnostic message so tests can assert on warnings.
-func (r *recordingDiagLogger) Printf(format string, args ...any) {
-	r.messages = append(r.messages, fmt.Sprintf(format, args...))
-}
-
 // TestJSONHandlerWarnsOnceWhenProjectUnknown ensures diagnostics fire once per process.
 func TestJSONHandlerWarnsOnceWhenProjectUnknown(t *testing.T) {
-	var diag recordingDiagLogger
-	origLogger := traceDiagnosticLogger
-	traceDiagnosticLogger = &diag
-	t.Cleanup(func() { traceDiagnosticLogger = origLogger })
-
 	var buf bytes.Buffer
+	var diagBuf bytes.Buffer
+	diagLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
 	cfg := &handlerConfig{
 		Writer:                &buf,
-		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce, diagLogger),
 	}
 	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
@@ -1542,31 +1608,35 @@ func TestJSONHandlerWarnsOnceWhenProjectUnknown(t *testing.T) {
 	if got := entry["otel.trace_id"]; got != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Fatalf("otel.trace_id = %v, want trace id", got)
 	}
-	if len(diag.messages) != 1 {
-		t.Fatalf("expected single diagnostic message, got %d (%v)", len(diag.messages), diag.messages)
+	diagOutput := strings.TrimSpace(diagBuf.String())
+	if diagOutput == "" {
+		t.Fatalf("expected trace diagnostic output, got none")
+	}
+	if !strings.Contains(diagOutput, "trace correlation disabled: unable to determine Cloud project ID") {
+		t.Fatalf("diagnostic output = %q, want missing project warning", diagOutput)
+	}
+	if strings.Count(diagOutput, "\n") != 0 {
+		t.Fatalf("expected one diagnostic warning line, got %q", diagOutput)
 	}
 
 	buf.Reset()
 	if err := handler.Handle(ctx, record); err != nil {
 		t.Fatalf("Handle() second call returned %v", err)
 	}
-	if len(diag.messages) != 1 {
-		t.Fatalf("diagnostics should warn once, got %d", len(diag.messages))
+	if strings.Count(strings.TrimSpace(diagBuf.String()), "\n") != 0 {
+		t.Fatalf("diagnostics should warn once, got %q", diagBuf.String())
 	}
 }
 
 // TestJSONHandlerAutoformatTraceFallback ensures raw trace IDs populate Cloud Logging keys when autoformat is allowed.
 func TestJSONHandlerAutoformatTraceFallback(t *testing.T) {
-	var diag recordingDiagLogger
-	origLogger := traceDiagnosticLogger
-	traceDiagnosticLogger = &diag
-	t.Cleanup(func() { traceDiagnosticLogger = origLogger })
-
 	var buf bytes.Buffer
+	var diagBuf bytes.Buffer
+	diagLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
 	cfg := &handlerConfig{
 		Writer:                &buf,
 		traceAllowAutoformat:  true,
-		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce),
+		traceDiagnosticsState: newTraceDiagnostics(TraceDiagnosticsWarnOnce, diagLogger),
 	}
 	handler := newJSONHandler(cfg, slog.LevelInfo, slog.New(slog.DiscardHandler))
 
@@ -1596,8 +1666,8 @@ func TestJSONHandlerAutoformatTraceFallback(t *testing.T) {
 	if _, exists := entry["otel.trace_id"]; exists {
 		t.Fatalf("otel.trace_id should be omitted when Cloud Logging fields are emitted: %v", entry)
 	}
-	if len(diag.messages) != 0 {
-		t.Fatalf("autoformat path should not emit diagnostics, got %d", len(diag.messages))
+	if strings.TrimSpace(diagBuf.String()) != "" {
+		t.Fatalf("autoformat path should not emit diagnostics, got %q", diagBuf.String())
 	}
 }
 
@@ -2236,5 +2306,117 @@ func TestJSONHandler_LabelsGroup_InBaseAttrs(t *testing.T) {
 	}
 	if labels["label_key"] != "label_val" {
 		t.Errorf("expected label_key=label_val, got %v", labels["label_key"])
+	}
+}
+
+// TestSlogHandlerContract validates core slog.Handler behavior using slogtest.
+func TestSlogHandlerContract(t *testing.T) {
+	t.Parallel()
+
+	var sink bytes.Buffer
+	h, err := NewHandler(
+		io.Discard,
+		WithRedirectWriter(&sink),
+		WithSeverityAliases(false),
+		WithTime(true),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	results := func() []map[string]any {
+		return decodeSlogtestResults(t, sink.String())
+	}
+
+	if err := slogtest.TestHandler(h, results); err != nil {
+		t.Fatalf("slogtest.TestHandler() returned %v", err)
+	}
+}
+
+// decodeSlogtestResults converts slogcp JSON output into the key names expected by slogtest.
+func decodeSlogtestResults(t *testing.T, raw string) []map[string]any {
+	t.Helper()
+
+	content := strings.TrimSpace(raw)
+	if content == "" {
+		return nil
+	}
+
+	lines := strings.Split(content, "\n")
+	out := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		entry := make(map[string]any)
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("json.Unmarshal(%q) returned %v", line, err)
+		}
+		normalizeEntryForSlogtest(entry)
+		out = append(out, entry)
+	}
+	return out
+}
+
+// normalizeEntryForSlogtest adapts slogcp field names to slog defaults.
+func normalizeEntryForSlogtest(entry map[string]any) {
+	if msg, ok := entry[messageKey]; ok {
+		entry[slog.MessageKey] = msg
+	}
+	if ts, ok := entry["time"]; ok {
+		if isZeroSlogTime(ts) {
+			delete(entry, "time")
+		} else {
+			entry[slog.TimeKey] = ts
+		}
+	}
+	if severityRaw, ok := entry["severity"]; ok {
+		if level, ok := severityToSlogLevelText(severityRaw); ok {
+			entry[slog.LevelKey] = level
+		}
+	}
+}
+
+// isZeroSlogTime reports whether raw represents slog's zero timestamp.
+func isZeroSlogTime(raw any) bool {
+	s, ok := raw.(string)
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(s), "0001-01-01T00:00:00")
+}
+
+// severityToSlogLevelText converts slogcp severity text to slog's canonical level text.
+func severityToSlogLevelText(raw any) (string, bool) {
+	s, ok := raw.(string)
+	if !ok {
+		return "", false
+	}
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "D":
+		return "DEBUG", true
+	case "I":
+		return "INFO", true
+	case "W", "WARNING":
+		return "WARN", true
+	case "E":
+		return "ERROR", true
+	case "N":
+		return "NOTICE", true
+	case "C":
+		return "CRITICAL", true
+	case "A":
+		return "ALERT", true
+	case "EMERG":
+		return "EMERGENCY", true
+	default:
+		return strings.ToUpper(strings.TrimSpace(s)), true
 	}
 }

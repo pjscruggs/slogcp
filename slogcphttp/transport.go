@@ -205,7 +205,8 @@ func newClientScope(req *http.Request, start time.Time, cfg *config) *RequestSco
 		scope.clientIP, scope.peerPort = outboundHostPort(req)
 	}
 
-	scope.status.Store(http.StatusOK)
+	// Outbound response size starts unknown until RoundTrip receives a response.
+	scope.respBytes.Store(-1)
 	scope.latencyNS.Store(-1)
 	return scope
 }

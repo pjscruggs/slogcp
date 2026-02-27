@@ -132,6 +132,7 @@ func TestUnaryClientInterceptorInjectsTrace(t *testing.T) {
 	interceptor := UnaryClientInterceptor(
 		WithLogger(logger),
 		WithProjectID("proj-123"),
+		WithPropagators(propagation.TraceContext{}),
 		WithLegacyXCloudInjection(true),
 	)
 
@@ -1302,7 +1303,7 @@ func copyMessage(dst any, src any) error {
 		}
 	}
 	rdst := reflect.ValueOf(dst)
-	if rdst.Kind() != reflect.Ptr {
+	if rdst.Kind() != reflect.Pointer {
 		return errors.New("destination not pointer")
 	}
 	rdst.Elem().Set(reflect.ValueOf(src).Elem())

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/pjscruggs/slogcp/slogcphttp"
@@ -54,7 +55,9 @@ func TestTransportForwardsTraceHeaders(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: slogcphttp.Transport(nil)}
+	client := &http.Client{
+		Transport: slogcphttp.Transport(nil, slogcphttp.WithPropagators(propagation.TraceContext{})),
+	}
 
 	ctx, span := otel.Tracer("example/http-client").Start(context.Background(), "outbound")
 	defer span.End()

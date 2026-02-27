@@ -40,7 +40,7 @@ const (
 // TransformLogEntryJSON rewrites a single LogEntry JSON to mimic the backend:
 // - Normalize/elevate timestamp (top-level > legacy seconds/nanos > jsonPayload.time > now)
 // - Promote severity (valid values go top-level; DEFAULT dropped; invalid payload values remain)
-// - Elevate httpRequest only if entirely canonical (strict)
+// - Elevate httpRequest when parsable, while retaining unknown fields in payload
 // - Elevate special fields from jsonPayload: operation, sourceLocation, trace, spanId, traceSampled
 // - Never HTML-escape output JSON
 func TransformLogEntryJSON(in string, now time.Time) (string, error) {
@@ -90,11 +90,13 @@ func TransformLogEntryJSON(in string, now time.Time) (string, error) {
 				clone := make(map[string]any, len(httpMap))
 				maps.Copy(clone, httpMap)
 				canonical, ok := extractHttpRequest(clone)
-				if ok && len(clone) == 0 {
+				if ok {
 					if _, exists := root["httpRequest"]; !exists {
 						root["httpRequest"] = canonical
 					}
-					delete(payload, "httpRequest")
+					if len(clone) == 0 {
+						delete(payload, "httpRequest")
+					}
 				} else {
 					payload["httpRequest"] = httpMap
 				}
@@ -531,6 +533,12 @@ func extractHttpRequest(m map[string]any) (map[string]any, bool) {
 	})
 	process("status", func(v any) {
 		if statusVal, ok := normalizeStatusValue(v); ok {
+			if statusFloat, ok := statusVal.(float64); ok && statusFloat == 0 {
+				return
+			}
+			if statusString, ok := statusVal.(string); ok && strings.TrimSpace(statusString) == "0" {
+				return
+			}
 			promoted["status"] = statusVal
 		}
 	})
@@ -1969,6 +1977,157 @@ func TestHttpRequestRemainsInPayload(t *testing.T) {
 	// Expect full map because invalid fields block promotion/consumption
 	if len(hr) < 10 {
 		t.Fatalf("expected httpRequest to remain intact: %+v", hr)
+	}
+}
+
+// TestHttpRequestPromotesKnownFieldsWithUnknownResidual ensures promotion
+// happens even when unknown fields are present, while preserving the original
+// payload copy for residual fields.
+func TestHttpRequestPromotesKnownFieldsWithUnknownResidual(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	input := `{
+	  "jsonPayload": {
+	    "httpRequest": {
+	      "requestMethod": "GET",
+	      "requestUrl": "https://example.com/items",
+	      "status": 200,
+	      "customField": "keep-me"
+	    }
+	  }
+	}`
+
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+
+	rootHTTP, ok := m["httpRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected promoted httpRequest at root: %+v", m)
+	}
+	if rootHTTP["requestMethod"] != "GET" {
+		t.Fatalf("requestMethod mismatch: %+v", rootHTTP)
+	}
+	if rootHTTP["requestUrl"] != "https://example.com/items" {
+		t.Fatalf("requestUrl mismatch: %+v", rootHTTP)
+	}
+	if status, ok := rootHTTP["status"].(float64); !ok || status != 200 {
+		t.Fatalf("status mismatch: %+v", rootHTTP["status"])
+	}
+	if _, ok := rootHTTP["customField"]; ok {
+		t.Fatalf("unknown fields should not be promoted: %+v", rootHTTP)
+	}
+
+	jp, ok := m["jsonPayload"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected jsonPayload map: %+v", m["jsonPayload"])
+	}
+	payloadHTTP, ok := jp["httpRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected original httpRequest to remain in payload: %+v", jp)
+	}
+	if payloadHTTP["customField"] != "keep-me" {
+		t.Fatalf("customField residual missing: %+v", payloadHTTP)
+	}
+	if payloadHTTP["requestMethod"] != "GET" || payloadHTTP["requestUrl"] != "https://example.com/items" {
+		t.Fatalf("payload copy should remain original: %+v", payloadHTTP)
+	}
+}
+
+// TestHttpRequestUnknownOnlyPromotesEmptyRoot ensures unknown-only maps still
+// promote an empty root httpRequest while retaining payload content.
+func TestHttpRequestUnknownOnlyPromotesEmptyRoot(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	input := `{
+	  "jsonPayload": {
+	    "httpRequest": {
+	      "customField": "x",
+	      "anotherCustom": 123
+	    }
+	  }
+	}`
+
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+
+	rootHTTP, ok := m["httpRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected promoted httpRequest: %+v", m)
+	}
+	if len(rootHTTP) != 0 {
+		t.Fatalf("unknown-only map should promote empty httpRequest, got %+v", rootHTTP)
+	}
+
+	jp := m["jsonPayload"].(map[string]any)
+	payloadHTTP, ok := jp["httpRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected payload httpRequest to remain: %+v", jp)
+	}
+	if payloadHTTP["customField"] != "x" || toInt64(payloadHTTP["anotherCustom"]) != 123 {
+		t.Fatalf("payload residual mismatch: %+v", payloadHTTP)
+	}
+}
+
+// TestHttpRequestEmptyMapPromotesAndRemovesPayload ensures empty maps are
+// promoted and removed from jsonPayload when no unknown fields remain.
+func TestHttpRequestEmptyMapPromotesAndRemovesPayload(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	input := `{"jsonPayload":{"httpRequest":{}}}`
+
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+
+	rootHTTP, ok := m["httpRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected root httpRequest: %+v", m)
+	}
+	if len(rootHTTP) != 0 {
+		t.Fatalf("expected empty promoted httpRequest, got %+v", rootHTTP)
+	}
+
+	jp := m["jsonPayload"].(map[string]any)
+	if _, ok := jp["httpRequest"]; ok {
+		t.Fatalf("payload httpRequest should be removed when no residual fields exist: %+v", jp)
+	}
+}
+
+// TestHttpRequestStatusZeroOmitted ensures status=0 is treated as unset in the
+// promoted httpRequest payload.
+func TestHttpRequestStatusZeroOmitted(t *testing.T) {
+	now := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	input := `{
+	  "jsonPayload": {
+	    "httpRequest": {
+	      "requestMethod": "GET",
+	      "status": 0
+	    }
+	  }
+	}`
+
+	out, err := TransformLogEntryJSON(input, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mustUnmarshalMap(t, out)
+
+	rootHTTP, ok := m["httpRequest"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected promoted httpRequest: %+v", m)
+	}
+	if _, ok := rootHTTP["status"]; ok {
+		t.Fatalf("status=0 should be omitted from promoted httpRequest: %+v", rootHTTP)
+	}
+
+	jp := m["jsonPayload"].(map[string]any)
+	if _, ok := jp["httpRequest"]; ok {
+		t.Fatalf("payload httpRequest should be removed for known-only fields: %+v", jp)
 	}
 }
 

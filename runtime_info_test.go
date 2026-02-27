@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -35,23 +34,49 @@ func init() {
 
 // resetRuntimeInfoCache clears cached runtime inspection state for isolated tests.
 func resetRuntimeInfoCache() {
-	runtimeInfoMu.Lock()
-	runtimeInfoOnce = sync.Once{}
-	runtimeInfo = RuntimeInfo{}
-	runtimeInfoPreset.Store(false)
-	runtimeInfoMu.Unlock()
-	resetHandlerConfigCache()
+	setRuntimeInfoGetter(sync.OnceValue(detectRuntimeInfo))
+	runtimeInfoOverride.Store(nil)
 }
 
 // stubRuntimeInfo seeds cached runtime info for tests that need deterministic values.
 func stubRuntimeInfo(info RuntimeInfo) {
-	runtimeInfoMu.Lock()
-	runtimeInfoOnce = sync.Once{}
-	runtimeInfoOnce.Do(func() {
-		runtimeInfo = info
-	})
-	runtimeInfoPreset.Store(true)
-	runtimeInfoMu.Unlock()
+	stub := RuntimeInfo{
+		ProjectID:      info.ProjectID,
+		Labels:         cloneStringMap(info.Labels),
+		ServiceContext: cloneStringMap(info.ServiceContext),
+		Environment:    info.Environment,
+	}
+	runtimeInfoOverride.Store(&stub)
+}
+
+// TestSetRuntimeInfoGetterNilUsesDefault ensures nil setters restore default detection.
+func TestSetRuntimeInfoGetterNilUsesDefault(t *testing.T) {
+	resetRuntimeInfoCache()
+	t.Cleanup(resetRuntimeInfoCache)
+
+	setRuntimeInfoGetter(nil)
+	if getter := getRuntimeInfoGetter(); getter == nil {
+		t.Fatalf("getRuntimeInfoGetter() returned nil after nil setter")
+	}
+}
+
+// TestGetRuntimeInfoGetterRepairsNilStoredGetter verifies nil stored getters are repaired.
+func TestGetRuntimeInfoGetterRepairsNilStoredGetter(t *testing.T) {
+	resetRuntimeInfoCache()
+	t.Cleanup(resetRuntimeInfoCache)
+
+	var nilGetter func() RuntimeInfo
+	runtimeInfoGet.Store(nilGetter)
+
+	getter := getRuntimeInfoGetter()
+	if getter == nil {
+		t.Fatalf("getRuntimeInfoGetter() returned nil")
+	}
+
+	loaded, ok := runtimeInfoGet.Load().(func() RuntimeInfo)
+	if !ok || loaded == nil {
+		t.Fatalf("runtimeInfoGet should be repaired to non-nil getter, got (%T, nil=%t)", runtimeInfoGet.Load(), loaded == nil)
+	}
 }
 
 type stubMetadataClient struct {
@@ -703,57 +728,6 @@ func TestMetadataLookupCachesEntries(t *testing.T) {
 	}
 	if client.getCalls != 1 {
 		t.Fatalf("cached lookup should not invoke metadata client; got %d calls", client.getCalls)
-	}
-}
-
-// TestCachedConfigFromEnvHandlesClearedCache exercises the fallback path when the cache is cleared mid-race.
-func TestCachedConfigFromEnvHandlesClearedCache(t *testing.T) {
-	t.Parallel()
-
-	resetHandlerConfigCache()
-	origLoader := getLoadConfigFromEnv()
-	origHook := getCachedConfigRaceHook()
-	t.Cleanup(func() {
-		setLoadConfigFromEnv(origLoader)
-		setCachedConfigRaceHook(origHook)
-		resetHandlerConfigCache()
-	})
-
-	start := make(chan struct{}, 2)
-	release := make(chan struct{})
-	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
-		start <- struct{}{}
-		<-release
-		return handlerConfig{Writer: io.Discard}, nil
-	})
-	setCachedConfigRaceHook(func() {
-		resetHandlerConfigCache()
-	})
-
-	logger := slog.New(slog.DiscardHandler)
-
-	var wg sync.WaitGroup
-	results := make(chan error, 2)
-	worker := func() {
-		defer wg.Done()
-		_, err := cachedConfigFromEnv(logger)
-		results <- err
-	}
-
-	wg.Add(2)
-	go worker()
-	go worker()
-
-	<-start
-	<-start
-	close(release)
-
-	wg.Wait()
-	close(results)
-	for err := range results {
-		if err != nil {
-			t.Fatalf("cachedConfigFromEnv returned %v", err)
-		}
 	}
 }
 

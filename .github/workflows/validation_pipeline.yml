@@ -120,7 +120,10 @@ jobs:
         continue-on-error: true
       
       - name: 💾 Commit All Fixes
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: |
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) &&
+          !startsWith(steps.get-branch.outputs.BRANCH_NAME, 'renovate/')
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -233,7 +236,7 @@ jobs:
       - name: Determine E2E Trigger Type
         id: trigger_type
         run: |
-          if [[ "${{ github.actor }}" == "renovate[bot]" ]]; then
+          if [[ "${{ github.actor }}" == "renovate[bot]" || "${{ github.event.pull_request.user.login }}" == "app/renovate" || "${{ github.event.pull_request.user.login }}" == "renovate[bot]" ]]; then
             echo "should_auto_trigger=true" >> $GITHUB_OUTPUT
           else
             echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
@@ -333,7 +336,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const ref = context.payload.pull_request.head.sha;
-            const targetCheckName = 'Fix and Validate Code';
+            const targetWorkflowName = 'Validation Pipeline';
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
             const checkRunId = Number("${{ steps.create_run_check.outputs.check_run_id }}") || 0;
             const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -342,12 +345,18 @@ jobs:
             let ok = false;
 
             for (let minute = 0; minute < maxMinutes; minute++) {
-              const { data } = await github.rest.checks.listForRef({ owner, repo, ref, filter: 'latest' });
-              const cr = data.check_runs.find(r => r.name === targetCheckName);
-              const status = cr?.status ?? 'not_found';
-              const conclusion = cr?.conclusion ?? 'unknown';
+              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner,
+                repo,
+                head_sha: ref,
+                event: 'pull_request',
+                per_page: 50
+              });
+              const run = data.workflow_runs.find(r => r.name === targetWorkflowName);
+              const status = run?.status ?? 'not_found';
+              const conclusion = run?.conclusion ?? 'unknown';
 
-              if (!cr || status === 'queued' || status === 'in_progress') {
+              if (!run || status !== 'completed') {
                 if (checkRunId) {
                   await github.rest.checks.update({
                     owner,
@@ -364,7 +373,7 @@ jobs:
                 continue;
               }
 
-              if (status === 'completed' && conclusion === 'success') { ok = true; break; }
+              if (conclusion === 'success') { ok = true; break; }
 
               if (checkRunId) {
                 await github.rest.checks.update({
@@ -376,11 +385,11 @@ jobs:
                   completed_at: new Date().toISOString(),
                   output: {
                     title: `E2E Tests (GCP) — ${runId}`,
-                    summary: `Validation job conclusion: ${conclusion}.`
+                    summary: `Validation workflow conclusion: ${conclusion}.`
                   }
                 });
               }
-              core.setFailed(`Validation job conclusion: ${conclusion}`);
+              core.setFailed(`Validation workflow conclusion: ${conclusion}`);
               return;
             }
 

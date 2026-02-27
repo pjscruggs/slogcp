@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -482,7 +483,6 @@ func TestHandlerWithLevelVarSeedsFromEnv(t *testing.T) {
 // default but can emit it when explicitly enabled.
 func TestHandlerTimeFieldEmission(t *testing.T) {
 	t.Setenv("SLOGCP_TIME", "")
-	ResetHandlerConfigCacheForTest()
 	ResetRuntimeInfoCacheForTest()
 
 	t.Run("disabled_by_default", func(t *testing.T) {
@@ -585,7 +585,8 @@ func TestHandlerLevelAccessors(t *testing.T) {
 	}
 }
 
-// TestHandlerHandleJSONEncodingFailure verifies encoding errors propagate and emit diagnostics.
+// TestHandlerHandleJSONEncodingFailure verifies encoding failures are
+// downgraded to field-level placeholders so the record still emits.
 func TestHandlerHandleJSONEncodingFailure(t *testing.T) {
 	t.Parallel()
 
@@ -613,14 +614,23 @@ func TestHandlerHandleJSONEncodingFailure(t *testing.T) {
 	record.Message = "encode failure"
 	record.AddAttrs(slog.Any("broken", failingJSONMarshaler{}))
 
-	if err := h.Handle(context.Background(), record); err == nil {
-		t.Fatalf("Handle() returned nil error, want encoding failure")
+	if err := h.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
 	}
-	if sink.Len() != 0 {
-		t.Fatalf("expected no log output, got %q", sink.String())
+
+	entries := decodeLogBuffer(t, &sink)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d (%q)", len(entries), sink.String())
 	}
-	if !strings.Contains(diagBuf.String(), "failed to render JSON log entry") {
-		t.Fatalf("diagnostic log missing encode failure, got %q", diagBuf.String())
+	broken, ok := entries[0]["broken"].(string)
+	if !ok {
+		t.Fatalf("broken field type = %T, want string placeholder", entries[0]["broken"])
+	}
+	if !strings.Contains(broken, "!ERROR:") || !strings.Contains(broken, "marshal failure") {
+		t.Fatalf("broken field = %q, want placeholder with marshal failure", broken)
+	}
+	if !strings.Contains(diagBuf.String(), "replaced unsupported values") {
+		t.Fatalf("diagnostic log missing sanitization message, got %q", diagBuf.String())
 	}
 }
 
@@ -629,6 +639,57 @@ type failingJSONMarshaler struct{}
 // MarshalJSON always fails to trigger handler encoding error paths.
 func (failingJSONMarshaler) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("marshal failure")
+}
+
+// TestHandlerHandleCustomKeyHTTPRequest ensures non-httpRequest keys with
+// HTTPRequest values are serialized via LogValue and do not break record output.
+func TestHandlerHandleCustomKeyHTTPRequest(t *testing.T) {
+	t.Parallel()
+
+	var sink bytes.Buffer
+	var diagBuf bytes.Buffer
+	internalLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
+
+	h, err := NewHandler(
+		io.Discard,
+		WithRedirectWriter(&sink),
+		WithInternalLogger(internalLogger),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler() returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/items/1", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() returned %v", err)
+	}
+
+	logger := slog.New(h)
+	logger.Info("custom key", slog.Any("custom_req", &HTTPRequest{Request: req}))
+
+	entries := decodeLogBuffer(t, &sink)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d (%q)", len(entries), sink.String())
+	}
+
+	customReq, ok := entries[0]["custom_req"].(map[string]any)
+	if !ok {
+		t.Fatalf("custom_req type = %T, want map[string]any", entries[0]["custom_req"])
+	}
+	if got := customReq["requestMethod"]; got != http.MethodGet {
+		t.Fatalf("custom_req.requestMethod = %v, want %q", got, http.MethodGet)
+	}
+	if _, exists := customReq["Request"]; exists {
+		t.Fatalf("custom_req should not include raw http.Request fields: %#v", customReq)
+	}
+	if strings.Contains(diagBuf.String(), "failed to render JSON log entry") {
+		t.Fatalf("unexpected JSON render failure diagnostics: %q", diagBuf.String())
+	}
 }
 
 // TestHandlerHandleWriterFailure verifies writer errors bubble up and trigger diagnostics.
@@ -768,7 +829,6 @@ func (h *handlerRecordingHandler) WithGroup(string) slog.Handler { return h }
 
 // TestHandlerStackTraceLevelEmitsStacks verifies the stack trace level option triggers capture.
 func TestHandlerStackTraceLevelEmitsStacks(t *testing.T) {
-	ResetHandlerConfigCacheForTest()
 	ResetRuntimeInfoCacheForTest()
 	t.Setenv("SLOGCP_TARGET", "")
 
@@ -801,7 +861,6 @@ func TestHandlerStackTraceLevelEmitsStacks(t *testing.T) {
 // TestHandlerDefaultSeverityDoesNotTriggerStack ensures LevelDefault does not
 // outrank error thresholds for stack trace capture.
 func TestHandlerDefaultSeverityDoesNotTriggerStack(t *testing.T) {
-	ResetHandlerConfigCacheForTest()
 	ResetRuntimeInfoCacheForTest()
 	t.Setenv("SLOGCP_TARGET", "")
 
@@ -833,7 +892,6 @@ func TestHandlerDefaultSeverityDoesNotTriggerStack(t *testing.T) {
 
 // TestHandlerMiddlewareInvokesHooks ensures WithMiddleware attaches middleware correctly.
 func TestHandlerMiddlewareInvokesHooks(t *testing.T) {
-	ResetHandlerConfigCacheForTest()
 	ResetRuntimeInfoCacheForTest()
 	t.Setenv("SLOGCP_TARGET", "")
 
@@ -1118,7 +1176,6 @@ func clearHandlerEnv(t *testing.T) {
 	t.Setenv(envTarget, "")
 	t.Setenv(envAsyncOnFile, "")
 	resetRuntimeInfoCache()
-	resetHandlerConfigCache()
 }
 
 // TestWithAsyncWrapsHandler ensures WithAsync applies the async wrapper.
@@ -1132,6 +1189,234 @@ func TestWithAsyncWrapsHandler(t *testing.T) {
 	}
 	if err := h.Close(); err != nil {
 		t.Fatalf("Close returned %v", err)
+	}
+}
+
+// TestWithAdditionalHandlersMirrorsRecords verifies MultiHandler-based fan-out
+// writes each record to slogcp's core handler and extra handlers.
+func TestWithAdditionalHandlersMirrorsRecords(t *testing.T) {
+	t.Parallel()
+
+	var primaryBuf bytes.Buffer
+	var mirrorBuf bytes.Buffer
+
+	mirror := slog.NewJSONHandler(&mirrorBuf, nil)
+	h, err := NewHandler(
+		io.Discard,
+		WithRedirectWriter(&primaryBuf),
+		WithAdditionalHandlers(nil, mirror),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	logger := slog.New(h).WithGroup("request").With(slog.String("id", "abc123"))
+	logger.InfoContext(context.Background(), "fanout", slog.String("step", "emit"))
+
+	primaryEntries := decodeLogBuffer(t, &primaryBuf)
+	if len(primaryEntries) != 1 {
+		t.Fatalf("primary entries = %d, want 1 (%v)", len(primaryEntries), primaryEntries)
+	}
+	if got := primaryEntries[0]["message"]; got != "fanout" {
+		t.Fatalf("primary message = %v, want fanout", got)
+	}
+
+	mirrorEntries := decodeLogBuffer(t, &mirrorBuf)
+	if len(mirrorEntries) != 1 {
+		t.Fatalf("mirror entries = %d, want 1 (%v)", len(mirrorEntries), mirrorEntries)
+	}
+	if got := mirrorEntries[0]["msg"]; got != "fanout" {
+		t.Fatalf("mirror msg = %v, want fanout", got)
+	}
+
+	requestAny, ok := mirrorEntries[0]["request"]
+	if !ok {
+		t.Fatalf("mirror entry missing request group: %v", mirrorEntries[0])
+	}
+	request, ok := requestAny.(map[string]any)
+	if !ok {
+		t.Fatalf("mirror request type = %T, want map[string]any", requestAny)
+	}
+	if got := request["id"]; got != "abc123" {
+		t.Fatalf("mirror request.id = %v, want abc123", got)
+	}
+	if got := request["step"]; got != "emit" {
+		t.Fatalf("mirror request.step = %v, want emit", got)
+	}
+}
+
+// TestWithAdditionalHandlersShareMiddleware ensures middleware transforms run once
+// before fan-out so every sink sees the same enriched record.
+func TestWithAdditionalHandlersShareMiddleware(t *testing.T) {
+	t.Parallel()
+
+	var primaryBuf bytes.Buffer
+	var mirrorBuf bytes.Buffer
+	var middlewareCalls atomic.Int64
+
+	mw := func(next slog.Handler) slog.Handler {
+		return middlewareCaptureHandler{
+			next: next,
+			onHandle: func(r *slog.Record) {
+				middlewareCalls.Add(1)
+				r.AddAttrs(slog.String("shared_pipeline", "yes"))
+			},
+		}
+	}
+
+	mirror := slog.NewJSONHandler(&mirrorBuf, nil)
+	h, err := NewHandler(
+		io.Discard,
+		WithRedirectWriter(&primaryBuf),
+		WithMiddleware(mw),
+		WithAdditionalHandlers(mirror),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	slog.New(h).Info("fanout-middleware")
+
+	if got := middlewareCalls.Load(); got != 1 {
+		t.Fatalf("middleware calls = %d, want 1", got)
+	}
+
+	primaryEntries := decodeLogBuffer(t, &primaryBuf)
+	if len(primaryEntries) != 1 {
+		t.Fatalf("primary entries = %d, want 1 (%v)", len(primaryEntries), primaryEntries)
+	}
+	if got := primaryEntries[0]["shared_pipeline"]; got != "yes" {
+		t.Fatalf("primary shared_pipeline = %v, want yes", got)
+	}
+
+	mirrorEntries := decodeLogBuffer(t, &mirrorBuf)
+	if len(mirrorEntries) != 1 {
+		t.Fatalf("mirror entries = %d, want 1 (%v)", len(mirrorEntries), mirrorEntries)
+	}
+	if got := mirrorEntries[0]["shared_pipeline"]; got != "yes" {
+		t.Fatalf("mirror shared_pipeline = %v, want yes", got)
+	}
+}
+
+// TestWithAdditionalHandlersAndAsync ensures async wrapping still applies when
+// fan-out handlers are configured.
+func TestWithAdditionalHandlersAndAsync(t *testing.T) {
+	t.Parallel()
+
+	var primaryBuf bytes.Buffer
+	var mirrorBuf bytes.Buffer
+
+	mirror := slog.NewJSONHandler(&mirrorBuf, nil)
+	h, err := NewHandler(
+		io.Discard,
+		WithRedirectWriter(&primaryBuf),
+		WithAdditionalHandlers(mirror),
+		WithAsync(),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler returned %v", err)
+	}
+	if _, ok := h.Handler.(*slogcpasync.Handler); !ok {
+		t.Fatalf("Handler is %T, want *slogcpasync.Handler", h.Handler)
+	}
+
+	slog.New(h).Info("fanout-async")
+	if err := h.Close(); err != nil {
+		t.Fatalf("Close returned %v", err)
+	}
+
+	primaryEntries := decodeLogBuffer(t, &primaryBuf)
+	if len(primaryEntries) != 1 {
+		t.Fatalf("primary entries = %d, want 1 (%v)", len(primaryEntries), primaryEntries)
+	}
+	mirrorEntries := decodeLogBuffer(t, &mirrorBuf)
+	if len(mirrorEntries) != 1 {
+		t.Fatalf("mirror entries = %d, want 1 (%v)", len(mirrorEntries), mirrorEntries)
+	}
+}
+
+// TestWithAdditionalHandlersRespectSharedLevel ensures slogcp's level gate
+// applies before fan-out dispatch.
+func TestWithAdditionalHandlersRespectSharedLevel(t *testing.T) {
+	t.Parallel()
+
+	var primaryBuf bytes.Buffer
+	var mirrorBuf bytes.Buffer
+
+	mirror := slog.NewJSONHandler(&mirrorBuf, nil)
+	h, err := NewHandler(
+		io.Discard,
+		WithRedirectWriter(&primaryBuf),
+		WithAdditionalHandlers(mirror),
+		WithLevel(slog.LevelError),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	logger := slog.New(h)
+	logger.Info("suppressed")
+	logger.Error("allowed")
+
+	primaryEntries := decodeLogBuffer(t, &primaryBuf)
+	if len(primaryEntries) != 1 {
+		t.Fatalf("primary entries = %d, want 1 (%v)", len(primaryEntries), primaryEntries)
+	}
+	if got := primaryEntries[0]["message"]; got != "allowed" {
+		t.Fatalf("primary message = %v, want allowed", got)
+	}
+
+	mirrorEntries := decodeLogBuffer(t, &mirrorBuf)
+	if len(mirrorEntries) != 1 {
+		t.Fatalf("mirror entries = %d, want 1 (%v)", len(mirrorEntries), mirrorEntries)
+	}
+	if got := mirrorEntries[0]["msg"]; got != "allowed" {
+		t.Fatalf("mirror msg = %v, want allowed", got)
+	}
+}
+
+// TestWithAdditionalHandlersAllNilFallsBackToPrimary covers the nil-only fan-out path.
+func TestWithAdditionalHandlersAllNilFallsBackToPrimary(t *testing.T) {
+	t.Parallel()
+
+	var primaryBuf bytes.Buffer
+	h, err := NewHandler(
+		io.Discard,
+		WithRedirectWriter(&primaryBuf),
+		WithAdditionalHandlers(nil, nil),
+	)
+	if err != nil {
+		t.Fatalf("NewHandler returned %v", err)
+	}
+	t.Cleanup(func() {
+		if cerr := h.Close(); cerr != nil {
+			t.Errorf("Handler.Close() returned %v, want nil", cerr)
+		}
+	})
+
+	slog.New(h).Info("primary-only")
+
+	primaryEntries := decodeLogBuffer(t, &primaryBuf)
+	if len(primaryEntries) != 1 {
+		t.Fatalf("primary entries = %d, want 1 (%v)", len(primaryEntries), primaryEntries)
+	}
+	if got := primaryEntries[0]["message"]; got != "primary-only" {
+		t.Fatalf("primary message = %v, want primary-only", got)
 	}
 }
 
@@ -1666,64 +1951,32 @@ func TestParseLevelEnvCoversAliases(t *testing.T) {
 	}
 }
 
-// TestCachedConfigFromEnvCachesResults ensures the first successful load is reused.
-func TestCachedConfigFromEnvCachesResults(t *testing.T) {
+// TestNewHandlerReadsEnvPerCall ensures each NewHandler call reads current environment values.
+func TestNewHandlerReadsEnvPerCall(t *testing.T) {
 	clearHandlerEnv(t)
-	t.Cleanup(resetHandlerConfigCache)
 
 	t.Setenv(envLogLevel, "error")
-	cfg, err := cachedConfigFromEnv(newDiscardLogger())
+	h1, err := NewHandler(io.Discard)
 	if err != nil {
-		t.Fatalf("cachedConfigFromEnv() returned %v", err)
+		t.Fatalf("NewHandler first call returned %v", err)
 	}
-	if cfg.Level != slog.LevelError {
-		t.Fatalf("cached level = %v, want %v", cfg.Level, slog.LevelError)
-	}
-
-	// Changing the environment without resetting the cache should not affect the result.
-	t.Setenv(envLogLevel, "debug")
-	cfgAgain, err := cachedConfigFromEnv(newDiscardLogger())
-	if err != nil {
-		t.Fatalf("cachedConfigFromEnv() second call returned %v", err)
-	}
-	if cfgAgain.Level != slog.LevelError {
-		t.Fatalf("cached level after env change = %v, want %v", cfgAgain.Level, slog.LevelError)
-	}
-}
-
-// TestCachedConfigFromEnvReturnsLocalCfgWhenCacheClearedAfterCAS verifies the fallback return when CAS fails and the cache is cleared.
-func TestCachedConfigFromEnvReturnsLocalCfgWhenCacheClearedAfterCAS(t *testing.T) {
-	clearHandlerEnv(t)
-	resetHandlerConfigCache()
-
-	origLoader := getLoadConfigFromEnv()
-	origHook := getCachedConfigRaceHook()
 	t.Cleanup(func() {
-		setLoadConfigFromEnv(origLoader)
-		setCachedConfigRaceHook(origHook)
-		resetHandlerConfigCache()
+		_ = h1.Close()
 	})
+	if got := h1.cfg.Level; got != slog.LevelError {
+		t.Fatalf("first handler level = %v, want %v", got, slog.LevelError)
+	}
 
-	// Loader simulates a concurrent cache population before CompareAndSwap runs.
-	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
-		handlerEnvConfigCache.Store(&handlerConfig{Level: slog.LevelWarn})
-		return handlerConfig{Level: slog.LevelDebug}, nil
-	})
-
-	// Hook clears the cache so the function must return the locally loaded cfg.
-	setCachedConfigRaceHook(func() {
-		resetHandlerConfigCache()
-	})
-
-	cfg, err := cachedConfigFromEnv(newDiscardLogger())
+	t.Setenv(envLogLevel, "debug")
+	h2, err := NewHandler(io.Discard)
 	if err != nil {
-		t.Fatalf("cachedConfigFromEnv() returned %v", err)
+		t.Fatalf("NewHandler second call returned %v", err)
 	}
-	if cfg.Level != slog.LevelDebug {
-		t.Fatalf("cfg.Level = %v, want %v (local cfg)", cfg.Level, slog.LevelDebug)
-	}
-	if cached := handlerEnvConfigCache.Load(); cached != nil {
-		t.Fatalf("handlerEnvConfigCache should be cleared, got %+v", cached)
+	t.Cleanup(func() {
+		_ = h2.Close()
+	})
+	if got := h2.cfg.Level; got != slog.LevelDebug {
+		t.Fatalf("second handler level = %v, want %v", got, slog.LevelDebug)
 	}
 }
 
@@ -1764,19 +2017,29 @@ func TestLogDiagnosticHandlesNilLogger(t *testing.T) {
 	}
 }
 
-// TestNewTraceDiagnosticsFallbacks ensures a default logger is created when the global logger is nil.
-func TestNewTraceDiagnosticsFallbacks(t *testing.T) {
-	original := traceDiagnosticLogger
-	t.Cleanup(func() {
-		traceDiagnosticLogger = original
-	})
-	traceDiagnosticLogger = nil
+// TestTraceDiagnosticsLoggerPrintfHandlesNilLogger ensures trace diagnostic writes tolerate nil loggers.
+func TestTraceDiagnosticsLoggerPrintfHandlesNilLogger(t *testing.T) {
+	t.Parallel()
 
-	if td := newTraceDiagnostics(TraceDiagnosticsOff); td != nil {
+	traceDiagnosticsLogger{}.Printf("suppressed %d", 1)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{AddSource: false}))
+	traceDiagnosticsLogger{logger: logger}.Printf("trace %s", "warning")
+
+	output := buf.String()
+	if !strings.Contains(output, "trace warning") {
+		t.Fatalf("diagnostic output = %q, want trace warning message", output)
+	}
+}
+
+// TestNewTraceDiagnosticsFallbacks ensures diagnostics helpers are initialized when enabled.
+func TestNewTraceDiagnosticsFallbacks(t *testing.T) {
+	if td := newTraceDiagnostics(TraceDiagnosticsOff, nil); td != nil {
 		t.Fatalf("newTraceDiagnostics(off) = %v, want nil", td)
 	}
 
-	td := newTraceDiagnostics(TraceDiagnosticsWarnOnce)
+	td := newTraceDiagnostics(TraceDiagnosticsWarnOnce, nil)
 	if td == nil {
 		t.Fatalf("newTraceDiagnostics returned nil in warn once mode")
 	}
@@ -1838,10 +2101,8 @@ func TestPrepareRuntimeConfigNormalizesExplicitTraceProjectID(t *testing.T) {
 	t.Cleanup(resetRuntimeInfoCache)
 	stubRuntimeInfo(RuntimeInfo{ProjectID: "runtime-project"})
 
-	recorder := &diagRecorder{}
-	original := traceDiagnosticLogger
-	traceDiagnosticLogger = recorder
-	t.Cleanup(func() { traceDiagnosticLogger = original })
+	var diagBuf bytes.Buffer
+	internalLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
 
 	cfg := handlerConfig{
 		TraceDiagnostics:     TraceDiagnosticsWarnOnce,
@@ -1849,17 +2110,21 @@ func TestPrepareRuntimeConfigNormalizesExplicitTraceProjectID(t *testing.T) {
 		traceProjectExplicit: true,
 		traceProjectSource:   traceProjectSourceOption,
 	}
-	if err := prepareRuntimeConfig(&cfg); err != nil {
+	if err := prepareRuntimeConfig(&cfg, internalLogger); err != nil {
 		t.Fatalf("prepareRuntimeConfig returned %v", err)
 	}
 	if cfg.TraceProjectID != "proj-123" {
 		t.Fatalf("TraceProjectID = %q, want proj-123", cfg.TraceProjectID)
 	}
-	if len(recorder.messages) != 1 {
-		t.Fatalf("normalized TraceProjectID warning count = %d, want 1", len(recorder.messages))
+	diagOutput := strings.TrimSpace(diagBuf.String())
+	if diagOutput == "" {
+		t.Fatalf("expected normalization diagnostic output, got none")
 	}
-	if !strings.Contains(recorder.messages[0], "normalized TraceProjectID") {
-		t.Fatalf("normalized warning = %q, want normalized TraceProjectID", recorder.messages[0])
+	if !strings.Contains(diagOutput, "normalized TraceProjectID") {
+		t.Fatalf("normalized warning output = %q, want normalized TraceProjectID", diagOutput)
+	}
+	if strings.Count(diagOutput, "\n") != 0 {
+		t.Fatalf("expected one normalization warning line, got %q", diagOutput)
 	}
 }
 
@@ -1869,10 +2134,8 @@ func TestPrepareRuntimeConfigInvalidExplicitTraceProjectIDWarnsAndFallsBack(t *t
 	t.Cleanup(resetRuntimeInfoCache)
 	stubRuntimeInfo(RuntimeInfo{ProjectID: "runtime-project"})
 
-	recorder := &diagRecorder{}
-	original := traceDiagnosticLogger
-	traceDiagnosticLogger = recorder
-	t.Cleanup(func() { traceDiagnosticLogger = original })
+	var diagBuf bytes.Buffer
+	internalLogger := slog.New(slog.NewTextHandler(&diagBuf, &slog.HandlerOptions{AddSource: false}))
 
 	cfg := handlerConfig{
 		TraceDiagnostics:     TraceDiagnosticsWarnOnce,
@@ -1880,17 +2143,21 @@ func TestPrepareRuntimeConfigInvalidExplicitTraceProjectIDWarnsAndFallsBack(t *t
 		traceProjectExplicit: true,
 		traceProjectSource:   traceProjectSourceOption,
 	}
-	if err := prepareRuntimeConfig(&cfg); err != nil {
+	if err := prepareRuntimeConfig(&cfg, internalLogger); err != nil {
 		t.Fatalf("prepareRuntimeConfig returned %v", err)
 	}
 	if cfg.TraceProjectID != "runtime-project" {
 		t.Fatalf("TraceProjectID = %q, want runtime-project", cfg.TraceProjectID)
 	}
-	if len(recorder.messages) != 1 {
-		t.Fatalf("invalid TraceProjectID warning count = %d, want 1", len(recorder.messages))
+	diagOutput := strings.TrimSpace(diagBuf.String())
+	if diagOutput == "" {
+		t.Fatalf("expected invalid TraceProjectID diagnostic output, got none")
 	}
-	if !strings.Contains(recorder.messages[0], "invalid TraceProjectID") {
-		t.Fatalf("invalid warning = %q, want invalid TraceProjectID", recorder.messages[0])
+	if !strings.Contains(diagOutput, "invalid TraceProjectID") {
+		t.Fatalf("invalid warning output = %q, want invalid TraceProjectID", diagOutput)
+	}
+	if strings.Count(diagOutput, "\n") != 0 {
+		t.Fatalf("expected one invalid TraceProjectID warning line, got %q", diagOutput)
 	}
 }
 
@@ -1932,60 +2199,6 @@ func TestParseTraceDiagnosticsEnvCoversModes(t *testing.T) {
 				t.Fatalf("parseTraceDiagnosticsEnv(%q) = %v, want %v", tt.value, got, tt.want)
 			}
 		})
-	}
-}
-
-// TestLoadConfigFromEnvHelpersFallback exercises the helper accessors and defaulting paths.
-func TestLoadConfigFromEnvHelpersFallback(t *testing.T) {
-	originalLoader := getLoadConfigFromEnv()
-	defer setLoadConfigFromEnv(originalLoader)
-
-	setLoadConfigFromEnv(nil)
-	if fn := getLoadConfigFromEnv(); fn == nil {
-		t.Fatalf("getLoadConfigFromEnv returned nil after nil setter")
-	}
-
-	loadConfigFromEnvFunc = atomic.Value{}
-	if fn := getLoadConfigFromEnv(); fn == nil {
-		t.Fatalf("getLoadConfigFromEnv returned nil after zeroing atomic value")
-	}
-
-	setLoadConfigFromEnv(originalLoader)
-}
-
-// TestCachedConfigFromEnvInvokesRaceHook simulates a concurrent cache fill to ensure the hook fires.
-func TestCachedConfigFromEnvInvokesRaceHook(t *testing.T) {
-	clearHandlerEnv(t)
-	resetHandlerConfigCache()
-
-	originalLoader := getLoadConfigFromEnv()
-	originalHook := getCachedConfigRaceHook()
-	t.Cleanup(func() {
-		setLoadConfigFromEnv(originalLoader)
-		setCachedConfigRaceHook(originalHook)
-		resetHandlerConfigCache()
-	})
-
-	raceWinner := &handlerConfig{Level: slog.LevelWarn}
-	setLoadConfigFromEnv(func(logger *slog.Logger) (handlerConfig, error) {
-		handlerEnvConfigCache.Store(raceWinner)
-		return handlerConfig{Level: slog.LevelInfo}, nil
-	})
-
-	hookCalled := false
-	setCachedConfigRaceHook(func() {
-		hookCalled = true
-	})
-
-	cfg, err := cachedConfigFromEnv(newDiscardLogger())
-	if err != nil {
-		t.Fatalf("cachedConfigFromEnv() returned %v, want nil", err)
-	}
-	if !hookCalled {
-		t.Fatalf("cachedConfigRaceHook was not invoked")
-	}
-	if cfg.Level != raceWinner.Level {
-		t.Fatalf("cfg.Level = %v, want %v from existing cache", cfg.Level, raceWinner.Level)
 	}
 }
 
@@ -2301,6 +2514,240 @@ func TestHandlerContextualLoggingCompatibility(t *testing.T) {
 	}
 }
 
+// TestHandlerCompatibilityPatternsWithFanout ensures Global, DI, and contextual
+// logging patterns still work when slogcp fans out through additional handlers.
+func TestHandlerCompatibilityPatternsWithFanout(t *testing.T) {
+	findMirrorEntry := func(entries []map[string]any, msg string) (map[string]any, bool) {
+		for _, entry := range entries {
+			if entry["msg"] == msg {
+				return entry, true
+			}
+		}
+		return nil, false
+	}
+
+	t.Run("Global", func(t *testing.T) {
+		var primaryBuf bytes.Buffer
+		var mirrorBuf bytes.Buffer
+
+		mirror := slog.NewJSONHandler(&mirrorBuf, nil)
+		h, err := NewHandler(
+			io.Discard,
+			WithRedirectWriter(&primaryBuf),
+			WithAdditionalHandlers(mirror),
+		)
+		if err != nil {
+			t.Fatalf("NewHandler() returned %v, want nil", err)
+		}
+		t.Cleanup(func() {
+			if cerr := h.Close(); cerr != nil {
+				t.Errorf("Handler.Close() returned %v, want nil", cerr)
+			}
+		})
+
+		prevDefault := slog.Default()
+		slog.SetDefault(slog.New(h))
+		t.Cleanup(func() {
+			slog.SetDefault(prevDefault)
+		})
+
+		slog.Info("global fanout", slog.String("pattern", "global"))
+
+		primaryEntries := decodeLogBuffer(t, &primaryBuf)
+		if len(primaryEntries) != 1 {
+			t.Fatalf("primary entries = %d, want 1 (%v)", len(primaryEntries), primaryEntries)
+		}
+		if got := primaryEntries[0]["message"]; got != "global fanout" {
+			t.Fatalf("primary message = %v, want global fanout", got)
+		}
+		if got := primaryEntries[0]["pattern"]; got != "global" {
+			t.Fatalf("primary pattern = %v, want global", got)
+		}
+
+		mirrorEntries := decodeLogBuffer(t, &mirrorBuf)
+		if len(mirrorEntries) != 1 {
+			t.Fatalf("mirror entries = %d, want 1 (%v)", len(mirrorEntries), mirrorEntries)
+		}
+		mirrorEntry, ok := findMirrorEntry(mirrorEntries, "global fanout")
+		if !ok {
+			t.Fatalf("missing mirror global entry: %v", mirrorEntries)
+		}
+		if got := mirrorEntry["pattern"]; got != "global" {
+			t.Fatalf("mirror pattern = %v, want global", got)
+		}
+	})
+
+	t.Run("DependencyInjected", func(t *testing.T) {
+		var primaryBuf bytes.Buffer
+		var mirrorBuf bytes.Buffer
+
+		mirror := slog.NewJSONHandler(&mirrorBuf, nil)
+		h, err := NewHandler(
+			io.Discard,
+			WithRedirectWriter(&primaryBuf),
+			WithAdditionalHandlers(mirror),
+		)
+		if err != nil {
+			t.Fatalf("NewHandler() returned %v, want nil", err)
+		}
+		t.Cleanup(func() {
+			if cerr := h.Close(); cerr != nil {
+				t.Errorf("Handler.Close() returned %v, want nil", cerr)
+			}
+		})
+
+		base := slog.New(h)
+		service := base.WithGroup("service").With(slog.String("name", "billing"))
+		service.Info("di fanout", slog.String("operation", "charge"))
+
+		primaryEntries := decodeLogBuffer(t, &primaryBuf)
+		if len(primaryEntries) != 1 {
+			t.Fatalf("primary entries = %d, want 1 (%v)", len(primaryEntries), primaryEntries)
+		}
+		primaryService, ok := primaryEntries[0]["service"].(map[string]any)
+		if !ok {
+			t.Fatalf("primary service group missing: %v", primaryEntries[0])
+		}
+		if got := primaryService["name"]; got != "billing" {
+			t.Fatalf("primary service.name = %v, want billing", got)
+		}
+		if got := primaryService["operation"]; got != "charge" {
+			t.Fatalf("primary service.operation = %v, want charge", got)
+		}
+
+		mirrorEntries := decodeLogBuffer(t, &mirrorBuf)
+		if len(mirrorEntries) != 1 {
+			t.Fatalf("mirror entries = %d, want 1 (%v)", len(mirrorEntries), mirrorEntries)
+		}
+		mirrorService, ok := mirrorEntries[0]["service"].(map[string]any)
+		if !ok {
+			t.Fatalf("mirror service group missing: %v", mirrorEntries[0])
+		}
+		if got := mirrorService["name"]; got != "billing" {
+			t.Fatalf("mirror service.name = %v, want billing", got)
+		}
+		if got := mirrorService["operation"]; got != "charge" {
+			t.Fatalf("mirror service.operation = %v, want charge", got)
+		}
+	})
+
+	t.Run("Contextual", func(t *testing.T) {
+		var primaryBuf bytes.Buffer
+		var mirrorBuf bytes.Buffer
+
+		mirror := slog.NewJSONHandler(&mirrorBuf, nil)
+		h, err := NewHandler(
+			io.Discard,
+			WithRedirectWriter(&primaryBuf),
+			WithAdditionalHandlers(mirror),
+		)
+		if err != nil {
+			t.Fatalf("NewHandler() returned %v, want nil", err)
+		}
+		t.Cleanup(func() {
+			if cerr := h.Close(); cerr != nil {
+				t.Errorf("Handler.Close() returned %v, want nil", cerr)
+			}
+		})
+
+		base := slog.New(h)
+		prevDefault := slog.Default()
+		slog.SetDefault(base)
+		t.Cleanup(func() {
+			slog.SetDefault(prevDefault)
+		})
+
+		alphaCtx := ContextWithLogger(context.Background(), base.With(
+			slog.String("request_id", "alpha"),
+			slog.String("trace_id", "trace-alpha"),
+		))
+		betaCtx := ContextWithLogger(context.Background(), base.With(
+			slog.String("request_id", "beta"),
+			slog.String("trace_id", "trace-beta"),
+		))
+
+		Logger(alphaCtx).InfoContext(alphaCtx, "context fanout alpha", slog.String("path", "/alpha"))
+		Logger(betaCtx).InfoContext(betaCtx, "context fanout beta", slog.String("path", "/beta"))
+		Logger(context.Background()).Info("context fanout fallback")
+
+		primaryEntries := decodeLogBuffer(t, &primaryBuf)
+		if len(primaryEntries) != 3 {
+			t.Fatalf("primary entries = %d, want 3 (%v)", len(primaryEntries), primaryEntries)
+		}
+
+		alphaPrimary, ok := findEntryByMessage(primaryEntries, "context fanout alpha")
+		if !ok {
+			t.Fatalf("missing primary alpha entry: %v", primaryEntries)
+		}
+		if got := alphaPrimary["request_id"]; got != "alpha" {
+			t.Fatalf("primary alpha request_id = %v, want alpha", got)
+		}
+		if got := alphaPrimary["trace_id"]; got != "trace-alpha" {
+			t.Fatalf("primary alpha trace_id = %v, want trace-alpha", got)
+		}
+
+		betaPrimary, ok := findEntryByMessage(primaryEntries, "context fanout beta")
+		if !ok {
+			t.Fatalf("missing primary beta entry: %v", primaryEntries)
+		}
+		if got := betaPrimary["request_id"]; got != "beta" {
+			t.Fatalf("primary beta request_id = %v, want beta", got)
+		}
+		if got := betaPrimary["trace_id"]; got != "trace-beta" {
+			t.Fatalf("primary beta trace_id = %v, want trace-beta", got)
+		}
+
+		fallbackPrimary, ok := findEntryByMessage(primaryEntries, "context fanout fallback")
+		if !ok {
+			t.Fatalf("missing primary fallback entry: %v", primaryEntries)
+		}
+		if _, exists := fallbackPrimary["request_id"]; exists {
+			t.Fatalf("fallback entry unexpectedly includes request_id: %v", fallbackPrimary)
+		}
+		if _, exists := fallbackPrimary["trace_id"]; exists {
+			t.Fatalf("fallback entry unexpectedly includes trace_id: %v", fallbackPrimary)
+		}
+
+		mirrorEntries := decodeLogBuffer(t, &mirrorBuf)
+		if len(mirrorEntries) != 3 {
+			t.Fatalf("mirror entries = %d, want 3 (%v)", len(mirrorEntries), mirrorEntries)
+		}
+
+		alphaMirror, ok := findMirrorEntry(mirrorEntries, "context fanout alpha")
+		if !ok {
+			t.Fatalf("missing mirror alpha entry: %v", mirrorEntries)
+		}
+		if got := alphaMirror["request_id"]; got != "alpha" {
+			t.Fatalf("mirror alpha request_id = %v, want alpha", got)
+		}
+		if got := alphaMirror["trace_id"]; got != "trace-alpha" {
+			t.Fatalf("mirror alpha trace_id = %v, want trace-alpha", got)
+		}
+
+		betaMirror, ok := findMirrorEntry(mirrorEntries, "context fanout beta")
+		if !ok {
+			t.Fatalf("missing mirror beta entry: %v", mirrorEntries)
+		}
+		if got := betaMirror["request_id"]; got != "beta" {
+			t.Fatalf("mirror beta request_id = %v, want beta", got)
+		}
+		if got := betaMirror["trace_id"]; got != "trace-beta" {
+			t.Fatalf("mirror beta trace_id = %v, want trace-beta", got)
+		}
+
+		fallbackMirror, ok := findMirrorEntry(mirrorEntries, "context fanout fallback")
+		if !ok {
+			t.Fatalf("missing mirror fallback entry: %v", mirrorEntries)
+		}
+		if _, exists := fallbackMirror["request_id"]; exists {
+			t.Fatalf("mirror fallback unexpectedly includes request_id: %v", fallbackMirror)
+		}
+		if _, exists := fallbackMirror["trace_id"]; exists {
+			t.Fatalf("mirror fallback unexpectedly includes trace_id: %v", fallbackMirror)
+		}
+	})
+}
+
 type strictMetadataClient struct{}
 
 // OnGCE reports that the strictMetadataClient is never running on GCE.
@@ -2390,6 +2837,68 @@ func TestSourceAwareHandlerHandlesNilChildren(t *testing.T) {
 	}
 }
 
+// TestComposeFanoutHandlesNilAdditional verifies defensive handling when fan-out
+// receives nil additional handlers.
+func TestComposeFanoutHandlesNilAdditional(t *testing.T) {
+	t.Parallel()
+
+	primary := slog.DiscardHandler
+	got := composeFanout(primary, []slog.Handler{nil, nil}, nil)
+	if got != primary {
+		t.Fatalf("composeFanout should fall back to primary when all additional handlers are nil")
+	}
+}
+
+// TestSharedLevelHandlerPaths exercises helper paths used by fan-out level gating.
+func TestSharedLevelHandlerPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("belowLevelSkipsHandle", func(t *testing.T) {
+		levelVar := new(slog.LevelVar)
+		levelVar.Set(slog.LevelWarn)
+
+		next := &captureHandler{}
+		wrapped := sharedLevelHandler{Handler: next, leveler: levelVar}
+
+		rec := slog.NewRecord(time.Now(), slog.LevelInfo, "ignored", 0)
+		if err := wrapped.Handle(context.Background(), rec); err != nil {
+			t.Fatalf("Handle returned %v, want nil", err)
+		}
+		if next.count != 0 {
+			t.Fatalf("wrapped handler should skip below-threshold records, count=%d", next.count)
+		}
+	})
+
+	t.Run("wrapsChildErrors", func(t *testing.T) {
+		sentinel := errors.New("sink failed")
+		wrapped := sharedLevelHandler{
+			Handler: errChildHandler{err: sentinel},
+		}
+
+		rec := slog.NewRecord(time.Now(), slog.LevelError, "boom", 0)
+		err := wrapped.Handle(context.Background(), rec)
+		if err == nil {
+			t.Fatalf("Handle returned nil, want wrapped error")
+		}
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("Handle error = %v, want wrapping %v", err, sentinel)
+		}
+		if !strings.Contains(err.Error(), "shared level handler") {
+			t.Fatalf("Handle error = %q, want shared level handler prefix", err.Error())
+		}
+	})
+
+	t.Run("nilChildPropagation", func(t *testing.T) {
+		wrapped := sharedLevelHandler{Handler: nilChildHandler{}}
+		if wrapped.WithAttrs(nil) != nil {
+			t.Fatalf("WithAttrs on nil child should return nil")
+		}
+		if wrapped.WithGroup("group") != nil {
+			t.Fatalf("WithGroup on nil child should return nil")
+		}
+	})
+}
+
 // TestOptionHelpersMutateOptions ensures the option helpers toggle internal handler options.
 func TestOptionHelpersMutateOptions(t *testing.T) {
 	t.Parallel()
@@ -2466,6 +2975,19 @@ func TestOptionHelpersMutateOptions(t *testing.T) {
 		WithGroup(" ")(&opts)
 		if opts.groups != nil {
 			t.Fatalf("blank group should reset groups slice, got %+v", opts.groups)
+		}
+	})
+
+	t.Run("WithCloseTimeoutPolicy", func(t *testing.T) {
+		var opts options
+		WithCloseTimeoutPolicy(CloseTimeoutReturn)(&opts)
+		if opts.closeTimeoutPolicy == nil || *opts.closeTimeoutPolicy != CloseTimeoutReturn {
+			t.Fatalf("closeTimeoutPolicy = %v, want CloseTimeoutReturn", opts.closeTimeoutPolicy)
+		}
+
+		WithCloseTimeoutPolicy(CloseTimeoutPolicy(99))(&opts)
+		if opts.closeTimeoutPolicy == nil || *opts.closeTimeoutPolicy != CloseTimeoutAutoAbort {
+			t.Fatalf("invalid close timeout policy should normalize to CloseTimeoutAutoAbort, got %v", opts.closeTimeoutPolicy)
 		}
 	})
 }
@@ -2600,8 +3122,8 @@ func TestHandlerCloseClosesOwnedResources(t *testing.T) {
 	} else if !errors.Is(err, os.ErrClosed) && !errors.Is(err, os.ErrInvalid) {
 		t.Fatalf("write error = %v, want os.ErrClosed or os.ErrInvalid", err)
 	}
-	if err := h.Close(); err != nil {
-		t.Fatalf("second Handler.Close() returned %v, want nil", err)
+	if err := h.Close(); !errors.Is(err, switchWriter.err) {
+		t.Fatalf("second Handler.Close() error = %v, want %v", err, switchWriter.err)
 	}
 }
 
@@ -2631,8 +3153,338 @@ func TestHandlerCloseReturnsAsyncHandlerError(t *testing.T) {
 	if !strings.Contains(err.Error(), "close async handler") {
 		t.Fatalf("Handler.Close() error = %q, want close async handler prefix", err.Error())
 	}
-	if err := h.Close(); err != nil {
-		t.Fatalf("second Handler.Close() = %v, want nil", err)
+	if err := h.Close(); !errors.Is(err, sentinel) {
+		t.Fatalf("second Handler.Close() error = %v, want %v", err, sentinel)
+	}
+}
+
+// TestHandlerCloseEscalatesAsyncTimeout verifies Close escalates graceful async
+// timeouts to abort before owned resources are torn down.
+func TestHandlerCloseEscalatesAsyncTimeout(t *testing.T) {
+	t.Parallel()
+
+	abortErr := errors.New("abort-sentinel")
+	inner := newBlockingAbortHandler(abortErr)
+	wrapped := slogcpasync.Wrap(inner,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+		slogcpasync.WithFlushTimeout(20*time.Millisecond),
+	)
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	if err := asyncHandler.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+
+	switchWriter := &writeCloseSpy{}
+	h := &Handler{
+		asyncHandler:     asyncHandler,
+		switchableWriter: NewSwitchableWriter(switchWriter),
+		internalLogger:   slog.New(slog.DiscardHandler),
+	}
+
+	err := h.Close()
+	if err == nil {
+		t.Fatalf("Handler.Close() = nil, want timeout/abort error")
+	}
+	if !errors.Is(err, slogcpasync.ErrFlushTimeout) {
+		t.Fatalf("Handler.Close() error = %v, want ErrFlushTimeout", err)
+	}
+	if !errors.Is(err, slogcpasync.ErrAborted) {
+		t.Fatalf("Handler.Close() error = %v, want ErrAborted", err)
+	}
+	if !errors.Is(err, abortErr) {
+		t.Fatalf("Handler.Close() error = %v, want abort sentinel %v", err, abortErr)
+	}
+	if switchWriter.closed != 1 {
+		t.Fatalf("switch writer close count = %d, want 1", switchWriter.closed)
+	}
+}
+
+// TestHandlerCloseTimeoutReturnSkipsAbort verifies Close can be configured to
+// return graceful timeout errors without forceful abort or owned resource close.
+func TestHandlerCloseTimeoutReturnSkipsAbort(t *testing.T) {
+	t.Parallel()
+
+	abortErr := errors.New("abort-sentinel")
+	inner := newBlockingAbortHandler(abortErr)
+	wrapped := slogcpasync.Wrap(inner,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+		slogcpasync.WithFlushTimeout(20*time.Millisecond),
+	)
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	if err := asyncHandler.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+
+	switchWriter := &writeCloseSpy{}
+	h := &Handler{
+		cfg:              &handlerConfig{CloseTimeoutPolicy: CloseTimeoutReturn},
+		asyncHandler:     asyncHandler,
+		switchableWriter: NewSwitchableWriter(switchWriter),
+		internalLogger:   slog.New(slog.DiscardHandler),
+	}
+
+	err := h.Close()
+	if err == nil {
+		t.Fatalf("Handler.Close() = nil, want timeout error")
+	}
+	if !errors.Is(err, slogcpasync.ErrFlushTimeout) {
+		t.Fatalf("Handler.Close() error = %v, want ErrFlushTimeout", err)
+	}
+	if errors.Is(err, slogcpasync.ErrAborted) {
+		t.Fatalf("Handler.Close() error = %v, want no ErrAborted when CloseTimeoutReturn is configured", err)
+	}
+	if errors.Is(err, abortErr) {
+		t.Fatalf("Handler.Close() error = %v, unexpected abort sentinel %v", err, abortErr)
+	}
+	if switchWriter.closed != 0 {
+		t.Fatalf("switch writer close count = %d, want 0", switchWriter.closed)
+	}
+
+	abortResult := h.Abort(context.Background())
+	if !errors.Is(abortResult, slogcpasync.ErrAborted) {
+		t.Fatalf("Abort() error = %v, want ErrAborted", abortResult)
+	}
+	if !errors.Is(abortResult, abortErr) {
+		t.Fatalf("Abort() error = %v, want abort sentinel %v", abortResult, abortErr)
+	}
+	if switchWriter.closed != 1 {
+		t.Fatalf("switch writer close count = %d, want 1 after Abort()", switchWriter.closed)
+	}
+}
+
+// TestHandlerShutdownTimeoutKeepsOwnedResourcesOpen verifies graceful shutdown
+// timeout returns without closing owned resources.
+func TestHandlerShutdownTimeoutKeepsOwnedResourcesOpen(t *testing.T) {
+	t.Parallel()
+
+	abortErr := errors.New("abort-sentinel")
+	inner := newBlockingAbortHandler(abortErr)
+	wrapped := slogcpasync.Wrap(inner,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+	)
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	if err := asyncHandler.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+
+	switchWriter := &writeCloseSpy{}
+	h := &Handler{
+		asyncHandler:     asyncHandler,
+		switchableWriter: NewSwitchableWriter(switchWriter),
+		internalLogger:   slog.New(slog.DiscardHandler),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := h.Shutdown(ctx)
+	if err == nil {
+		t.Fatalf("Shutdown() = nil, want timeout error")
+	}
+	if !errors.Is(err, slogcpasync.ErrFlushTimeout) {
+		t.Fatalf("Shutdown() error = %v, want ErrFlushTimeout", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown() error = %v, want context.DeadlineExceeded", err)
+	}
+	if switchWriter.closed != 0 {
+		t.Fatalf("switch writer close count = %d, want 0", switchWriter.closed)
+	}
+
+	abortResult := h.Abort(context.Background())
+	if !errors.Is(abortResult, slogcpasync.ErrAborted) {
+		t.Fatalf("Abort() error = %v, want ErrAborted", abortResult)
+	}
+	if !errors.Is(abortResult, abortErr) {
+		t.Fatalf("Abort() error = %v, want abort sentinel %v", abortResult, abortErr)
+	}
+	if switchWriter.closed != 1 {
+		t.Fatalf("switch writer close count = %d, want 1", switchWriter.closed)
+	}
+}
+
+// TestHandlerAbortRespectsContext verifies Abort returns on caller deadlines
+// when the downstream abort hook does not complete, and repeated timeout
+// callers share one downstream abort attempt.
+func TestHandlerAbortRespectsContext(t *testing.T) {
+	t.Parallel()
+
+	inner := newSlowAbortHandler()
+	wrapped := slogcpasync.Wrap(inner,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+	)
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	if err := asyncHandler.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+
+	switchWriter := &writeCloseSpy{}
+	h := &Handler{
+		asyncHandler:     asyncHandler,
+		switchableWriter: NewSwitchableWriter(switchWriter),
+		internalLogger:   slog.New(slog.DiscardHandler),
+	}
+
+	for range 3 {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		err := h.Abort(ctx)
+		cancel()
+		if err == nil {
+			t.Fatalf("Abort() = nil, want context deadline error")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Abort() error = %v, want context deadline exceeded", err)
+		}
+		if !errors.Is(err, slogcpasync.ErrAborted) {
+			t.Fatalf("Abort() error = %v, want ErrAborted", err)
+		}
+	}
+	if switchWriter.closed != 1 {
+		t.Fatalf("switch writer close count = %d, want 1", switchWriter.closed)
+	}
+	if got := inner.abortHits.Load(); got != 1 {
+		t.Fatalf("downstream abort invoked %d times, want 1", got)
+	}
+
+	// Release the delayed abort path so helper goroutines can exit cleanly.
+	close(inner.abortGate)
+}
+
+// TestHandlerLifecycleNilAndNoAsyncPaths covers nil receiver and no-async
+// branches in lifecycle helpers.
+func TestHandlerLifecycleNilAndNoAsyncPaths(t *testing.T) {
+	t.Parallel()
+
+	var nilHandler *Handler
+	if err := nilHandler.Close(); err != nil {
+		t.Fatalf("nil Close() returned %v, want nil", err)
+	}
+	if err := nilHandler.Shutdown(context.TODO()); err != nil {
+		t.Fatalf("nil Shutdown(context.TODO()) returned %v, want nil", err)
+	}
+	if err := nilHandler.Abort(context.TODO()); err != nil {
+		t.Fatalf("nil Abort(context.TODO()) returned %v, want nil", err)
+	}
+	if err := nilHandler.shutdownAsyncHandler(context.Background()); err != nil {
+		t.Fatalf("nil shutdownAsyncHandler returned %v, want nil", err)
+	}
+	if err := nilHandler.abortAsyncHandler(context.TODO()); err != nil {
+		t.Fatalf("nil abortAsyncHandler(context.TODO()) returned %v, want nil", err)
+	}
+	if err := nilHandler.closeResourcesOnce(); err != nil {
+		t.Fatalf("nil closeResourcesOnce() returned %v, want nil", err)
+	}
+
+	h := &Handler{internalLogger: slog.New(slog.DiscardHandler)}
+	if err := h.Shutdown(context.TODO()); err != nil {
+		t.Fatalf("Shutdown(context.TODO()) without async returned %v, want nil", err)
+	}
+	if err := h.Abort(context.TODO()); err != nil {
+		t.Fatalf("Abort(context.TODO()) without async returned %v, want nil", err)
+	}
+}
+
+// TestHandlerAsyncHelperBranches exercises helper error and nil-context paths.
+func TestHandlerAsyncHelperBranches(t *testing.T) {
+	t.Parallel()
+
+	blocking := newBlockingAbortHandler(nil)
+	wrapped := slogcpasync.Wrap(blocking,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+	)
+	asyncHandler, ok := wrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrapped)
+	}
+
+	h := &Handler{
+		asyncHandler:   asyncHandler,
+		internalLogger: slog.New(slog.DiscardHandler),
+	}
+
+	abortErr := h.abortAsyncHandler(context.TODO())
+	if !errors.Is(abortErr, slogcpasync.ErrAborted) {
+		t.Fatalf("abortAsyncHandler(context.TODO()) error = %v, want ErrAborted", abortErr)
+	}
+
+	inner := newBlockingAbortHandler(nil)
+	wrappedTimeout := slogcpasync.Wrap(inner,
+		slogcpasync.WithQueueSize(1),
+		slogcpasync.WithWorkerCount(1),
+	)
+	asyncTimeout, ok := wrappedTimeout.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", wrappedTimeout)
+	}
+	if err := asyncTimeout.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)); err != nil {
+		t.Fatalf("Handle() returned %v, want nil", err)
+	}
+
+	hTimeout := &Handler{
+		asyncHandler:   asyncTimeout,
+		internalLogger: slog.New(slog.DiscardHandler),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := hTimeout.shutdownAsyncHandler(ctx)
+	if err == nil {
+		t.Fatalf("shutdownAsyncHandler() = nil, want timeout error")
+	}
+	if !errors.Is(err, slogcpasync.ErrFlushTimeout) {
+		t.Fatalf("shutdownAsyncHandler() error = %v, want ErrFlushTimeout", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdownAsyncHandler() error = %v, want context.DeadlineExceeded", err)
+	}
+
+	if abort := hTimeout.abortAsyncHandler(context.Background()); !errors.Is(abort, slogcpasync.ErrAborted) {
+		t.Fatalf("abortAsyncHandler() error = %v, want ErrAborted", abort)
+	}
+
+	fastWrapped := slogcpasync.Wrap(slog.DiscardHandler)
+	fastAsync, ok := fastWrapped.(*slogcpasync.Handler)
+	if !ok {
+		t.Fatalf("slogcpasync.Wrap() returned %T, want *slogcpasync.Handler", fastWrapped)
+	}
+	hFast := &Handler{
+		asyncHandler:   fastAsync,
+		internalLogger: slog.New(slog.DiscardHandler),
+	}
+	if err := hFast.shutdownAsyncHandler(context.Background()); err != nil {
+		t.Fatalf("shutdownAsyncHandler() returned %v, want nil", err)
+	}
+	if err := hFast.abortAsyncHandler(context.Background()); !errors.Is(err, slogcpasync.ErrAborted) {
+		t.Fatalf("abortAsyncHandler() on fast handler error = %v, want ErrAborted", err)
+	}
+
+	// Defensive guard: malformed async handlers with nil internal state should
+	// still let abortAsyncHandler return nil without panicking.
+	hNilState := &Handler{
+		asyncHandler:   &slogcpasync.Handler{},
+		internalLogger: slog.New(slog.DiscardHandler),
+	}
+	if err := hNilState.abortAsyncHandler(context.Background()); err != nil {
+		t.Fatalf("abortAsyncHandler() with nil async state returned %v, want nil", err)
 	}
 }
 
@@ -2755,6 +3607,22 @@ func (nilChildHandler) WithAttrs([]slog.Attr) slog.Handler { return nil }
 // WithGroup implements slog.Handler and returns nil to simulate handler failure.
 func (nilChildHandler) WithGroup(string) slog.Handler { return nil }
 
+type errChildHandler struct {
+	err error
+}
+
+// Enabled implements slog.Handler.
+func (h errChildHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle implements slog.Handler.
+func (h errChildHandler) Handle(context.Context, slog.Record) error { return h.err }
+
+// WithAttrs implements slog.Handler.
+func (h errChildHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+// WithGroup implements slog.Handler.
+func (h errChildHandler) WithGroup(string) slog.Handler { return h }
+
 type writeCloseSpy struct {
 	closed int
 	err    error
@@ -2788,6 +3656,84 @@ type closeErrorHandler struct {
 // Close implements io.Closer and returns the configured error.
 func (h closeErrorHandler) Close() error {
 	return h.err
+}
+
+type blockingAbortHandler struct {
+	release   chan struct{}
+	abortErr  error
+	abortOnce sync.Once
+}
+
+// newBlockingAbortHandler returns a handler whose Handle blocks until Abort is called.
+func newBlockingAbortHandler(abortErr error) *blockingAbortHandler {
+	return &blockingAbortHandler{
+		release:  make(chan struct{}),
+		abortErr: abortErr,
+	}
+}
+
+// Enabled always reports loggable records for testing.
+func (h *blockingAbortHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle blocks until Abort signals release.
+func (h *blockingAbortHandler) Handle(context.Context, slog.Record) error {
+	<-h.release
+	return nil
+}
+
+// WithAttrs preserves the blocking abort test behavior.
+func (h *blockingAbortHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+// WithGroup preserves the blocking abort test behavior.
+func (h *blockingAbortHandler) WithGroup(string) slog.Handler { return h }
+
+// Abort releases any blocked Handle call and returns the configured sentinel.
+func (h *blockingAbortHandler) Abort() error {
+	h.abortOnce.Do(func() {
+		close(h.release)
+	})
+	return h.abortErr
+}
+
+type slowAbortHandler struct {
+	release   chan struct{}
+	abortGate chan struct{}
+	abortHits atomic.Int64
+}
+
+// newSlowAbortHandler returns a handler whose Abort blocks until abortGate is closed.
+func newSlowAbortHandler() *slowAbortHandler {
+	return &slowAbortHandler{
+		release:   make(chan struct{}),
+		abortGate: make(chan struct{}),
+	}
+}
+
+// Enabled always reports loggable records for testing.
+func (h *slowAbortHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+// Handle blocks until release closes.
+func (h *slowAbortHandler) Handle(context.Context, slog.Record) error {
+	<-h.release
+	return nil
+}
+
+// WithAttrs preserves the slow-abort test behavior.
+func (h *slowAbortHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+// WithGroup preserves the slow-abort test behavior.
+func (h *slowAbortHandler) WithGroup(string) slog.Handler { return h }
+
+// Abort waits for abortGate to close before unblocking Handle.
+func (h *slowAbortHandler) Abort() error {
+	h.abortHits.Add(1)
+	<-h.abortGate
+	select {
+	case <-h.release:
+	default:
+		close(h.release)
+	}
+	return nil
 }
 
 // TestHandlerReopenLogFileNoopWithoutFile ensures file rotation is a no-op when no file is configured.
@@ -2829,6 +3775,18 @@ func TestHandlerSetupHelpers(t *testing.T) {
 		t.Fatalf("collectOptions level = %v, want LevelWarn", builder.level)
 	}
 
+	cfgWithPolicy := handlerConfig{CloseTimeoutPolicy: CloseTimeoutAutoAbort}
+	policy := CloseTimeoutReturn
+	applyLevelAndTraceOptions(&cfgWithPolicy, &options{closeTimeoutPolicy: &policy})
+	if cfgWithPolicy.CloseTimeoutPolicy != CloseTimeoutReturn {
+		t.Fatalf("CloseTimeoutPolicy = %v, want CloseTimeoutReturn", cfgWithPolicy.CloseTimeoutPolicy)
+	}
+	invalidPolicy := CloseTimeoutPolicy(42)
+	applyLevelAndTraceOptions(&cfgWithPolicy, &options{closeTimeoutPolicy: &invalidPolicy})
+	if cfgWithPolicy.CloseTimeoutPolicy != CloseTimeoutAutoAbort {
+		t.Fatalf("invalid CloseTimeoutPolicy should normalize to CloseTimeoutAutoAbort, got %v", cfgWithPolicy.CloseTimeoutPolicy)
+	}
+
 	custom := slog.New(slog.DiscardHandler)
 	if got := ensureInternalLogger(custom); got != custom {
 		t.Fatalf("ensureInternalLogger returned %v, want provided logger", got)
@@ -2841,7 +3799,7 @@ func TestHandlerSetupHelpers(t *testing.T) {
 		TraceDiagnostics: TraceDiagnosticsWarnOnce,
 		TraceProjectID:   "runtime-project",
 	}
-	if err := prepareRuntimeConfig(&cfg); err != nil {
+	if err := prepareRuntimeConfig(&cfg, newDiscardLogger()); err != nil {
 		t.Fatalf("prepareRuntimeConfig returned %v", err)
 	}
 	if cfg.TraceProjectID != "runtime-project" {
@@ -2852,7 +3810,7 @@ func TestHandlerSetupHelpers(t *testing.T) {
 	}
 
 	strictCfg := handlerConfig{TraceDiagnostics: TraceDiagnosticsStrict}
-	if err := prepareRuntimeConfig(&strictCfg); err == nil {
+	if err := prepareRuntimeConfig(&strictCfg, newDiscardLogger()); err == nil {
 		t.Fatalf("prepareRuntimeConfig strict mode without project should error")
 	}
 

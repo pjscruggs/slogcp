@@ -82,6 +82,45 @@ func TestTransportRoundTripDerivesScope(t *testing.T) {
 	}
 }
 
+// TestTransportRoundTripPreservesUnknownContentLength ensures unknown outbound
+// response sizes remain distinguishable from an actual zero-byte response.
+func TestTransportRoundTripPreservesUnknownContentLength(t *testing.T) {
+	t.Parallel()
+
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Body:          io.NopCloser(strings.NewReader("chunked")),
+		ContentLength: -1,
+	}
+	stub := &stubRoundTripper{resp: resp}
+	rt := Transport(stub)
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/stream", nil)
+	gotResp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip returned %v", err)
+	}
+	defer func() {
+		if cerr := gotResp.Body.Close(); cerr != nil {
+			t.Fatalf("gotResp.Body.Close() returned %v", cerr)
+		}
+	}()
+
+	scope, ok := ScopeFromContext(stub.req.Context())
+	if !ok {
+		t.Fatalf("request scope missing from context")
+	}
+	if got := scope.ResponseSize(); got != -1 {
+		t.Fatalf("scope.ResponseSize = %d, want -1 for unknown length", got)
+	}
+
+	for _, attr := range scope.metricAttrs() {
+		if attr.Key == "http.response_size" {
+			t.Fatalf("http.response_size should be omitted when size is unknown: %+v", attr)
+		}
+	}
+}
+
 // TestTransportRoundTripHandlesNilRequest ensures nil requests reach the base transport.
 func TestTransportRoundTripHandlesNilRequest(t *testing.T) {
 	t.Parallel()
