@@ -17,11 +17,13 @@ package slogcp
 import (
 	"context"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // stubPropagator implements propagation.TextMapPropagator for testing toggles.
@@ -45,80 +47,99 @@ func resetPropagatorForTest(tb testing.TB, prop propagation.TextMapPropagator) {
 	installPropagatorOnce = sync.Once{}
 }
 
-// TestEnsurePropagationInstallsCompositePropagator verifies EnsurePropagation
-// replaces the global propagator when auto-set is enabled.
-func TestEnsurePropagationInstallsCompositePropagator(t *testing.T) {
-	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "")
+// TestNewCompositePropagatorIncludesW3CAndBaggage verifies the helper builds a usable propagator.
+func TestNewCompositePropagatorIncludesW3CAndBaggage(t *testing.T) {
+	p := NewCompositePropagator()
 
+	fields := p.Fields()
+	has := func(key string) bool {
+		return slices.Contains(fields, key)
+	}
+	if !has("traceparent") {
+		t.Fatalf("propagator fields missing traceparent: %v", fields)
+	}
+	if !has("tracestate") {
+		t.Fatalf("propagator fields missing tracestate: %v", fields)
+	}
+	if !has("baggage") {
+		t.Fatalf("propagator fields missing baggage: %v", fields)
+	}
+}
+
+// TestCompositePropagatorZeroValueIsNoOp verifies the zero value behaves safely.
+func TestCompositePropagatorZeroValueIsNoOp(t *testing.T) {
+	var p CompositePropagator
+	carrier := propagation.MapCarrier{}
+	ctx := context.Background()
+
+	p.Inject(ctx, carrier)
+	if got := carrier.Get("traceparent"); got != "" {
+		t.Fatalf("zero-value propagator injected traceparent: %q", got)
+	}
+
+	extracted := p.Extract(ctx, carrier)
+	if extracted != ctx {
+		t.Fatalf("zero-value propagator should return original context")
+	}
+
+	if fields := p.Fields(); fields != nil {
+		t.Fatalf("zero-value propagator fields = %v, want nil", fields)
+	}
+}
+
+// TestCompositePropagatorInjectExtract verifies non-zero behavior for trace context.
+func TestCompositePropagatorInjectExtract(t *testing.T) {
+	p := NewCompositePropagator()
+	traceID, _ := trace.TraceIDFromHex("105445aa7843bc8bf206b12000100000")
+	spanID, _ := trace.SpanIDFromHex("09158d8185d3c3af")
+	spanCtx := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), spanCtx)
+	carrier := propagation.MapCarrier{}
+
+	p.Inject(ctx, carrier)
+	if got := carrier.Get("traceparent"); got == "" {
+		t.Fatalf("inject did not set traceparent")
+	}
+
+	extractedCtx := p.Extract(context.Background(), carrier)
+	extractedSC := trace.SpanContextFromContext(extractedCtx)
+	if !extractedSC.IsValid() {
+		t.Fatalf("extract did not produce a valid span context")
+	}
+	if extractedSC.TraceID() != traceID {
+		t.Fatalf("extracted trace id = %s, want %s", extractedSC.TraceID(), traceID)
+	}
+}
+
+// TestEnsurePropagationInstallsCompositePropagator verifies EnsurePropagation replaces the global propagator.
+func TestEnsurePropagationInstallsCompositePropagator(t *testing.T) {
 	stub := stubPropagator{}
 	resetPropagatorForTest(t, stub)
 
 	EnsurePropagation()
-	if reflect.TypeOf(otel.GetTextMapPropagator()) == reflect.TypeOf(stub) {
+	if reflect.TypeOf(otel.GetTextMapPropagator()) == reflect.TypeFor[stubPropagator]() {
 		t.Fatalf("expected EnsurePropagation to replace stub propagator")
 	}
 }
 
-// TestAutoSetPropagationHonorsDisableFlag ensures the disable env var prevents import-time mutation.
-func TestAutoSetPropagationHonorsDisableFlag(t *testing.T) {
-	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "false")
-
-	stub := stubPropagator{}
-	resetPropagatorForTest(t, stub)
-
-	autoSetPropagation()
-	if reflect.TypeOf(otel.GetTextMapPropagator()) != reflect.TypeOf(stub) {
-		t.Fatalf("expected stub propagator to remain installed when auto-set disabled")
-	}
-}
-
-// TestEnsurePropagationIgnoresAutoSetFlag verifies explicit calls still install the propagator.
-func TestEnsurePropagationIgnoresAutoSetFlag(t *testing.T) {
-	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "false")
-
+// TestEnsurePropagationDoesNotOverrideAfterFirstInstall verifies once semantics.
+func TestEnsurePropagationDoesNotOverrideAfterFirstInstall(t *testing.T) {
 	stub := stubPropagator{}
 	resetPropagatorForTest(t, stub)
 
 	EnsurePropagation()
-	if reflect.TypeOf(otel.GetTextMapPropagator()) == reflect.TypeOf(stub) {
-		t.Fatalf("expected EnsurePropagation to replace stub propagator even when auto-set disabled")
-	}
-}
-
-// TestPropagatorAutoSetParsesValues exercises parsing of environment overrides without mutating the propagator.
-func TestPropagatorAutoSetParsesValues(t *testing.T) {
-	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "TRUE")
-	if !propagatorAutoSetEnabled() {
-		t.Fatalf("propagatorAutoSetEnabled() = false, want true for TRUE")
+	if reflect.TypeOf(otel.GetTextMapPropagator()) == reflect.TypeFor[stubPropagator]() {
+		t.Fatalf("expected first EnsurePropagation call to replace stub propagator")
 	}
 
-	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "t")
-	if !propagatorAutoSetEnabled() {
-		t.Fatalf("propagatorAutoSetEnabled() = false, want true for t")
-	}
-
-	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "1")
-	if !propagatorAutoSetEnabled() {
-		t.Fatalf("propagatorAutoSetEnabled() = false, want true for 1")
-	}
-
-	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "false")
-	if propagatorAutoSetEnabled() {
-		t.Fatalf("propagatorAutoSetEnabled() = true, want false for false")
-	}
-
-	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "F")
-	if propagatorAutoSetEnabled() {
-		t.Fatalf("propagatorAutoSetEnabled() = true, want false for F")
-	}
-
-	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "0")
-	if propagatorAutoSetEnabled() {
-		t.Fatalf("propagatorAutoSetEnabled() = true, want false for 0")
-	}
-
-	t.Setenv("SLOGCP_PROPAGATOR_AUTOSET", "not-a-bool")
-	if !propagatorAutoSetEnabled() {
-		t.Fatalf("propagatorAutoSetEnabled() = false, want true for invalid values")
+	// Simulate an application/library overriding the global propagator after install.
+	otel.SetTextMapPropagator(stub)
+	EnsurePropagation()
+	if reflect.TypeOf(otel.GetTextMapPropagator()) != reflect.TypeFor[stubPropagator]() {
+		t.Fatalf("EnsurePropagation should not override global propagator after first install")
 	}
 }

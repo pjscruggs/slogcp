@@ -63,7 +63,6 @@ func TestCaptureStackProducesGoFormat(t *testing.T) {
 
 // TestHandlerEmitsStackTraceForErrors verifies handlers include stack traces when enabled.
 func TestHandlerEmitsStackTraceForErrors(t *testing.T) {
-	ResetHandlerConfigCacheForTest()
 	ResetRuntimeInfoCacheForTest()
 	t.Setenv("SLOGCP_TARGET", "")
 

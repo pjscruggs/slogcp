@@ -2,7 +2,7 @@
 
 <img src="logo.svg" width="50%" alt="slogcp logo">
 
-A "batteries included" structured logging module for Google Cloud Platform with built-in HTTP and gRPC interceptors.
+A "batteries included" `slog.Handler` for Google Cloud Platform with built-in HTTP, gRPC, and Pub/Sub integrations. `slogcp` turns application events into observability-ready telemetry by aligning logs, traces, and error data for Cloud Logging, Cloud Trace, and Error Reporting. It writes structured JSON to stdout/stderr so GCP's logging agent handles ingestion without the overhead of managing gRPC streams, retries, or batching. Its middleware is OpenTelemetry-aware by default, automatically propagating trace context and attaching request-scoped metadata across service boundaries, while the handler auto-detects your GCP runtime and adapts its defaults so you get end-to-end visibility with minimal configuration.
 
 ## Installation
 
@@ -54,7 +54,7 @@ slogcp will be useful to you if you're using:
   - Google Kubernetes Engine
 
 2. **Google Cloud's native observability stack**  
-  You rely on Cloud Logging, Cloud Trace, and Error Reporting to understand your services. So, you want logs, traces, and errors to line up cleanly in those UIs with correct severities, structured fields, trace IDs, and stack traces—without wiring all of that by hand in every service.
+  You rely on Cloud Logging, Cloud Trace, and Error Reporting to understand your services. So, you want logs, traces, and errors to line up cleanly in those UIs with correct severities, structured fields, trace IDs, and stack traces, without wiring all of that by hand in every service.
 
 3. **You want to reduce the boilerplate**
 
@@ -72,7 +72,7 @@ CPU time is money. When you use a Cloud Logging client library and let it send l
 
 If it determines that it is running in a GCP environment, slogcp further reduces the billable CPU cycles spent on JSON marshalling by:
  - **suppressing `log/slog`'s automatic timestamping** for stdout/stderr handlers since the logging ingester will automatically timestamp those entries (file targets keep timestamps so rotated/shipped logs stay annotated)
- - **using shorter, single-letter aliases for `severity`**, which the logging ingester will recognize and convert to their standard values
+ - **using shorter, aliases for `severity`**, which the logging ingester will recognize and convert to their standard values
 
 #### Why not just use `cloud.google.com/go/logging` with `logging.RedirectAsJSON(os.Stdout)`?
 
@@ -104,7 +104,7 @@ Pub/Sub workflows usually require extra glue code: copy trace context into messa
 > Async wrappers on `stdout`/`stderr` usually add overhead without improving throughput.
 
 ### Tested Out The Wazoo
-slogcp has 100% local test coverage. Our testing process includes making sure all of our [examples](.examples) build and that their own tests pass. We also run a series of E2E tests **in Google Cloud** that spin up real Cloud Run services wired together with slogcp’s HTTP and gRPC interceptors. Those tests drive traffic through unary and streaming RPCs, then query Cloud Logging and Cloud Trace to verify severities, resource labels/serviceContext, and log names (`run.googleapis.com/stdout`), and that trace IDs/span IDs are correctly propagated so logs and spans from downstream HTTP and gRPC services all correlate into a single end‑to‑end trace in Google Cloud’s UIs.
+slogcp has 100% local test coverage. Each of our [examples](.examples) is its own Go module with its own tests. Some of those tests verify compatibility with popular third-party libraries like [masq](https://github.com/m-mizutani/masq) for redaction and [timberjack](https://github.com/DeRuina/timberjack/) for log rotation. We also run a series of E2E tests **in Google Cloud** that spin up real Cloud Run services wired together with slogcp’s HTTP and gRPC interceptors. Those tests drive HTTP requests and both unary and streaming gRPC calls through chains of downstream services, then query Cloud Logging and Cloud Trace to verify severities, resource labels/serviceContext, log names (`run.googleapis.com/stdout`), and that trace IDs/span IDs propagate correctly so logs and spans from every service correlate into a single end-to-end trace in Google Cloud's UIs.
 
 ### Easy compatibility with other slog libraries
 Because slogcp is "just" a `slog.Handler` that writes JSON to an `io.Writer`, it slots into existing slog setups instead of replacing them. You still use `slog.New`, `slog.SetDefault`, `logger.With`, and request-scoped loggers, and you can compose slogcp with other slog-based tools like [masq](https://github.com/m-mizutani/masq) for redaction or [timberjack](https://github.com/DeRuina/timberjack/) (the maintained [lumberjack](https://github.com/natefinch/lumberjack) fork) for file rotation without special adapters. When you do write logs to files, the built-in `SwitchableWriter` and `Handler.ReopenLogFile` helpers let you cooperate with external rotation tools without rebuilding handlers or changing how the rest of your code logs.

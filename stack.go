@@ -68,7 +68,7 @@ func extractAndFormatOriginStack(err error) string {
 	return formatPCsToStackString(pcs)
 }
 
-var uintptrType = reflect.TypeOf(uintptr(0))
+var uintptrType = reflect.TypeFor[uintptr]()
 
 // stackPCsFromError extracts program counters from supported stack-trace methods.
 func stackPCsFromError(err error) []uintptr {

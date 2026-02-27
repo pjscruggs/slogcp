@@ -262,7 +262,6 @@ func newRequestScope(r *http.Request, start time.Time, cfg *config) *RequestScop
 		scope.populateFromRequest(r, cfg)
 	}
 
-	scope.status.Store(http.StatusOK)
 	scope.latencyNS.Store(unsetLatencySentinel)
 	return scope
 }
@@ -354,49 +353,17 @@ func (rs *RequestScope) metricAttrs() []slog.Attr {
 	return rs.appendMetricAttrs(nil)
 }
 
-type requestScopeMetricKind uint8
-
-const (
-	requestScopeMetricStatus requestScopeMetricKind = iota
-	requestScopeMetricResponseSize
-)
-
-type requestScopeMetricValue struct {
-	scope *RequestScope
-	kind  requestScopeMetricKind
-}
-
-// LogValue implements slog.LogValuer for deferred metric evaluation.
-func (v requestScopeMetricValue) LogValue() slog.Value {
-	if v.scope == nil {
-		return slog.Value{}
-	}
-	switch v.kind {
-	case requestScopeMetricStatus:
-		return slog.IntValue(v.scope.Status())
-	case requestScopeMetricResponseSize:
-		return slog.Int64Value(v.scope.ResponseSize())
-	default:
-		return slog.Value{}
-	}
-}
-
 // appendMetricAttrs appends status, latency, and response size attributes.
 func (rs *RequestScope) appendMetricAttrs(attrs []slog.Attr) []slog.Attr {
+	if status := rs.status.Load(); status > 0 {
+		attrs = append(attrs, slog.Int64("http.status_code", status))
+	}
+
 	lat, finalized := rs.Latency()
-
-	attrs = append(attrs,
-		slog.Attr{
-			Key:   "http.status_code",
-			Value: slog.AnyValue(requestScopeMetricValue{scope: rs, kind: requestScopeMetricStatus}),
-		},
-		slog.Attr{
-			Key:   "http.response_size",
-			Value: slog.AnyValue(requestScopeMetricValue{scope: rs, kind: requestScopeMetricResponseSize}),
-		},
-	)
-
 	if finalized {
+		if size := rs.ResponseSize(); size >= 0 {
+			attrs = append(attrs, slog.Int64("http.response_size", size))
+		}
 		attrs = append(attrs, slog.Duration("http.latency", lat))
 	}
 
@@ -459,7 +426,8 @@ func (rs *RequestScope) Latency() (time.Duration, bool) {
 	return time.Since(rs.start), false
 }
 
-// ResponseSize returns the number of bytes written to the client.
+// ResponseSize returns the response payload size in bytes. A value of -1 means
+// the response size is unknown.
 func (rs *RequestScope) ResponseSize() int64 {
 	return rs.respBytes.Load()
 }
@@ -614,9 +582,7 @@ func wrapResponseWriter(w http.ResponseWriter, scope *RequestScope) (http.Respon
 	rec := &responseRecorder{
 		ResponseWriter: w,
 		scope:          scope,
-		status:         http.StatusOK,
 	}
-	scope.setStatus(http.StatusOK)
 	return rec, rec
 }
 

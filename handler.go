@@ -19,13 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/pjscruggs/slogcp/slogcpasync"
 )
@@ -64,11 +62,24 @@ const (
 	TraceDiagnosticsStrict
 )
 
+// CloseTimeoutPolicy controls what [Handler.Close] does when async graceful
+// shutdown reaches its flush timeout.
+type CloseTimeoutPolicy int
+
+const (
+	// CloseTimeoutAutoAbort keeps backward-compatible Close behavior: if
+	// graceful async close times out, Close escalates to forceful abort before
+	// closing owned resources.
+	CloseTimeoutAutoAbort CloseTimeoutPolicy = iota
+	// CloseTimeoutReturn keeps Close in graceful-only mode on timeout. Close
+	// returns the timeout error and leaves owned resources open so in-flight
+	// async workers are not interrupted by a concurrent sink close.
+	CloseTimeoutReturn
+)
+
 var (
 	// ErrInvalidRedirectTarget indicates an unsupported value for SLOGCP_TARGET or redirect options.
 	ErrInvalidRedirectTarget = errors.New("slogcp: invalid redirect target")
-
-	handlerEnvConfigCache atomic.Pointer[handlerConfig]
 )
 
 // Option mutates Handler construction behaviour when supplied to [NewHandler].
@@ -79,11 +90,17 @@ type Option func(*options)
 
 // Middleware adapts a [slog.Handler] before it is exposed by [Handler].
 // Middleware functions run in the order they are supplied, wrapping the core
-// handler from last to first to mirror idiomatic HTTP middleware composition.
+// handler pipeline from last to first to mirror idiomatic HTTP middleware
+// composition.
 type Middleware func(slog.Handler) slog.Handler
 
 // Handler routes slog records to Google Cloud Logging with optional
 // middlewares, stack traces and trace correlation.
+//
+// JSON payload emission is best-effort. If a field value cannot be encoded by
+// encoding/json, slogcp replaces the failing top-level field with a stable
+// "!ERROR:<cause>" placeholder and retries once so one unsupported value does
+// not drop the entire entry.
 type Handler struct {
 	slog.Handler
 
@@ -96,13 +113,24 @@ type Handler struct {
 
 	mu        sync.Mutex
 	closeOnce sync.Once
+	closeErr  error
 }
 
 type diagLogger interface {
 	Printf(format string, args ...any)
 }
 
-var traceDiagnosticLogger diagLogger = log.New(os.Stderr, "slogcp: ", log.LstdFlags)
+type traceDiagnosticsLogger struct {
+	logger *slog.Logger
+}
+
+// Printf writes trace diagnostics through the configured internal logger.
+func (l traceDiagnosticsLogger) Printf(format string, args ...any) {
+	if l.logger == nil {
+		return
+	}
+	logDiagnostic(l.logger, slog.LevelWarn, fmt.Sprintf(format, args...))
+}
 
 type traceDiagnostics struct {
 	mode         TraceDiagnosticsMode
@@ -113,15 +141,14 @@ type traceDiagnostics struct {
 }
 
 // newTraceDiagnostics constructs a traceDiagnostics helper unless tracing is disabled.
-func newTraceDiagnostics(mode TraceDiagnosticsMode) *traceDiagnostics {
+func newTraceDiagnostics(mode TraceDiagnosticsMode, logger *slog.Logger) *traceDiagnostics {
 	if mode == TraceDiagnosticsOff {
 		return nil
 	}
-	logger := traceDiagnosticLogger
-	if logger == nil {
-		logger = log.New(io.Discard, "slogcp: ", log.LstdFlags)
+	return &traceDiagnostics{
+		mode:   mode,
+		logger: traceDiagnosticsLogger{logger: ensureInternalLogger(logger)},
 	}
-	return &traceDiagnostics{mode: mode, logger: logger}
 }
 
 // warnUnknownProject emits a single warning when we cannot resolve the Cloud project ID.
@@ -195,6 +222,7 @@ type handlerConfig struct {
 	runtimeServiceContextAny map[string]any
 	traceAllowAutoformat     bool
 	traceDiagnosticsState    *traceDiagnostics
+	CloseTimeoutPolicy       CloseTimeoutPolicy
 }
 
 type options struct {
@@ -220,12 +248,15 @@ type options struct {
 	asyncEnabled          bool
 	asyncOnFileTargets    bool
 	asyncOpts             []slogcpasync.Option
+	additionalHandlers    []slog.Handler
+	closeTimeoutPolicy    *CloseTimeoutPolicy
 }
 
 // NewHandler builds a Google Cloud aware slog [Handler]. It inspects the
 // environment for configuration overrides and then applies any provided
 // [Option] values. The handler writes to defaultWriter unless a redirect
-// option or environment override is provided.
+// option or environment override is provided. Encoding failures are handled
+// with a single sanitize-and-retry pass described in [Handler].
 //
 // Example:
 //
@@ -241,7 +272,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	builder := collectOptions(opts)
 	internalLogger := ensureInternalLogger(builder.internalLogger)
 
-	cfg, err := cachedConfigFromEnv(internalLogger)
+	cfg, err := loadConfigFromEnv(internalLogger)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +291,7 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 
 	levelVar := resolveLevelVar(builder.levelVar, cfg.Level)
 
-	if err := prepareRuntimeConfig(&cfg); err != nil {
+	if err := prepareRuntimeConfig(&cfg, internalLogger); err != nil {
 		return nil, err
 	}
 
@@ -333,11 +364,11 @@ func resolveLevelVar(levelVar *slog.LevelVar, level slog.Level) *slog.LevelVar {
 }
 
 // prepareRuntimeConfig populates runtime-derived fields and validates tracing.
-func prepareRuntimeConfig(cfg *handlerConfig) error {
+func prepareRuntimeConfig(cfg *handlerConfig, internalLogger *slog.Logger) error {
 	runtimeInfo := DetectRuntimeInfo()
 	cfg.runtimeServiceContext = cloneStringMap(runtimeInfo.ServiceContext)
 	cfg.runtimeServiceContextAny = stringMapToAny(cfg.runtimeServiceContext)
-	cfg.traceDiagnosticsState = newTraceDiagnostics(cfg.TraceDiagnostics)
+	cfg.traceDiagnosticsState = newTraceDiagnostics(cfg.TraceDiagnostics, internalLogger)
 
 	if err := normalizeTraceProjectConfig(cfg); err != nil {
 		return err
@@ -399,11 +430,9 @@ func validateTraceProjectAvailability(cfg *handlerConfig) error {
 
 // buildPipeline assembles the handler stack with middlewares and async wrapper.
 func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *slog.Logger, builder *options) (slog.Handler, *slogcpasync.Handler) {
-	core := newJSONHandler(cfg, levelVar, internalLogger)
-	handler := slog.Handler(core)
-	for i := len(cfg.Middlewares) - 1; i >= 0; i-- {
-		handler = cfg.Middlewares[i](handler)
-	}
+	core := slog.Handler(newJSONHandler(cfg, levelVar, internalLogger))
+	handler := composeFanout(core, builder.additionalHandlers, levelVar)
+	handler = applyMiddlewares(handler, cfg.Middlewares)
 
 	isFileTarget := hasFileTarget(cfg)
 	asyncEnabled, asyncOnFileTargets := resolveAsyncConfig(isFileTarget, builder)
@@ -420,6 +449,83 @@ func buildPipeline(cfg *handlerConfig, levelVar *slog.LevelVar, internalLogger *
 		handler = sourceAwareHandler{Handler: handler}
 	}
 	return handler, asyncHandler
+}
+
+// composeFanout composes the primary handler with optional additional sinks.
+// Fan-out dispatch and error aggregation are delegated to slog.NewMultiHandler,
+// which invokes all enabled sinks and returns errors.Join of sink failures.
+func composeFanout(primary slog.Handler, additional []slog.Handler, leveler slog.Leveler) slog.Handler {
+	if len(additional) == 0 {
+		return primary
+	}
+	handlers := make([]slog.Handler, 0, len(additional)+1)
+	handlers = append(handlers, primary)
+	for _, h := range additional {
+		if h != nil {
+			handlers = append(handlers, sharedLevelHandler{Handler: h, leveler: leveler})
+		}
+	}
+	if len(handlers) == 1 {
+		return primary
+	}
+	return slog.NewMultiHandler(handlers...)
+}
+
+// applyMiddlewares wraps handler with supplied middlewares from last to first.
+func applyMiddlewares(handler slog.Handler, middlewares []Middleware) slog.Handler {
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		handler = middlewares[i](handler)
+	}
+	return handler
+}
+
+// sharedLevelHandler applies slogcp's shared level threshold to wrapped sinks.
+// It preserves the full slog.Handler contract (Enabled/Handle/WithAttrs/WithGroup)
+// while adding level gating for additional fan-out handlers.
+type sharedLevelHandler struct {
+	slog.Handler
+	leveler slog.Leveler
+}
+
+// Enabled reports whether the level satisfies slogcp's shared threshold and the wrapped handler.
+func (h sharedLevelHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	if h.leveler != nil && level < h.leveler.Level() {
+		return false
+	}
+	return h.Handler.Enabled(ctx, level)
+}
+
+// Handle drops records below the shared level before forwarding.
+// Errors from wrapped handlers are returned with context using %w so callers
+// can still match concrete sink errors via errors.Is/errors.As.
+func (h sharedLevelHandler) Handle(ctx context.Context, r slog.Record) error {
+	if !h.Enabled(ctx, r.Level) {
+		return nil
+	}
+	if err := h.Handler.Handle(ctx, r); err != nil {
+		return fmt.Errorf("shared level handler: %w", err)
+	}
+	return nil
+}
+
+// WithAttrs propagates attribute state while preserving shared level gating.
+// Returning sharedLevelHandler ensures derived fan-out handlers remain level-aware.
+func (h sharedLevelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	child := h.Handler.WithAttrs(attrs)
+	if child == nil {
+		return nil
+	}
+	return sharedLevelHandler{Handler: child, leveler: h.leveler}
+}
+
+// WithGroup propagates groups while preserving shared level gating.
+// Returning sharedLevelHandler ensures derived fan-out handlers remain level-aware.
+func (h sharedLevelHandler) WithGroup(name string) slog.Handler {
+	child := h.Handler.WithGroup(name)
+	if child == nil {
+		return nil
+	}
+	return sharedLevelHandler{Handler: child, leveler: h.leveler}
 }
 
 // resolveAsyncConfig determines async wrapper defaults for file targets when no explicit option is set.
@@ -515,19 +621,72 @@ func ensureWriterFallback(cfg *handlerConfig) {
 }
 
 // Close releases any resources owned by the handler such as log files or
-// writer implementations created by options. It is safe to call multiple
-// times; only the first invocation performs work.
+// writer implementations created by options. It first runs async shutdown via
+// the configured flush timeout.
+//
+// On timeout, behavior depends on [CloseTimeoutPolicy]:
+//   - [CloseTimeoutAutoAbort] (default): Close escalates to abort, then closes
+//     owned resources.
+//   - [CloseTimeoutReturn]: Close returns timeout errors without aborting and
+//     leaves owned resources open.
 func (h *Handler) Close() error {
-	var firstErr error
-	h.closeOnce.Do(func() {
-		if err := h.closeAsyncHandler(); err != nil {
-			firstErr = err
+	if h == nil {
+		return nil
+	}
+
+	asyncErr := h.closeAsyncHandler()
+	if errors.Is(asyncErr, slogcpasync.ErrFlushTimeout) {
+		if h.closeTimeoutPolicy() == CloseTimeoutAutoAbort {
+			asyncErr = errors.Join(asyncErr, h.abortAsyncHandler(context.Background()))
+			return errors.Join(asyncErr, h.closeResourcesOnce())
 		}
-		if err := h.closeResources(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	})
-	return firstErr
+		// Do not close owned resources here: async workers may still be in
+		// downstream writes, and closing sinks underneath them can corrupt output
+		// or trigger avoidable write/close races in custom writers.
+		return asyncErr
+	}
+
+	return errors.Join(asyncErr, h.closeResourcesOnce())
+}
+
+// closeTimeoutPolicy resolves Close timeout behavior, defaulting invalid or
+// unspecified values to CloseTimeoutAutoAbort for backward compatibility.
+func (h *Handler) closeTimeoutPolicy() CloseTimeoutPolicy {
+	if h == nil || h.cfg == nil {
+		return CloseTimeoutAutoAbort
+	}
+	return normalizeCloseTimeoutPolicy(h.cfg.CloseTimeoutPolicy)
+}
+
+// Shutdown performs graceful async drain bounded by ctx. On timeout it returns
+// without tearing down owned resources so callers can decide whether to abort.
+func (h *Handler) Shutdown(ctx context.Context) error {
+	if h == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if err := h.shutdownAsyncHandler(ctx); err != nil {
+		return err
+	}
+	return h.closeResourcesOnce()
+}
+
+// Abort performs forceful async shutdown (bounded by ctx) and then closes
+// owned resources. When ctx expires first, Abort returns promptly while the
+// underlying async abort may still be finishing in the background.
+func (h *Handler) Abort(ctx context.Context) error {
+	if h == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	asyncErr := h.abortAsyncHandler(ctx)
+	return errors.Join(asyncErr, h.closeResourcesOnce())
 }
 
 // closeAsyncHandler drains any async wrapper so queued records are written before resources are closed.
@@ -537,6 +696,37 @@ func (h *Handler) closeAsyncHandler() error {
 	}
 	if err := h.asyncHandler.Close(); err != nil {
 		return fmt.Errorf("close async handler: %w", err)
+	}
+	return nil
+}
+
+// shutdownAsyncHandler asks the async wrapper to drain until ctx expires.
+func (h *Handler) shutdownAsyncHandler(ctx context.Context) error {
+	if h == nil || h.asyncHandler == nil {
+		return nil
+	}
+	if err := h.asyncHandler.Shutdown(ctx); err != nil {
+		return fmt.Errorf("shutdown async handler: %w", err)
+	}
+	return nil
+}
+
+// abortAsyncHandler requests forceful async shutdown and waits until either the
+// abort completes or ctx expires.
+//
+// This intentionally delegates bounded waiting to slogcpasync.AbortContext so
+// repeated timeout callers share one abort coordinator instead of spawning a
+// helper goroutine per call.
+func (h *Handler) abortAsyncHandler(ctx context.Context) error {
+	if h == nil || h.asyncHandler == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if err := h.asyncHandler.AbortContext(ctx); err != nil {
+		return fmt.Errorf("abort async handler: %w", err)
 	}
 	return nil
 }
@@ -556,6 +746,18 @@ func (h *Handler) closeResources() error {
 		firstErr = err
 	}
 	return firstErr
+}
+
+// closeResourcesOnce tears down owned resources exactly once and returns the
+// cached result on subsequent calls.
+func (h *Handler) closeResourcesOnce() error {
+	if h == nil {
+		return nil
+	}
+	h.closeOnce.Do(func() {
+		h.closeErr = h.closeResources()
+	})
+	return h.closeErr
 }
 
 // closeSwitchableWriter closes the switchable writer and determines if the file should be closed.
@@ -920,6 +1122,24 @@ func WithMiddleware(mw Middleware) Option {
 	}
 }
 
+// WithAdditionalHandlers fans out accepted records to additional handlers using
+// [slog.NewMultiHandler]. Nil handlers are ignored.
+//
+// Additional handlers are not owned by slogcp. If they require shutdown
+// (for example, async wrappers), close them explicitly.
+// Additional sinks are wrapped with sharedLevelHandler so they use slogcp's
+// shared level threshold. When a sink fails, the wrapped error remains
+// unwrappable (errors.Is/errors.As) and MultiHandler aggregates sink failures.
+func WithAdditionalHandlers(handlers ...slog.Handler) Option {
+	return func(o *options) {
+		for _, h := range handlers {
+			if h != nil {
+				o.additionalHandlers = append(o.additionalHandlers, h)
+			}
+		}
+	}
+}
+
 // WithAsync wraps the constructed handler in slogcpasync using tuned per-mode defaults.
 // Supply slogcpasync options to override queue, workers, drop mode, or batch size.
 func WithAsync(opts ...slogcpasync.Option) Option {
@@ -937,6 +1157,18 @@ func WithAsyncOnFile(opts ...slogcpasync.Option) Option {
 		o.asyncEnabled = true
 		o.asyncOnFileTargets = true
 		o.asyncOpts = append(o.asyncOpts, opts...)
+	}
+}
+
+// WithCloseTimeoutPolicy configures how [Handler.Close] behaves when async
+// graceful shutdown reaches its flush timeout.
+//
+// The default is [CloseTimeoutAutoAbort]. Use [CloseTimeoutReturn] to make
+// Close return timeout errors without aborting or closing owned resources.
+func WithCloseTimeoutPolicy(policy CloseTimeoutPolicy) Option {
+	normalized := normalizeCloseTimeoutPolicy(policy)
+	return func(o *options) {
+		o.closeTimeoutPolicy = &normalized
 	}
 }
 
@@ -1000,77 +1232,6 @@ func defaultEmitTimeField() bool {
 	return !prefersManagedGCPDefaults(DetectRuntimeInfo())
 }
 
-var (
-	loadConfigFromEnvFunc atomic.Value // func(*slog.Logger) (handlerConfig, error)
-	cachedConfigRaceHook  atomic.Value // func()
-)
-
-// init seeds the handler configuration loader defaults.
-func init() {
-	setLoadConfigFromEnv(loadConfigFromEnv)
-}
-
-// setLoadConfigFromEnv overrides the function used to load handler configuration from environment variables.
-func setLoadConfigFromEnv(fn func(*slog.Logger) (handlerConfig, error)) {
-	if fn == nil {
-		fn = loadConfigFromEnv
-	}
-	loadConfigFromEnvFunc.Store(fn)
-}
-
-// getLoadConfigFromEnv returns the current handler configuration loader, defaulting to the built-in implementation.
-func getLoadConfigFromEnv() func(*slog.Logger) (handlerConfig, error) {
-	if fn, ok := loadConfigFromEnvFunc.Load().(func(*slog.Logger) (handlerConfig, error)); ok && fn != nil {
-		return fn
-	}
-	return loadConfigFromEnv
-}
-
-// setCachedConfigRaceHook installs a hook invoked when cachedConfigFromEnv observes a concurrent cache fill.
-func setCachedConfigRaceHook(fn func()) {
-	cachedConfigRaceHook.Store(fn)
-}
-
-// getCachedConfigRaceHook returns the currently configured cache race hook, if any.
-func getCachedConfigRaceHook() func() {
-	if fn, ok := cachedConfigRaceHook.Load().(func()); ok {
-		return fn
-	}
-	return nil
-}
-
-// loadConfigFromEnv reads handler configuration overrides from environment
-// variables, logging validation issues to logger.
-func cachedConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
-	if cached := handlerEnvConfigCache.Load(); cached != nil {
-		return *cached, nil
-	}
-
-	cfg, err := getLoadConfigFromEnv()(logger)
-	if err != nil {
-		return handlerConfig{}, err
-	}
-
-	entry := new(handlerConfig)
-	*entry = cfg
-	if handlerEnvConfigCache.CompareAndSwap(nil, entry) {
-		return cfg, nil
-	}
-	if hook := getCachedConfigRaceHook(); hook != nil {
-		hook()
-	}
-	if cached := handlerEnvConfigCache.Load(); cached != nil {
-		return *cached, nil
-	}
-	return cfg, nil
-}
-
-// resetHandlerConfigCache clears the cached handler configuration derived from
-// environment variables, forcing the next handler to re-read the environment.
-func resetHandlerConfigCache() {
-	handlerEnvConfigCache.Store(nil)
-}
-
 // resolveTraceProjectFromEnv returns the highest-priority trace project ID and its source.
 func resolveTraceProjectFromEnv() (string, string) {
 	candidates := []string{
@@ -1096,6 +1257,7 @@ func loadConfigFromEnv(logger *slog.Logger) (handlerConfig, error) {
 		EmitTimeField:         defaultEmitTimeField(),
 		TraceDiagnostics:      TraceDiagnosticsWarnOnce,
 		UseShortSeverityNames: defaultUseShortSeverityNames(),
+		CloseTimeoutPolicy:    CloseTimeoutAutoAbort,
 	}
 
 	cfg.Level = resolveLevelFromEnv(cfg.Level, logger)
@@ -1155,6 +1317,20 @@ func applyLevelAndTraceOptions(cfg *handlerConfig, o *options) {
 	}
 	if o.useShortSeverity != nil {
 		cfg.UseShortSeverityNames = *o.useShortSeverity
+	}
+	if o.closeTimeoutPolicy != nil {
+		cfg.CloseTimeoutPolicy = normalizeCloseTimeoutPolicy(*o.closeTimeoutPolicy)
+	}
+}
+
+// normalizeCloseTimeoutPolicy maps unknown values to the default
+// backward-compatible behavior.
+func normalizeCloseTimeoutPolicy(policy CloseTimeoutPolicy) CloseTimeoutPolicy {
+	switch policy {
+	case CloseTimeoutAutoAbort, CloseTimeoutReturn:
+		return policy
+	default:
+		return CloseTimeoutAutoAbort
 	}
 }
 

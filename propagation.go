@@ -15,9 +15,7 @@
 package slogcp
 
 import (
-	"os"
-	"strconv"
-	"strings"
+	"context"
 	"sync"
 
 	gcppropagator "github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator"
@@ -27,24 +25,58 @@ import (
 
 var installPropagatorOnce sync.Once
 
-// init triggers default propagator installation when the package is imported.
-func init() {
-	autoSetPropagation()
+// CompositePropagator wraps slogcp's recommended OpenTelemetry text map
+// propagator composition.
+type CompositePropagator struct {
+	composite propagation.TextMapPropagator
 }
 
-// autoSetPropagation applies the default propagator when import-time auto-set is enabled.
-func autoSetPropagation() {
-	if !propagatorAutoSetEnabled() {
+// NewCompositePropagator returns slogcp's recommended composite propagator.
+//
+// The returned propagator:
+//  1. Extracts the legacy X-Cloud-Trace-Context header (read-only).
+//  2. Extracts and injects W3C Trace Context headers.
+//  3. Extracts and injects baggage.
+//
+// This helper does not mutate process-wide OpenTelemetry globals.
+func NewCompositePropagator() CompositePropagator {
+	return CompositePropagator{
+		composite: propagation.NewCompositeTextMapPropagator(
+			gcppropagator.CloudTraceOneWayPropagator{},
+			propagation.TraceContext{},
+			propagation.Baggage{},
+		),
+	}
+}
+
+// Inject writes propagation fields into the supplied carrier.
+func (p CompositePropagator) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+	if p.composite == nil {
 		return
 	}
-	EnsurePropagation()
+	p.composite.Inject(ctx, carrier)
+}
+
+// Extract reads propagation fields from the supplied carrier into context.
+func (p CompositePropagator) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+	if p.composite == nil {
+		return ctx
+	}
+	return p.composite.Extract(ctx, carrier)
+}
+
+// Fields returns the set of headers this propagator reads or writes.
+func (p CompositePropagator) Fields() []string {
+	if p.composite == nil {
+		return nil
+	}
+	return p.composite.Fields()
 }
 
 // EnsurePropagation configures a composite OpenTelemetry text map propagator that
 // prefers the W3C Trace Context headers while accepting Google Cloud's legacy
 // X-Cloud-Trace-Context header on ingress. The configuration is applied exactly
-// once per process. Import-time auto-set can be disabled via
-// SLOGCP_PROPAGATOR_AUTOSET, but explicit calls to EnsurePropagation are always honored.
+// once per process.
 //
 // The installed propagator order is:
 //  1. CloudTraceOneWayPropagator (extracts X-Cloud-Trace-Context only)
@@ -55,24 +87,6 @@ func autoSetPropagation() {
 // calling otel.SetTextMapPropagator with their own implementation.
 func EnsurePropagation() {
 	installPropagatorOnce.Do(func() {
-		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-			gcppropagator.CloudTraceOneWayPropagator{},
-			propagation.TraceContext{},
-			propagation.Baggage{},
-		))
+		otel.SetTextMapPropagator(NewCompositePropagator())
 	})
-}
-
-// propagatorAutoSetEnabled reports whether automatic propagator installation is enabled
-// via the SLOGCP_PROPAGATOR_AUTOSET environment variable.
-func propagatorAutoSetEnabled() bool {
-	raw := strings.TrimSpace(os.Getenv("SLOGCP_PROPAGATOR_AUTOSET"))
-	if raw == "" {
-		return true
-	}
-	b, err := strconv.ParseBool(raw)
-	if err == nil {
-		return b
-	}
-	return true
 }

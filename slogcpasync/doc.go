@@ -46,4 +46,12 @@
 //
 // Worker errors and panics are reported to stderr by default to avoid silent
 // failure; configure [WithErrorWriter] to redirect or silence those messages.
+// Panic diagnostics include a worker stack trace, and panic-recovered records
+// are reported through [WithOnDrop] when configured.
+//
+// The context passed to [Handler.Handle] is treated as a value carrier for
+// downstream handlers. Canceling that context does not suppress record
+// processing, matching the [log/slog] handler contract. For memory-sensitive
+// workloads, [WithDetachedContext] can opt into queueing records with
+// context.Background() instead of retaining request contexts.
 package slogcpasync

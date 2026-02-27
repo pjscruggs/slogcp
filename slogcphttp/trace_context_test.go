@@ -143,6 +143,88 @@ func TestParseXCloudTraceRejectsBadTraceID(t *testing.T) {
 	}
 }
 
+// TestParseXCloudTraceSamplingOptions verifies o= token parsing is boundary-safe.
+func TestParseXCloudTraceSamplingOptions(t *testing.T) {
+	t.Parallel()
+
+	const base = "105445aa7843bc8bf206b12000100000/10"
+	tests := []struct {
+		name        string
+		suffix      string
+		wantSampled bool
+	}{
+		{name: "sampled_one", suffix: ";o=1", wantSampled: true},
+		{name: "unsampled_zero", suffix: ";o=0", wantSampled: false},
+		{name: "sampled_nonzero", suffix: ";o=10", wantSampled: true},
+		{name: "ignores_non_o_key", suffix: ";xo=1", wantSampled: false},
+		{name: "ignores_embedded_o", suffix: ";foo=o=1", wantSampled: false},
+		{name: "supports_options_with_whitespace", suffix: "; foo=bar ; o = 1", wantSampled: true},
+		{name: "case_insensitive_o_key", suffix: ";O=1", wantSampled: true},
+		{name: "invalid_o_then_valid_o", suffix: ";o=abc;o=1", wantSampled: true},
+		{name: "invalid_o_value", suffix: ";o=1x", wantSampled: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sc, ok := parseXCloudTrace(base + tc.suffix)
+			if !ok {
+				t.Fatalf("parseXCloudTrace returned !ok for %q", tc.suffix)
+			}
+			gotSampled := sc.TraceFlags() == trace.FlagsSampled
+			if gotSampled != tc.wantSampled {
+				t.Fatalf("sampled=%v, want %v for suffix %q", gotSampled, tc.wantSampled, tc.suffix)
+			}
+		})
+	}
+}
+
+// TestParseXCloudTraceAcceptsCommaJoinedValues ensures the parser can recover
+// a valid header value when multiple values are joined by commas.
+func TestParseXCloudTraceAcceptsCommaJoinedValues(t *testing.T) {
+	t.Parallel()
+
+	header := "not-a-trace, 105445aa7843bc8bf206b12000100000/10;o=1"
+	sc, ok := parseXCloudTrace(header)
+	if !ok {
+		t.Fatalf("parseXCloudTrace returned !ok")
+	}
+	if !sc.IsValid() {
+		t.Fatalf("parsed span context should be valid")
+	}
+	if sc.TraceFlags() != trace.FlagsSampled {
+		t.Fatalf("TraceFlags = %v, want sampled", sc.TraceFlags())
+	}
+}
+
+// TestSampledFlagFromOptionsEdgeCases covers malformed and sparse option tokens.
+func TestSampledFlagFromOptionsEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		options     string
+		wantSampled bool
+		wantOK      bool
+	}{
+		{name: "empty_string", options: "", wantSampled: false, wantOK: false},
+		{name: "empty_tokens", options: " ; ; foo=bar", wantSampled: false, wantOK: false},
+		{name: "token_without_equals", options: "o", wantSampled: false, wantOK: false},
+		{name: "empty_o_value", options: "o=", wantSampled: false, wantOK: false},
+		{name: "nonnumeric_o", options: "o=abc", wantSampled: false, wantOK: false},
+		{name: "sampled_nonzero", options: "o=2", wantSampled: true, wantOK: true},
+		{name: "unsampled_zero", options: "o=0", wantSampled: false, wantOK: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotSampled, gotOK := sampledFlagFromOptions(tc.options)
+			if gotSampled != tc.wantSampled || gotOK != tc.wantOK {
+				t.Fatalf("sampledFlagFromOptions(%q) = (%v,%v), want (%v,%v)", tc.options, gotSampled, gotOK, tc.wantSampled, tc.wantOK)
+			}
+		})
+	}
+}
+
 // TestInjectTraceContextMiddlewareCoversBranches exercises valid, missing, and pre-existing span cases.
 func TestInjectTraceContextMiddlewareCoversBranches(t *testing.T) {
 	t.Parallel()
