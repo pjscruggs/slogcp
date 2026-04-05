@@ -10,8 +10,7 @@ top-level `LogEntry` fields.
 
 The transformation rules are based on the Cloud Logging Fluent plugin source
 ([`out_google_cloud.rb`](https://github.com/GoogleCloudPlatform/fluent-plugin-google-cloud/blob/master/lib/fluent/plugin/out_google_cloud.rb)), and are refined
-using direct observations of backend field-handling behavior. It is a focused best-effort model of this parsing/elevation stage, not a full
-reproduction of every step of the GCP backend's `stdout`-to-`LogEntry` flow.
+using direct observations of backend field-handling behavior. It is a focused best-effort model of this parsing/elevation stage, not a full reproduction of every step of the GCP backend's `stdout`-to-`LogEntry` flow.
 
 The fixture focuses on promotion behavior such as:
 
