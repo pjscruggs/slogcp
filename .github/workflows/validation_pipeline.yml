@@ -29,7 +29,7 @@ jobs:
       GOTOOLCHAIN: auto
     steps:
       - name: 🛒 Checkout Code
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
@@ -60,7 +60,7 @@ jobs:
           GO_VERSION="$GO_VERSION" python3 .github/scripts/resolve_go_version.py
 
       - name: 🏗️ Set up Go
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
@@ -110,7 +110,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ♻️ Restore Go toolchain (post-license-fix)
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
@@ -162,7 +162,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ♻️ Restore Go toolchain (pre-tests)
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
@@ -294,7 +294,7 @@ jobs:
       - name: Generate App Token for Check Run
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: check_run_token
-        uses: actions/create-github-app-token@7e473efe3cb98aa54f8d4bac15400b15fad77d94 # v2
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -431,7 +431,7 @@ jobs:
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: app_token
-        uses: actions/create-github-app-token@7e473efe3cb98aa54f8d4bac15400b15fad77d94 # v2
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}

@@ -1,10 +1,10 @@
 module github.com/pjscruggs/slogcp/examples/masq
 
-go 1.26.0
+go 1.26.1
 
 require (
 	github.com/m-mizutani/masq v0.2.1
-	github.com/pjscruggs/slogcp v0.0.0
+	github.com/pjscruggs/slogcp v1.2.0
 )
 
 require (

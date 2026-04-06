@@ -1,8 +1,8 @@
 module github.com/pjscruggs/slogcp/examples/configuration
 
-go 1.26.0
+go 1.26.1
 
-require github.com/pjscruggs/slogcp v0.0.0
+require github.com/pjscruggs/slogcp v1.2.0
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect

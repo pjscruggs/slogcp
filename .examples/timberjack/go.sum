@@ -2,6 +2,8 @@ cloud.google.com/go/compute/metadata v0.9.0 h1:pDUj4QMoPejqq20dK0Pg2N4yG9zIkYGdB
 cloud.google.com/go/compute/metadata v0.9.0/go.mod h1:E0bWwX5wTnLPedCKqk3pJmVgCBSM6qQI1yTBdEb3C10=
 github.com/DeRuina/timberjack v1.3.9 h1:6UXZ1I7ExPGTX/1UNYawR58LlOJUHKBPiYC7WQ91eBo=
 github.com/DeRuina/timberjack v1.3.9/go.mod h1:RLoeQrwrCGIEF8gO5nV5b/gMD0QIy7bzQhBUgpp1EqE=
+github.com/DeRuina/timberjack v1.4.1 h1:JftM5HN/ITKehAXjtdbGqN5XZIS1biHm7VSjU0Qbtqg=
+github.com/DeRuina/timberjack v1.4.1/go.mod h1:RLoeQrwrCGIEF8gO5nV5b/gMD0QIy7bzQhBUgpp1EqE=
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.55.0 h1:0G1Faw/W6OirxOw2Kgz303+JuUgifQXYS5J21NtZxog=
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.55.0/go.mod h1:8W5IW/jylevlBQKSWkh5ZMP2oy7yT9Pnfug6Y6W/9D8=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

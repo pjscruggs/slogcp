@@ -1,12 +1,12 @@
 module github.com/pjscruggs/slogcp/examples/timberjack
 
-go 1.26.0
+go 1.26.1
 
 replace github.com/pjscruggs/slogcp => ../..
 
 require (
-	github.com/DeRuina/timberjack v1.3.9
-	github.com/pjscruggs/slogcp v0.0.0
+	github.com/DeRuina/timberjack v1.4.1
+	github.com/pjscruggs/slogcp v1.2.0
 )
 
 require (
