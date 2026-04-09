@@ -87,6 +87,27 @@ jobs:
         run: |
           go mod tidy
 
+      - name: 🧹 Ensure example module metadata is tidy
+        run: |
+          set -euo pipefail
+          if [ ! -d ".examples" ]; then
+            echo "No .examples directory found; skipping example module tidy."
+            exit 0
+          fi
+
+          modules_found=0
+          while IFS= read -r -d '' mod; do
+            modules_found=1
+            dir=$(dirname "$mod")
+            echo "::group::go mod tidy $dir"
+            (cd "$dir" && go mod tidy)
+            echo "::endgroup::"
+          done < <(find .examples -name go.mod -print0)
+
+          if [ "$modules_found" -eq 0 ]; then
+            echo "No example go.mod files found under .examples; skipping."
+          fi
+
       - name: 📅🕰️ Get current year in US Central Time
         id: year
         run: |
