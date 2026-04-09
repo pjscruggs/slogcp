@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/examples/middleware
 
-go 1.26.0
+go 1.26.2
 
 replace github.com/pjscruggs/slogcp => ../..
 

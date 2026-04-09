@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/examples/google-cloud
 
-go 1.26.0
+go 1.26.2
 
 require github.com/pjscruggs/slogcp v1.2.0
 

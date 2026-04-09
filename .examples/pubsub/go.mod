@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/examples/pubsub
 
-go 1.26.0
+go 1.26.2
 
 require (
 	cloud.google.com/go/pubsub/v2 v2.5.1
