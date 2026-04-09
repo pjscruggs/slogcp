@@ -142,28 +142,57 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Create Run-Scoped E2E Check
+      - name: Create or Update Stable E2E Check
         id: create_check
         # actions/github-script v8 (pinned)
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
-            const checkName =
-              `${process.env.CHECK_RUN_NAME} - ${{ steps.run_id.outputs.e2e_run_id }}`;
+            const checkName = process.env.CHECK_RUN_NAME;
             const sha = '${{ steps.target.outputs.head_sha }}';
-            const { data: checkRun } = await github.rest.checks.create({
+            const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
+            const existing = '${{ steps.target.outputs.pr_number }}'
+              ? (await github.rest.checks.listForRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: sha,
+                  filter: 'latest',
+                  per_page: 100
+                })).data.check_runs
+                  .filter(run => run.name === checkName)
+                  .sort((a, b) => {
+                    const aTime = Date.parse(a.started_at || a.completed_at || 0);
+                    const bTime = Date.parse(b.started_at || b.completed_at || 0);
+                    return bTime - aTime;
+                  })[0]
+              : null;
+
+            const params = {
               owner: context.repo.owner,
               repo: context.repo.repo,
               name: checkName,
-              head_sha: sha,
               status: 'in_progress',
-              external_id: '${{ steps.run_id.outputs.e2e_run_id }}',
+              external_id: runId,
               started_at: new Date().toISOString(),
               output: {
                 title: checkName,
-                summary: `E2E tests manually triggered by @${context.actor}`
+                summary: `Manual Google Cloud Build E2E run ${runId} triggered by @${context.actor}.`
               }
+            };
+
+            if (existing) {
+              await github.rest.checks.update({
+                ...params,
+                check_run_id: existing.id
+              });
+              core.setOutput('check_run_id', existing.id);
+              return;
+            }
+
+            const { data: checkRun } = await github.rest.checks.create({
+              ...params,
+              head_sha: sha
             });
             core.setOutput('check_run_id', checkRun.id);
         env:
@@ -225,11 +254,13 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               check_run_id: Number('${{ steps.create_check.outputs.check_run_id }}'),
+              details_url: buildLogUrl || undefined,
+              external_id: '${{ steps.run_id.outputs.e2e_run_id }}',
               status: 'completed',
               conclusion,
               completed_at: new Date().toISOString(),
               output: {
-                title: `${process.env.CHECK_RUN_NAME} - ${{ steps.run_id.outputs.e2e_run_id }}`,
+                title: process.env.CHECK_RUN_NAME,
                 summary: summaryLines.join('\n')
               }
             });
