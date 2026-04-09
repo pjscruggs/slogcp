@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp-e2e-internal/services/target-apps/trace-downstream-grpc
 
-go 1.26.0
+go 1.26.2
 
 require (
 	cloud.google.com/go/trace v1.12.0

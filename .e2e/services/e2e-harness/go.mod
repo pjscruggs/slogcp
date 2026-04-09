@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp-e2e-internal/services/e2e-harness
 
-go 1.26
+go 1.26.2
 
 require (
 	cloud.google.com/go/logging v1.14.0
@@ -46,5 +46,3 @@ require (
 )
 
 replace github.com/pjscruggs/slogcp-e2e-internal/services/traceproto => ../traceproto
-
-toolchain go1.26.0
