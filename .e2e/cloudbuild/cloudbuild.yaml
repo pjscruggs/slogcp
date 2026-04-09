@@ -1,0 +1,788 @@
+timeout: '7200s'
+serviceAccount: 'projects/$PROJECT_ID/serviceAccounts/${_CALLER_SERVICE_ACCOUNT}'
+options:
+  logging: CLOUD_LOGGING_ONLY
+  automapSubstitutions: true
+  dynamicSubstitutions: true
+substitutions:
+  _LIB_REPO_FULL_NAME: 'pjscruggs/slogcp'
+  _PR_SHA: ''
+  _PR_NUMBER: ''
+  _SHORT_SHA: ''
+  _BUILD_TIME: '1970-01-01T00:00:00Z'
+  _GCP_REGION: 'us-central1'
+  _ARTIFACT_REGISTRY_REPO: 'us-central1-docker.pkg.dev/slogcp/slogcp-images'
+  _GCS_BUCKET_NAME: 'slogcp-e2e-artifacts'
+  _RUNTIME_SERVICE_ACCOUNT: 'core-log-app-runtime@slogcp.iam.gserviceaccount.com'
+  _CALLER_SERVICE_ACCOUNT: 'custom-cloudbuild-runner@slogcp.iam.gserviceaccount.com'
+  _GITHUB_TOKEN_SECRET_VERSION: ''
+  _E2E_SOURCE_MODE: 'github'
+  _SLOGCP_REF_OVERRIDE: ''
+  _TRACE_PUBSUB_TOPIC: 'slogcp-trace-pubsub'
+  _TRACE_PUBSUB_SUBSCRIPTION: 'slogcp-trace-pubsub-sub'
+  _E2E_HARNESS_TIMEOUT_SECONDS: '5400'
+  _E2E_DEBUG: 'true'
+  _E2E_RUN_ID: ''
+steps:
+  - name: 'ubuntu'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [ -z "${_BUILD_TIME}" ]; then
+          export BUILD_TIME="$$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        else
+          export BUILD_TIME="${_BUILD_TIME}"
+        fi
+        printf '[init]\n  defaultBranch = main\n' >> ~/.gitconfig
+        export ARTIFACT_REGISTRY_REPO="${_ARTIFACT_REGISTRY_REPO}"
+        export GCS_BUCKET_NAME="${_GCS_BUCKET_NAME}"
+        # Use BUILD_ID if _E2E_RUN_ID is not provided
+        if [ -z "${_E2E_RUN_ID}" ]; then
+          RUN_ID="$BUILD_ID"
+        else
+          RUN_ID="${_E2E_RUN_ID}"
+        fi
+        RUN_ID_LC="$$(echo "$$RUN_ID" | tr '[:upper:]' '[:lower:]')"
+        SANITIZED="$$(echo "$$RUN_ID_LC" | sed -E 's/[^a-z0-9-]+/-/g' | sed -E 's/-+/-/g' | sed -E 's/^-+//; s/-+$//')"
+        case "$$SANITIZED" in
+          [a-z]* ) ;;
+          * ) SANITIZED="r-$$SANITIZED" ;;
+        esac
+        RID_SHORT="$$(echo "$$SANITIZED" | cut -c1-50)"
+        SUFFIX="$$RID_SHORT"
+        echo "$$SUFFIX" > /workspace/suffix.txt
+        # Store the actual RUN_ID for later use
+        echo "$$RUN_ID" > /workspace/e2e_run_id.txt
+        # Short RUN_ID for harness-created service names (≤32 chars to keep under 63 with longest prefix)
+        E2E_RUN_ID_SHORT="$$(echo "$$SANITIZED" | cut -c1-32)"
+        echo "$$E2E_RUN_ID_SHORT" > /workspace/e2e_run_id_short.txt
+        
+        if [ -n "${_PR_NUMBER}" ]; then
+          STREAM_TAG="pr-${_PR_NUMBER}"
+        else
+          STREAM_TAG=""
+        fi
+        echo "$$STREAM_TAG" > /workspace/stream_tag.txt
+        if [ -n "$$STREAM_TAG" ]; then
+          STREAM_TAG_DEFAULTED="$$STREAM_TAG"
+        else
+          STREAM_TAG_DEFAULTED="main"
+        fi
+        echo "$$STREAM_TAG_DEFAULTED" > /workspace/stream_tag_defaulted.txt
+        APP_VERSION="$$STREAM_TAG_DEFAULTED-${_PR_SHA:-${_SHORT_SHA}}"
+        echo "$$APP_VERSION" > /workspace/app_version.txt
+        echo "$${BUILD_TIME}" > /workspace/build_time.txt
+        cut63 () { local x="$$1"; echo "$${x:0:63}"; }
+        sanitize_pubsub_id () {
+          local x="$$(echo "$$1" | tr '[:upper:]' '[:lower:]')"
+          x="$$(echo "$$x" | sed -E 's/[^a-z0-9-]+/-/g' | sed -E 's/-+/-/g' | sed -E 's/^-+//; s/-+$//')"
+          case "$$x" in
+            [a-z]* ) ;;
+            * ) x="e2e-$$x" ;;
+          esac
+          echo "$${x:0:255}"
+        }
+        CORE_APP_SERVICE_NAME_CUT="$$(cut63 "core-log-app-$$SUFFIX")"
+        TRACE_TARGET_SERVICE_NAME_CUT="$$(cut63 "trace-target-app-$$SUFFIX")"
+        TRACE_HTTP_SERVICE_NAME_CUT="$$(cut63 "trace-http-app-$$SUFFIX")"
+        TRACE_GRPC_SERVICE_NAME_CUT="$$(cut63 "trace-grpc-app-$$SUFFIX")"
+        TRACE_PUBSUB_TOPIC_ID="$$(sanitize_pubsub_id "${_TRACE_PUBSUB_TOPIC}-$$E2E_RUN_ID_SHORT")"
+        TRACE_PUBSUB_SUBSCRIPTION_ID="$$(sanitize_pubsub_id "${_TRACE_PUBSUB_SUBSCRIPTION}-$$E2E_RUN_ID_SHORT")"
+        echo "$$CORE_APP_SERVICE_NAME_CUT" > /workspace/core_service_name.txt
+        echo "$$TRACE_TARGET_SERVICE_NAME_CUT" > /workspace/trace_target_service_name.txt
+        echo "$$TRACE_HTTP_SERVICE_NAME_CUT" > /workspace/trace_http_service_name.txt
+        echo "$$TRACE_GRPC_SERVICE_NAME_CUT" > /workspace/trace_grpc_service_name.txt
+        echo "$$TRACE_PUBSUB_TOPIC_ID" > /workspace/trace_pubsub_topic.txt
+        echo "$$TRACE_PUBSUB_SUBSCRIPTION_ID" > /workspace/trace_pubsub_subscription.txt
+        
+        echo "Computed build variables:"
+        echo "  E2E_RUN_ID (full): $$RUN_ID"
+        echo "  E2E_RUN_ID_SHORT (32): $$E2E_RUN_ID_SHORT"
+        echo "  SUFFIX (rid_short): $$SUFFIX"
+        echo "  STREAM_TAG_DEFAULTED: $$STREAM_TAG_DEFAULTED"
+        echo "  APP_VERSION: $$APP_VERSION"
+        echo "  Core service: $$CORE_APP_SERVICE_NAME_CUT"
+        echo "  Trace target service: $$TRACE_TARGET_SERVICE_NAME_CUT"
+        echo "  Trace HTTP service: $$TRACE_HTTP_SERVICE_NAME_CUT"
+        echo "  Trace gRPC service: $$TRACE_GRPC_SERVICE_NAME_CUT"
+        echo "  Trace Pub/Sub topic: $$TRACE_PUBSUB_TOPIC_ID"
+        echo "  Trace Pub/Sub subscription: $$TRACE_PUBSUB_SUBSCRIPTION_ID"
+    id: 'Compute build variables'
+  - name: 'ubuntu'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        VERSION_FILE=".toolchain/go.version"
+        if [ ! -f "$$VERSION_FILE" ]; then
+          echo "Error: Go version file not found at $$VERSION_FILE" >&2
+          exit 1
+        fi
+        GO_VERSION="$$(tr -d '[:space:]' < "$$VERSION_FILE")"
+        if [ -z "$$GO_VERSION" ]; then
+          echo "Error: Go version value is empty" >&2
+          exit 1
+        fi
+
+        IFS='.' read -r GO_MAJOR GO_MINOR GO_PATCH <<< "$$GO_VERSION"
+        if [ -z "$$GO_MAJOR" ] || [ -z "$$GO_MINOR" ]; then
+          echo "Error: Go version must include major and minor components (got '$$GO_VERSION')" >&2
+          exit 1
+        fi
+        GO_VERSION_MAJOR_MINOR="$$GO_MAJOR.$$GO_MINOR"
+        GO_TOOLCHAIN="go$$GO_VERSION"
+
+        DEBIAN_FILE=".toolchain/debian.env"
+        if [ ! -f "$$DEBIAN_FILE" ]; then
+          echo "Error: Debian config file not found at $$DEBIAN_FILE" >&2
+          exit 1
+        fi
+
+        # shellcheck disable=SC1090
+        source "$$DEBIAN_FILE"
+
+        if [ -z "${DEBIAN_CODENAME:-}" ]; then
+          echo "Error: DEBIAN_CODENAME missing from $$DEBIAN_FILE" >&2
+          exit 1
+        fi
+        if [ -z "${DISTROLESS_TAG:-}" ]; then
+          echo "Error: DISTROLESS_TAG missing from $$DEBIAN_FILE" >&2
+          exit 1
+        fi
+
+        printf '%s\n' "$$GO_VERSION" > /workspace/go_version.txt
+        printf '%s\n' "$$DEBIAN_CODENAME" > /workspace/debian_codename.txt
+        printf '%s\n' "$$DISTROLESS_TAG" > /workspace/distroless_tag.txt
+
+        printf 'GO_VERSION=%s\nGO_VERSION_MAJOR_MINOR=%s\nGO_TOOLCHAIN=%s\nDEBIAN_CODENAME=%s\nDISTROLESS_TAG=%s\n' \
+          "$$GO_VERSION" \
+          "$$GO_VERSION_MAJOR_MINOR" \
+          "$$GO_TOOLCHAIN" \
+          "$$DEBIAN_CODENAME" \
+          "$$DISTROLESS_TAG" > /workspace/.tool-versions.env
+
+        echo "Bootstrapped toolchain configuration:"
+        echo "  GO_VERSION=$$GO_VERSION"
+        echo "  GO_VERSION_MAJOR_MINOR=$$GO_VERSION_MAJOR_MINOR"
+        echo "  GO_TOOLCHAIN=$$GO_TOOLCHAIN"
+        echo "  DEBIAN_CODENAME=$$DEBIAN_CODENAME"
+        echo "  DISTROLESS_TAG=$$DISTROLESS_TAG"
+    id: 'Bootstrap toolchain config'
+    waitFor: ['Compute build variables']
+  - name: 'ubuntu'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        bash cloudbuild/build-tools/verify-toolchain-config.sh
+    id: 'Verify toolchain config'
+    waitFor: ['Bootstrap toolchain config']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    env:
+      - 'HOME=/workspace/home-lib-repo'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [ "${_E2E_SOURCE_MODE}" = "local" ]; then
+          if [ ! -f /workspace/lib-repo-checkout/go.mod ]; then
+            echo "Error: local source mode requires /workspace/lib-repo-checkout/go.mod" >&2
+            exit 1
+          fi
+          echo "Using staged local slogcp checkout from build source"
+          exit 0
+        fi
+
+        mkdir -p "$$HOME"
+        if [ -n "${_GITHUB_TOKEN_SECRET_VERSION}" ]; then
+          case "${_GITHUB_TOKEN_SECRET_VERSION}" in
+            projects/*/secrets/*/versions/*) ;;
+            *)
+              echo "Error: invalid _GITHUB_TOKEN_SECRET_VERSION: ${_GITHUB_TOKEN_SECRET_VERSION}" >&2
+              exit 1
+              ;;
+          esac
+          SECRET_PROJECT="$$(echo "${_GITHUB_TOKEN_SECRET_VERSION}" | cut -d/ -f2)"
+          SECRET_NAME="$$(echo "${_GITHUB_TOKEN_SECRET_VERSION}" | cut -d/ -f4)"
+          SECRET_VERSION="$$(echo "${_GITHUB_TOKEN_SECRET_VERSION}" | cut -d/ -f6)"
+          GITHUB_TOKEN="$$(gcloud secrets versions access "$$SECRET_VERSION" --secret "$$SECRET_NAME" --project "$$SECRET_PROJECT" | tr -d '\r\n')"
+          echo "https://x-access-token:$$GITHUB_TOKEN@github.com" > "$$HOME/.git-credentials"
+          git config --global credential.helper store
+        fi
+        git clone https://github.com/${_LIB_REPO_FULL_NAME}.git lib-repo-checkout
+        cd lib-repo-checkout
+        REF="${_PR_SHA}"
+        if [ -z "$$REF" ]; then 
+          # For manual triggers with no PR_SHA, always fetch latest main
+          echo "No PR_SHA provided, fetching latest main branch from origin"
+          git fetch origin main
+          git checkout origin/main -B main
+        else
+          # For PR triggers, checkout the specific commit
+          git fetch origin "$$REF" || true
+          if git rev-parse --verify --quiet "$$REF" >/dev/null; then
+            git checkout "$$REF"
+          else
+            git checkout "origin/$$REF"
+          fi
+        fi
+        SUFFIX="$$(cat /workspace/suffix.txt)"
+        echo "Cloned ${_LIB_REPO_FULL_NAME} at commit $$(git rev-parse HEAD) (RUN_SUFFIX=$$SUFFIX)"
+    id: 'Clone lib-repo'
+    waitFor: ['Compute build variables']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        # Copy helper scripts and make them executable
+        cp cloudbuild/build-tools/*.sh /workspace/
+        chmod +x cloudbuild/build-tools/*.sh /workspace/*.sh
+        
+        # Extract metadata from cloned slogcp repository
+        echo "Extracting metadata from slogcp repository..."
+        /workspace/extract-slogcp-metadata.sh \
+          /workspace/lib-repo-checkout \
+          "${_PR_SHA}" \
+          "${_PR_NUMBER}" \
+          "${_E2E_SOURCE_MODE}" \
+          "${_SLOGCP_REF_OVERRIDE}"
+
+        echo "Metadata extraction complete"
+        echo "  Go version: $$(cat /workspace/go_version.txt)"
+        echo "  Slogcp reference: $$(cat /workspace/slogcp_reference.txt)"
+        echo "  Build type: $$(cat /workspace/build_type.txt)"
+    id: 'Extract slogcp metadata'
+    waitFor: ['Clone lib-repo', 'Verify toolchain config']
+  - name: 'ubuntu'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo "Preparing Docker build contexts..."
+        
+        BUILD_TYPE="$$(cat /workspace/build_type.txt)"
+        SLOGCP_DIR=""
+        if [ "$$BUILD_TYPE" = "pr" ] || [ "$$BUILD_TYPE" = "local" ]; then
+          SLOGCP_DIR="/workspace/lib-repo-checkout"
+          echo "$$BUILD_TYPE build: will include local slogcp in build context"
+        else
+          echo "Main build: will use remote slogcp reference"
+        fi
+
+        TRACEPROTO_DIR="/workspace/services/traceproto"
+
+        /workspace/prepare-build-context.sh \
+          /workspace/services/target-apps/core-logging-target-app \
+          /workspace/build-context/core \
+          "$$SLOGCP_DIR"
+
+        /workspace/prepare-build-context.sh \
+          /workspace/services/target-apps/trace-target-app \
+          /workspace/build-context/trace-target \
+          "$$SLOGCP_DIR" \
+          "$$TRACEPROTO_DIR"
+
+        /workspace/prepare-build-context.sh \
+          /workspace/services/target-apps/trace-downstream-http \
+          /workspace/build-context/trace-http \
+          "$$SLOGCP_DIR"
+
+        /workspace/prepare-build-context.sh \
+          /workspace/services/target-apps/trace-downstream-grpc \
+          /workspace/build-context/trace-grpc \
+          "$$SLOGCP_DIR" \
+          "$$TRACEPROTO_DIR"
+
+        echo "Preparing e2e-harness build context..."
+        /workspace/prepare-build-context.sh \
+          /workspace/services/e2e-harness \
+          /workspace/build-context/e2e-harness \
+          "$$SLOGCP_DIR" \
+          "$$TRACEPROTO_DIR"
+
+        echo "Build context preparation complete"
+    id: 'Prepare build context'
+    waitFor: ['Extract slogcp metadata']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        export ARTIFACT_REGISTRY_REPO="${_ARTIFACT_REGISTRY_REPO}"
+        export GCS_BUCKET_NAME="${_GCS_BUCKET_NAME}"
+        cloudbuild/build-tools/evaluate-image-cache.sh \
+          core-logging-target-app \
+          /workspace/build-context/core \
+          /workspace/build-context/core \
+          services/target-apps/core-logging-target-app/Dockerfile \
+          core-logging-target-app
+
+        cloudbuild/build-tools/evaluate-image-cache.sh \
+          trace-target-app \
+          /workspace/build-context/trace-target \
+          /workspace/build-context/trace-target \
+          services/target-apps/trace-target-app/Dockerfile \
+          trace-target-app
+
+        cloudbuild/build-tools/evaluate-image-cache.sh \
+          trace-downstream-http \
+          /workspace/build-context/trace-http \
+          /workspace/build-context/trace-http \
+          services/target-apps/trace-downstream-http/Dockerfile \
+          trace-downstream-http
+
+        cloudbuild/build-tools/evaluate-image-cache.sh \
+          trace-downstream-grpc \
+          /workspace/build-context/trace-grpc \
+          /workspace/build-context/trace-grpc \
+          services/target-apps/trace-downstream-grpc/Dockerfile \
+          trace-downstream-grpc
+
+        cloudbuild/build-tools/evaluate-image-cache.sh \
+          e2e-harness \
+          /workspace/services/e2e-harness \
+          /workspace/build-context/e2e-harness \
+          /workspace/build-context/e2e-harness/Dockerfile \
+          e2e-harness
+    id: 'Evaluate image cache'
+    waitFor: ['Prepare build context']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/docker-build-with-cache.sh core-logging-target-app
+    id: 'Build core-logging-target-app'
+    waitFor: ['Evaluate image cache']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/docker-push-if-needed.sh core-logging-target-app
+    id: 'Push core-logging-target-app'
+    waitFor: ['Build core-logging-target-app']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/docker-build-with-cache.sh trace-target-app
+    id: 'Build trace-target-app'
+    waitFor: ['Evaluate image cache']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/docker-push-if-needed.sh trace-target-app
+    id: 'Push trace-target-app'
+    waitFor: ['Build trace-target-app']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/docker-build-with-cache.sh trace-downstream-http
+    id: 'Build trace-downstream-http'
+    waitFor: ['Evaluate image cache']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/docker-push-if-needed.sh trace-downstream-http
+    id: 'Push trace-downstream-http'
+    waitFor: ['Build trace-downstream-http']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/docker-build-with-cache.sh trace-downstream-grpc
+    id: 'Build trace-downstream-grpc'
+    waitFor: ['Evaluate image cache']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/docker-push-if-needed.sh trace-downstream-grpc
+    id: 'Push trace-downstream-grpc'
+    waitFor: ['Build trace-downstream-grpc']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        TRACE_HTTP_SERVICE_NAME="$$(cat /workspace/trace_http_service_name.txt)"
+        TRACE_PUBSUB_TOPIC_ID="$$(cat /workspace/trace_pubsub_topic.txt)"
+        TRACE_PUBSUB_SUBSCRIPTION_ID="$$(cat /workspace/trace_pubsub_subscription.txt)"
+        STREAM_TAG_DEFAULTED="$$(cat /workspace/stream_tag_defaulted.txt)"
+        APP_VERSION="$$(cat /workspace/app_version.txt)"
+        RUNTIME_INVOKER="serviceAccount:${_RUNTIME_SERVICE_ACCOUNT}"
+        HARNESS_INVOKER="serviceAccount:${_CALLER_SERVICE_ACCOUNT}"
+        echo "Deploying trace-downstream-http service: $$TRACE_HTTP_SERVICE_NAME"
+        gcloud run deploy "$$TRACE_HTTP_SERVICE_NAME" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/trace-downstream-http:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --platform managed \
+          --region "${_GCP_REGION}" \
+          --no-allow-unauthenticated \
+          --service-account "${_RUNTIME_SERVICE_ACCOUNT}" \
+          --port "8080" \
+          --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},TRACE_PUBSUB_TOPIC=$$TRACE_PUBSUB_TOPIC_ID,TRACE_PUBSUB_SUBSCRIPTION=$$TRACE_PUBSUB_SUBSCRIPTION_ID,SLOGCP_LOGICAL_SERVICE=trace-downstream-http,SLOGCP_RUNTIME_SERVICE_NAME=$$TRACE_HTTP_SERVICE_NAME,SLOGCP_BUILD_ID=$$APP_VERSION" \
+          --quiet
+        /workspace/grant-run-invokers.sh "$$TRACE_HTTP_SERVICE_NAME" "${_GCP_REGION}" "$$RUNTIME_INVOKER" "$$HARNESS_INVOKER"
+        TRACE_HTTP_URL="$$(gcloud run services describe "$$TRACE_HTTP_SERVICE_NAME" --platform managed --region "${_GCP_REGION}" --format="value(status.url)")"
+        echo "$$TRACE_HTTP_URL" > /workspace/trace_http_url.txt
+        echo "  Trace HTTP service URL: $$TRACE_HTTP_URL"
+    id: 'Deploy trace downstream http'
+    waitFor: ['Push trace-downstream-http']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        TRACE_GRPC_SERVICE_NAME="$$(cat /workspace/trace_grpc_service_name.txt)"
+        STREAM_TAG_DEFAULTED="$$(cat /workspace/stream_tag_defaulted.txt)"
+        APP_VERSION="$$(cat /workspace/app_version.txt)"
+        RUNTIME_INVOKER="serviceAccount:${_RUNTIME_SERVICE_ACCOUNT}"
+        HARNESS_INVOKER="serviceAccount:${_CALLER_SERVICE_ACCOUNT}"
+        echo "Deploying trace-downstream-grpc service: $$TRACE_GRPC_SERVICE_NAME"
+        gcloud run deploy "$$TRACE_GRPC_SERVICE_NAME" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/trace-downstream-grpc:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --platform managed \
+          --region "${_GCP_REGION}" \
+          --no-allow-unauthenticated \
+          --use-http2 \
+          --service-account "${_RUNTIME_SERVICE_ACCOUNT}" \
+          --port "8080" \
+          --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},SLOGCP_LOGICAL_SERVICE=trace-downstream-grpc,SLOGCP_RUNTIME_SERVICE_NAME=$$TRACE_GRPC_SERVICE_NAME,SLOGCP_BUILD_ID=$$APP_VERSION" \
+          --quiet
+        /workspace/grant-run-invokers.sh "$$TRACE_GRPC_SERVICE_NAME" "${_GCP_REGION}" "$$RUNTIME_INVOKER" "$$HARNESS_INVOKER"
+        TRACE_GRPC_URL="$$(gcloud run services describe "$$TRACE_GRPC_SERVICE_NAME" --platform managed --region "${_GCP_REGION}" --format="value(status.url)")"
+        TRACE_GRPC_HOST="$${TRACE_GRPC_URL#https://}"
+        TRACE_GRPC_HOST="$${TRACE_GRPC_HOST%%/}"
+        TRACE_GRPC_TARGET="$${TRACE_GRPC_HOST}:443"
+        echo "$$TRACE_GRPC_URL" > /workspace/trace_grpc_url.txt
+        echo "$$TRACE_GRPC_TARGET" > /workspace/trace_grpc_target.txt
+        echo "  Trace gRPC service URL: $$TRACE_GRPC_URL"
+        echo "  Trace gRPC target: $$TRACE_GRPC_TARGET"
+    id: 'Deploy trace downstream grpc'
+    waitFor: ['Push trace-downstream-grpc']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        TRACE_TARGET_SERVICE_NAME="$$(cat /workspace/trace_target_service_name.txt)"
+        STREAM_TAG_DEFAULTED="$$(cat /workspace/stream_tag_defaulted.txt)"
+        APP_VERSION="$$(cat /workspace/app_version.txt)"
+        TRACE_HTTP_URL="$$(cat /workspace/trace_http_url.txt)"
+        TRACE_GRPC_TARGET="$$(cat /workspace/trace_grpc_target.txt)"
+        TRACE_PUBSUB_TOPIC_ID="$$(cat /workspace/trace_pubsub_topic.txt)"
+        TRACE_PUBSUB_SUBSCRIPTION_ID="$$(cat /workspace/trace_pubsub_subscription.txt)"
+        RUNTIME_INVOKER="serviceAccount:${_RUNTIME_SERVICE_ACCOUNT}"
+        HARNESS_INVOKER="serviceAccount:${_CALLER_SERVICE_ACCOUNT}"
+        echo "Deploying trace-target-app service: $$TRACE_TARGET_SERVICE_NAME"
+        gcloud run deploy "$$TRACE_TARGET_SERVICE_NAME" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/trace-target-app:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --platform managed \
+          --region "${_GCP_REGION}" \
+          --no-allow-unauthenticated \
+          --service-account "${_RUNTIME_SERVICE_ACCOUNT}" \
+          --port "8080" \
+          --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},DOWNSTREAM_HTTP_URL=$$TRACE_HTTP_URL,DOWNSTREAM_GRPC_TARGET=$$TRACE_GRPC_TARGET,TRACE_PUBSUB_TOPIC=$$TRACE_PUBSUB_TOPIC_ID,TRACE_PUBSUB_SUBSCRIPTION=$$TRACE_PUBSUB_SUBSCRIPTION_ID,SLOGCP_LOGICAL_SERVICE=trace-target-app,SLOGCP_RUNTIME_SERVICE_NAME=$$TRACE_TARGET_SERVICE_NAME,SLOGCP_BUILD_ID=$$APP_VERSION" \
+          --quiet
+        /workspace/grant-run-invokers.sh "$$TRACE_TARGET_SERVICE_NAME" "${_GCP_REGION}" "$$RUNTIME_INVOKER" "$$HARNESS_INVOKER"
+        TRACE_TARGET_URL="$$(gcloud run services describe "$$TRACE_TARGET_SERVICE_NAME" --platform managed --region "${_GCP_REGION}" --format="value(status.url)")"
+        echo "$$TRACE_TARGET_URL" > /workspace/trace_target_url.txt
+        echo "  Trace target service URL: $$TRACE_TARGET_URL"
+    id: 'Deploy trace target service'
+    waitFor: ['Push trace-target-app', 'Deploy trace downstream http', 'Deploy trace downstream grpc']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/docker-build-with-cache.sh e2e-harness
+    id: 'Build e2e-harness'
+    waitFor: ['Evaluate image cache']
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/docker-push-if-needed.sh e2e-harness
+    id: 'Push e2e-harness'
+    waitFor: ['Build e2e-harness']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cloudbuild/build-tools/update-image-manifest.sh core-logging-target-app
+        cloudbuild/build-tools/update-image-manifest.sh trace-target-app
+        cloudbuild/build-tools/update-image-manifest.sh trace-downstream-http
+        cloudbuild/build-tools/update-image-manifest.sh trace-downstream-grpc
+        cloudbuild/build-tools/update-image-manifest.sh e2e-harness
+    id: 'Update image manifests'
+    waitFor: ['Push core-logging-target-app', 'Push trace-target-app', 'Push trace-downstream-http', 'Push trace-downstream-grpc', 'Push e2e-harness']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -eEuo
+      - pipefail
+      - -c
+      - |
+        SERVICE_SUFFIX="$$(cat /workspace/suffix.txt)"
+        STREAM_TAG_DEFAULTED="$$(cat /workspace/stream_tag_defaulted.txt)"
+        APP_VERSION="$$(cat /workspace/app_version.txt)"
+        CORE_APP_SERVICE_NAME_CUT="$$(cat /workspace/core_service_name.txt)"
+        TRACE_TARGET_URL="$$(cat /workspace/trace_target_url.txt)"
+        RUNTIME_INVOKER="serviceAccount:${_RUNTIME_SERVICE_ACCOUNT}"
+        HARNESS_INVOKER="serviceAccount:${_CALLER_SERVICE_ACCOUNT}"
+        echo "started" > /workspace/deployment_started.txt
+        echo "Deploying core-logging-target-app as Cloud Run service: $$CORE_APP_SERVICE_NAME_CUT"
+        gcloud run deploy "$$CORE_APP_SERVICE_NAME_CUT" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/core-logging-target-app:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --platform managed \
+          --region "${_GCP_REGION}" \
+          --no-allow-unauthenticated \
+          --service-account "${_RUNTIME_SERVICE_ACCOUNT}" \
+          --port "8080" \
+          --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},SLOGCP_LOGICAL_SERVICE=core-logging-target-app,SLOGCP_RUNTIME_SERVICE_NAME=$$CORE_APP_SERVICE_NAME_CUT,SLOGCP_BUILD_ID=$$APP_VERSION" \
+          --quiet
+        /workspace/grant-run-invokers.sh "$$CORE_APP_SERVICE_NAME_CUT" "${_GCP_REGION}" "$$RUNTIME_INVOKER" "$$HARNESS_INVOKER"
+        CORE_APP_URL="$$(gcloud run services describe "$$CORE_APP_SERVICE_NAME_CUT" --platform managed --region "${_GCP_REGION}" --format="value(status.url)")"
+        echo "$$CORE_APP_URL" > /workspace/core_app_url.txt
+        echo "Service deployed:"
+        echo "  Core Logging App: $$CORE_APP_URL"
+    id: 'Deploy core service'
+    waitFor: ['Push core-logging-target-app', 'Deploy trace target service']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        TRACE_PUBSUB_TOPIC_ID="$$(cat /workspace/trace_pubsub_topic.txt)"
+        TRACE_PUBSUB_SUBSCRIPTION_ID="$$(cat /workspace/trace_pubsub_subscription.txt)"
+        cleanup_pubsub() {
+          gcloud pubsub subscriptions delete "$$TRACE_PUBSUB_SUBSCRIPTION_ID" \
+            --project "${PROJECT_ID}" \
+            --quiet >/dev/null 2>&1 || true
+          gcloud pubsub topics delete "$$TRACE_PUBSUB_TOPIC_ID" \
+            --project "${PROJECT_ID}" \
+            --quiet >/dev/null 2>&1 || true
+        }
+        trap cleanup_pubsub ERR
+        echo "Ensuring Pub/Sub topic exists: $$TRACE_PUBSUB_TOPIC_ID"
+        if ! gcloud pubsub topics describe "$$TRACE_PUBSUB_TOPIC_ID" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+          gcloud pubsub topics create "$$TRACE_PUBSUB_TOPIC_ID" --project "${PROJECT_ID}"
+        fi
+        echo "Ensuring Pub/Sub subscription exists: $$TRACE_PUBSUB_SUBSCRIPTION_ID"
+        if ! gcloud pubsub subscriptions describe "$$TRACE_PUBSUB_SUBSCRIPTION_ID" --project "${PROJECT_ID}" >/dev/null 2>&1; then
+          gcloud pubsub subscriptions create "$$TRACE_PUBSUB_SUBSCRIPTION_ID" \
+            --topic "$$TRACE_PUBSUB_TOPIC_ID" \
+            --project "${PROJECT_ID}"
+        fi
+        trap - ERR
+    id: 'Ensure trace pubsub resources'
+    waitFor: ['Deploy core service', 'Push e2e-harness']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -eEuo
+      - pipefail
+      - -c
+      - |
+        SUFFIX="$$(cat /workspace/suffix.txt)"
+        STREAM_TAG_DEFAULTED="$$(cat /workspace/stream_tag_defaulted.txt)"
+        CORE_APP_URL="$$(cat /workspace/core_app_url.txt)"
+        CORE_APP_SERVICE_NAME_CUT="$$(cat /workspace/core_service_name.txt)"
+        APP_VERSION="$$(cat /workspace/app_version.txt)"
+        TRACE_TARGET_URL="$$(cat /workspace/trace_target_url.txt)"
+        RUN_ID_SHORT="$$(cat /workspace/e2e_run_id_short.txt)"
+        TRACE_PUBSUB_TOPIC_ID="$$(cat /workspace/trace_pubsub_topic.txt)"
+        TRACE_PUBSUB_SUBSCRIPTION_ID="$$(cat /workspace/trace_pubsub_subscription.txt)"
+        for image_state in \
+          /workspace/cache/core-logging-target-app.env \
+          /workspace/cache/trace-target-app.env \
+          /workspace/cache/trace-downstream-http.env \
+          /workspace/cache/trace-downstream-grpc.env; do
+          if [ ! -f "$$image_state" ]; then
+            echo "$$image_state missing" >&2
+            exit 1
+          fi
+        done
+        CORE_TARGET_IMAGE="$$(source /workspace/cache/core-logging-target-app.env && echo "$$VERSIONED_TAG")"
+        TRACE_TARGET_IMAGE="$$(source /workspace/cache/trace-target-app.env && echo "$$VERSIONED_TAG")"
+        TRACE_HTTP_IMAGE="$$(source /workspace/cache/trace-downstream-http.env && echo "$$VERSIONED_TAG")"
+        TRACE_GRPC_IMAGE="$$(source /workspace/cache/trace-downstream-grpc.env && echo "$$VERSIONED_TAG")"
+        if [ -z "$${TRACE_TARGET_URL}" ]; then
+          echo "TRACE_TARGET_URL missing" >&2
+          exit 1
+        fi
+        RUN_ID="$$(cat /workspace/e2e_run_id.txt)"
+        JOB_NAME_PREFIX="e2e-hjob-$$SUFFIX"
+        JOB_NAME_PREFIX_CUT="$$(echo "$$JOB_NAME_PREFIX" | cut -c1-38)"
+        JOB_NAME="$${JOB_NAME_PREFIX_CUT}-$$(date +%s)"
+        echo "$$JOB_NAME" > /workspace/e2e_job_name.txt
+        echo "Creating and executing e2e-harness Cloud Run Job: $$JOB_NAME"
+        # Run the harness job with the Cloud Build service account so it can
+        # create and clean up temporary Cloud Run services during the tests.
+        set +e
+        gcloud run jobs create "$$JOB_NAME" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/e2e-harness:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --region "${_GCP_REGION}" \
+          --service-account "${_CALLER_SERVICE_ACCOUNT}" \
+          --set-env-vars CORE_TARGET_URL=$$CORE_APP_URL \
+          --set-env-vars TRACE_TARGET_URL=$$TRACE_TARGET_URL \
+          --set-env-vars EXPECTED_CORE_RUNTIME_SERVICE_NAME=$$CORE_APP_SERVICE_NAME_CUT \
+          --set-env-vars EXPECTED_BUILD_ID=$$APP_VERSION \
+          --set-env-vars GCS_ARTIFACT_PATH=gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA:-${_SHORT_SHA}}/$${RUN_ID}/ \
+          --set-env-vars E2E_SERVICE_ACCOUNT=${_RUNTIME_SERVICE_ACCOUNT} \
+          --set-env-vars E2E_CALLER_SERVICE_ACCOUNT=${_CALLER_SERVICE_ACCOUNT} \
+          --set-env-vars TRACE_PUBSUB_TOPIC=$$TRACE_PUBSUB_TOPIC_ID \
+          --set-env-vars TRACE_PUBSUB_SUBSCRIPTION=$$TRACE_PUBSUB_SUBSCRIPTION_ID \
+          --set-env-vars E2E_TIMEOUT_SECONDS=${_E2E_HARNESS_TIMEOUT_SECONDS} \
+          --set-env-vars E2E_DEBUG=${_E2E_DEBUG} \
+          --set-env-vars GOOGLE_CLOUD_PROJECT=${PROJECT_ID} \
+          --set-env-vars E2E_RUN_ID=$$RUN_ID_SHORT \
+          --set-env-vars CORE_TARGET_IMAGE=$$CORE_TARGET_IMAGE \
+          --set-env-vars TRACE_TARGET_IMAGE=$$TRACE_TARGET_IMAGE \
+          --set-env-vars TRACE_HTTP_IMAGE=$$TRACE_HTTP_IMAGE \
+          --set-env-vars TRACE_GRPC_IMAGE=$$TRACE_GRPC_IMAGE \
+          --max-retries 0 \
+          --task-timeout "${_E2E_HARNESS_TIMEOUT_SECONDS}s" \
+          --quiet
+        CREATE_EXIT=$$?
+        gcloud run jobs execute "$$JOB_NAME" \
+          --region "${_GCP_REGION}" \
+          --wait --quiet
+        EXEC_EXIT=$$?
+              set -e
+        E2E_EXIT_CODE=$$CREATE_EXIT
+        if [ $$E2E_EXIT_CODE -eq 0 ]; then
+          E2E_EXIT_CODE=$$EXEC_EXIT
+        fi
+        echo "$$E2E_EXIT_CODE" > /workspace/e2e_exit_code.txt
+        if [ $$E2E_EXIT_CODE -eq 0 ]; then
+          echo "✅ e2e-harness Cloud Run Job $$JOB_NAME completed successfully."
+        else
+          echo "❌ e2e-harness Cloud Run Job $$JOB_NAME failed with exit code $$E2E_EXIT_CODE"
+          echo "$$E2E_EXIT_CODE" > /workspace/e2e_failed.txt
+        fi
+        # Do not exit non-zero here; let cleanup run and final step fail if needed.
+    id: 'Run e2e-harness Job'
+    waitFor: ['Ensure trace pubsub resources']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        echo "=== Starting cleanup phase ==="
+        if [ -f /workspace/core_service_name.txt ]; then
+          CORE_APP_SERVICE_NAME_CUT="$$(cat /workspace/core_service_name.txt)"
+          echo "Deleting service: $$CORE_APP_SERVICE_NAME_CUT"
+          gcloud run services delete "$$CORE_APP_SERVICE_NAME_CUT" \
+            --platform managed \
+            --region "${_GCP_REGION}" \
+            --quiet 2>/dev/null || echo "  Service $$CORE_APP_SERVICE_NAME_CUT not found or already deleted"
+        fi
+        if [ -f /workspace/trace_target_service_name.txt ]; then
+          TRACE_TARGET_SERVICE_NAME="$$(cat /workspace/trace_target_service_name.txt)"
+          echo "Deleting service: $$TRACE_TARGET_SERVICE_NAME"
+          gcloud run services delete "$$TRACE_TARGET_SERVICE_NAME" \
+            --platform managed \
+            --region "${_GCP_REGION}" \
+            --quiet 2>/dev/null || echo "  Service $$TRACE_TARGET_SERVICE_NAME not found or already deleted"
+        fi
+        if [ -f /workspace/trace_http_service_name.txt ]; then
+          TRACE_HTTP_SERVICE_NAME="$$(cat /workspace/trace_http_service_name.txt)"
+          echo "Deleting service: $$TRACE_HTTP_SERVICE_NAME"
+          gcloud run services delete "$$TRACE_HTTP_SERVICE_NAME" \
+            --platform managed \
+            --region "${_GCP_REGION}" \
+            --quiet 2>/dev/null || echo "  Service $$TRACE_HTTP_SERVICE_NAME not found or already deleted"
+        fi
+        if [ -f /workspace/trace_grpc_service_name.txt ]; then
+          TRACE_GRPC_SERVICE_NAME="$$(cat /workspace/trace_grpc_service_name.txt)"
+          echo "Deleting service: $$TRACE_GRPC_SERVICE_NAME"
+          gcloud run services delete "$$TRACE_GRPC_SERVICE_NAME" \
+            --platform managed \
+            --region "${_GCP_REGION}" \
+            --quiet 2>/dev/null || echo "  Service $$TRACE_GRPC_SERVICE_NAME not found or already deleted"
+        fi
+        if [ -f /workspace/e2e_job_name.txt ]; then
+          JOB_NAME="$$(cat /workspace/e2e_job_name.txt)"
+          echo "Deleting Cloud Run Job: $$JOB_NAME"
+          gcloud run jobs delete "$$JOB_NAME" \
+            --region "${_GCP_REGION}" \
+            --quiet 2>/dev/null || echo "  Job $$JOB_NAME not found or already deleted"
+        fi
+        if [ -f /workspace/trace_pubsub_subscription.txt ]; then
+          TRACE_PUBSUB_SUBSCRIPTION_ID="$$(cat /workspace/trace_pubsub_subscription.txt)"
+          echo "Deleting Pub/Sub subscription: $$TRACE_PUBSUB_SUBSCRIPTION_ID"
+          gcloud pubsub subscriptions delete "$$TRACE_PUBSUB_SUBSCRIPTION_ID" \
+            --project "${PROJECT_ID}" \
+            --quiet 2>/dev/null || echo "  Subscription $$TRACE_PUBSUB_SUBSCRIPTION_ID not found or already deleted"
+        fi
+        if [ -f /workspace/trace_pubsub_topic.txt ]; then
+          TRACE_PUBSUB_TOPIC_ID="$$(cat /workspace/trace_pubsub_topic.txt)"
+          echo "Deleting Pub/Sub topic: $$TRACE_PUBSUB_TOPIC_ID"
+          gcloud pubsub topics delete "$$TRACE_PUBSUB_TOPIC_ID" \
+            --project "${PROJECT_ID}" \
+            --quiet 2>/dev/null || echo "  Topic $$TRACE_PUBSUB_TOPIC_ID not found or already deleted"
+        fi
+        echo "=== Cleanup phase completed ==="
+        if [ -f /workspace/e2e_failed.txt ]; then
+          E2E_EXIT_CODE="$$(cat /workspace/e2e_failed.txt)"
+          echo "❌ Build will fail due to e2e test failure (exit code: $$E2E_EXIT_CODE) after cleanup."
+        fi
+    id: 'Cleanup all resources'
+    waitFor: ['Run e2e-harness Job']
+  - name: 'ubuntu'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        CODE=0
+        if [ -f /workspace/e2e_exit_code.txt ]; then
+          CODE="$$(cat /workspace/e2e_exit_code.txt)"
+        fi
+        if [ "$$CODE" -ne 0 ]; then
+          echo "Failing build: e2e exit code $$CODE"
+        else
+          echo "E2E tests passed"
+        fi
+        exit "$$CODE"
+    id: 'Fail build if tests failed'
+    waitFor: ['Cleanup all resources']
