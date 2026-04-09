@@ -11,10 +11,7 @@ on:
   workflow_call:
 
 permissions:
-  contents: write
-  pull-requests: write
-  security-events: write
-  checks: write
+  contents: read
 
 jobs:
   # -----------------------------
@@ -25,6 +22,8 @@ jobs:
     # Skip validation on pull_request_target to avoid running the full pipeline twice per PR update.
     if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GOTOOLCHAIN: auto
     steps:
@@ -73,7 +72,9 @@ jobs:
           
       - name: 🧰 Install format/modernize tools
         run: |
-          go install golang.org/x/tools/cmd/goimports@869ced31773aa6009975882daa7005641f1364fc
+          # renovate: datasource=go depName=golang.org/x/tools versioning=semver
+          go install golang.org/x/tools/cmd/goimports@v0.39.1-0.20251201175718-869ced31773a
+          # renovate: datasource=go depName=golang.org/x/tools/gopls versioning=semver
           go install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.20.0
 
       - name: ✨ Apply Go formatting
@@ -100,6 +101,11 @@ jobs:
           else
             echo "📅✅ Keeping year as 2025"
           fi
+
+      - name: 📄🧭 Verify `.e2e` license header scope
+        run: |
+          grep -Fq ".e2e/scripts/**/*.sh" .licenserc.yaml
+          grep -Fq ".e2e/local/scripts/**/*.sh" .licenserc.yaml
       
       - name: 📄🩹 Fix License Headers
         id: fix-license
@@ -120,10 +126,7 @@ jobs:
         continue-on-error: true
       
       - name: 💾 Commit All Fixes
-        if: |
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository) &&
-          !startsWith(steps.get-branch.outputs.BRANCH_NAME, 'renovate/')
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -134,6 +137,7 @@ jobs:
           }
           
       - name: 🔄 Re-checkout after fixes if needed
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         run: |
           if git diff --quiet origin/${{ steps.get-branch.outputs.BRANCH_NAME }} HEAD; then
             echo "No changes were committed, skipping re-checkout"
@@ -169,7 +173,8 @@ jobs:
 
       - name: Install Go Test Tools
         run: |
-          go install github.com/mfridman/tparse@ba2512e7be150bfcbd6f6220d517d3741f8f2f75
+          # renovate: datasource=go depName=github.com/mfridman/tparse versioning=semver
+          go install github.com/mfridman/tparse@v0.18.0
 
       - name: Run Go Tests
         if: success()
@@ -199,6 +204,28 @@ jobs:
             echo "No example go.mod files found under .examples; skipping."
           fi
 
+      - name: Verify .e2e Modules
+        if: success()
+        run: |
+          set -euo pipefail
+          if [ ! -d ".e2e" ]; then
+            echo "No .e2e directory found; skipping .e2e local tests."
+            exit 0
+          fi
+
+          modules_found=0
+          while IFS= read -r -d '' mod; do
+            modules_found=1
+            dir=$(dirname "$mod")
+            echo "::group::go test $dir"
+            (cd "$dir" && go test ./...)
+            echo "::endgroup::"
+          done < <(find .e2e -name go.mod -print0)
+
+          if [ "$modules_found" -eq 0 ]; then
+            echo "No .e2e go.mod files found; skipping .e2e local tests."
+          fi
+
       - name: Print Coverage Report
         if: always()
         run: |
@@ -213,7 +240,8 @@ jobs:
       - name: 🛡️🔍 Run Vulnerability Check
         run: |
           echo "Installing govulncheck..."
-          go install golang.org/x/vuln/cmd/govulncheck@b9d319d7ce41a3991288754d7ec709166dce2619
+          # renovate: datasource=go depName=golang.org/x/vuln versioning=semver
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.5-0.20250813145526-b9d319d7ce41
           echo "Running vulnerability check..."
           govulncheck ./...
 
@@ -223,24 +251,53 @@ jobs:
   e2e_gatekeeper:
     name: E2E Test Gatekeeper
     if: github.event_name == 'pull_request_target'
+    env:
+      CHECK_RUN_NAME: E2E Tests (GCP)
+      GCS_BUCKET_NAME: slogcp-e2e-artifacts
+      GCP_PROJECT_ID: slogcp
+      GITHUB_TOKEN_SECRET_VERSION: projects/slogcp/secrets/GitHub-us-central1-connection-github-oauthtoken-34ff15/versions/latest
+      RUN_REGION: us-central1
     concurrency:
       group: e2e-gate-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     permissions:
       checks: write
-      contents: write
+      contents: read
       pull-requests: write
+      id-token: write
     
     steps:
       - name: Determine E2E Trigger Type
         id: trigger_type
         run: |
-          if [[ "${{ github.actor }}" == "renovate[bot]" || "${{ github.event.pull_request.user.login }}" == "app/renovate" || "${{ github.event.pull_request.user.login }}" == "renovate[bot]" ]]; then
+          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" && ("${{ github.event.pull_request.user.login }}" == "app/renovate" || "${{ github.event.pull_request.user.login }}" == "renovate[bot]") ]]; then
             echo "should_auto_trigger=true" >> $GITHUB_OUTPUT
           else
             echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Classify Auto-Update Scope
+        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        id: auto_scope
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100
+            });
+
+            const paths = files.map(f => f.filename);
+            const onlyE2E = paths.length > 0 && paths.every(p => p.startsWith('.e2e/'));
+            const mode = onlyE2E ? 'local_only' : 'local_plus_e2e';
+
+            core.info(`Classified Renovate PR mode=${mode}; changed files=${paths.length}`);
+            core.setOutput('mode', mode);
+            core.setOutput('only_e2e', onlyE2E ? 'true' : 'false');
 
       - name: Create Manual Gatekeeper Check (queued)
         if: steps.trigger_type.outputs.should_auto_trigger == 'false'
@@ -291,10 +348,17 @@ jobs:
         run: |
           echo "e2e_run_id=$(date -u +%Y%m%dT%H%M%S)-$RANDOM" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout Workflow Repository
+        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Generate App Token for Check Run
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: check_run_token
-        uses: actions/create-github-app-token@7e473efe3cb98aa54f8d4bac15400b15fad77d94 # v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -416,6 +480,7 @@ jobs:
       - name: Detect secret availability
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.auto_scope.outputs.mode == 'local_plus_e2e' &&
           steps.wait_validation.outputs.ok == 'true'
         id: have_secrets
         run: |
@@ -425,67 +490,141 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Generate App Token for E2E Dispatch
+      - name: Authenticate to Google Cloud
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.auto_scope.outputs.mode == 'local_plus_e2e' &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
-        id: app_token
-        uses: actions/create-github-app-token@7e473efe3cb98aa54f8d4bac15400b15fad77d94 # v2
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          app-id: ${{ secrets.E2E_APP_ID }}
-          private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
-          owner: pjscruggs
-          repositories: slogcp-test
+          workload_identity_provider: projects/110228674866/locations/global/workloadIdentityPools/slogcp-github-pool/providers/slogcp-test-gh-provider
+          service_account: e2e-cloudbuild-invoker@slogcp.iam.gserviceaccount.com
 
-      - name: Dispatch E2E Tests
-        if: steps.app_token.outputs.token != ''
-        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4
-        with:
-          token: ${{ steps.app_token.outputs.token }}
-          repository: pjscruggs/slogcp-test
-          event-type: e2e-test
-          client-payload: |
-            {
-              "lib_repo_full_name": "${{ github.repository }}",
-              "pr_sha": "${{ github.event.pull_request.head.sha }}",
-              "pr_number": "${{ github.event.pull_request.number }}",
-              "lib_run_id": "${{ github.run_id }}",
-              "check_run_id": "${{ steps.create_run_check.outputs.check_run_id }}",
-              "e2e_run_id": "${{ steps.run_id.outputs.e2e_run_id }}"
-            }
+      - name: Set up Cloud SDK
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.auto_scope.outputs.mode == 'local_plus_e2e' &&
+          steps.wait_validation.outputs.ok == 'true' &&
+          steps.have_secrets.outputs.ok == 'true'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
-      - name: Wait for E2E Check Result
-        if: steps.app_token.outputs.token != ''
-        id: wait_e2e
+      - name: Run E2E Cloud Build
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.auto_scope.outputs.mode == 'local_plus_e2e' &&
+          steps.wait_validation.outputs.ok == 'true' &&
+          steps.have_secrets.outputs.ok == 'true'
+        id: cloud_build
+        shell: bash
+        run: |
+          bash .github/scripts/run_e2e_cloud_build.sh
+        env:
+          LIB_REPO_FULL_NAME: ${{ github.repository }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CHECK_RUN_ID: ${{ steps.create_run_check.outputs.check_run_id }}
+          LIB_RUN_ID: ${{ github.run_id }}
+          E2E_RUN_ID: ${{ steps.run_id.outputs.e2e_run_id }}
+          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+          GITHUB_TOKEN_SECRET_VERSION: ${{ env.GITHUB_TOKEN_SECRET_VERSION }}
+          RUN_REGION: ${{ env.RUN_REGION }}
+          GCS_BUCKET_NAME: ${{ env.GCS_BUCKET_NAME }}
+
+      - name: Finalize run-scoped E2E check
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.auto_scope.outputs.mode == 'local_plus_e2e' &&
+          steps.wait_validation.outputs.ok == 'true' &&
+          steps.have_secrets.outputs.ok == 'true'
+        id: finalize_check
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
+          github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const checkRunId = Number("${{ steps.create_run_check.outputs.check_run_id }}") || 0;
-            const maxMinutes = 120;
-            const sleepMs = 60_000;
-            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-            for (let minute = 0; minute < maxMinutes; minute++) {
-              const { data: check } = await github.rest.checks.get({ owner, repo, check_run_id: checkRunId });
-              if (check.status !== 'completed') {
-                await sleep(sleepMs);
-                continue;
-              }
-              if (check.conclusion === 'success') {
-                core.setOutput('ok', 'true');
-                return;
-              }
-              core.setFailed(`E2E check conclusion: ${check.conclusion}`);
-              return;
-            }
-            core.setFailed(`E2E check did not complete within ${maxMinutes} minutes`);
+            const checkRunId = Number('${{ steps.create_run_check.outputs.check_run_id }}') || 0;
+            const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
+            const buildStatus = '${{ steps.cloud_build.outputs.build_status }}'.toUpperCase();
+            const buildId = '${{ steps.cloud_build.outputs.build_id }}';
+            const buildLogUrl = '${{ steps.cloud_build.outputs.build_log_url }}';
+            const artifactsUrl = '${{ steps.cloud_build.outputs.artifacts_url }}';
 
-      - name: Merge PR after successful E2E
-        if: steps.wait_e2e.outputs.ok == 'true'
+            let conclusion = 'failure';
+            if (buildStatus === 'SUCCESS') {
+              conclusion = 'success';
+            } else if (buildStatus === 'CANCELLED' || buildStatus === 'TIMEOUT') {
+              conclusion = 'cancelled';
+            }
+
+            const summaryLines = [
+              `Google Cloud Build E2E tests finished: **${buildStatus || 'UNKNOWN'}**.`,
+              buildId ? `Build ID: ${buildId}` : null,
+              buildLogUrl ? `[View Cloud Build Logs](${buildLogUrl})` : null,
+              artifactsUrl ? `[Browse Test Artifacts in GCS](${artifactsUrl})` : null
+            ].filter(Boolean);
+
+            await github.rest.checks.update({
+              owner,
+              repo,
+              check_run_id: checkRunId,
+              status: 'completed',
+              conclusion,
+              completed_at: new Date().toISOString(),
+              output: {
+                title: `${process.env.CHECK_RUN_NAME} — ${runId}`,
+                summary: summaryLines.join('\n')
+              }
+            });
+
+            core.setOutput('ok', conclusion === 'success' ? 'true' : 'false');
+        env:
+          CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
+
+      - name: Finalize run-scoped check for .e2e-only updates
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.auto_scope.outputs.mode == 'local_only' &&
+          steps.wait_validation.outputs.ok == 'true'
+        id: finalize_local_only
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
+          github-token: ${{ steps.check_run_token.outputs.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const checkRunId = Number('${{ steps.create_run_check.outputs.check_run_id }}') || 0;
+            const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
+
+            await github.rest.checks.update({
+              owner,
+              repo,
+              check_run_id: checkRunId,
+              status: 'completed',
+              conclusion: 'success',
+              completed_at: new Date().toISOString(),
+              output: {
+                title: `${process.env.CHECK_RUN_NAME} — ${runId}`,
+                summary: 'Renovate PR touched only .e2e files. Local validation (including .e2e module tests) succeeded, so cloud E2E was skipped by policy.'
+              }
+            });
+
+            core.setOutput('ok', 'true');
+        env:
+          CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
+
+      - name: Merge Renovate PR after successful E2E
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          (
+            (steps.auto_scope.outputs.mode == 'local_only' && steps.finalize_local_only.outputs.ok == 'true') ||
+            (steps.auto_scope.outputs.mode == 'local_plus_e2e' && steps.finalize_check.outputs.ok == 'true')
+          ) &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -497,12 +636,12 @@ jobs:
               merge_method: 'squash'
             });
 
-      - name: Update run-scoped check when auto path cannot dispatch
+      - name: Update run-scoped check when auto path cannot run
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.auto_scope.outputs.mode == 'local_plus_e2e' &&
           (steps.wait_validation.outputs.ok != 'true' ||
-           steps.have_secrets.outputs.ok != 'true' ||
-           steps.app_token.outputs.token == '')
+           steps.have_secrets.outputs.ok != 'true')
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ steps.check_run_token.outputs.token }}
