@@ -16,6 +16,8 @@ header:
     - '**/*.java'
     - '**/*.py'
     - '**/*.sh'
+    - '.e2e/scripts/**/*.sh'
+    - '.e2e/local/scripts/**/*.sh'
 
   paths-ignore:
     - 'dist'
