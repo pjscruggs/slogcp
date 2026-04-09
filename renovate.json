@@ -5,13 +5,25 @@
     "config:semverAllWeekly",
     ":gomod",
     ":noUnscheduledUpdates",
-    ":automergeMinor",
     "helpers:pinGitHubActionDigests"
   ],
   "timezone": "America/Chicago",
-  "platformAutomerge": true,
+  "platformAutomerge": false,
   "postUpdateOptions": [
     "gomodTidy"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update go install tool pins used by GitHub Actions workflows",
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/.*\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+go install \\S+@(?<currentValue>\\S+)"
+      ],
+      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
+    }
   ],
   "packageRules": [
     {
@@ -22,15 +34,23 @@
     {
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["minor", "patch"],
-      "automerge": true,
-      "platformAutomerge": true
+      "automerge": false,
+      "platformAutomerge": false
     },
     {
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch"],
       "groupName": "GitHub Actions",
-      "automerge": true,
-      "platformAutomerge": true
+      "automerge": false,
+      "platformAutomerge": false
+    },
+    {
+      "description": "Keep .e2e module updates isolated so Renovate PRs can use the local-only validation path",
+      "matchManagers": ["gomod"],
+      "matchFileNames": [".e2e/**"],
+      "groupName": ".e2e Go Modules",
+      "automerge": false,
+      "platformAutomerge": false
     },
     {
       "matchManagers": ["gomod", "github-actions"],
