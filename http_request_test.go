@@ -139,7 +139,7 @@ type fakeLogValuer struct{}
 // LogValue implements slog.LogValuer.
 func (fakeLogValuer) LogValue() slog.Value { return slog.StringValue("noop") }
 
-// TestHTTPRequestFromLogValuerCoversHelper verifies the helper recognises HTTPRequest valuers.
+// TestHTTPRequestFromLogValuerCoversHelper verifies the helper recognizes HTTPRequest valuers.
 func TestHTTPRequestFromLogValuerCoversHelper(t *testing.T) {
 	t.Parallel()
 

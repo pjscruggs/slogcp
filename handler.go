@@ -82,7 +82,7 @@ var (
 	ErrInvalidRedirectTarget = errors.New("slogcp: invalid redirect target")
 )
 
-// Option mutates Handler construction behaviour when supplied to [NewHandler].
+// Option mutates Handler construction behavior when supplied to [NewHandler].
 //
 // Options follow the functional options pattern and are applied in the order
 // they are provided by the caller.
@@ -1082,7 +1082,7 @@ func WithRedirectToStderr() Option {
 // WithRedirectToFile directs handler output to the file at path, creating it
 // if necessary. The path is trimmed of surrounding whitespace and then passed
 // verbatim to os.OpenFile in append mode; parent directories must already
-// exist. When configuring the same behaviour via SLOGCP_TARGET use "file:<path>"
+// exist. When configuring the same behavior via SLOGCP_TARGET use "file:<path>"
 // with an OS-specific path string (for example, "file:/var/log/app.log" or
 // "file:C:\\logs\\app.log").
 func WithRedirectToFile(path string) Option {

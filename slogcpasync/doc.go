@@ -14,7 +14,7 @@
 
 // Package slogcpasync adds an opt-in async wrapper around slogcp's synchronous
 // handler. The wrapper queues records on a bounded channel and drains them with
-// worker goroutines, leaving slogcp's default behaviour unchanged for callers
+// worker goroutines, leaving slogcp's default behavior unchanged for callers
 // that never import this package.
 //
 // Basic usage:

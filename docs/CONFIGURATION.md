@@ -59,7 +59,7 @@ Additional notes:
 - `WithAdditionalHandlers` does not transfer ownership of the extra handlers. If those handlers need shutdown (for example async wrappers), close them explicitly.
 - Level filtering (`WithLevel`/`WithLevelVar`) and middleware run before fan-out dispatch, so every configured sink receives the same filtered and transformed records.
 - When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor after external tools move the file. Always call `Close` during shutdown to flush buffers and release writers.
-- `SLOGCP_LEVEL` is the preferred knob for minimum severity. When it is empty, slogcp also honours `LOG_LEVEL` so shared conventions still work. When you supply `WithLevelVar`, slogcp seeds the shared var using the same resolution rules.
+- `SLOGCP_LEVEL` is the preferred knob for minimum severity. When it is empty, slogcp also honors `LOG_LEVEL` so shared conventions still work. When you supply `WithLevelVar`, slogcp seeds the shared var using the same resolution rules.
 - `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust levels at runtime via `SetLevel` or share the var with other handlers.
 - `WithSeverityAliases` controls whether JSON carries the terse severity names; Cloud Logging still renders the full names in the console. slogcp enables the aliases by default only on Cloud Run (services/jobs), Cloud Functions, and App Engine deployments.
 - `WithTime` defaults mirror Cloud Logging expectations: timestamps are omitted on the same managed GCP runtimes (Cloud Run, Cloud Functions, App Engine) when writing to stdout/stderr, but file targets keep timestamps even there so rotated/shipped logs stay annotated. When slogcp emits a timestamp it preserves the nanosecond precision provided by `slog`.

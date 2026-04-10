@@ -1107,7 +1107,7 @@ func TestResponseRecorderWriteHandlesZeroBytes(t *testing.T) {
 	}
 }
 
-// TestResponseRecorderReadFromDelegates ensures ReaderFrom on the base writer is honoured.
+// TestResponseRecorderReadFromDelegates ensures ReaderFrom on the base writer is honored.
 func TestResponseRecorderReadFromDelegates(t *testing.T) {
 	t.Parallel()
 

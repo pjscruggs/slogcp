@@ -100,7 +100,7 @@ var ErrAborted = errors.New("slogcpasync: aborted")
 // Callbacks may run concurrently and should remain fast/non-blocking.
 type DropHandler func(ctx context.Context, rec slog.Record)
 
-// Config controls async handler behaviour.
+// Config controls async handler behavior.
 type Config struct {
 	Enabled       bool
 	QueueSize     int
@@ -204,7 +204,7 @@ func WithEnv() Option {
 	}
 }
 
-// Middleware wraps an existing slog.Handler with async behaviour.
+// Middleware wraps an existing slog.Handler with async behavior.
 func Middleware(opts ...Option) func(slog.Handler) slog.Handler {
 	return func(inner slog.Handler) slog.Handler {
 		return Wrap(inner, opts...)

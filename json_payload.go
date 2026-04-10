@@ -54,7 +54,7 @@ func formatErrorForReporting(err error) (fe formattedError, originStackTrace str
 }
 
 // resolveSlogValue converts an slog.Value into a Go type suitable for JSON
-// marshalling within the payload map.
+// marshaling within the payload map.
 func resolveSlogValue(v slog.Value) any {
 	return resolveSlogValueWithRaw(v.Resolve())
 }

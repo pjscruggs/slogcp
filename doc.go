@@ -40,7 +40,7 @@
 // Handlers can be redirected to stderr, a file managed by slogcp, or a custom
 // writer. When slogcp opens the file it also provides [Handler.ReopenLogFile]
 // to cooperate with external rotation tools. The handler exposes [Handler.LevelVar]
-// and [Handler.SetLevel] for dynamic severity adjustments and honours many
+// and [Handler.SetLevel] for dynamic severity adjustments and honors many
 // environment variables (for example `SLOGCP_LEVEL` with a `LOG_LEVEL` fallback,
 // `SLOGCP_STACK_TRACES`, or `SLOGCP_TARGET`) so the same binary can run locally and in
 // production without code changes. [ContextWithLogger] and [Logger] store and
@@ -84,7 +84,7 @@
 //
 // Use functional options such as [WithLevel], [WithSourceLocationEnabled],
 // [WithStackTraceEnabled], [WithRedirectToFile], [WithRedirectWriter],
-// [WithAdditionalHandlers], [WithSeverityAliases], and [WithTraceProjectID] to adjust behaviour
+// [WithAdditionalHandlers], [WithSeverityAliases], and [WithTraceProjectID] to adjust behavior
 // programmatically. Refer to the package documentation and configuration guide
 // in docs/CONFIGURATION.md for the complete list of options, environment
 // variables, and integration helpers. For trace propagation, applications can

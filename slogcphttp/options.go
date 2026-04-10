@@ -36,7 +36,7 @@ type AttrEnricher func(*http.Request, *RequestScope) []slog.Attr
 // AttrEnrichers and see the accumulated slice.
 type AttrTransformer func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr
 
-// Option configures HTTP middleware or transport behaviour.
+// Option configures HTTP middleware or transport behavior.
 type Option func(*config)
 
 // ProxyMode configures how the middleware derives peer and scheme metadata when
