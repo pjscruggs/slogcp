@@ -52,6 +52,13 @@
       "enabled": false
     },
     {
+      "description": "Ignore local slogcp module requirements in .e2e modules resolved via replace directives",
+      "matchManagers": ["gomod"],
+      "matchFileNames": [".e2e/**"],
+      "matchPackageNames": ["github.com/pjscruggs/slogcp"],
+      "enabled": false
+    },
+    {
       "description": "Keep .e2e module updates isolated so Renovate PRs can use the local-only validation path",
       "matchManagers": ["gomod"],
       "matchFileNames": [".e2e/**"],
