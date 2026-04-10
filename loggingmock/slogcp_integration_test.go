@@ -242,7 +242,7 @@ func TestHTTPRequestAttrCoexistsWithHTTPAttributes(t *testing.T) {
 		}
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/widgets/42?q=blue", http.NoBody)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com/widgets/42?q=blue", http.NoBody)
 	req.RemoteAddr = "198.51.100.50:9000"
 	req.Header.Set("User-Agent", "middleware-test/1.0")
 
@@ -351,7 +351,7 @@ func TestTraceContextPropagation(t *testing.T) {
 	// 1 is the span ID (decimal)
 	// o=1 means sampled
 	traceHeader := "105445aa7843bc8bf206b12000100000/1;o=1"
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/", nil)
 	req.Header.Set("X-Cloud-Trace-Context", traceHeader)
 
 	rr := httptest.NewRecorder()

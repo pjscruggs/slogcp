@@ -47,7 +47,7 @@ func TestFlattenHTTPRequestToMapNormalizesEmbeddedRequest(t *testing.T) {
 	t.Parallel()
 
 	body := strings.NewReader("payload")
-	req := httptest.NewRequest(http.MethodPost, "https://example.com/upload?q=1", body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://example.com/upload?q=1", body)
 	req.Header.Set("User-Agent", "slogcp-tests")
 	req.Header.Set("Referer", "https://example.com/ref")
 	req.RemoteAddr = "203.0.113.5:1234"
@@ -185,7 +185,7 @@ func TestResolveSlogValueCoversKinds(t *testing.T) {
 		t.Fatalf("HTTPRequest requestMethod = %v, want %q", payload["requestMethod"], http.MethodGet)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	if got := resolveSlogValue(slog.AnyValue(req)); got != nil {
 		t.Fatalf("http.Request resolution = %v, want nil", got)
 	}

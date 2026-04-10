@@ -22,7 +22,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -49,7 +48,7 @@ func TestTransportRoundTripDerivesScope(t *testing.T) {
 
 	rt := Transport(stub, WithLogger(baseLogger), WithProjectID("proj-123"))
 
-	req := httptest.NewRequest(http.MethodPost, "https://example.com/api", strings.NewReader("body"))
+	req := newTestRequest(t, http.MethodPost, "https://example.com/api", strings.NewReader("body"))
 	req.Header.Set("User-Agent", "test-client")
 
 	gotResp, err := rt.RoundTrip(req)
@@ -95,7 +94,7 @@ func TestTransportRoundTripPreservesUnknownContentLength(t *testing.T) {
 	stub := &stubRoundTripper{resp: resp}
 	rt := Transport(stub)
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/stream", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/stream", nil)
 	gotResp, err := rt.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
@@ -164,7 +163,7 @@ func TestTransportRoundTripRecordsFailure(t *testing.T) {
 	errStub := &stubRoundTripper{err: errors.New("boom")}
 	rt := Transport(errStub)
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 
 	if _, err := rt.RoundTrip(req); !errors.Is(err, errStub.err) {
 		t.Fatalf("RoundTrip error = %v, want boom", err)
@@ -201,7 +200,7 @@ func TestTransportRoundTripAppliesAttrHooks(t *testing.T) {
 		return attrs[:0]
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/widgets", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/widgets", nil)
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
@@ -248,7 +247,7 @@ func TestTransportSkipsNilHooks(t *testing.T) {
 		},
 	))
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/nil-hooks", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/nil-hooks", nil)
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
@@ -275,7 +274,7 @@ func TestTransportUsesContextLoggerFallback(t *testing.T) {
 	stub := &stubRoundTripper{}
 	rt := Transport(stub, func(cfg *config) { cfg.logger = nil })
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/logger", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/logger", nil)
 	req = req.WithContext(slogcp.ContextWithLogger(req.Context(), ctxLogger))
 
 	resp, err := rt.RoundTrip(req)
@@ -310,7 +309,7 @@ func TestTransportRoundTripReturnsWrappedErrorWithResponse(t *testing.T) {
 	base := respErrRoundTripper{resp: resp, err: errors.New("base-fail")}
 	rt := Transport(base)
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/with-error", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/with-error", nil)
 	gotResp, err := rt.RoundTrip(req)
 	if gotResp == nil || gotResp.StatusCode != http.StatusTeapot {
 		t.Fatalf("RoundTrip response = %+v, want status %d", gotResp, http.StatusTeapot)
@@ -325,7 +324,7 @@ func TestTransportRoundTripDetectsMissingResponse(t *testing.T) {
 	t.Parallel()
 
 	rt := Transport(respErrRoundTripper{})
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/missing", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/missing", nil)
 
 	if _, err := rt.RoundTrip(req); err == nil || !strings.Contains(err.Error(), "received no response") {
 		t.Fatalf("RoundTrip err = %v, want missing response error", err)
@@ -350,7 +349,7 @@ func TestRoundTripperInjectTraceLegacy(t *testing.T) {
 	ctx := trace.ContextWithSpanContext(context.Background(), spanCtx)
 
 	t.Run("injects_when_missing", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+		req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 		rt.injectTrace(ctx, req)
 		if req.Header.Get(XCloudTraceContextHeader) == "" {
 			t.Fatalf("legacy header not injected")
@@ -358,7 +357,7 @@ func TestRoundTripperInjectTraceLegacy(t *testing.T) {
 	})
 
 	t.Run("skips_when_existing", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+		req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 		req.Header.Set(XCloudTraceContextHeader, "existing")
 		rt.injectTrace(ctx, req)
 		if req.Header.Get(XCloudTraceContextHeader) != "existing" {
@@ -367,7 +366,7 @@ func TestRoundTripperInjectTraceLegacy(t *testing.T) {
 	})
 
 	t.Run("skips_without_span", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+		req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 		rt.injectTrace(context.Background(), req)
 		if req.Header.Get(XCloudTraceContextHeader) != "" {
 			t.Fatalf("header should not be injected without span context")
@@ -394,7 +393,7 @@ func TestTransportSkipsTraceInjectionWhenDisabled(t *testing.T) {
 		TraceFlags: trace.FlagsSampled,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/api", nil).WithContext(trace.ContextWithSpanContext(context.Background(), spanCtx))
+	req := newTestRequest(t, http.MethodGet, "https://example.com/api", nil).WithContext(trace.ContextWithSpanContext(context.Background(), spanCtx))
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip returned %v", err)
@@ -432,7 +431,7 @@ func TestTransportBranches(t *testing.T) {
 	rec := &recordingRoundTripper{}
 	rt = Transport(rec, WithProjectID(""), WithLegacyXCloudInjection(true))
 	typed = rt.(roundTripper)
-	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil).WithContext(context.Background())
+	req := newTestRequest(t, http.MethodGet, "http://example.com", nil).WithContext(context.Background())
 	if _, err := typed.RoundTrip(req); err != nil {
 		t.Fatalf("RoundTrip returned error: %v", err)
 	}
@@ -538,7 +537,7 @@ func TestOutboundHost(t *testing.T) {
 	}{
 		{
 			name: "url_host_with_port",
-			req:  httptest.NewRequest(http.MethodGet, "https://example.com:443/data", nil),
+			req:  newTestRequest(t, http.MethodGet, "https://example.com:443/data", nil),
 			want: "example.com",
 		},
 		{

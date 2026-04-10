@@ -18,7 +18,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -29,7 +28,7 @@ import (
 func TestPrepareHTTPRequestNormalizesFields(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodPost, "https://example.com/widgets/42", nil)
+	req := newTestRequest(t, http.MethodPost, "https://example.com/widgets/42", nil)
 	req.RemoteAddr = "198.51.100.5:4321"
 	req.Header.Set("User-Agent", "tester/1.0")
 	req.ContentLength = 256
@@ -67,7 +66,7 @@ func TestPrepareHTTPRequestNormalizesFields(t *testing.T) {
 func TestHTTPRequestAttrIncorporatesScope(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodPut, "https://api.example.com/things?id=99", nil)
+	req := newTestRequest(t, http.MethodPut, "https://api.example.com/things?id=99", nil)
 	req.RemoteAddr = "203.0.113.17:80"
 
 	scope := &RequestScope{
@@ -128,7 +127,7 @@ func TestHTTPRequestAttrHandlesNilInputs(t *testing.T) {
 func TestPrepareHTTPRequestDerivesDefaults(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "https://derived.example.com/parts", nil)
+	req := newTestRequest(t, http.MethodGet, "https://derived.example.com/parts", nil)
 	req.RemoteAddr = "198.51.100.99:9000"
 	req.ContentLength = 123
 
@@ -156,7 +155,7 @@ func TestPrepareHTTPRequestDerivesDefaults(t *testing.T) {
 func TestHTTPRequestAttrFromContext(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "https://ctx.example.com/widgets", nil)
+	req := newTestRequest(t, http.MethodGet, "https://ctx.example.com/widgets", nil)
 	scope := &RequestScope{}
 	ctx := context.WithValue(context.Background(), requestScopeKey{}, scope)
 
@@ -180,7 +179,7 @@ func TestHTTPRequestAttrFromContext(t *testing.T) {
 func TestHTTPRequestAttrUsesRequestWhenScopeMissing(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "https://noscope.example.com/widgets?q=1", nil)
+	req := newTestRequest(t, http.MethodGet, "https://noscope.example.com/widgets?q=1", nil)
 	req.RemoteAddr = "198.51.100.1:1234"
 
 	attr := HTTPRequestAttr(req, nil)
@@ -253,7 +252,7 @@ func TestHTTPRequestFromScopeBuildsSnapshot(t *testing.T) {
 func TestHTTPRequestAttrMidRequestOmitsLatency(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/inflight", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/inflight", nil)
 	scope := newRequestScope(req, time.Now(), defaultConfig())
 	attr := HTTPRequestAttr(nil, scope)
 	payload := attr.Value.Resolve().Any().(map[string]any)
@@ -272,7 +271,7 @@ func TestHTTPRequestAttrMidRequestOmitsLatency(t *testing.T) {
 func TestHTTPRequestAttrRequestOnlyUsesZeroLatency(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/no-scope", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/no-scope", nil)
 	attr := HTTPRequestAttr(req, nil)
 	payload := attr.Value.Resolve().Any().(map[string]any)
 	if payload["latency"] != "0.000000000s" {
@@ -316,7 +315,7 @@ func TestHTTPRequestFromScopeHandlesNil(t *testing.T) {
 func TestHTTPRequestEnricher(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodPost, "https://enrich.example.com/api", nil)
+	req := newTestRequest(t, http.MethodPost, "https://enrich.example.com/api", nil)
 	scope := &RequestScope{}
 	scope.status.Store(201)
 	scope.latencyNS.Store(250 * time.Millisecond.Nanoseconds())
@@ -338,7 +337,7 @@ func TestHTTPRequestEnricher(t *testing.T) {
 func TestHTTPRequestFromRequest(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "https://derived.example.com/parts", nil)
+	req := newTestRequest(t, http.MethodGet, "https://derived.example.com/parts", nil)
 	req.RemoteAddr = "198.51.100.99:9000"
 	req.ContentLength = 123
 

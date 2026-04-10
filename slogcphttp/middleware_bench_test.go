@@ -18,7 +18,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/pjscruggs/slogcp"
@@ -34,7 +33,7 @@ func BenchmarkMiddlewareServeHTTP(b *testing.B) {
 
 	logger := slog.New(handler)
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/items?limit=10", nil)
+	req := newTestRequest(b, http.MethodGet, "https://example.com/items?limit=10", nil)
 	req.RemoteAddr = "203.0.113.5:1234"
 	req.Header.Set("User-Agent", "bench")
 
