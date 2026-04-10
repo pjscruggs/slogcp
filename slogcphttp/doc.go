@@ -25,7 +25,7 @@
 //     emits request logs by itself; it enriches application logs produced by
 //     your handlers.
 //   - [Transport] wraps an http.RoundTripper to inject W3C trace headers,
-//     optionally synthesise legacy X-Cloud-Trace-Context headers, and expose a
+//     optionally synthesize legacy X-Cloud-Trace-Context headers, and expose a
 //     request-scoped logger on outgoing contexts. Options such as
 //     [WithAttrEnricher], [WithAttrTransformer], and [WithIncludeQuery] apply to
 //     both middleware and transport instrumentation.
@@ -35,7 +35,7 @@
 //     `httpRequest` structured payload used by Cloud Logging when you need to
 //     emit it manually.
 //   - [InjectTraceContextMiddleware] remains available for deployments that
-//     disable OpenTelemetry instrumentation yet still need to recognise the
+//     disable OpenTelemetry instrumentation yet still need to recognize the
 //     legacy X-Cloud-Trace-Context header on ingress.
 //
 // Typical usage:

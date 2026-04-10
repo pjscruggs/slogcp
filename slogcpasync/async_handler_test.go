@@ -1333,7 +1333,7 @@ func TestStartWorkersDoneMonitorIdempotent(t *testing.T) {
 	}
 }
 
-// TestBuildConfigClampsInvalidValues validates buildConfig sanitises input.
+// TestBuildConfigClampsInvalidValues validates buildConfig sanitizes input.
 func TestBuildConfigClampsInvalidValues(t *testing.T) {
 	cfg := buildConfig([]Option{
 		WithQueueSize(-1),
@@ -1418,7 +1418,7 @@ func TestBuildConfigUnknownModeFallsBack(t *testing.T) {
 	}
 }
 
-// TestApplyEnvParsesValues covers env overlay behaviour.
+// TestApplyEnvParsesValues covers env overlay behavior.
 func TestApplyEnvParsesValues(t *testing.T) {
 	t.Setenv(envAsyncEnabled, "false")
 	t.Setenv(envAsyncQueueSize, "5")

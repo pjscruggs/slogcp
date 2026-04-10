@@ -575,7 +575,7 @@ func firstValidProjectID(values ...string) string {
 }
 
 // kubernetesNamespacePath points at the mounted namespace file in Kubernetes.
-// Tests may override this path to exercise readNamespace behaviour without needing
+// Tests may override this path to exercise readNamespace behavior without needing
 // to access the real serviceaccount mount.
 var kubernetesNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 

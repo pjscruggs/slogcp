@@ -298,7 +298,7 @@ func TestDetectKubernetesRequiresClusterName(t *testing.T) {
 	}
 }
 
-// TestReadNamespaceUsesOverride ensures readNamespace honours the configurable path.
+// TestReadNamespaceUsesOverride ensures readNamespace honors the configurable path.
 func TestReadNamespaceUsesOverride(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "namespace")
 	if err := os.WriteFile(tmp, []byte("observability\n"), 0o600); err != nil {
