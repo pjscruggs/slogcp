@@ -14,13 +14,50 @@ permissions:
   contents: read
 
 jobs:
+  # ----------------------------------
+  # CLASSIFY VALIDATION SCOPE FOR PRS
+  # ----------------------------------
+  classify_validation_scope:
+    name: Classify Validation Scope
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.classify.outputs.mode }}
+      only_e2e: ${{ steps.classify.outputs.only_e2e }}
+    steps:
+      - name: Classify changed files
+        id: classify
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            let mode = 'local_plus_e2e';
+            let onlyE2E = false;
+
+            if (context.eventName === 'pull_request') {
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                per_page: 100
+              });
+
+              const paths = files.map(f => f.filename);
+              onlyE2E = paths.length > 0 && paths.every(p => p.startsWith('.e2e/'));
+              mode = onlyE2E ? 'local_only' : 'local_plus_e2e';
+            }
+
+            core.info(`Validation scope mode=${mode}`);
+            core.setOutput('mode', mode);
+            core.setOutput('only_e2e', onlyE2E ? 'true' : 'false');
+
   # -----------------------------
   # VALIDATION (runs actual code)
   # -----------------------------
   validation:
     name: Fix and Validate Code
+    needs: classify_validation_scope
     # Skip validation on pull_request_target to avoid running the full pipeline twice per PR update.
-    if: github.event_name != 'pull_request_target'
+    if: github.event_name != 'pull_request_target' && needs.classify_validation_scope.outputs.mode != 'local_only'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -69,6 +106,7 @@ jobs:
         with:
           version: v2.1.5
           install-mode: goinstall
+          install-only: true
           
       - name: 🧰 Install format/modernize tools
         run: |
@@ -266,6 +304,133 @@ jobs:
           echo "Running vulnerability check..."
           govulncheck ./...
 
+  # ---------------------------------------
+  # SCOPED LOCAL VALIDATION FOR .e2e-ONLY PRS
+  # ---------------------------------------
+  e2e_local_validation:
+    name: E2E Local Validation
+    needs: classify_validation_scope
+    if: github.event_name != 'pull_request_target' && needs.classify_validation_scope.outputs.mode == 'local_only'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GOTOOLCHAIN: auto
+    steps:
+      - name: 🛒 Checkout Code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🔢 Determine Go version
+        id: go-version
+        run: |
+          GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')
+          if [ -z "$GO_VERSION" ]; then
+            echo "Unable to determine Go version from go.mod" >&2
+            exit 1
+          fi
+
+          GO_VERSION="$GO_VERSION" python3 .github/scripts/resolve_go_version.py
+
+      - name: 🏗️ Set up Go
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        with:
+          go-version: ${{ steps.go-version.outputs.version }}
+          cache: true
+
+      - name: 🧹 Ensure .e2e module metadata is tidy
+        run: |
+          set -euo pipefail
+          if [ ! -d ".e2e" ]; then
+            echo "No .e2e directory found; skipping .e2e module tidy."
+            exit 0
+          fi
+
+          modules_found=0
+          while IFS= read -r -d '' mod; do
+            modules_found=1
+            dir=$(dirname "$mod")
+            echo "::group::go mod tidy $dir"
+            (cd "$dir" && go mod tidy)
+            echo "::endgroup::"
+          done < <(find .e2e -name go.mod -print0)
+
+          if [ "$modules_found" -eq 0 ]; then
+            echo "No .e2e go.mod files found; skipping .e2e module tidy."
+          fi
+
+      - name: ✅ Ensure .e2e working tree is clean
+        run: |
+          if ! git diff --quiet; then
+            echo "Working tree has changes after .e2e local validation."
+            git status --short
+            exit 1
+          fi
+
+      - name: Verify .e2e Modules
+        run: |
+          set -euo pipefail
+          if [ ! -d ".e2e" ]; then
+            echo "No .e2e directory found; skipping .e2e local tests."
+            exit 0
+          fi
+
+          modules_found=0
+          while IFS= read -r -d '' mod; do
+            modules_found=1
+            dir=$(dirname "$mod")
+            echo "::group::go test $dir"
+            (cd "$dir" && go test ./...)
+            echo "::endgroup::"
+          done < <(find .e2e -name go.mod -print0)
+
+          if [ "$modules_found" -eq 0 ]; then
+            echo "No .e2e go.mod files found under .e2e; skipping .e2e local tests."
+          fi
+
+  # ---------------------------------------
+  # STABLE LOCAL VALIDATION CHECK FOR MERGE POLICY
+  # ---------------------------------------
+  local_validation_policy:
+    name: Local Validation Policy
+    needs:
+      - classify_validation_scope
+      - validation
+      - e2e_local_validation
+    if: always() && github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate scoped local validation result
+        shell: bash
+        env:
+          MODE: ${{ needs.classify_validation_scope.outputs.mode }}
+          REPO_VALIDATION_RESULT: ${{ needs.validation.result }}
+          E2E_LOCAL_VALIDATION_RESULT: ${{ needs.e2e_local_validation.result }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$MODE" == "local_only" ]]; then
+            if [[ "$E2E_LOCAL_VALIDATION_RESULT" == "success" ]]; then
+              echo ".e2e-only change passed scoped local validation."
+              exit 0
+            fi
+
+            echo ".e2e-only change expected E2E Local Validation=success, got: $E2E_LOCAL_VALIDATION_RESULT"
+            exit 1
+          fi
+
+          if [[ "$REPO_VALIDATION_RESULT" == "success" ]]; then
+            echo "Repo-wide validation passed."
+            exit 0
+          fi
+
+          echo "Repo-wide change expected Fix and Validate Code=success, got: $REPO_VALIDATION_RESULT"
+          exit 1
+
   # -------------------------------------------------------
   # E2E GATEKEEPER (PR-target; API-only; uses repo secrets)
   # -------------------------------------------------------
@@ -274,6 +439,7 @@ jobs:
     if: github.event_name == 'pull_request_target'
     env:
       CHECK_RUN_NAME: E2E Tests (GCP)
+      LOCAL_VALIDATION_CHECK_NAME: Local Validation Policy
       GCS_BUCKET_NAME: slogcp-e2e-artifacts
       GCP_PROJECT_ID: slogcp
       GITHUB_TOKEN_SECRET_VERSION: projects/slogcp/secrets/GitHub-us-central1-connection-github-oauthtoken-34ff15/versions/latest
@@ -417,7 +583,7 @@ jobs:
         env:
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
 
-      - name: Wait for Validation to Succeed
+      - name: Wait for scoped local validation to succeed
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: wait_validation
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -427,7 +593,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const ref = context.payload.pull_request.head.sha;
-            const targetWorkflowName = 'Validation Pipeline';
+            const targetCheckName = process.env.LOCAL_VALIDATION_CHECK_NAME;
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
             const checkRunId = Number("${{ steps.create_run_check.outputs.check_run_id }}") || 0;
             const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -436,18 +602,19 @@ jobs:
             let ok = false;
 
             for (let minute = 0; minute < maxMinutes; minute++) {
-              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+              const { data } = await github.rest.checks.listForRef({
                 owner,
                 repo,
-                head_sha: ref,
-                event: 'pull_request',
-                per_page: 50
+                ref,
+                per_page: 100
               });
-              const run = data.workflow_runs.find(r => r.name === targetWorkflowName);
-              const status = run?.status ?? 'not_found';
-              const conclusion = run?.conclusion ?? 'unknown';
+              const checkRun = [...data.check_runs]
+                .filter(run => run.name === targetCheckName)
+                .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
+              const status = checkRun?.status ?? 'not_found';
+              const conclusion = checkRun?.conclusion ?? 'unknown';
 
-              if (!run || status !== 'completed') {
+              if (!checkRun || status !== 'completed') {
                 if (checkRunId) {
                     await github.rest.checks.update({
                       owner,
@@ -456,7 +623,7 @@ jobs:
                       status: 'in_progress',
                       output: {
                         title: process.env.CHECK_RUN_NAME,
-                        summary: `Waiting for validation to finish (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.`
+                        summary: `Waiting for ${targetCheckName} to finish (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.`
                       }
                     });
                   }
@@ -464,7 +631,7 @@ jobs:
                 continue;
               }
 
-              if (conclusion === 'success') { ok = true; break; }
+              if (['success', 'skipped', 'neutral'].includes(conclusion)) { ok = true; break; }
 
               if (checkRunId) {
                 await github.rest.checks.update({
@@ -476,11 +643,11 @@ jobs:
                   completed_at: new Date().toISOString(),
                   output: {
                     title: process.env.CHECK_RUN_NAME,
-                    summary: `Validation workflow conclusion: ${conclusion}.`
+                    summary: `${targetCheckName} conclusion: ${conclusion}.`
                   }
                 });
               }
-              core.setFailed(`Validation workflow conclusion: ${conclusion}`);
+              core.setFailed(`${targetCheckName} conclusion: ${conclusion}`);
               return;
             }
 
@@ -495,16 +662,17 @@ jobs:
                   completed_at: new Date().toISOString(),
                   output: {
                     title: process.env.CHECK_RUN_NAME,
-                    summary: `Validation job did not complete within ${maxMinutes} minutes.`
+                    summary: `${targetCheckName} did not complete within ${maxMinutes} minutes.`
                   }
                 });
               }
-              core.setFailed(`Validation job did not complete within ${maxMinutes} minutes`);
+              core.setFailed(`${targetCheckName} did not complete within ${maxMinutes} minutes`);
               return;
             }
             core.setOutput('ok', ok ? 'true' : 'false');
         env:
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
+          LOCAL_VALIDATION_CHECK_NAME: ${{ env.LOCAL_VALIDATION_CHECK_NAME }}
 
       - name: Detect secret availability
         if: |
