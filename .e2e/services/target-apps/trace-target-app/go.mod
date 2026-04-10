@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	cloud.google.com/go/pubsub/v2 v2.5.1
-	cloud.google.com/go/trace v1.12.0
+	cloud.google.com/go/trace v1.13.0
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3
 	github.com/pjscruggs/slogcp-e2e-internal/services/traceproto v0.0.0
 	github.com/pjscruggs/slogcp-grpc-adapter v1.0.0
