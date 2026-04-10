@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	cloud.google.com/go/pubsub/v2 v2.5.1
-	cloud.google.com/go/trace v1.12.0
+	cloud.google.com/go/trace v1.13.0
 	go.opentelemetry.io/otel/trace v1.43.0
 	google.golang.org/protobuf v1.36.11
 )
