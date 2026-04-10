@@ -26,7 +26,7 @@ jobs:
     steps:
       - name: Classify changed files
         id: classify
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             let mode = 'everything_else';
@@ -64,7 +64,7 @@ jobs:
       GOTOOLCHAIN: auto
     steps:
       - name: 🛒 Checkout Code
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
@@ -95,7 +95,7 @@ jobs:
           GO_VERSION="$GO_VERSION" python3 .github/scripts/resolve_go_version.py
 
       - name: 🏗️ Set up Go
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
@@ -103,16 +103,16 @@ jobs:
       - name: 🛠️ Install golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
-          version: v2.1.5
+          version: v2.11.4
           install-mode: goinstall
           install-only: true
           
       - name: 🧰 Install format/modernize tools
         run: |
           # renovate: datasource=go depName=golang.org/x/tools versioning=semver
-          go install golang.org/x/tools/cmd/goimports@v0.39.1-0.20251201175718-869ced31773a
+          go install golang.org/x/tools/cmd/goimports@v0.44.0
           # renovate: datasource=go depName=golang.org/x/tools/gopls versioning=semver
-          go install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.20.0
+          go install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.21.1
 
       - name: ✨ Apply Go formatting
         run: gofmt -w .
@@ -174,7 +174,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ♻️ Restore Go toolchain (post-license-fix)
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
@@ -224,7 +224,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ♻️ Restore Go toolchain (pre-tests)
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
@@ -362,7 +362,7 @@ jobs:
     steps:
       - name: Classify PR Scope
         id: pr_scope
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -393,7 +393,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'false' &&
           steps.pr_scope.outputs.mode == 'ci_only'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const checkName = process.env.CHECK_RUN_NAME;
@@ -429,7 +429,7 @@ jobs:
           steps.trigger_type.outputs.should_auto_trigger == 'false' &&
           steps.pr_scope.outputs.mode == 'everything_else'
         id: manual_check
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const checkName = 'E2E Tests (GCP)';
@@ -448,7 +448,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'false' &&
           steps.pr_scope.outputs.mode == 'everything_else'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             await github.rest.checks.update({
@@ -479,7 +479,7 @@ jobs:
 
       - name: Checkout Workflow Repository
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -488,7 +488,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.pr_scope.outputs.mode == 'everything_else'
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -498,7 +498,7 @@ jobs:
       - name: Generate App Token for Check Run
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: check_run_token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@f8d387b68d61c58ab83c6c016672934102569859 # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -508,7 +508,7 @@ jobs:
       - name: Create Stable E2E Check (in progress)
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: create_run_check
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
@@ -539,7 +539,7 @@ jobs:
       - name: Wait for scoped local validation to succeed
         if: steps.trigger_type.outputs.should_auto_trigger == 'true'
         id: wait_validation
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
@@ -691,7 +691,7 @@ jobs:
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: finalize_check
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
@@ -743,7 +743,7 @@ jobs:
           steps.pr_scope.outputs.mode == 'ci_only' &&
           steps.wait_validation.outputs.ok == 'true'
         id: finalize_ci_only
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
@@ -775,7 +775,7 @@ jobs:
           steps.pr_scope.outputs.mode == 'everything_else' &&
           (steps.wait_validation.outputs.ok != 'true' ||
            steps.have_secrets.outputs.ok != 'true')
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_run_token.outputs.token }}
           script: |
