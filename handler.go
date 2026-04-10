@@ -658,14 +658,21 @@ func (h *Handler) closeTimeoutPolicy() CloseTimeoutPolicy {
 	return normalizeCloseTimeoutPolicy(h.cfg.CloseTimeoutPolicy)
 }
 
+// lifecycleContext preserves the handler's defensive nil-context behavior for
+// shutdown paths by treating nil the same as context.Background().
+func lifecycleContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 // Shutdown performs graceful async drain bounded by ctx. On timeout it returns
 // without tearing down owned resources so callers can decide whether to abort.
+// A nil ctx is treated as context.Background().
 func (h *Handler) Shutdown(ctx context.Context) error {
 	if h == nil {
 		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	if err := h.shutdownAsyncHandler(ctx); err != nil {
@@ -676,13 +683,11 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 
 // Abort performs forceful async shutdown (bounded by ctx) and then closes
 // owned resources. When ctx expires first, Abort returns promptly while the
-// underlying async abort may still be finishing in the background.
+// underlying async abort may still be finishing in the background. A nil ctx is
+// treated as context.Background().
 func (h *Handler) Abort(ctx context.Context) error {
 	if h == nil {
 		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	asyncErr := h.abortAsyncHandler(ctx)
@@ -705,7 +710,7 @@ func (h *Handler) shutdownAsyncHandler(ctx context.Context) error {
 	if h == nil || h.asyncHandler == nil {
 		return nil
 	}
-	if err := h.asyncHandler.Shutdown(ctx); err != nil {
+	if err := h.asyncHandler.Shutdown(lifecycleContext(ctx)); err != nil {
 		return fmt.Errorf("shutdown async handler: %w", err)
 	}
 	return nil
@@ -721,11 +726,8 @@ func (h *Handler) abortAsyncHandler(ctx context.Context) error {
 	if h == nil || h.asyncHandler == nil {
 		return nil
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
-	if err := h.asyncHandler.AbortContext(ctx); err != nil {
+	if err := h.asyncHandler.AbortContext(lifecycleContext(ctx)); err != nil {
 		return fmt.Errorf("abort async handler: %w", err)
 	}
 	return nil
