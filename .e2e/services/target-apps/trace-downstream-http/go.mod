@@ -5,7 +5,6 @@ go 1.26.2
 require (
 	cloud.google.com/go/pubsub/v2 v2.5.1
 	cloud.google.com/go/trace v1.12.0
-	github.com/pjscruggs/slogcp v1.2.0
 	go.opentelemetry.io/otel/trace v1.43.0
 	google.golang.org/protobuf v1.36.11
 )
@@ -25,6 +24,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.14 // indirect
 	github.com/googleapis/gax-go/v2 v2.21.0 // indirect
+	github.com/pjscruggs/slogcp v0.0.0-unpublished
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0 // indirect

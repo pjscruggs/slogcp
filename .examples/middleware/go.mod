@@ -2,9 +2,7 @@ module github.com/pjscruggs/slogcp/examples/middleware
 
 go 1.26.0
 
-replace github.com/pjscruggs/slogcp => ../..
-
-require github.com/pjscruggs/slogcp v1.2.0
+require github.com/pjscruggs/slogcp v0.0.0-unpublished
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
@@ -18,3 +16,5 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 )
+
+replace github.com/pjscruggs/slogcp => ../..
