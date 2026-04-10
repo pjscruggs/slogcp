@@ -46,6 +46,13 @@ func (c *closingBuffer) Close() error {
 	return nil
 }
 
+// typedNilContext returns a typed nil context so tests can exercise the
+// defensive lifecycle fallback without tripping SA1012 on a nil literal.
+func typedNilContext() context.Context {
+	var ctx context.Context
+	return ctx
+}
+
 // prefersManagedDefaults reports whether runtime detection mirrors managed GCP
 // platforms where slogcp opts into Cloud Logging defaults.
 func prefersManagedDefaults() bool {
@@ -3401,11 +3408,11 @@ func TestHandlerLifecycleNilAndNoAsyncPaths(t *testing.T) {
 	if err := h.Abort(context.TODO()); err != nil {
 		t.Fatalf("Abort(context.TODO()) without async returned %v, want nil", err)
 	}
-	if err := h.Shutdown(nil); err != nil {
-		t.Fatalf("Shutdown(nil) without async returned %v, want nil", err)
+	if err := h.Shutdown(typedNilContext()); err != nil {
+		t.Fatalf("Shutdown(nil context) without async returned %v, want nil", err)
 	}
-	if err := h.Abort(nil); err != nil {
-		t.Fatalf("Abort(nil) without async returned %v, want nil", err)
+	if err := h.Abort(typedNilContext()); err != nil {
+		t.Fatalf("Abort(nil context) without async returned %v, want nil", err)
 	}
 }
 
@@ -3476,14 +3483,14 @@ func TestHandlerAsyncHelperBranches(t *testing.T) {
 		asyncHandler:   fastAsync,
 		internalLogger: slog.New(slog.DiscardHandler),
 	}
-	if err := hFast.shutdownAsyncHandler(context.Background()); err != nil {
-		t.Fatalf("shutdownAsyncHandler() returned %v, want nil", err)
+	if err := hFast.shutdownAsyncHandler(typedNilContext()); err != nil {
+		t.Fatalf("shutdownAsyncHandler(nil context) returned %v, want nil", err)
 	}
 	if err := hFast.abortAsyncHandler(context.Background()); !errors.Is(err, slogcpasync.ErrAborted) {
 		t.Fatalf("abortAsyncHandler() on fast handler error = %v, want ErrAborted", err)
 	}
-	if err := hFast.abortAsyncHandler(nil); !errors.Is(err, slogcpasync.ErrAborted) {
-		t.Fatalf("abortAsyncHandler(nil) on fast handler error = %v, want ErrAborted", err)
+	if err := hFast.abortAsyncHandler(typedNilContext()); !errors.Is(err, slogcpasync.ErrAborted) {
+		t.Fatalf("abortAsyncHandler(nil context) on fast handler error = %v, want ErrAborted", err)
 	}
 
 	// Defensive guard: malformed async handlers with nil internal state should

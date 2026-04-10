@@ -27,6 +27,13 @@ import (
 	"time"
 )
 
+// typedNilContext returns a typed nil context so lifecycle tests can exercise
+// the defensive fallback without tripping SA1012 on a nil literal.
+func typedNilContext() context.Context {
+	var ctx context.Context
+	return ctx
+}
+
 // recordingState tracks records handled by a test double handler.
 type recordingState struct {
 	mu         sync.Mutex
@@ -1256,8 +1263,8 @@ func TestAbortContextWithoutDeadlineUsesCallerAbort(t *testing.T) {
 	if err := h.(*Handler).AbortContext(context.TODO()); !errors.Is(err, ErrAborted) {
 		t.Fatalf("AbortContext(context.TODO()) error = %v, want ErrAborted", err)
 	}
-	if err := h.(*Handler).AbortContext(nil); !errors.Is(err, ErrAborted) {
-		t.Fatalf("AbortContext(nil) error = %v, want ErrAborted", err)
+	if err := h.(*Handler).AbortContext(typedNilContext()); !errors.Is(err, ErrAborted) {
+		t.Fatalf("AbortContext(nil context) error = %v, want ErrAborted", err)
 	}
 	if got := inner.abortCount.Load(); got != 1 {
 		t.Fatalf("abort hook called %d times, want 1", got)
@@ -1300,8 +1307,11 @@ func TestShutdownAndAbortHandleNilState(t *testing.T) {
 	t.Parallel()
 
 	h := &Handler{}
-	if err := h.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown(context.Background()) returned %v, want nil", err)
+	if err := h.Shutdown(typedNilContext()); err != nil {
+		t.Fatalf("Shutdown(nil context) returned %v, want nil", err)
+	}
+	if err := h.AbortContext(typedNilContext()); err != nil {
+		t.Fatalf("AbortContext(nil context) returned %v, want nil", err)
 	}
 	if err := h.Abort(); err != nil {
 		t.Fatalf("Abort() returned %v, want nil", err)

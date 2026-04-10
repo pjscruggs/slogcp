@@ -567,8 +567,18 @@ func (h *Handler) Close() error {
 	return h.state.closeErr
 }
 
+// lifecycleContext preserves the async handler's defensive nil-context
+// behavior for shutdown paths by treating nil the same as context.Background().
+func lifecycleContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 // Shutdown begins graceful shutdown, waits for workers until ctx expires,
-// then closes the wrapped handler (if closable) after workers exit.
+// then closes the wrapped handler (if closable) after workers exit. A nil ctx
+// is treated as context.Background().
 func (h *Handler) Shutdown(ctx context.Context) error {
 	if h == nil || h.state == nil {
 		return nil
@@ -576,7 +586,7 @@ func (h *Handler) Shutdown(ctx context.Context) error {
 
 	h.state.startShutdown()
 
-	if err := h.state.waitWorkers(ctx); err != nil {
+	if err := h.state.waitWorkers(lifecycleContext(ctx)); err != nil {
 		return errors.Join(ErrFlushTimeout, err)
 	}
 
@@ -596,7 +606,7 @@ func (h *Handler) Abort() error {
 }
 
 // AbortContext initiates the forceful abort sequence and waits until completion
-// or ctx expiry.
+// or ctx expiry. A nil ctx is treated as context.Background().
 //
 // Cancellation only bounds the caller's wait; abort continues in the background
 // once started. This method intentionally starts at most one abort coordinator
@@ -606,9 +616,7 @@ func (h *Handler) AbortContext(ctx context.Context) error {
 	if h == nil || h.state == nil {
 		return nil
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = lifecycleContext(ctx)
 
 	done := h.state.startAbort()
 	select {
