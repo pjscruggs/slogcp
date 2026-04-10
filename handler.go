@@ -986,7 +986,7 @@ func WithLevel(level slog.Level) Option {
 
 // WithLevelVar shares the provided slog.LevelVar with the handler, allowing
 // external code to adjust log levels at runtime while keeping slogcp's internal
-// state in sync. When supplied, slogcp initialises the LevelVar to the
+// state in sync. When supplied, slogcp initializes the LevelVar to the
 // resolved minimum level (defaults, environment, then WithLevel) during
 // handler construction.
 func WithLevelVar(levelVar *slog.LevelVar) Option {
