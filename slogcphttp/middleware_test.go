@@ -62,7 +62,7 @@ func TestMiddlewareAttachesRequestLogger(t *testing.T) {
 		logger.Info("processing request")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/widgets?id=42", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/widgets?id=42", nil)
 	req.RemoteAddr = "198.51.100.10:12345"
 	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/10;o=1")
 
@@ -139,7 +139,7 @@ func TestMiddlewareStatusRemainsOmittedForInFlightLogs(t *testing.T) {
 		slogcp.Logger(r.Context()).Info("after header")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/known-status", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/known-status", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -195,7 +195,7 @@ func TestMiddlewareProxyModeGCLBUsesForwardedHeaders(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/widgets", nil)
+	req := newTestRequest(t, http.MethodGet, "http://example.com/widgets", nil)
 	req.URL.Scheme = ""
 	req.Host = "example.com"
 	req.RemoteAddr = "10.0.0.1:12345"
@@ -243,7 +243,7 @@ func TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled(t *testi
 			w.WriteHeader(http.StatusNoContent)
 		}))
 
-		req := httptest.NewRequest(http.MethodGet, "http://example.com/public", nil)
+		req := newTestRequest(t, http.MethodGet, "http://example.com/public", nil)
 		req.Header.Set("Traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
 
 		rec := httptest.NewRecorder()
@@ -282,7 +282,7 @@ func TestMiddlewarePublicEndpointDisablesLogCorrelationWhenOTelDisabled(t *testi
 			w.WriteHeader(http.StatusNoContent)
 		}))
 
-		req := httptest.NewRequest(http.MethodGet, "http://example.com/public", nil)
+		req := newTestRequest(t, http.MethodGet, "http://example.com/public", nil)
 		req.Header.Set("Traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
 
 		rec := httptest.NewRecorder()
@@ -330,7 +330,7 @@ func TestMiddlewareHelpersCoverBranches(t *testing.T) {
 	})
 
 	cfg := applyOptions([]Option{WithPropagators(nil)})
-	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req := newTestRequest(t, http.MethodGet, "http://example.com", nil)
 	req.Header.Set("traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
 	if _, _, ok := extractSpanContextFromHeaders(ctx, req, cfg); !ok {
 		t.Fatalf("extractSpanContextFromHeaders should use the global propagator when nil is supplied")
@@ -369,7 +369,7 @@ func TestMiddlewareHelpersCoverBranches(t *testing.T) {
 		t.Fatalf("gclbClientIPFromXForwardedFor(invalid ip) = %q, want empty", got)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req = newTestRequest(t, http.MethodGet, "http://example.com", nil)
 	req.Header.Set(XCloudTraceContextHeader, "not-a-valid-xctc")
 	if _, _, ok := extractSpanContextFromXCloudTraceContext(ctx, req); ok {
 		t.Fatalf("extractSpanContextFromXCloudTraceContext should fail on invalid header")
@@ -380,7 +380,7 @@ func TestMiddlewareHelpersCoverBranches(t *testing.T) {
 	xCloudTraceContextExtractor = func(ctx context.Context, _ string) (context.Context, bool) {
 		return ctx, true
 	}
-	req = httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req = newTestRequest(t, http.MethodGet, "http://example.com", nil)
 	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/1;o=1")
 	if _, _, ok := extractSpanContextFromXCloudTraceContext(ctx, req); ok {
 		t.Fatalf("extractSpanContextFromXCloudTraceContext should fail when extractor returns invalid span context")
@@ -434,7 +434,7 @@ func TestInferSchemeTrustXForwardedProtoUsesHeader(t *testing.T) {
 	t.Parallel()
 
 	cfg := applyOptions([]Option{WithTrustXForwardedProto(true)})
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/widgets", nil)
+	req := newTestRequest(t, http.MethodGet, "http://example.com/widgets", nil)
 	req.URL.Scheme = ""
 	req.Header.Set("X-Forwarded-Proto", schemeHTTPS)
 	if got := inferScheme(req, cfg); got != schemeHTTPS {
@@ -459,7 +459,7 @@ func TestExtractSpanContextFromHeadersFallsBackToGlobal(t *testing.T) {
 	})
 	ctxWithSpan := trace.ContextWithSpanContext(context.Background(), sc)
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req := newTestRequest(t, http.MethodGet, "http://example.com", nil)
 	propagation.TraceContext{}.Inject(ctxWithSpan, propagation.HeaderCarrier(req.Header))
 
 	_, extracted, ok := extractSpanContextFromHeaders(context.Background(), req, nil)
@@ -480,7 +480,7 @@ func TestExtractSpanContextFromHeadersReturnsFalseWithoutPropagator(t *testing.T
 	otel.SetTextMapPropagator(nil)
 	t.Cleanup(func() { otel.SetTextMapPropagator(orig) })
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	req := newTestRequest(t, http.MethodGet, "http://example.com", nil)
 	req.Header.Set("traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
 	if _, _, ok := extractSpanContextFromHeaders(context.Background(), req, nil); ok {
 		t.Fatalf("expected extractSpanContextFromHeaders to return false when no propagator is configured")
@@ -514,7 +514,7 @@ func TestMiddlewareTracePropagationDisabledIgnoresTraceparent(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/disabled", http.NoBody)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/disabled", http.NoBody)
 	req.Header.Set("Traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
 
 	rec := httptest.NewRecorder()
@@ -567,7 +567,7 @@ func TestMiddlewareNilNextUsesNotFound(t *testing.T) {
 	t.Parallel()
 
 	handler := Middleware()(nil)
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/missing", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/missing", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
@@ -618,7 +618,7 @@ func TestMiddlewareSkipsNilAttrHooks(t *testing.T) {
 		slogcp.Logger(r.Context()).Info("nil-friendly")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/hooks", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/hooks", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -675,7 +675,7 @@ func TestMiddlewareAttrEnricherAndTransformer(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/widgets/42?color=blue", http.NoBody)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/widgets/42?color=blue", http.NoBody)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -715,7 +715,7 @@ func TestMiddlewareIncludesHTTPRequestAttr(t *testing.T) {
 		slogcp.Logger(r.Context()).Info("http attr enabled")
 	}))
 
-	req := httptest.NewRequest(http.MethodPost, "https://example.com/orders", strings.NewReader("body"))
+	req := newTestRequest(t, http.MethodPost, "https://example.com/orders", strings.NewReader("body"))
 	req.RemoteAddr = "203.0.113.10:8080"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -757,7 +757,7 @@ func TestWrapResponseWriterPreservesOptionalInterfaces(t *testing.T) {
 	t.Parallel()
 
 	base := newOptionalResponseWriter()
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/stream", http.NoBody)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/stream", http.NoBody)
 	cfg := defaultConfig()
 	scope := newRequestScope(req, time.Now(), cfg)
 
@@ -817,7 +817,7 @@ func TestWrapResponseWriterReadFromAccounting(t *testing.T) {
 	t.Parallel()
 
 	base := &readerFromResponseWriter{header: make(http.Header)}
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/download", http.NoBody)
+	req := newTestRequest(t, http.MethodGet, "https://example.com/download", http.NoBody)
 	scope := newRequestScope(req, time.Now(), defaultConfig())
 
 	wrapped, recorder := wrapResponseWriter(base, scope)
@@ -849,7 +849,7 @@ func TestRequestScopeFinalizeClampsValues(t *testing.T) {
 	t.Parallel()
 
 	cfg := defaultConfig()
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/items?id=42", strings.NewReader("body"))
+	req := newTestRequest(t, http.MethodGet, "https://example.com/items?id=42", strings.NewReader("body"))
 	req.RemoteAddr = "203.0.113.5:443"
 
 	scope := newRequestScope(req, time.Now().Add(-10*time.Millisecond), cfg)
@@ -975,7 +975,7 @@ func TestScopeFromContextNil(t *testing.T) {
 func TestNewRequestScopeInfersTLSScheme(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/secure", nil)
+	req := newTestRequest(t, http.MethodGet, "http://example.com/secure", nil)
 	req.URL.Scheme = ""
 	req.TLS = &tls.ConnectionState{}
 
@@ -989,7 +989,7 @@ func TestNewRequestScopeInfersTLSScheme(t *testing.T) {
 func TestResponseRecorderWriteAndStatus(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com", http.NoBody)
+	req := newTestRequest(t, http.MethodGet, "https://example.com", http.NoBody)
 	scope := newRequestScope(req, time.Now(), defaultConfig())
 	base := httptest.NewRecorder()
 
@@ -1019,7 +1019,7 @@ func TestResponseRecorderWriteAndStatus(t *testing.T) {
 func TestResponseRecorderWriteAutoHeader(t *testing.T) {
 	t.Parallel()
 
-	scope := newRequestScope(httptest.NewRequest(http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	scope := newRequestScope(newTestRequest(t, http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
 	writer := &statusTrackingResponseWriter{header: make(http.Header)}
 	wrapped, _ := wrapResponseWriter(writer, scope)
 
@@ -1035,7 +1035,7 @@ func TestResponseRecorderWriteAutoHeader(t *testing.T) {
 func TestResponseRecorderWriteHeaderIgnoresDuplicates(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com", http.NoBody)
+	req := newTestRequest(t, http.MethodGet, "https://example.com", http.NoBody)
 	scope := newRequestScope(req, time.Now(), defaultConfig())
 
 	writer := &statusTrackingResponseWriter{header: make(http.Header)}
@@ -1059,7 +1059,7 @@ func TestResponseRecorderWriteHeaderIgnoresDuplicates(t *testing.T) {
 func TestResponseRecorderReadFromFallback(t *testing.T) {
 	t.Parallel()
 
-	scope := newRequestScope(httptest.NewRequest(http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	scope := newRequestScope(newTestRequest(t, http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
 	base := &minimalResponseWriter{header: make(http.Header)}
 
 	wrapped, recorder := wrapResponseWriter(base, scope)
@@ -1087,7 +1087,7 @@ func TestResponseRecorderReadFromFallback(t *testing.T) {
 func TestResponseRecorderWriteHandlesZeroBytes(t *testing.T) {
 	t.Parallel()
 
-	scope := newRequestScope(httptest.NewRequest(http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	scope := newRequestScope(newTestRequest(t, http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
 	base := &failingResponseWriter{header: make(http.Header)}
 
 	writer, recorder := wrapResponseWriter(base, scope)
@@ -1111,7 +1111,7 @@ func TestResponseRecorderWriteHandlesZeroBytes(t *testing.T) {
 func TestResponseRecorderReadFromDelegates(t *testing.T) {
 	t.Parallel()
 
-	scope := newRequestScope(httptest.NewRequest(http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
+	scope := newRequestScope(newTestRequest(t, http.MethodGet, "https://example.com", nil), time.Now(), defaultConfig())
 	base := &readerFromResponseWriter{header: make(http.Header)}
 
 	wrapped, recorder := wrapResponseWriter(base, scope)
@@ -1285,7 +1285,7 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 			SpanID:     spanID,
 			TraceFlags: trace.FlagsSampled,
 		}))
-		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+		req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 
 		gotCtx, sc := ensureSpanContext(ctx, req, defaultConfig())
 		if gotCtx != ctx {
@@ -1300,7 +1300,7 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 		cfg := defaultConfig()
 		cfg.propagators = propagation.TraceContext{}
 
-		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+		req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 		carrier := propagation.HeaderCarrier(req.Header)
 
 		src := trace.ContextWithRemoteSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
@@ -1318,7 +1318,7 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 	})
 
 	t.Run("xcloud", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+		req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 		req.Header.Set(XCloudTraceContextHeader, traceID.String()+"/33;o=1")
 
 		_, sc := ensureSpanContext(context.Background(), req, defaultConfig())
@@ -1328,7 +1328,7 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 	})
 
 	t.Run("absent", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+		req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 		if _, sc := ensureSpanContext(context.Background(), req, defaultConfig()); sc.IsValid() {
 			t.Fatalf("unexpected span context detected: %v", sc)
 		}
@@ -1338,7 +1338,7 @@ func TestEnsureSpanContextVariants(t *testing.T) {
 		cfg := defaultConfig()
 		cfg.propagateTrace = false
 
-		req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+		req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 		req.Header.Set("traceparent", "00-105445aa7843bc8bf206b12000100000-09158d8185d3c3af-01")
 
 		type markerKey struct{}
@@ -1360,7 +1360,7 @@ func TestEnsureSpanContextUsesLegacyHeader(t *testing.T) {
 
 	cfg := defaultConfig()
 	cfg.propagators = noopPropagator{}
-	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/1;o=1")
 
 	origExtractor := xCloudTraceContextExtractor

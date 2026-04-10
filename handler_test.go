@@ -664,7 +664,7 @@ func TestHandlerHandleCustomKeyHTTPRequest(t *testing.T) {
 		}
 	})
 
-	req, err := http.NewRequest(http.MethodGet, "https://example.com/items/1", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.com/items/1", nil)
 	if err != nil {
 		t.Fatalf("http.NewRequest() returned %v", err)
 	}
@@ -3401,6 +3401,12 @@ func TestHandlerLifecycleNilAndNoAsyncPaths(t *testing.T) {
 	if err := h.Abort(context.TODO()); err != nil {
 		t.Fatalf("Abort(context.TODO()) without async returned %v, want nil", err)
 	}
+	if err := h.Shutdown(nil); err != nil {
+		t.Fatalf("Shutdown(nil) without async returned %v, want nil", err)
+	}
+	if err := h.Abort(nil); err != nil {
+		t.Fatalf("Abort(nil) without async returned %v, want nil", err)
+	}
 }
 
 // TestHandlerAsyncHelperBranches exercises helper error and nil-context paths.
@@ -3475,6 +3481,9 @@ func TestHandlerAsyncHelperBranches(t *testing.T) {
 	}
 	if err := hFast.abortAsyncHandler(context.Background()); !errors.Is(err, slogcpasync.ErrAborted) {
 		t.Fatalf("abortAsyncHandler() on fast handler error = %v, want ErrAborted", err)
+	}
+	if err := hFast.abortAsyncHandler(nil); !errors.Is(err, slogcpasync.ErrAborted) {
+		t.Fatalf("abortAsyncHandler(nil) on fast handler error = %v, want ErrAborted", err)
 	}
 
 	// Defensive guard: malformed async handlers with nil internal state should

@@ -39,7 +39,7 @@ func TestExamplesExercisesEveryExampleModule(t *testing.T) {
 		relPath = filepath.ToSlash(relPath)
 
 		t.Run(relPath, func(t *testing.T) {
-			cmd := exec.Command("go", "test", "./...")
+			cmd := exec.CommandContext(t.Context(), "go", "test", "./...")
 			cmd.Dir = moduleDir
 			cmd.Env = os.Environ()
 

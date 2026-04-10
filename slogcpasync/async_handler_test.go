@@ -1256,6 +1256,9 @@ func TestAbortContextWithoutDeadlineUsesCallerAbort(t *testing.T) {
 	if err := h.(*Handler).AbortContext(context.TODO()); !errors.Is(err, ErrAborted) {
 		t.Fatalf("AbortContext(context.TODO()) error = %v, want ErrAborted", err)
 	}
+	if err := h.(*Handler).AbortContext(nil); !errors.Is(err, ErrAborted) {
+		t.Fatalf("AbortContext(nil) error = %v, want ErrAborted", err)
+	}
 	if got := inner.abortCount.Load(); got != 1 {
 		t.Fatalf("abort hook called %d times, want 1", got)
 	}

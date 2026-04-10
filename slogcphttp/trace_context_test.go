@@ -246,7 +246,7 @@ func TestInjectTraceContextMiddlewareCoversBranches(t *testing.T) {
 		handler := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			called = true
 		}))
-		req := httptest.NewRequest(http.MethodGet, "http://example.com", nil).WithContext(existingCtx)
+		req := newTestRequest(t, http.MethodGet, "http://example.com", nil).WithContext(existingCtx)
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 		if !called {
 			t.Fatalf("handler not invoked when span already present")
@@ -258,7 +258,7 @@ func TestInjectTraceContextMiddlewareCoversBranches(t *testing.T) {
 		handler := mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 			spanCtx = trace.SpanContextFromContext(r.Context())
 		}))
-		req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+		req := newTestRequest(t, http.MethodGet, "http://example.com", nil)
 		req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/1;o=1")
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 		if !spanCtx.IsValid() {
@@ -271,7 +271,7 @@ func TestInjectTraceContextMiddlewareCoversBranches(t *testing.T) {
 		handler := mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			invoked = true
 		}))
-		req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+		req := newTestRequest(t, http.MethodGet, "http://example.com", nil)
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 		if !invoked {
 			t.Fatalf("handler not invoked when header missing")
@@ -289,7 +289,7 @@ func TestInjectTraceContextMiddlewareExtractsHeader(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 	req.Header.Set(XCloudTraceContextHeader, "105445aa7843bc8bf206b12000100000/10;o=1")
 
 	rr := httptest.NewRecorder()
@@ -324,7 +324,7 @@ func TestInjectTraceContextMiddlewareHonorsExistingSpan(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+	req := newTestRequest(t, http.MethodGet, "https://example.com", nil)
 	req = req.WithContext(trace.ContextWithSpanContext(req.Context(), spanCtx))
 	req.Header.Set(XCloudTraceContextHeader, "00000000000000000000000000000000/5;o=1")
 
