@@ -50,6 +50,8 @@ linters:
       statements: 160
     goconst:
       min-occurrences: 4
+    misspell:
+      locale: US
     nestif:
       min-complexity: 10
   exclusions:
