@@ -32,17 +32,10 @@
       "rangeStrategy": "bump"
     },
     {
-      "matchManagers": ["gomod"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "automerge": false,
-      "platformAutomerge": false
-    },
-    {
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "groupName": "GitHub Actions",
-      "automerge": false,
-      "platformAutomerge": false
+      "description": "Keep the core module pinned to the lowest supported Go patch release",
+      "matchDatasources": ["golang-version"],
+      "matchFileNames": ["go.mod"],
+      "allowedVersions": "/^{{major}}\\.{{minor}}\\.0$/"
     },
     {
       "description": "Ignore local shared .e2e modules resolved via replace directives",
@@ -59,17 +52,28 @@
       "enabled": false
     },
     {
-      "description": "Keep .e2e module updates isolated so Renovate PRs can use the local-only validation path",
-      "matchManagers": ["gomod"],
-      "matchFileNames": [".e2e/**"],
-      "groupName": ".e2e Go Modules",
-      "automerge": false,
-      "platformAutomerge": false
+      "description": "1. CI-only dependency updates run earlier and stay under .github without touching go.mod/go.sum",
+      "matchManagers": ["github-actions", "custom.regex"],
+      "matchFileNames": [".github/**"],
+      "groupName": "daily ci-only deps",
+      "labels": ["renovate:type1"],
+      "schedule": ["* 2 * * *"],
+      "prPriority": 20
     },
     {
-      "matchManagers": ["gomod", "github-actions"],
-      "matchUpdateTypes": ["major"],
-      "automerge": false
+      "description": "2. Everything else runs later and requires local validation before cloud E2E",
+      "matchManagers": ["gomod"],
+      "groupName": "daily full-validation deps",
+      "labels": ["renovate:type2"],
+      "schedule": ["* 4 * * *"],
+      "prPriority": 10
+    },
+    {
+      "description": "Automerge updates after the bucket-specific required checks pass",
+      "matchManagers": ["gomod", "github-actions", "custom.regex"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": false
     }
   ],
   "prHourlyLimit": 0,

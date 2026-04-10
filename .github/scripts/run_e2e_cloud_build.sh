@@ -23,6 +23,7 @@ Options override environment variables when both are provided.
 
 Options:
   --source-mode MODE
+  --trusted-e2e-root DIR
   --project ID
   --region REGION
   --artifact-registry-repo REPO
@@ -42,6 +43,7 @@ Options:
 
 Env-backed defaults:
   E2E_SOURCE_MODE
+  E2E_TRUSTED_E2E_ROOT
   GCP_PROJECT_ID
   RUN_REGION
   ARTIFACT_REGISTRY_REPO
@@ -113,11 +115,27 @@ normalize_service_account_resource() {
 
 stage_local_build_source() {
     local staging_root="$1"
+    local trusted_e2e_root="$2"
 
     rm -rf "$staging_root"
     mkdir -p "$staging_root"
 
-    cp -R ".e2e/." "$staging_root/"
+    if [[ ! -d "$trusted_e2e_root" ]]; then
+        echo "Trusted .e2e root not found: $trusted_e2e_root" >&2
+        exit 1
+    fi
+    if [[ ! -d ".e2e/services" ]]; then
+        echo "Source .e2e services directory not found: .e2e/services" >&2
+        exit 1
+    fi
+
+    # Use trusted build/config infrastructure, but stage service code and
+    # module manifests from the current checkout so cloud E2E exercises the
+    # exact dependency graph under test.
+    cp -R "$trusted_e2e_root/." "$staging_root/"
+    rm -rf "$staging_root/services"
+    mkdir -p "$staging_root/services"
+    cp -R ".e2e/services/." "$staging_root/services/"
     mkdir -p "$staging_root/lib-repo-checkout"
 
     find . -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" \) \
@@ -126,6 +144,7 @@ stage_local_build_source() {
 }
 
 E2E_SOURCE_MODE="${E2E_SOURCE_MODE:-}"
+E2E_TRUSTED_E2E_ROOT="${E2E_TRUSTED_E2E_ROOT:-}"
 GCP_PROJECT_ID="${GCP_PROJECT_ID:-}"
 RUN_REGION="${RUN_REGION:-}"
 ARTIFACT_REGISTRY_REPO="${ARTIFACT_REGISTRY_REPO:-}"
@@ -150,6 +169,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --source-mode=*)
             E2E_SOURCE_MODE="${1#*=}"
+            shift
+            ;;
+        --trusted-e2e-root)
+            E2E_TRUSTED_E2E_ROOT="${2:?missing value for --trusted-e2e-root}"
+            shift 2
+            ;;
+        --trusted-e2e-root=*)
+            E2E_TRUSTED_E2E_ROOT="${1#*=}"
             shift
             ;;
         --project)
@@ -287,6 +314,9 @@ done
 if [[ -z "$E2E_SOURCE_MODE" ]]; then
     E2E_SOURCE_MODE="github"
 fi
+if [[ -z "$E2E_TRUSTED_E2E_ROOT" ]]; then
+    E2E_TRUSTED_E2E_ROOT=".e2e"
+fi
 if [[ -z "$GCP_PROJECT_ID" ]]; then
     GCP_PROJECT_ID="slogcp"
 fi
@@ -361,7 +391,7 @@ if [[ "$E2E_SOURCE_MODE" == "local" ]]; then
 
     TEMP_SOURCE_ROOT="$(mktemp -d 2>/dev/null || mktemp -d -t slogcp-e2e-local)"
     trap 'if [[ -n "$TEMP_SOURCE_ROOT" && -d "$TEMP_SOURCE_ROOT" ]]; then rm -rf "$TEMP_SOURCE_ROOT"; fi' EXIT
-    stage_local_build_source "$TEMP_SOURCE_ROOT"
+    stage_local_build_source "$TEMP_SOURCE_ROOT" "$E2E_TRUSTED_E2E_ROOT"
     SOURCE_PATH="$TEMP_SOURCE_ROOT"
     CONFIG_PATH="$TEMP_SOURCE_ROOT/cloudbuild/cloudbuild.yaml"
 fi
