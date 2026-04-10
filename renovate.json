@@ -67,13 +67,6 @@
       "labels": ["renovate:type2"],
       "schedule": ["* 4 * * *"],
       "prPriority": 10
-    },
-    {
-      "description": "Automerge updates after the bucket-specific required checks pass",
-      "matchManagers": ["gomod", "github-actions", "custom.regex"],
-      "automerge": true,
-      "automergeType": "pr",
-      "platformAutomerge": false
     }
   ],
   "prHourlyLimit": 0,

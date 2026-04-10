@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 180
     env:
       CHECK_RUN_NAME: E2E Tests (GCP)
+      LOCAL_VALIDATION_CHECK_NAME: Local Validation Policy
       GCS_BUCKET_NAME: slogcp-e2e-artifacts
       GCP_PROJECT_ID: slogcp
       GITHUB_TOKEN_SECRET_VERSION: projects/slogcp/secrets/GitHub-us-central1-connection-github-oauthtoken-34ff15/versions/latest
@@ -206,16 +207,72 @@ jobs:
         env:
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
 
+      - name: Require successful local validation before manual PR E2E
+        if: ${{ steps.target.outputs.pr_number != '' }}
+        id: local_validation_gate
+        # actions/github-script v8 (pinned)
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          github-token: ${{ steps.app_token.outputs.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const ref = '${{ steps.target.outputs.head_sha }}';
+            const checkRunId = Number('${{ steps.create_check.outputs.check_run_id }}');
+            const targetCheckName = process.env.LOCAL_VALIDATION_CHECK_NAME;
+            const { data } = await github.rest.checks.listForRef({
+              owner,
+              repo,
+              ref,
+              per_page: 100
+            });
+
+            const localCheck = [...data.check_runs]
+              .filter(run => run.name === targetCheckName)
+              .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
+
+            const ok = !!localCheck &&
+              localCheck.status === 'completed' &&
+              ['success', 'skipped', 'neutral'].includes(localCheck.conclusion);
+
+            if (ok) {
+              core.setOutput('ok', 'true');
+              return;
+            }
+
+            const status = localCheck?.status ?? 'not_found';
+            const conclusion = localCheck?.conclusion ?? 'unknown';
+            await github.rest.checks.update({
+              owner,
+              repo,
+              check_run_id: checkRunId,
+              status: 'completed',
+              conclusion: 'action_required',
+              completed_at: new Date().toISOString(),
+              output: {
+                title: process.env.CHECK_RUN_NAME,
+                summary: `${targetCheckName} must complete successfully on ${ref} before manual E2E can start. Current status: ${status}; conclusion: ${conclusion}. Re-run this workflow after local validation passes.`
+              }
+            });
+
+            core.setFailed(`${targetCheckName} is not successful for ${ref}`);
+        env:
+          LOCAL_VALIDATION_CHECK_NAME: ${{ env.LOCAL_VALIDATION_CHECK_NAME }}
+          CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
+
       - name: Authenticate to Google Cloud
+        if: ${{ steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true' }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: GCP_SERVICE_ACCOUNT_EMAIL
 
       - name: Set up Cloud SDK
+        if: ${{ steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true' }}
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
       - name: Run E2E Cloud Build
+        if: ${{ steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true' }}
         id: cloud_build
         shell: bash
         run: |
