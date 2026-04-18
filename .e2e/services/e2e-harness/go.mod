@@ -3,11 +3,11 @@ module github.com/pjscruggs/slogcp-e2e-internal/services/e2e-harness
 go 1.26.2
 
 require (
-	cloud.google.com/go/logging v1.15.0
-	cloud.google.com/go/pubsub/v2 v2.5.1
+	cloud.google.com/go/logging v1.16.0
+	cloud.google.com/go/pubsub/v2 v2.6.0
 	github.com/google/uuid v1.6.0
 	github.com/pjscruggs/slogcp-e2e-internal/services/traceproto v0.0.0
-	google.golang.org/api v0.275.0
+	google.golang.org/api v0.276.0
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
 )
