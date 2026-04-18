@@ -3,14 +3,14 @@ module github.com/pjscruggs/slogcp-e2e-internal/services/target-apps/trace-targe
 go 1.26.2
 
 require (
-	cloud.google.com/go/pubsub/v2 v2.5.1
-	cloud.google.com/go/trace v1.13.0
+	cloud.google.com/go/pubsub/v2 v2.6.0
+	cloud.google.com/go/trace v1.14.0
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3
 	github.com/pjscruggs/slogcp-e2e-internal/services/traceproto v0.0.0
 	github.com/pjscruggs/slogcp-grpc-adapter v1.0.0
 	go.opentelemetry.io/otel/trace v1.43.0
 	golang.org/x/oauth2 v0.36.0
-	google.golang.org/api v0.275.0
+	google.golang.org/api v0.276.0
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
 )

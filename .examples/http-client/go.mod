@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/examples/http-client
 
-go 1.26.0
+go 1.26.2
 
 require (
 	go.opentelemetry.io/otel v1.43.0
@@ -15,7 +15,7 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/pjscruggs/slogcp v0.0.0-unpublished
+	github.com/pjscruggs/slogcp v1.2.0
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
