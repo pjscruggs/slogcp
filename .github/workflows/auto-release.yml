@@ -1,0 +1,98 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Tag And Release Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect Release Intent
+        id: release_intent
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch requested release evaluation."
+            exit 0
+          fi
+
+          if [[ -z "$BEFORE_SHA" || "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "No stable previous commit was available; skipping automatic release."
+            exit 0
+          fi
+
+          if git diff --quiet "$BEFORE_SHA" "$GITHUB_SHA" -- version.go; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "version.go did not change in this push; skipping automatic release."
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "version.go changed in this push; release evaluation will continue."
+          fi
+
+      - name: Read Version
+        id: version
+        if: steps.release_intent.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^var Version = "(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' version.go | head -n 1)"
+          if [[ -z "$version" ]]; then
+            echo "Unable to parse Version from version.go" >&2
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $version already exists; release creation is skipped."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create Tag And GitHub Release
+        if: steps.release_intent.outputs.should_release == 'true' && steps.version.outputs.exists == 'false'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const version = '${{ steps.version.outputs.version }}';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = context.sha;
+
+            await github.rest.git.createRef({
+              owner,
+              repo,
+              ref: `refs/tags/${version}`,
+              sha
+            });
+
+            await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: version,
+              target_commitish: sha,
+              name: version,
+              generate_release_notes: true
+            });
+
+            core.info(`Created ${version} for ${sha}.`);
