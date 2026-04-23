@@ -9,6 +9,13 @@
   ],
   "timezone": "America/Chicago",
   "platformAutomerge": false,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "security:floor", "renovate:type-security-floor"],
+    "vulnerabilityFixStrategy": "lowest",
+    "automerge": true
+  },
+  "osvVulnerabilityAlerts": true,
   "postUpdateOptions": [
     "gomodTidy"
   ],
@@ -27,13 +34,11 @@
   ],
   "packageRules": [
     {
-      "description": "Keep go directive current",
-      "matchDatasources": ["golang-version"],
-      "rangeStrategy": "bump"
-    },
-    {
       "description": "Keep the core module pinned to the lowest supported Go patch release",
+      "matchManagers": ["gomod"],
       "matchDatasources": ["golang-version"],
+      "matchDepTypes": ["golang"],
+      "matchDepNames": ["go"],
       "matchFileNames": ["go.mod"],
       "allowedVersions": "/^{{major}}\\.{{minor}}\\.0$/"
     },
@@ -67,6 +72,71 @@
       "labels": ["renovate:type2"],
       "schedule": ["* 4 * * *"],
       "prPriority": 10
+    },
+    {
+      "description": "Normal root Go module dependency updates require maintainer approval from the Dependency Dashboard",
+      "matchManagers": ["gomod"],
+      "matchFileNames": ["go.mod"],
+      "dependencyDashboardApproval": true,
+      "automerge": false,
+      "groupName": "root dependency floor candidates",
+      "labels": ["dependency-scope:root"],
+      "prPriority": 0
+    },
+    {
+      "description": "Security floor updates must not wait for normal root Dependency Dashboard approval",
+      "matchManagers": ["gomod"],
+      "matchFileNames": ["go.mod"],
+      "matchJsonata": ["$exists(vulnerabilityFixVersion)"],
+      "dependencyDashboardApproval": false,
+      "automerge": true,
+      "automergeType": "pr",
+      "labels": ["security", "security:floor", "renovate:type-security-floor"]
+    },
+    {
+      "description": "Keep the root go.mod toolchain directive on the latest released Go toolchain without E2E or release",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["golang-version"],
+      "matchDepTypes": ["toolchain"],
+      "matchDepNames": ["go"],
+      "matchFileNames": ["go.mod"],
+      "dependencyDashboardApproval": false,
+      "automerge": true,
+      "automergeType": "pr",
+      "groupName": "root go toolchain",
+      "labels": ["renovate:toolchain", "dependency-scope:toolchain"],
+      "prPriority": 15
+    },
+    {
+      "description": "Keep checked-in example module go directives on the latest released Go version",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["golang-version"],
+      "matchDepTypes": ["golang"],
+      "matchDepNames": ["go"],
+      "matchFileNames": [".examples/**/go.mod"],
+      "rangeStrategy": "bump",
+      "dependencyDashboardApproval": false,
+      "automerge": true,
+      "automergeType": "pr",
+      "groupName": "examples go directives",
+      "labels": ["renovate:examples", "dependency-scope:examples", "renovate:go-version"],
+      "prPriority": 6
+    },
+    {
+      "description": "Routine latest-compatible updates for checked-in example modules",
+      "matchManagers": ["gomod"],
+      "matchFileNames": [".examples/**"],
+      "groupName": "examples module dependencies",
+      "labels": ["renovate:examples", "dependency-scope:examples"],
+      "schedule": ["* 4 * * *"],
+      "prPriority": 5
+    },
+    {
+      "description": "Do not update the local unpublished slogcp requirement used by examples",
+      "matchManagers": ["gomod"],
+      "matchFileNames": [".examples/**"],
+      "matchPackageNames": ["github.com/pjscruggs/slogcp"],
+      "enabled": false
     }
   ],
   "prHourlyLimit": 0,
