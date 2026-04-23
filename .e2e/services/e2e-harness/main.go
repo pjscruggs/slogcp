@@ -22,6 +22,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +49,7 @@ const (
 	separatorLine                  = "------------------------------------------------------------------------"
 	defaultTracePubSubTopic        = "slogcp-trace-pubsub"
 	defaultTracePubSubSubscription = "slogcp-trace-pubsub-sub"
+	defaultHarnessTimeout          = 25 * time.Minute
 	maxPubSubResourceIDLength      = 255
 )
 
@@ -149,6 +151,11 @@ func run() int {
 func parseHarnessConfig() (harnessConfig, error) {
 	const defaultRegion = "us-central1"
 
+	timeoutDefault, err := harnessTimeoutDefault()
+	if err != nil {
+		return harnessConfig{}, err
+	}
+
 	var (
 		projectID            = flag.String("project-id", os.Getenv("GOOGLE_CLOUD_PROJECT"), "GCP project ID")
 		region               = flag.String("region", os.Getenv("E2E_GCP_REGION"), "Cloud Run region for test deployments")
@@ -163,7 +170,7 @@ func parseHarnessConfig() (harnessConfig, error) {
 		// timeout bounds the full harness run, including service provisioning,
 		// health checks, and sequential scenario execution. The default value
 		// is sized for multi-service runs to complete reliably in CI.
-		timeout = flag.Duration("timeout", 25*time.Minute, "Overall test timeout")
+		timeout = flag.Duration("timeout", timeoutDefault, "Overall test timeout")
 		runID   = flag.String("run-id", os.Getenv("E2E_RUN_ID"), "Identifier used to ensure isolated service names")
 	)
 
@@ -191,6 +198,22 @@ func parseHarnessConfig() (harnessConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// harnessTimeoutDefault returns the default harness timeout from the
+// E2E_TIMEOUT_SECONDS environment variable, falling back to the local default.
+func harnessTimeoutDefault() (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv("E2E_TIMEOUT_SECONDS"))
+	if raw == "" {
+		return defaultHarnessTimeout, nil
+	}
+
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || seconds <= 0 {
+		return 0, fmt.Errorf("E2E_TIMEOUT_SECONDS must be a positive integer number of seconds, got %q", raw)
+	}
+
+	return time.Duration(seconds) * time.Second, nil
 }
 
 // normalizeHarnessConfig applies defaults and validates required values.
