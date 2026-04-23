@@ -15,17 +15,15 @@
 
 set -euo pipefail
 
-# Prepare a Docker build context using committed module manifests.
+# Prepare a Docker build context using generated module manifests.
 # Usage:
-#   prepare-build-context.sh <service-source-dir> <output-dir> [local-slogcp-dir] [extra-source-dir1,extra-source-dir2,...]
+#   prepare-build-context.sh <service-source-dir> <output-dir> <slogcp-graph-dir> [local-slogcp-dir] [extra-source-dir1,extra-source-dir2,...]
 
 SERVICE_SOURCE_DIR="${1:-}"
 OUTPUT_DIR="${2:-}"
-SLOGCP_DIR="${3:-}"
-EXTRA_SOURCE_DIRS="${4:-}"
-
-TRACEPROTO_MODULE="github.com/pjscruggs/slogcp-e2e-internal/services/traceproto"
-SLOGCP_MODULE="github.com/pjscruggs/slogcp"
+SLOGCP_GRAPH_DIR="${3:-}"
+LOCAL_SLOGCP_DIR="${4:-}"
+EXTRA_SOURCE_DIRS="${5:-}"
 
 preview_build_context_files() {
     local dir="$1"
@@ -35,21 +33,6 @@ preview_build_context_files() {
             return 0
         fi
         return "${statuses[0]:-1}"
-    fi
-}
-
-copy_module_manifest() {
-    local src_dir="$1"
-    local dest_dir="$2"
-
-    if [[ ! -f "$src_dir/go.mod" ]]; then
-        echo "Error: committed go.mod not found in $src_dir" >&2
-        exit 1
-    fi
-
-    cp "$src_dir/go.mod" "$dest_dir/go.mod"
-    if [[ -f "$src_dir/go.sum" ]]; then
-        cp "$src_dir/go.sum" "$dest_dir/go.sum"
     fi
 }
 
@@ -87,47 +70,21 @@ copy_extra_source_dir() {
     cp -R "$extra_dir"/. "$dest_dir/$base_name"/
 }
 
-rewrite_replace_directive() {
-    local go_mod_path="$1"
-    local module_path="$2"
-    local replacement_path="$3"
-    local tmp_path
-
-    tmp_path="$(mktemp)"
-
-    awk -v module_path="$module_path" -v replacement_path="$replacement_path" '
-        BEGIN {
-            replace_line = "replace " module_path " => " replacement_path
-            updated = 0
-        }
-        $1 == "replace" && $2 == module_path && $3 == "=>" {
-            if (updated == 0) {
-                print replace_line
-                updated = 1
-            }
-            next
-        }
-        {
-            print
-        }
-        END {
-            if (updated == 0) {
-                print ""
-                print replace_line
-            }
-        }
-    ' "$go_mod_path" > "$tmp_path"
-
-    mv "$tmp_path" "$go_mod_path"
-}
-
-if [[ -z "$SERVICE_SOURCE_DIR" ]] || [[ -z "$OUTPUT_DIR" ]]; then
-    echo "Error: Usage: prepare-build-context.sh <service-source-dir> <output-dir> [local-slogcp-dir] [extra-source-dir1,extra-source-dir2,...]" >&2
+if [[ -z "$SERVICE_SOURCE_DIR" ]] || [[ -z "$OUTPUT_DIR" ]] || [[ -z "$SLOGCP_GRAPH_DIR" ]]; then
+    echo "Error: Usage: prepare-build-context.sh <service-source-dir> <output-dir> <slogcp-graph-dir> [local-slogcp-dir] [extra-source-dir1,extra-source-dir2,...]" >&2
     exit 1
 fi
 
 if [[ ! -d "$SERVICE_SOURCE_DIR" ]]; then
     echo "Error: service source directory not found: $SERVICE_SOURCE_DIR" >&2
+    exit 1
+fi
+if [[ ! -d "$SLOGCP_GRAPH_DIR" ]]; then
+    echo "Error: slogcp graph directory not found: $SLOGCP_GRAPH_DIR" >&2
+    exit 1
+fi
+if [[ ! -f "$SLOGCP_GRAPH_DIR/go.mod" ]]; then
+    echo "Error: slogcp graph directory does not contain go.mod: $SLOGCP_GRAPH_DIR" >&2
     exit 1
 fi
 
@@ -137,8 +94,9 @@ echo "=== Preparing Docker build context ==="
 echo "  Service source: $SERVICE_SOURCE_DIR"
 echo "  Output dir: $OUTPUT_DIR"
 echo "  Build type: $BUILD_TYPE"
-if [[ -n "$SLOGCP_DIR" ]]; then
-    echo "  Local slogcp source: $SLOGCP_DIR"
+echo "  Slogcp graph source: $SLOGCP_GRAPH_DIR"
+if [[ -n "$LOCAL_SLOGCP_DIR" ]]; then
+    echo "  Local slogcp source: $LOCAL_SLOGCP_DIR"
 fi
 if [[ -n "$EXTRA_SOURCE_DIRS" ]]; then
     echo "  Extra sources: $EXTRA_SOURCE_DIRS"
@@ -147,7 +105,6 @@ fi
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-copy_module_manifest "$SERVICE_SOURCE_DIR" "$OUTPUT_DIR"
 copy_service_sources "$SERVICE_SOURCE_DIR" "$OUTPUT_DIR"
 
 if [[ -f "$SERVICE_SOURCE_DIR/Dockerfile" ]]; then
@@ -157,12 +114,12 @@ if [[ -f "$SERVICE_SOURCE_DIR/.dockerignore" ]]; then
     cp "$SERVICE_SOURCE_DIR/.dockerignore" "$OUTPUT_DIR/.dockerignore"
 fi
 
-if [[ -n "$SLOGCP_DIR" ]]; then
-    if [[ ! -d "$SLOGCP_DIR" ]]; then
-        echo "Error: slogcp directory not found: $SLOGCP_DIR" >&2
+if [[ -n "$LOCAL_SLOGCP_DIR" ]]; then
+    if [[ ! -d "$LOCAL_SLOGCP_DIR" ]]; then
+        echo "Error: local slogcp directory not found: $LOCAL_SLOGCP_DIR" >&2
         exit 1
     fi
-    copy_slogcp_workspace "$SLOGCP_DIR" "$OUTPUT_DIR"
+    copy_slogcp_workspace "$LOCAL_SLOGCP_DIR" "$OUTPUT_DIR"
 fi
 
 if [[ -n "$EXTRA_SOURCE_DIRS" ]]; then
@@ -179,14 +136,6 @@ if [[ -n "$EXTRA_SOURCE_DIRS" ]]; then
         echo "Copying extra source directory $trimmed_dir"
         copy_extra_source_dir "$trimmed_dir" "$OUTPUT_DIR"
     done
-fi
-
-GO_MOD_PATH="$OUTPUT_DIR/go.mod"
-if [[ -n "$SLOGCP_DIR" ]]; then
-    rewrite_replace_directive "$GO_MOD_PATH" "$SLOGCP_MODULE" "./slogcp"
-fi
-if [[ -d "$OUTPUT_DIR/traceproto" ]]; then
-    rewrite_replace_directive "$GO_MOD_PATH" "$TRACEPROTO_MODULE" "./traceproto"
 fi
 
 cat > "$OUTPUT_DIR/.build-manifest" <<EOF

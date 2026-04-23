@@ -41,13 +41,18 @@ if [[ -f /workspace/go_version.txt ]]; then
     SOURCE_DESC="/workspace/go_version.txt"
 else
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    GO_VERSION_FILE="${GO_VERSION_FILE:-$SCRIPT_DIR/.toolchain/go.version}"
-    if [[ ! -f "$GO_VERSION_FILE" ]]; then
-        echo "Error: Go version file not found at $GO_VERSION_FILE" >&2
+    RESOLVER_SCRIPT="${GO_VERSION_RESOLVER:-$SCRIPT_DIR/../../scripts/resolve_latest_go_version.py}"
+    PYTHON_BIN="$(command -v python3 || command -v python || true)"
+    if [[ -z "$PYTHON_BIN" ]]; then
+        echo "Error: python3 or python is required to resolve the latest Go version" >&2
         exit 1
     fi
-    GO_VERSION=$(tr -d '[:space:]' < "$GO_VERSION_FILE")
-    SOURCE_DESC="$GO_VERSION_FILE"
+    if [[ ! -f "$RESOLVER_SCRIPT" ]]; then
+        echo "Error: Go version resolver not found at $RESOLVER_SCRIPT" >&2
+        exit 1
+    fi
+    GO_VERSION="$("$PYTHON_BIN" "$RESOLVER_SCRIPT")"
+    SOURCE_DESC="$RESOLVER_SCRIPT"
     echo "$GO_VERSION" > /workspace/go_version.txt
 fi
 

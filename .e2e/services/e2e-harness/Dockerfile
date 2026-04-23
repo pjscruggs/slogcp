@@ -6,17 +6,11 @@ ARG DISTROLESS_TAG
 FROM golang:${GO_VERSION}-${DEBIAN_CODENAME} AS builder
 
 ENV GOTOOLCHAIN=auto
-ENV GOFLAGS=-mod=mod
 WORKDIR /build
-# Copy module definition first to maximize cache reuse. The harness module
-# intentionally omits a committed go.sum file so the build can operate without
-# it; copying go.mod alone allows go to resolve dependencies in module mode.
-COPY go.mod ./
-# Bring in the traceproto module definition before downloading dependencies so
-# the local replace directive in go.mod can be resolved by the Go toolchain.
-COPY traceproto/go.mod ./traceproto/go.mod
-# Download dependencies early to warm the module cache. Modules can be resolved
-# without a committed go.sum because GOFLAGS enables automatic updates.
+# Copy generated module and workspace metadata first to maximize cache reuse.
+COPY go.mod go.sum go.work* ./
+COPY traceproto/go.mod traceproto/go.sum ./traceproto/
+# Download dependencies early to warm the module cache.
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 # Copy the remaining source
 COPY . .

@@ -15,18 +15,20 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(pwd)"
-VERSION_FILE="$ROOT_DIR/.toolchain/go.version"
-DEBIAN_FILE="$ROOT_DIR/.toolchain/debian.env"
+ROOT_DIR="${ROOT_DIR_OVERRIDE:-$(pwd)}"
+WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
+GO_VERSION_FILE="${GO_VERSION_FILE_OVERRIDE:-$WORKSPACE_DIR/go_version.txt}"
+DEBIAN_CODENAME_FILE="${DEBIAN_CODENAME_FILE_OVERRIDE:-$WORKSPACE_DIR/debian_codename.txt}"
+DISTROLESS_TAG_FILE="${DISTROLESS_TAG_FILE_OVERRIDE:-$WORKSPACE_DIR/distroless_tag.txt}"
 
-if [[ ! -f "$VERSION_FILE" ]]; then
-    echo "Go version file not found at $VERSION_FILE" >&2
+if [[ ! -f "$GO_VERSION_FILE" ]]; then
+    echo "Go version file not found at $GO_VERSION_FILE" >&2
     exit 1
 fi
 
-GO_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+GO_VERSION="$(tr -d '[:space:]' < "$GO_VERSION_FILE")"
 if [[ -z "$GO_VERSION" ]]; then
-    echo "Go version file is empty" >&2
+    echo "Go version file is empty: $GO_VERSION_FILE" >&2
     exit 1
 fi
 
@@ -37,20 +39,24 @@ if [[ -z "${GO_MAJOR:-}" || -z "${GO_MINOR:-}" ]]; then
 fi
 GO_VERSION_MAJOR_MINOR="${GO_MAJOR}.${GO_MINOR}"
 
-if [[ ! -f "$DEBIAN_FILE" ]]; then
-    echo "Debian configuration not found at $DEBIAN_FILE" >&2
+if [[ ! -f "$DEBIAN_CODENAME_FILE" ]]; then
+    echo "Debian codename file not found at $DEBIAN_CODENAME_FILE" >&2
+    exit 1
+fi
+if [[ ! -f "$DISTROLESS_TAG_FILE" ]]; then
+    echo "Distroless tag file not found at $DISTROLESS_TAG_FILE" >&2
     exit 1
 fi
 
-# shellcheck disable=SC1090
-source "$DEBIAN_FILE"
+DEBIAN_CODENAME="$(tr -d '[:space:]' < "$DEBIAN_CODENAME_FILE")"
+DISTROLESS_TAG="$(tr -d '[:space:]' < "$DISTROLESS_TAG_FILE")"
 
-if [[ -z "${DEBIAN_CODENAME:-}" ]]; then
-    echo "DEBIAN_CODENAME missing from $DEBIAN_FILE" >&2
+if [[ -z "$DEBIAN_CODENAME" ]]; then
+    echo "Debian codename file is empty: $DEBIAN_CODENAME_FILE" >&2
     exit 1
 fi
-if [[ -z "${DISTROLESS_TAG:-}" ]]; then
-    echo "DISTROLESS_TAG missing from $DEBIAN_FILE" >&2
+if [[ -z "$DISTROLESS_TAG" ]]; then
+    echo "Distroless tag file is empty: $DISTROLESS_TAG_FILE" >&2
     exit 1
 fi
 
@@ -62,29 +68,10 @@ Verifying toolchain configuration (canonical values)
   Distroless tag      : $DISTROLESS_TAG
 EOF_CHECK
 
-verify_go_mod() {
-    local requested_path="$1"
-    local path="$requested_path"
-
-    if [[ ! -f "$path" ]]; then
-        local template_path="${requested_path}.template"
-        if [[ -f "$template_path" ]]; then
-            path="$template_path"
-        else
-            echo "Skipping Go module verification because neither $requested_path nor $template_path exists."
-            return
-        fi
-    fi
-
-    local go_pattern="^go (${GO_VERSION_MAJOR_MINOR}|\\{\\{GO_VERSION_MAJOR_MINOR\\}\\})[[:space:]]*$"
-    if ! grep -Eq "$go_pattern" "$path"; then
-        echo "Mismatch: expected 'go ${GO_VERSION_MAJOR_MINOR}' in $path" >&2
-        exit 1
-    fi
-
-    local toolchain_pattern="^toolchain (go${GO_VERSION}|\\{\\{GO_TOOLCHAIN\\}\\})[[:space:]]*$"
-    if ! grep -Eq "$toolchain_pattern" "$path"; then
-        echo "Mismatch: expected 'toolchain go${GO_VERSION}' in $path" >&2
+verify_metadata() {
+    local path="$1"
+    if ! grep -Eq '"module_path"[[:space:]]*:[[:space:]]*"[^"]+"' "$path"; then
+        echo "missing module_path in $path" >&2
         exit 1
     fi
 }
@@ -113,12 +100,22 @@ verify_dockerfile() {
     fi
 }
 
-while IFS= read -r go_mod; do
-    verify_go_mod "$go_mod"
-done < <(find "$ROOT_DIR/services" -name go.mod -print | sort)
+if find "$ROOT_DIR/services" \( -name go.mod -o -name go.sum \) -print -quit | grep -q .; then
+    echo "Checked-in go.mod/go.sum files are not allowed under $ROOT_DIR/services" >&2
+    exit 1
+fi
+
+if [[ ! -f "$ROOT_DIR/scripts/generate_go_module.py" ]]; then
+    echo "Module generator not found at $ROOT_DIR/scripts/generate_go_module.py" >&2
+    exit 1
+fi
+
+while IFS= read -r metadata_file; do
+    verify_metadata "$metadata_file"
+done < <(find "$ROOT_DIR/services" -name go.module.json -print | sort)
 
 while IFS= read -r dockerfile; do
     verify_dockerfile "$dockerfile"
 done < <(find "$ROOT_DIR/services" -name Dockerfile -print | sort)
 
-echo "Toolchain configuration checks passed."
+echo "Dynamic toolchain and module metadata checks passed."

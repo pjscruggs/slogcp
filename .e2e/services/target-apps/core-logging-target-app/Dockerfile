@@ -9,17 +9,16 @@ ENV GOTOOLCHAIN=auto
 
 WORKDIR /build
 
-# Pre-fetch module dependencies to leverage Docker layer caching
-COPY go.mod ./
-COPY slogcp ./slogcp
+# Pre-fetch generated module and workspace metadata to leverage Docker layer caching
+COPY go.mod go.sum go.work* ./
+COPY slogcp/go.mod slogcp/go.sum ./slogcp/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 # Copy the remaining build context (service sources, optional slogcp replace)
 COPY . .
 
-# Refresh module metadata after copying sources
+# Refresh the workspace download cache after copying sources
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
-RUN --mount=type=cache,target=/go/pkg/mod go mod tidy
 
 # Verify module graph after context copy
 RUN --mount=type=cache,target=/go/pkg/mod go mod verify

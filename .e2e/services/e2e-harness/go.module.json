@@ -1,0 +1,11 @@
+{
+  "module_path": "github.com/pjscruggs/slogcp-e2e-internal/services/e2e-harness",
+  "seed_requirements": {},
+  "pinned_modules": [
+    {
+      "module_path": "github.com/pjscruggs/slogcp-e2e-internal/services/traceproto",
+      "version": "v0.0.0",
+      "replace_path": "./traceproto"
+    }
+  ]
+}

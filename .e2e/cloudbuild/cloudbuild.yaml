@@ -17,6 +17,9 @@ substitutions:
   _CALLER_SERVICE_ACCOUNT: 'custom-cloudbuild-runner@slogcp.iam.gserviceaccount.com'
   _GITHUB_TOKEN_SECRET_VERSION: ''
   _E2E_SOURCE_MODE: 'github'
+  _E2E_DEPENDENCY_MODE: 'floor'
+  _E2E_TOOLCHAIN_MODE: 'repo'
+  _E2E_REPO_GO_VERSION: ''
   _SLOGCP_REF_OVERRIDE: ''
   _TRACE_PUBSUB_TOPIC: 'slogcp-trace-pubsub'
   _TRACE_PUBSUB_SUBSCRIPTION: 'slogcp-trace-pubsub-sub'
@@ -35,6 +38,22 @@ steps:
         else
           export BUILD_TIME="${_BUILD_TIME}"
         fi
+        case "${_E2E_DEPENDENCY_MODE}" in
+          floor|latest-slogcp) ;;
+          *)
+            echo "Error: unsupported _E2E_DEPENDENCY_MODE '${_E2E_DEPENDENCY_MODE}'" >&2
+            exit 1
+            ;;
+        esac
+        case "${_E2E_TOOLCHAIN_MODE}" in
+          repo|latest) ;;
+          *)
+            echo "Error: unsupported _E2E_TOOLCHAIN_MODE '${_E2E_TOOLCHAIN_MODE}'" >&2
+            exit 1
+            ;;
+        esac
+        echo "${_E2E_DEPENDENCY_MODE}" > /workspace/dependency_mode.txt
+        echo "${_E2E_TOOLCHAIN_MODE}" > /workspace/toolchain_mode.txt
         printf '[init]\n  defaultBranch = main\n' >> ~/.gitconfig
         export ARTIFACT_REGISTRY_REPO="${_ARTIFACT_REGISTRY_REPO}"
         export GCS_BUCKET_NAME="${_GCS_BUCKET_NAME}"
@@ -70,6 +89,7 @@ steps:
         else
           STREAM_TAG_DEFAULTED="main"
         fi
+        STREAM_TAG_DEFAULTED="$${STREAM_TAG_DEFAULTED}-${_E2E_DEPENDENCY_MODE}"
         echo "$$STREAM_TAG_DEFAULTED" > /workspace/stream_tag_defaulted.txt
         APP_VERSION="$$STREAM_TAG_DEFAULTED-${_PR_SHA:-${_SHORT_SHA}}"
         echo "$$APP_VERSION" > /workspace/app_version.txt
@@ -100,6 +120,8 @@ steps:
         echo "Computed build variables:"
         echo "  E2E_RUN_ID (full): $$RUN_ID"
         echo "  E2E_RUN_ID_SHORT (32): $$E2E_RUN_ID_SHORT"
+        echo "  DEPENDENCY_MODE: ${_E2E_DEPENDENCY_MODE}"
+        echo "  TOOLCHAIN_MODE: ${_E2E_TOOLCHAIN_MODE}"
         echo "  SUFFIX (rid_short): $$SUFFIX"
         echo "  STREAM_TAG_DEFAULTED: $$STREAM_TAG_DEFAULTED"
         echo "  APP_VERSION: $$APP_VERSION"
@@ -110,21 +132,19 @@ steps:
         echo "  Trace Pub/Sub topic: $$TRACE_PUBSUB_TOPIC_ID"
         echo "  Trace Pub/Sub subscription: $$TRACE_PUBSUB_SUBSCRIPTION_ID"
     id: 'Compute build variables'
-  - name: 'ubuntu'
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     args:
       - -c
       - |
         set -euo pipefail
-
-        VERSION_FILE=".toolchain/go.version"
-        if [ ! -f "$$VERSION_FILE" ]; then
-          echo "Error: Go version file not found at $$VERSION_FILE" >&2
-          exit 1
+        if [ "${_E2E_TOOLCHAIN_MODE}" = "latest" ]; then
+          GO_VERSION="$$(python3 scripts/resolve_latest_go_version.py)"
+        else
+          GO_VERSION="${_E2E_REPO_GO_VERSION}"
         fi
-        GO_VERSION="$$(tr -d '[:space:]' < "$$VERSION_FILE")"
         if [ -z "$$GO_VERSION" ]; then
-          echo "Error: Go version value is empty" >&2
+          echo "Error: failed to resolve Go version for toolchain mode ${_E2E_TOOLCHAIN_MODE}" >&2
           exit 1
         fi
 
@@ -136,27 +156,15 @@ steps:
         GO_VERSION_MAJOR_MINOR="$$GO_MAJOR.$$GO_MINOR"
         GO_TOOLCHAIN="go$$GO_VERSION"
 
-        DEBIAN_FILE=".toolchain/debian.env"
-        if [ ! -f "$$DEBIAN_FILE" ]; then
-          echo "Error: Debian config file not found at $$DEBIAN_FILE" >&2
-          exit 1
-        fi
-
-        # shellcheck disable=SC1090
-        source "$$DEBIAN_FILE"
-
-        if [ -z "${DEBIAN_CODENAME:-}" ]; then
-          echo "Error: DEBIAN_CODENAME missing from $$DEBIAN_FILE" >&2
-          exit 1
-        fi
-        if [ -z "${DISTROLESS_TAG:-}" ]; then
-          echo "Error: DISTROLESS_TAG missing from $$DEBIAN_FILE" >&2
-          exit 1
-        fi
+        eval "$$(python3 scripts/resolve_latest_google_cloud_debian.py)"
 
         printf '%s\n' "$$GO_VERSION" > /workspace/go_version.txt
         printf '%s\n' "$$DEBIAN_CODENAME" > /workspace/debian_codename.txt
         printf '%s\n' "$$DISTROLESS_TAG" > /workspace/distroless_tag.txt
+        rm -rf /workspace/go
+        curl -fsSL "https://go.dev/dl/go$${GO_VERSION}.linux-amd64.tar.gz" -o /workspace/go.tgz
+        tar -C /workspace -xzf /workspace/go.tgz
+        rm -f /workspace/go.tgz
 
         printf 'GO_VERSION=%s\nGO_VERSION_MAJOR_MINOR=%s\nGO_TOOLCHAIN=%s\nDEBIAN_CODENAME=%s\nDISTROLESS_TAG=%s\n' \
           "$$GO_VERSION" \
@@ -166,6 +174,7 @@ steps:
           "$$DISTROLESS_TAG" > /workspace/.tool-versions.env
 
         echo "Bootstrapped toolchain configuration:"
+        echo "  TOOLCHAIN_MODE=${_E2E_TOOLCHAIN_MODE}"
         echo "  GO_VERSION=$$GO_VERSION"
         echo "  GO_VERSION_MAJOR_MINOR=$$GO_VERSION_MAJOR_MINOR"
         echo "  GO_TOOLCHAIN=$$GO_TOOLCHAIN"
@@ -270,48 +279,97 @@ steps:
         echo "Preparing Docker build contexts..."
         
         BUILD_TYPE="$$(cat /workspace/build_type.txt)"
-        SLOGCP_DIR=""
-        if [ "$$BUILD_TYPE" = "pr" ] || [ "$$BUILD_TYPE" = "local" ]; then
-          SLOGCP_DIR="/workspace/lib-repo-checkout"
-          echo "$$BUILD_TYPE build: will include local slogcp in build context"
-        else
-          echo "Main build: will use remote slogcp reference"
-        fi
+        SLOGCP_GRAPH_DIR="/workspace/lib-repo-checkout"
+        LOCAL_SLOGCP_DIR="/workspace/lib-repo-checkout"
+        echo "$$BUILD_TYPE build: will include the staged slogcp checkout in every build context"
 
         TRACEPROTO_DIR="/workspace/services/traceproto"
+        GRPC_ADAPTER_DIR=""
+        if [[ -f /workspace/slogcp-grpc-adapter/go.mod ]]; then
+          GRPC_ADAPTER_DIR="/workspace/slogcp-grpc-adapter"
+          echo "Local source mode: will include staged slogcp-grpc-adapter checkout in gRPC build contexts"
+        fi
+        TRACE_TARGET_EXTRA_DIRS="$$TRACEPROTO_DIR"
+        TRACE_GRPC_EXTRA_DIRS="$$TRACEPROTO_DIR"
+        if [[ -n "$$GRPC_ADAPTER_DIR" ]]; then
+          TRACE_TARGET_EXTRA_DIRS="$$TRACE_TARGET_EXTRA_DIRS,$$GRPC_ADAPTER_DIR"
+          TRACE_GRPC_EXTRA_DIRS="$$TRACE_GRPC_EXTRA_DIRS,$$GRPC_ADAPTER_DIR"
+        fi
 
         /workspace/prepare-build-context.sh \
           /workspace/services/target-apps/core-logging-target-app \
           /workspace/build-context/core \
-          "$$SLOGCP_DIR"
+          "$$SLOGCP_GRAPH_DIR" \
+          "$$LOCAL_SLOGCP_DIR"
 
         /workspace/prepare-build-context.sh \
           /workspace/services/target-apps/trace-target-app \
           /workspace/build-context/trace-target \
-          "$$SLOGCP_DIR" \
-          "$$TRACEPROTO_DIR"
+          "$$SLOGCP_GRAPH_DIR" \
+          "$$LOCAL_SLOGCP_DIR" \
+          "$$TRACE_TARGET_EXTRA_DIRS"
 
         /workspace/prepare-build-context.sh \
           /workspace/services/target-apps/trace-downstream-http \
           /workspace/build-context/trace-http \
-          "$$SLOGCP_DIR"
+          "$$SLOGCP_GRAPH_DIR" \
+          "$$LOCAL_SLOGCP_DIR"
 
         /workspace/prepare-build-context.sh \
           /workspace/services/target-apps/trace-downstream-grpc \
           /workspace/build-context/trace-grpc \
-          "$$SLOGCP_DIR" \
-          "$$TRACEPROTO_DIR"
+          "$$SLOGCP_GRAPH_DIR" \
+          "$$LOCAL_SLOGCP_DIR" \
+          "$$TRACE_GRPC_EXTRA_DIRS"
 
         echo "Preparing e2e-harness build context..."
         /workspace/prepare-build-context.sh \
           /workspace/services/e2e-harness \
           /workspace/build-context/e2e-harness \
-          "$$SLOGCP_DIR" \
+          "$$SLOGCP_GRAPH_DIR" \
+          "$$LOCAL_SLOGCP_DIR" \
           "$$TRACEPROTO_DIR"
 
         echo "Build context preparation complete"
     id: 'Prepare build context'
     waitFor: ['Extract slogcp metadata']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        export PATH="/workspace/go/bin:$$PATH"
+        export GO_BINARY="/workspace/go/bin/go"
+        GO_VERSION="$$(cat /workspace/go_version.txt)"
+        SLOGCP_REFERENCE="$$(cat /workspace/slogcp_reference.txt)"
+        python3 scripts/generate_go_module.py \
+          --module-dir /workspace/build-context/core \
+          --module-dir /workspace/build-context/trace-target \
+          --module-dir /workspace/build-context/trace-http \
+          --module-dir /workspace/build-context/trace-grpc \
+          --module-dir /workspace/build-context/e2e-harness \
+          --go-version "$$GO_VERSION" \
+          --slogcp-dir /workspace/lib-repo-checkout \
+          --slogcp-reference "$$SLOGCP_REFERENCE" \
+          --dependency-mode "${_E2E_DEPENDENCY_MODE}" \
+          --slogcp-shared-ceiling-scope package \
+          --emit-dependency-report /workspace/dependency-report.json
+    id: 'Generate module files'
+    waitFor: ['Prepare build context']
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [ -f /workspace/dependency-report.json ]; then
+          STREAM_TAG_DEFAULTED="$$(cat /workspace/stream_tag_defaulted.txt)"
+          RUN_ID="$$(cat /workspace/e2e_run_id.txt)"
+          gsutil cp /workspace/dependency-report.json "gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA:-${_SHORT_SHA}}/$${RUN_ID}/dependency-report.json"
+        fi
+    id: 'Upload dependency report'
+    waitFor: ['Generate module files']
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     args:
@@ -355,7 +413,7 @@ steps:
           /workspace/build-context/e2e-harness/Dockerfile \
           e2e-harness
     id: 'Evaluate image cache'
-    waitFor: ['Prepare build context']
+    waitFor: ['Upload dependency report']
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     args:
@@ -678,6 +736,7 @@ steps:
           --set-env-vars TRACE_TARGET_IMAGE=$$TRACE_TARGET_IMAGE \
           --set-env-vars TRACE_HTTP_IMAGE=$$TRACE_HTTP_IMAGE \
           --set-env-vars TRACE_GRPC_IMAGE=$$TRACE_GRPC_IMAGE \
+          --args=--timeout=${_E2E_HARNESS_TIMEOUT_SECONDS}s \
           --max-retries 0 \
           --task-timeout "${_E2E_HARNESS_TIMEOUT_SECONDS}s" \
           --quiet

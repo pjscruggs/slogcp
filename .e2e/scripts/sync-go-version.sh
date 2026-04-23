@@ -17,112 +17,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-VERSION_FILE="${ROOT_DIR}/.toolchain/go.version"
+PYTHON_BIN="$(command -v python3 || command -v python || true)"
+RESOLVER_SCRIPT="${ROOT_DIR}/scripts/resolve_latest_go_version.py"
 
-if [[ ! -f "$VERSION_FILE" ]]; then
-    echo "Error: canonical Go version file not found at $VERSION_FILE" >&2
+if [[ -z "$PYTHON_BIN" ]]; then
+    echo "Error: python3 or python is required to resolve the latest stable Go version" >&2
+    exit 1
+fi
+if [[ ! -f "$RESOLVER_SCRIPT" ]]; then
+    echo "Error: Go resolver not found at $RESOLVER_SCRIPT" >&2
     exit 1
 fi
 
-GO_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
-if [[ -z "$GO_VERSION" ]]; then
-    echo "Error: $VERSION_FILE is empty" >&2
-    exit 1
-fi
+GO_VERSION="$("$PYTHON_BIN" "$RESOLVER_SCRIPT")"
 
-IFS='.' read -r GO_MAJOR GO_MINOR GO_PATCH <<< "$GO_VERSION"
-if [[ -z "${GO_MAJOR:-}" || -z "${GO_MINOR:-}" ]]; then
-    echo "Error: Go version must include major and minor components (found '$GO_VERSION')" >&2
-    exit 1
-fi
-GO_VERSION_MAJOR_MINOR="${GO_MAJOR}.${GO_MINOR}"
-GO_TOOLCHAIN="toolchain go${GO_VERSION}"
-
-echo "Syncing Go version to $GO_VERSION (go directive ${GO_VERSION_MAJOR_MINOR})"
-
-update_go_mod() {
-    local path="$1"
-    local tmp
-    tmp="$(mktemp)"
-    awk -v gom="$GO_VERSION_MAJOR_MINOR" -v gotool="$GO_TOOLCHAIN" '
-        BEGIN {
-            go_updated = 0;
-            toolchain_updated = 0;
-        }
-        /^go[[:space:]]+/ && go_updated == 0 {
-            print "go " gom;
-            go_updated = 1;
-            next;
-        }
-        /^toolchain[[:space:]]+/ && toolchain_updated == 0 {
-            print gotool;
-            toolchain_updated = 1;
-            next;
-        }
-        {
-            print;
-        }
-        END {
-            if (go_updated == 0) {
-                print "go " gom;
-            }
-            if (toolchain_updated == 0) {
-                print gotool;
-            }
-        }
-    ' "$path" > "$tmp"
-    mv "$tmp" "$path"
-    local rel="${path#${ROOT_DIR}/}"
-    echo "  updated ${rel}"
-}
-
-update_dockerfile() {
-    local path="$1"
-    local tmp
-    tmp="$(mktemp)"
-    awk '
-        BEGIN {
-            go_arg_updated = 0;
-            debian_arg_updated = 0;
-            distroless_arg_updated = 0;
-        }
-        /^ARG[[:space:]]+GO_VERSION([[:space:]]*=.*)?[[:space:]]*$/ && go_arg_updated == 0 {
-            print "ARG GO_VERSION";
-            go_arg_updated = 1;
-            next;
-        }
-        /^ARG[[:space:]]+DEBIAN_CODENAME([[:space:]]*=.*)?[[:space:]]*$/ && debian_arg_updated == 0 {
-            print "ARG DEBIAN_CODENAME";
-            debian_arg_updated = 1;
-            next;
-        }
-        /^ARG[[:space:]]+DISTROLESS_TAG([[:space:]]*=.*)?[[:space:]]*$/ && distroless_arg_updated == 0 {
-            print "ARG DISTROLESS_TAG";
-            distroless_arg_updated = 1;
-            next;
-        }
-        { print }
-        END {
-            if (go_arg_updated == 0 || debian_arg_updated == 0 || distroless_arg_updated == 0) {
-                exit 64;
-            }
-        }
-    ' "$path" > "$tmp" || {
-        rm -f "$tmp"
-        echo "Error: could not locate canonical toolchain ARG lines in $path" >&2
-        exit 1
-    }
-    mv "$tmp" "$path"
-    local rel="${path#${ROOT_DIR}/}"
-    echo "  updated ${rel}"
-}
-
-while IFS= read -r go_mod; do
-    update_go_mod "$go_mod"
-done < <(find "${ROOT_DIR}/services" -name go.mod -print | sort)
-
-while IFS= read -r dockerfile; do
-    update_dockerfile "$dockerfile"
-done < <(find "${ROOT_DIR}/services" -name Dockerfile -print | sort)
-
-echo "Go version sync complete."
+echo ".e2e no longer syncs checked-in go.mod/go.sum files."
+echo "Generated .e2e modules will currently use the latest stable Go release: $GO_VERSION"

@@ -1,0 +1,11 @@
+{
+  "module_path": "github.com/pjscruggs/slogcp-e2e-internal/services/target-apps/core-logging-target-app",
+  "seed_requirements": {},
+  "pinned_modules": [
+    {
+      "module_path": "github.com/pjscruggs/slogcp",
+      "version_source": "slogcp_reference",
+      "replace_path": "./slogcp"
+    }
+  ]
+}

@@ -9,17 +9,15 @@ ENV GOTOOLCHAIN=auto
 
 WORKDIR /build
 
-# Pre-fetch module dependencies to leverage Docker layer caching
-COPY go.mod ./
-COPY slogcp ./slogcp
-COPY traceproto ./traceproto
+# Pre-fetch generated module and workspace metadata to leverage Docker layer caching
+COPY go.mod go.sum go.work* ./
+COPY slogcp/go.mod slogcp/go.sum ./slogcp/
+COPY traceproto/go.mod traceproto/go.sum ./traceproto/
+COPY slogcp-grpc-adapter/go.mod slogcp-grpc-adapter/go.sum ./slogcp-grpc-adapter/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 # Copy the remaining build context
 COPY . .
-
-# Ensure go.mod/go.sum capture all imports before building
-RUN --mount=type=cache,target=/go/pkg/mod go mod tidy
 
 # Refresh module metadata after copying service sources
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
