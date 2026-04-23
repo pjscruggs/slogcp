@@ -1,0 +1,76 @@
+name: Weekly Latest Dependency E2E
+
+on:
+  schedule:
+    - cron: '17 9 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  latest_dependency_e2e:
+    name: Weekly Latest Dependency E2E (GCP)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GCS_BUCKET_NAME: slogcp-e2e-artifacts
+      GCS_SOURCE_STAGING_DIR: gs://slogcp-e2e-artifacts/cloudbuild/source
+      GCP_PROJECT_ID: slogcp
+      GITHUB_TOKEN_SECRET_VERSION: projects/slogcp/secrets/GitHub-us-central1-connection-github-oauthtoken-34ff15/versions/latest
+      RUN_REGION: us-central1
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: GCP_SERVICE_ACCOUNT_EMAIL
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Run Latest Dependency E2E Cloud Build
+        id: cloud_build
+        shell: bash
+        run: |
+          bash .github/scripts/run_e2e_cloud_build.sh \
+            --source-mode local \
+            --trusted-e2e-root .e2e \
+            --dependency-mode latest-slogcp \
+            --toolchain-mode latest
+        env:
+          LIB_REPO_FULL_NAME: ${{ github.repository }}
+          PR_SHA: ${{ github.sha }}
+          LIB_RUN_ID: ${{ github.run_id }}
+          GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+          GITHUB_TOKEN_SECRET_VERSION: ${{ env.GITHUB_TOKEN_SECRET_VERSION }}
+          RUN_REGION: ${{ env.RUN_REGION }}
+          GCS_BUCKET_NAME: ${{ env.GCS_BUCKET_NAME }}
+          GCS_SOURCE_STAGING_DIR: ${{ env.GCS_SOURCE_STAGING_DIR }}
+
+      - name: Summarize Cloud Build
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Weekly Latest Dependency E2E"
+            echo
+            echo "- Status: ${{ steps.cloud_build.outputs.build_status }}"
+            echo "- Build ID: ${{ steps.cloud_build.outputs.build_id }}"
+            echo "- Logs: ${{ steps.cloud_build.outputs.build_log_url }}"
+            echo "- Artifacts: ${{ steps.cloud_build.outputs.artifacts_url }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail workflow when E2E failed
+        if: steps.cloud_build.outputs.build_status != 'SUCCESS'
+        run: |
+          echo "E2E build status: ${{ steps.cloud_build.outputs.build_status }}"
+          exit 1

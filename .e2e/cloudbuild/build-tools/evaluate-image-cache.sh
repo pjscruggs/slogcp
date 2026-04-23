@@ -61,6 +61,8 @@ fi
 GO_VERSION="$(cat /workspace/go_version.txt)"
 DEBIAN_CODENAME="$(cat /workspace/debian_codename.txt)"
 DISTROLESS_TAG="$(cat /workspace/distroless_tag.txt)"
+DEPENDENCY_MODE="$(cat /workspace/dependency_mode.txt 2>/dev/null || echo floor)"
+TOOLCHAIN_MODE="$(cat /workspace/toolchain_mode.txt 2>/dev/null || echo repo)"
 PYTHON_BIN="$(command -v python3 || command -v python || true)"
 
 # Compute a deterministic hash of the build inputs and toolchain metadata
@@ -69,6 +71,8 @@ HASH="$(
     printf 'GO_VERSION=%s\n' "${GO_VERSION}"
     printf 'DEBIAN_CODENAME=%s\n' "${DEBIAN_CODENAME}"
     printf 'DISTROLESS_TAG=%s\n' "${DISTROLESS_TAG}"
+    printf 'DEPENDENCY_MODE=%s\n' "${DEPENDENCY_MODE}"
+    printf 'TOOLCHAIN_MODE=%s\n' "${TOOLCHAIN_MODE}"
     tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - -C "${HASH_SOURCE_PATH}" . 2>/dev/null || true
   } | sha256sum | cut -d' ' -f1
 )"
@@ -166,6 +170,8 @@ CACHE_FROM_TAG=${CACHE_FROM_TAG}
 NEEDS_RETAG=${NEEDS_RETAG}
 RETAG_SOURCE_VERSION_TAG=${RETAG_SOURCE_VERSION_TAG}
 RETAG_SOURCE_IMAGE=${RETAG_SOURCE_IMAGE}
+DEPENDENCY_MODE=${DEPENDENCY_MODE}
+TOOLCHAIN_MODE=${TOOLCHAIN_MODE}
 RETAGGED=false
 BUILT=false
 PUSHED=false

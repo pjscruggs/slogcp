@@ -54,6 +54,8 @@ cat > "${TMP_MANIFEST}" <<EOF
   "image": "${IMAGE_NAME}",
   "versionTag": "${VERSION_TAG}",
   "streamTag": "${STREAM_TAG}",
+  "dependencyMode": "${DEPENDENCY_MODE:-floor}",
+  "toolchainMode": "${TOOLCHAIN_MODE:-repo}",
   "hash": "${HASH}",
   "digest": "${DIGEST}",
   "built": "${BUILT}",

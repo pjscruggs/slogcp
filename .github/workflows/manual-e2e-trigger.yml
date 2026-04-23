@@ -29,8 +29,9 @@ jobs:
     timeout-minutes: 180
     env:
       CHECK_RUN_NAME: E2E Tests (GCP)
-      LOCAL_VALIDATION_CHECK_NAME: Local Validation Policy
+      LOCAL_VALIDATION_CHECK_NAME: Local Validation Ready for E2E
       GCS_BUCKET_NAME: slogcp-e2e-artifacts
+      GCS_SOURCE_STAGING_DIR: gs://slogcp-e2e-artifacts/cloudbuild/source
       GCP_PROJECT_ID: slogcp
       GITHUB_TOKEN_SECRET_VERSION: projects/slogcp/secrets/GitHub-us-central1-connection-github-oauthtoken-34ff15/versions/latest
       RUN_REGION: us-central1
@@ -279,7 +280,9 @@ jobs:
           cd e2e-target-source
           bash ../.github/scripts/run_e2e_cloud_build.sh \
             --source-mode local \
-            --trusted-e2e-root ../.e2e
+            --trusted-e2e-root ../.e2e \
+            --dependency-mode floor \
+            --toolchain-mode repo
         env:
           LIB_REPO_FULL_NAME: ${{ github.repository }}
           PR_SHA: ${{ steps.target.outputs.head_sha }}
@@ -291,6 +294,7 @@ jobs:
           GITHUB_TOKEN_SECRET_VERSION: ${{ env.GITHUB_TOKEN_SECRET_VERSION }}
           RUN_REGION: ${{ env.RUN_REGION }}
           GCS_BUCKET_NAME: ${{ env.GCS_BUCKET_NAME }}
+          GCS_SOURCE_STAGING_DIR: ${{ env.GCS_SOURCE_STAGING_DIR }}
 
       - name: Finalize E2E Check
         id: finalize_check

@@ -23,11 +23,16 @@ Options override environment variables when both are provided.
 
 Options:
   --source-mode MODE
+  --dependency-mode MODE
+  --toolchain-mode MODE
+  --repo-go-version VERSION
+  --no-wait
   --trusted-e2e-root DIR
   --project ID
   --region REGION
   --artifact-registry-repo REPO
   --gcs-bucket-name BUCKET
+  --gcs-source-staging-dir URI
   --runtime-service-account EMAIL
   --caller-service-account EMAIL
   --github-token-secret-version VERSION_NAME
@@ -43,11 +48,15 @@ Options:
 
 Env-backed defaults:
   E2E_SOURCE_MODE
+  E2E_DEPENDENCY_MODE
+  E2E_TOOLCHAIN_MODE
+  E2E_REPO_GO_VERSION
   E2E_TRUSTED_E2E_ROOT
   GCP_PROJECT_ID
   RUN_REGION
   ARTIFACT_REGISTRY_REPO
   GCS_BUCKET_NAME
+  GCS_SOURCE_STAGING_DIR
   E2E_SERVICE_ACCOUNT
   E2E_CALLER_SERVICE_ACCOUNT
   GITHUB_TOKEN_SECRET_VERSION
@@ -59,6 +68,7 @@ Env-backed defaults:
   CHECK_RUN_ID
   LIB_RUN_ID
   E2E_RUN_ID
+  E2E_NO_WAIT
 EOF
 }
 
@@ -98,6 +108,26 @@ derive_slogcp_ref() {
     printf 'v0.0.0-%s-%s\n' "$commit_time" "$short_commit"
 }
 
+derive_repo_go_version() {
+    local version
+
+    if [[ ! -f "go.mod" ]]; then
+        return 0
+    fi
+
+    version="$(awk '$1 == "toolchain" {value = $2} END {print value}' go.mod)"
+    if [[ -n "$version" ]]; then
+        version="${version#go}"
+        printf '%s\n' "$version"
+        return 0
+    fi
+
+    version="$(awk '$1 == "go" {print $2; exit}' go.mod)"
+    if [[ -n "$version" ]]; then
+        printf '%s\n' "$version"
+    fi
+}
+
 normalize_service_account_resource() {
     local project_id="$1"
     local service_account="$2"
@@ -113,9 +143,23 @@ normalize_service_account_resource() {
     printf 'projects/%s/serviceAccounts/%s\n' "$project_id" "$service_account"
 }
 
+stage_go_module_checkout() {
+    local source_dir="$1"
+    local destination_dir="$2"
+
+    mkdir -p "$destination_dir"
+    (
+        cd "$source_dir"
+        find . -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" \) \
+            ! -path './.git/*' \
+            -exec cp --parents {} "$destination_dir" \;
+    )
+}
+
 stage_local_build_source() {
     local staging_root="$1"
     local trusted_e2e_root="$2"
+    local adapter_checkout="../slogcp-grpc-adapter"
 
     rm -rf "$staging_root"
     mkdir -p "$staging_root"
@@ -136,19 +180,24 @@ stage_local_build_source() {
     rm -rf "$staging_root/services"
     mkdir -p "$staging_root/services"
     cp -R ".e2e/services/." "$staging_root/services/"
-    mkdir -p "$staging_root/lib-repo-checkout"
+    stage_go_module_checkout "." "$staging_root/lib-repo-checkout"
 
-    find . -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" \) \
-        ! -path './.git/*' \
-        -exec cp --parents {} "$staging_root/lib-repo-checkout" \;
+    if [[ -f "$adapter_checkout/go.mod" ]]; then
+        echo "Staging local slogcp-grpc-adapter checkout from $adapter_checkout"
+        stage_go_module_checkout "$adapter_checkout" "$staging_root/slogcp-grpc-adapter"
+    fi
 }
 
 E2E_SOURCE_MODE="${E2E_SOURCE_MODE:-}"
+E2E_DEPENDENCY_MODE="${E2E_DEPENDENCY_MODE:-}"
+E2E_TOOLCHAIN_MODE="${E2E_TOOLCHAIN_MODE:-}"
+E2E_REPO_GO_VERSION="${E2E_REPO_GO_VERSION:-}"
 E2E_TRUSTED_E2E_ROOT="${E2E_TRUSTED_E2E_ROOT:-}"
 GCP_PROJECT_ID="${GCP_PROJECT_ID:-}"
 RUN_REGION="${RUN_REGION:-}"
 ARTIFACT_REGISTRY_REPO="${ARTIFACT_REGISTRY_REPO:-}"
 GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-}"
+GCS_SOURCE_STAGING_DIR="${GCS_SOURCE_STAGING_DIR:-}"
 E2E_SERVICE_ACCOUNT="${E2E_SERVICE_ACCOUNT:-}"
 E2E_CALLER_SERVICE_ACCOUNT="${E2E_CALLER_SERVICE_ACCOUNT:-}"
 GITHUB_TOKEN_SECRET_VERSION="${GITHUB_TOKEN_SECRET_VERSION:-}"
@@ -160,6 +209,7 @@ PR_NUMBER="${PR_NUMBER:-}"
 CHECK_RUN_ID="${CHECK_RUN_ID:-}"
 LIB_RUN_ID="${LIB_RUN_ID:-}"
 E2E_RUN_ID="${E2E_RUN_ID:-}"
+E2E_NO_WAIT="${E2E_NO_WAIT:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -171,12 +221,40 @@ while [[ $# -gt 0 ]]; do
             E2E_SOURCE_MODE="${1#*=}"
             shift
             ;;
+        --dependency-mode)
+            E2E_DEPENDENCY_MODE="${2:?missing value for --dependency-mode}"
+            shift 2
+            ;;
+        --dependency-mode=*)
+            E2E_DEPENDENCY_MODE="${1#*=}"
+            shift
+            ;;
+        --toolchain-mode)
+            E2E_TOOLCHAIN_MODE="${2:?missing value for --toolchain-mode}"
+            shift 2
+            ;;
+        --toolchain-mode=*)
+            E2E_TOOLCHAIN_MODE="${1#*=}"
+            shift
+            ;;
+        --repo-go-version)
+            E2E_REPO_GO_VERSION="${2:?missing value for --repo-go-version}"
+            shift 2
+            ;;
+        --repo-go-version=*)
+            E2E_REPO_GO_VERSION="${1#*=}"
+            shift
+            ;;
         --trusted-e2e-root)
             E2E_TRUSTED_E2E_ROOT="${2:?missing value for --trusted-e2e-root}"
             shift 2
             ;;
         --trusted-e2e-root=*)
             E2E_TRUSTED_E2E_ROOT="${1#*=}"
+            shift
+            ;;
+        --no-wait)
+            E2E_NO_WAIT="true"
             shift
             ;;
         --project)
@@ -209,6 +287,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --gcs-bucket-name=*)
             GCS_BUCKET_NAME="${1#*=}"
+            shift
+            ;;
+        --gcs-source-staging-dir)
+            GCS_SOURCE_STAGING_DIR="${2:?missing value for --gcs-source-staging-dir}"
+            shift 2
+            ;;
+        --gcs-source-staging-dir=*)
+            GCS_SOURCE_STAGING_DIR="${1#*=}"
             shift
             ;;
         --runtime-service-account)
@@ -314,6 +400,15 @@ done
 if [[ -z "$E2E_SOURCE_MODE" ]]; then
     E2E_SOURCE_MODE="github"
 fi
+if [[ -z "$E2E_DEPENDENCY_MODE" ]]; then
+    E2E_DEPENDENCY_MODE="floor"
+fi
+if [[ -z "$E2E_TOOLCHAIN_MODE" ]]; then
+    E2E_TOOLCHAIN_MODE="repo"
+fi
+if [[ -z "$E2E_REPO_GO_VERSION" ]]; then
+    E2E_REPO_GO_VERSION="$(derive_repo_go_version)"
+fi
 if [[ -z "$E2E_TRUSTED_E2E_ROOT" ]]; then
     E2E_TRUSTED_E2E_ROOT=".e2e"
 fi
@@ -365,9 +460,28 @@ fi
 if [[ -z "$E2E_RUN_ID" ]]; then
     E2E_RUN_ID="$(date -u +%Y%m%dT%H%M%S)-${RANDOM}"
 fi
+if [[ -n "$E2E_NO_WAIT" && "$E2E_NO_WAIT" != "true" && "$E2E_NO_WAIT" != "false" ]]; then
+    echo "E2E_NO_WAIT must be 'true' or 'false' when set (got '$E2E_NO_WAIT')" >&2
+    exit 1
+fi
 if [[ "$E2E_SOURCE_MODE" != "github" && "$E2E_SOURCE_MODE" != "local" ]]; then
     echo "E2E_SOURCE_MODE must be 'github' or 'local' (got '$E2E_SOURCE_MODE')" >&2
     exit 1
+fi
+if [[ "$E2E_DEPENDENCY_MODE" != "floor" && "$E2E_DEPENDENCY_MODE" != "latest-slogcp" ]]; then
+    echo "E2E_DEPENDENCY_MODE must be 'floor' or 'latest-slogcp' (got '$E2E_DEPENDENCY_MODE')" >&2
+    exit 1
+fi
+if [[ "$E2E_TOOLCHAIN_MODE" != "repo" && "$E2E_TOOLCHAIN_MODE" != "latest" ]]; then
+    echo "E2E_TOOLCHAIN_MODE must be 'repo' or 'latest' (got '$E2E_TOOLCHAIN_MODE')" >&2
+    exit 1
+fi
+if [[ "$E2E_TOOLCHAIN_MODE" == "repo" && -z "$E2E_REPO_GO_VERSION" ]]; then
+    echo "E2E_REPO_GO_VERSION is required when E2E_TOOLCHAIN_MODE=repo" >&2
+    exit 1
+fi
+if [[ -z "$GCS_SOURCE_STAGING_DIR" && "$E2E_SOURCE_MODE" == "local" ]]; then
+    GCS_SOURCE_STAGING_DIR="gs://${GCS_BUCKET_NAME}/cloudbuild/source"
 fi
 if [[ "$E2E_SOURCE_MODE" == "github" && -z "$GITHUB_TOKEN_SECRET_VERSION" ]]; then
     echo "GITHUB_TOKEN_SECRET_VERSION is required (set it in env or pass --github-token-secret-version)" >&2
@@ -404,6 +518,7 @@ STREAM_TAG_DEFAULTED="main"
 if [[ -n "$PR_NUMBER" ]]; then
     STREAM_TAG_DEFAULTED="pr-${PR_NUMBER}"
 fi
+STREAM_TAG_DEFAULTED="${STREAM_TAG_DEFAULTED}-${E2E_DEPENDENCY_MODE}"
 
 BUILD_STATUS="FAILURE"
 BUILD_ID=""
@@ -432,11 +547,19 @@ emit_outputs() {
     fi
 }
 
-SUBSTITUTIONS="_LIB_REPO_FULL_NAME=${LIB_REPO_FULL_NAME},_PR_SHA=${PR_SHA},_PR_NUMBER=${PR_NUMBER},_SHORT_SHA=${SHORT_SHA},_BUILD_TIME=${BUILD_TIME_ISO},_GCP_REGION=${RUN_REGION},_ARTIFACT_REGISTRY_REPO=${ARTIFACT_REGISTRY_REPO},_GCS_BUCKET_NAME=${GCS_BUCKET_NAME},_E2E_RUN_ID=${E2E_RUN_ID},_RUNTIME_SERVICE_ACCOUNT=${E2E_SERVICE_ACCOUNT},_CALLER_SERVICE_ACCOUNT=${E2E_CALLER_SERVICE_ACCOUNT},_GITHUB_TOKEN_SECRET_VERSION=${GITHUB_TOKEN_SECRET_VERSION},_TRACE_PUBSUB_TOPIC=${TRACE_PUBSUB_TOPIC},_TRACE_PUBSUB_SUBSCRIPTION=${TRACE_PUBSUB_SUBSCRIPTION},_E2E_SOURCE_MODE=${E2E_SOURCE_MODE},_SLOGCP_REF_OVERRIDE=${SLOGCP_REF_OVERRIDE}"
+SUBSTITUTIONS="_LIB_REPO_FULL_NAME=${LIB_REPO_FULL_NAME},_PR_SHA=${PR_SHA},_PR_NUMBER=${PR_NUMBER},_SHORT_SHA=${SHORT_SHA},_BUILD_TIME=${BUILD_TIME_ISO},_GCP_REGION=${RUN_REGION},_ARTIFACT_REGISTRY_REPO=${ARTIFACT_REGISTRY_REPO},_GCS_BUCKET_NAME=${GCS_BUCKET_NAME},_E2E_RUN_ID=${E2E_RUN_ID},_RUNTIME_SERVICE_ACCOUNT=${E2E_SERVICE_ACCOUNT},_CALLER_SERVICE_ACCOUNT=${E2E_CALLER_SERVICE_ACCOUNT},_GITHUB_TOKEN_SECRET_VERSION=${GITHUB_TOKEN_SECRET_VERSION},_TRACE_PUBSUB_TOPIC=${TRACE_PUBSUB_TOPIC},_TRACE_PUBSUB_SUBSCRIPTION=${TRACE_PUBSUB_SUBSCRIPTION},_E2E_SOURCE_MODE=${E2E_SOURCE_MODE},_SLOGCP_REF_OVERRIDE=${SLOGCP_REF_OVERRIDE},_E2E_DEPENDENCY_MODE=${E2E_DEPENDENCY_MODE},_E2E_TOOLCHAIN_MODE=${E2E_TOOLCHAIN_MODE},_E2E_REPO_GO_VERSION=${E2E_REPO_GO_VERSION}"
 
 echo "Submitting e2e Cloud Build for ${LIB_REPO_FULL_NAME}@${PR_SHA}"
 echo "Run ID: ${E2E_RUN_ID}"
 echo "Source mode: ${E2E_SOURCE_MODE}"
+echo "Dependency mode: ${E2E_DEPENDENCY_MODE}"
+echo "Toolchain mode: ${E2E_TOOLCHAIN_MODE}"
+if [[ -n "$E2E_REPO_GO_VERSION" ]]; then
+    echo "Repo Go version: ${E2E_REPO_GO_VERSION}"
+fi
+if [[ -n "$GCS_SOURCE_STAGING_DIR" ]]; then
+    echo "Source staging dir: ${GCS_SOURCE_STAGING_DIR}"
+fi
 
 submit_args=(
     "$SOURCE_PATH"
@@ -444,11 +567,15 @@ submit_args=(
     --project="$GCP_PROJECT_ID"
     --region="$RUN_REGION"
     --async
+    --quiet
     --substitutions="$SUBSTITUTIONS"
     "--format=value(metadata.build.id)"
 )
 if [[ -n "$E2E_CALLER_SERVICE_ACCOUNT" ]]; then
     submit_args+=(--service-account="$BUILD_SUBMIT_SERVICE_ACCOUNT")
+fi
+if [[ -n "$GCS_SOURCE_STAGING_DIR" ]]; then
+    submit_args+=(--gcs-source-staging-dir="$GCS_SOURCE_STAGING_DIR")
 fi
 
 submit_output=""
@@ -459,7 +586,16 @@ if ! submit_output="$(gcloud builds submit "${submit_args[@]}" 2>&1)"; then
     exit 1
 fi
 
-BUILD_ID="$(printf '%s\n' "$submit_output" | tr -d '\r' | tail -n 1)"
+BUILD_ID="$(
+    printf '%s\n' "$submit_output" \
+    | tr -d '\r' \
+    | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+    | head -n 1
+)"
+
+if [[ -z "$BUILD_ID" ]]; then
+    BUILD_ID="$(printf '%s\n' "$submit_output" | tr -d '\r' | tail -n 1)"
+fi
 
 if [[ -z "$BUILD_ID" ]]; then
     printf '%s\n' "$submit_output" >&2
@@ -471,6 +607,16 @@ fi
 BUILD_LOG_URL="https://console.cloud.google.com/cloud-build/builds/${BUILD_ID}?project=${GCP_PROJECT_ID}"
 echo "Cloud Build started: ${BUILD_ID}"
 echo "Logs: ${BUILD_LOG_URL}"
+
+if [[ "$E2E_NO_WAIT" == "true" ]]; then
+    BUILD_STATUS="$(gcloud builds describe "$BUILD_ID" --project="$GCP_PROJECT_ID" --region="$RUN_REGION" --format='value(status)' 2>/dev/null || true)"
+    if [[ -z "$BUILD_STATUS" ]]; then
+        BUILD_STATUS="QUEUED"
+    fi
+    echo "Skipping wait because --no-wait was requested."
+    emit_outputs
+    exit 0
+fi
 
 MAX_WAIT_SECONDS=7800
 POLL_INTERVAL=30

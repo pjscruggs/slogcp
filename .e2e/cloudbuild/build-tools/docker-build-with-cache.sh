@@ -62,6 +62,8 @@ GO_VERSION="$(cat /workspace/go_version.txt)"
 DEBIAN_CODENAME="$(cat /workspace/debian_codename.txt)"
 DISTROLESS_TAG="$(cat /workspace/distroless_tag.txt)"
 APP_VERSION="$(cat /workspace/app_version.txt)"
+DEPENDENCY_MODE="$(cat /workspace/dependency_mode.txt 2>/dev/null || echo "${DEPENDENCY_MODE:-floor}")"
+TOOLCHAIN_MODE="$(cat /workspace/toolchain_mode.txt 2>/dev/null || echo "${TOOLCHAIN_MODE:-repo}")"
 if [[ -n "${_BUILD_TIME:-}" ]]; then
   BUILD_TIME="${_BUILD_TIME}"
 elif [[ -n "${BUILD_TIME:-}" ]]; then
@@ -79,6 +81,8 @@ BUILD_ARGS=(docker build
   --tag "${VERSIONED_TAG}"
   --tag "${STREAM_TAG_TAG}"
   --label "slogcp.build.hash=${HASH}"
+  --label "slogcp.e2e.dependency-mode=${DEPENDENCY_MODE}"
+  --label "slogcp.e2e.toolchain-mode=${TOOLCHAIN_MODE}"
   --build-arg "GO_VERSION=${GO_VERSION}"
   --build-arg "DEBIAN_CODENAME=${DEBIAN_CODENAME}"
   --build-arg "DISTROLESS_TAG=${DISTROLESS_TAG}"
