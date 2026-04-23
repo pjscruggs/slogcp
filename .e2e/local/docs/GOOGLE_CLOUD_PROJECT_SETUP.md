@@ -155,7 +155,35 @@ Create the artifacts bucket:
 gcloud storage buckets create "gs://${ARTIFACT_BUCKET}" \
   --project "${PROJECT_ID}" \
   --location "${REGION}" \
-  --uniform-bucket-level-access
+  --uniform-bucket-level-access \
+  --public-access-prevention \
+  --enable-autoclass
+```
+
+Add a lifecycle rule so old e2e artifacts are removed automatically:
+
+```bash
+LIFECYCLE_FILE="$(mktemp)"
+cat > "${LIFECYCLE_FILE}" <<'JSON'
+{
+  "rule": [
+    {
+      "action": {
+        "type": "Delete"
+      },
+      "condition": {
+        "age": 30
+      }
+    }
+  ]
+}
+JSON
+
+gcloud storage buckets update "gs://${ARTIFACT_BUCKET}" \
+  --project "${PROJECT_ID}" \
+  --lifecycle-file "${LIFECYCLE_FILE}"
+
+rm -f "${LIFECYCLE_FILE}"
 ```
 
 Grant artifact write access on the bucket:
@@ -166,12 +194,6 @@ gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
   --role "roles/storage.objectAdmin" \
   --project "${PROJECT_ID}"
 ```
-
-Reasonable optional bucket settings:
-
-- enable public access prevention
-- enable Autoclass
-- add a lifecycle rule for old artifacts
 
 ## Local Workflow
 
@@ -193,7 +215,7 @@ Submit the Cloud Build using `.env` values:
 .e2e/local/scripts/submit-cloud-build.sh
 ```
 
-Local runs use the current checkout as the slogcp source.
+Local runs stage the repository as the library source for Cloud Build.
 
 Flags override `.env` values per run. Example:
 

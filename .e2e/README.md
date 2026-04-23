@@ -1,8 +1,19 @@
 # `.e2e`
 
-`.e2e` is the GitHub CI end-to-end suite that confirms `slogcp` and its automatic dependency updates still behave correctly in Google Cloud. This directory contains the Cloud Run target apps, the harness that drives them, and the Cloud Build config for the full suite. 
+`.e2e` is the GitHub CI end-to-end suite for validating `slogcp` behavior and dependency resolution in Google Cloud. This directory contains the Cloud Run target apps, the harness that drives them, and the Cloud Build config for the full suite.
 
 The CI deployment path keeps those Cloud Run services private. The build and harness grant `roles/run.invoker` only to the service accounts that participate in the test run, and the harness plus trace target app use Google-signed ID tokens for service-to-service calls instead of exposing the services publicly.
+
+## Module Generation
+
+Each `.e2e` service directory carries a checked-in `go.module.json` manifest. `scripts/generate_go_module.py` uses that manifest to generate `go.mod`, `go.sum`, and a local `go.work` for build contexts that include multiple staged modules.
+
+That generator does two things:
+
+- It resolves the latest stable Go release and uses that toolchain for every `.e2e` module.
+- It builds each service context as a local Go workspace that includes the generated service module plus any staged local modules it depends on, such as the local library checkout and `traceproto`. That workspace is the mechanism that keeps shared dependency resolution aligned during the build.
+
+The `.e2e` Dockerfiles consume `GO_VERSION`, `DEBIAN_CODENAME`, and `DISTROLESS_TAG`. Cloud Build resolves those values during the bootstrap step.
 
 ## What this suite tests
 

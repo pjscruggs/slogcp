@@ -2,11 +2,13 @@
 
 This folder is the local entrypoint for running `slogcp/.e2e` against a Google Cloud project from a developer machine.
 
-It is intentionally thin. The goal is to reuse the same Cloud Build and Cloud Run path that GitHub CI uses, while letting a local developer supply project- specific configuration and build from the current local checkout.
+Use it when you want to run the same Cloud Build and Cloud Run based E2E path
+from a local checkout.
 
 ## Start Here
 
-If you need to bootstrap a project or understand the required IAM/resources, read [GOOGLE_CLOUD_PROJECT_SETUP.md](docs/GOOGLE_CLOUD_PROJECT_SETUP.md).
+If you need to bootstrap a project or understand the required IAM/resources,
+read [GOOGLE_CLOUD_PROJECT_SETUP.md](docs/GOOGLE_CLOUD_PROJECT_SETUP.md).
 
 If your project already exists:
 
@@ -22,13 +24,14 @@ CLI flags override `.env` values on each run.
 
 - [`.env.template`](.env.template): starting point for local config
 - [`.env`](.env): ignored local settings for your project
-- [`scripts/sync-env-from-gcloud.sh`](scripts/sync-env-from-gcloud.sh): populate/update `.env` from a GCP project
+- [`scripts/sync-env-from-gcloud.sh`](scripts/sync-env-from-gcloud.sh): populate or update `.env` from a GCP project
 - [`scripts/submit-cloud-build.sh`](scripts/submit-cloud-build.sh): submit the `.e2e` Cloud Build using local config
-- [`docs/`](docs): deeper setup and project-shape documentation
+- [`docs/`](docs): setup documentation
 
 ## Notes
 
 - Local runs reuse the shared `.e2e` Cloud Build and Cloud Run path.
-- Local runs stage the current checkout into Cloud Build.
+- Local runs stage the repository into Cloud Build.
+- If `../slogcp-grpc-adapter` exists beside this repo, local runs stage that checkout and the gRPC-path tests use that source.
 - The local `.env` file is ignored by git; keep secrets and project-specific values there.
 - If you need a one-off change for a run, prefer passing flags to the scripts instead of editing checked-in files.
