@@ -32,7 +32,7 @@ jobs:
       LOCAL_VALIDATION_CHECK_NAME: Local Validation Ready for E2E
       GCS_BUCKET_NAME: slogcp-e2e-artifacts
       GCS_SOURCE_STAGING_DIR: gs://slogcp-e2e-artifacts/cloudbuild/source
-      GCP_PROJECT_ID: slogcp
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       GITHUB_TOKEN_SECRET_VERSION: projects/slogcp/secrets/GitHub-us-central1-connection-github-oauthtoken-34ff15/versions/latest
       RUN_REGION: us-central1
 
@@ -266,7 +266,7 @@ jobs:
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: GCP_SERVICE_ACCOUNT_EMAIL
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
         if: ${{ steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true' }}
