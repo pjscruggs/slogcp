@@ -146,12 +146,8 @@ jobs:
           if [[ "$EVENT_NAME" == "pull_request" && "$PR_HEAD_REPO_FULL_NAME" == "$REPOSITORY" ]]; then
             allow_push=true
             if [[ "$VALIDATION_MODE" != "examples_dependency" && "$BRANCH_NAME" == renovate/* && ("$PR_AUTHOR" == "app/renovate" || "$PR_AUTHOR" == "renovate[bot]") ]]; then
-              if [[ "$VALIDATION_MODE" == "security_floor" ]]; then
-                allow_push=true
-              else
-                allow_push=false
-                allow_go_sum_only_drift=true
-              fi
+              allow_push=false
+              allow_go_sum_only_drift=true
             fi
           fi
 
@@ -175,32 +171,6 @@ jobs:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
 
-      - name: 🔖 Bump patch version for automated security floor release
-        if: needs.classify_validation_scope.outputs.mode == 'security_floor'
-        id: security-release-version
-        shell: bash
-        run: |
-          set -euo pipefail
-          latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1)"
-          if [[ -z "$latest_tag" ]]; then
-            latest_tag="v0.0.0"
-          fi
-
-          current_version="$(sed -nE 's/^var Version = "(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' version.go | head -n 1)"
-          if [[ -z "$current_version" ]]; then
-            echo "Unable to parse Version from version.go" >&2
-            exit 1
-          fi
-
-          base="${latest_tag#v}"
-          IFS='.' read -r major minor patch <<< "$base"
-          next_candidate="v${major}.${minor}.$((patch + 1))"
-          next_version="$(printf '%s\n%s\n' "$next_candidate" "$current_version" | sort -V | tail -n 1)"
-
-          sed -i -E 's/^var Version = "v[0-9]+\.[0-9]+\.[0-9]+"/var Version = "'"$next_version"'"/' version.go
-          echo "release_version=$next_version" >> "$GITHUB_OUTPUT"
-          echo "Security floor release version: $next_version"
-      
       - name: 🛠️ Install golangci-lint
         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
         with:
@@ -582,6 +552,118 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
 
+      - name: Ensure security floor release version is committed
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.pr_scope.outputs.mode == 'security_floor'
+        id: security_release_version
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          github-token: ${{ steps.check_run_token.outputs.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
+            const expectedSha = context.payload.pull_request.head.sha;
+
+            const parseVersion = (value) => {
+              const match = /^v(\d+)\.(\d+)\.(\d+)$/.exec(value || '');
+              if (!match) return null;
+              return match.slice(1).map(Number);
+            };
+            const compareVersions = (a, b) => {
+              const pa = parseVersion(a);
+              const pb = parseVersion(b);
+              if (!pa || !pb) return 0;
+              for (let i = 0; i < 3; i++) {
+                if (pa[i] !== pb[i]) return pa[i] - pb[i];
+              }
+              return 0;
+            };
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number
+            });
+
+            if (pr.head.sha !== expectedSha) {
+              core.info(`PR head is already ${pr.head.sha}; this run was for ${expectedSha}.`);
+              core.setOutput('committed', 'true');
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number,
+              per_page: 100
+            });
+            if (files.some(file => file.filename === 'version.go')) {
+              core.info('version.go is already part of this security-floor PR.');
+              core.setOutput('committed', 'false');
+              return;
+            }
+
+            const tags = await github.paginate(github.rest.repos.listTags, {
+              owner,
+              repo,
+              per_page: 100
+            });
+            const versions = tags
+              .map(tag => tag.name)
+              .filter(name => parseVersion(name))
+              .sort(compareVersions);
+            const latestTag = versions.at(-1) || 'v0.0.0';
+            const [major, minor, patch] = parseVersion(latestTag);
+            const nextCandidate = `v${major}.${minor}.${patch + 1}`;
+
+            const { data: file } = await github.rest.repos.getContent({
+              owner,
+              repo,
+              path: 'version.go',
+              ref: pr.head.sha
+            });
+            if (Array.isArray(file) || !file.content || !file.sha) {
+              core.setFailed('Unable to read version.go from the PR head.');
+              return;
+            }
+
+            const content = Buffer.from(file.content, 'base64').toString('utf8');
+            const match = /^var Version = "(v\d+\.\d+\.\d+)"/m.exec(content);
+            if (!match) {
+              core.setFailed('Unable to parse Version from version.go.');
+              return;
+            }
+
+            const currentVersion = match[1];
+            const nextVersion = compareVersions(nextCandidate, currentVersion) > 0
+              ? nextCandidate
+              : currentVersion;
+            const updated = content.replace(
+              /^var Version = "v\d+\.\d+\.\d+"/m,
+              `var Version = "${nextVersion}"`
+            );
+
+            if (updated === content) {
+              core.info(`version.go is already at ${nextVersion}.`);
+              core.setOutput('committed', 'false');
+              return;
+            }
+
+            await github.rest.repos.createOrUpdateFileContents({
+              owner,
+              repo,
+              path: 'version.go',
+              branch: pr.head.ref,
+              sha: file.sha,
+              message: `chore(security): bump release version to ${nextVersion}`,
+              content: Buffer.from(updated, 'utf8').toString('base64')
+            });
+
+            core.info(`Committed ${nextVersion} to ${pr.head.ref}; a synchronize run will validate and gate the new SHA.`);
+            core.setOutput('committed', 'true');
+
       - name: Finalize E2E check for CI-only manual PRs
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'false' &&
@@ -667,14 +749,18 @@ jobs:
             });
 
       - name: Generate E2E Run ID
-        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true'
         id: run_id
         shell: bash
         run: |
           echo "e2e_run_id=$(date -u +%Y%m%dT%H%M%S)-$RANDOM" >> "$GITHUB_OUTPUT"
 
       - name: Checkout Workflow Repository
-        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true'
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           fetch-depth: 1
@@ -683,6 +769,7 @@ jobs:
       - name: Checkout Target Source For Cloud E2E
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor'
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
@@ -692,7 +779,9 @@ jobs:
           path: e2e-target-source
 
       - name: Create Stable E2E Check (in progress)
-        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true'
         id: create_run_check
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
@@ -728,7 +817,9 @@ jobs:
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
 
       - name: Wait for scoped local validation to succeed
-        if: steps.trigger_type.outputs.should_auto_trigger == 'true'
+        if: |
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true'
         id: wait_validation
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
@@ -752,11 +843,19 @@ jobs:
                 ref,
                 per_page: 100
               });
-              const checkRun = [...data.check_runs]
-                .filter(run => run.name === targetCheckName)
+              const validationRuns = [...data.check_runs]
+                .filter(run => run.name === targetCheckName);
+              const skippedCount = validationRuns
+                .filter(run => run.status === 'completed' && run.conclusion === 'skipped')
+                .length;
+              const checkRun = validationRuns
+                .filter(run => run.status !== 'completed' || run.conclusion !== 'skipped')
                 .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
               const status = checkRun?.status ?? 'not_found';
               const conclusion = checkRun?.conclusion ?? 'unknown';
+              const skippedSummary = skippedCount
+                ? ` Ignored ${skippedCount} skipped ${targetCheckName} duplicate(s).`
+                : '';
 
               if (!checkRun || status !== 'completed') {
                 if (checkRunId) {
@@ -767,7 +866,7 @@ jobs:
                       status: 'in_progress',
                       output: {
                         title: process.env.CHECK_RUN_NAME,
-                        summary: `Waiting for ${targetCheckName} to finish (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.`
+                        summary: `Waiting for ${targetCheckName} to finish (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.${skippedSummary}`
                       }
                     });
                   }
@@ -775,7 +874,7 @@ jobs:
                 continue;
               }
 
-              if (['success', 'skipped', 'neutral'].includes(conclusion)) { ok = true; break; }
+              if (conclusion === 'success') { ok = true; break; }
 
               if (checkRunId) {
                 await github.rest.checks.update({
@@ -821,6 +920,7 @@ jobs:
       - name: Detect secret availability
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor' &&
           steps.wait_validation.outputs.ok == 'true'
         id: have_secrets
@@ -834,6 +934,7 @@ jobs:
       - name: Authenticate to Google Cloud
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor' &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
@@ -845,6 +946,7 @@ jobs:
       - name: Set up Cloud SDK
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor' &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
@@ -853,6 +955,7 @@ jobs:
       - name: Run E2E Cloud Build
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor' &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
@@ -881,6 +984,7 @@ jobs:
       - name: Finalize stable E2E check after Cloud Build
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor' &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
@@ -934,6 +1038,7 @@ jobs:
       - name: Auto-merge security floor PR after E2E
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor' &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true' &&
@@ -1045,6 +1150,7 @@ jobs:
       - name: Update stable E2E check when auto path cannot run
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor' &&
           (steps.wait_validation.outputs.ok != 'true' ||
            steps.have_secrets.outputs.ok != 'true')
