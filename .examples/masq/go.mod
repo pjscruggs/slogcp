@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/examples/masq
 
-go 1.26.2
+go 1.26.3
 
 require github.com/m-mizutani/masq v0.2.1
 
