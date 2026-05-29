@@ -930,7 +930,7 @@ jobs:
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
           LOCAL_VALIDATION_CHECK_NAME: ${{ env.LOCAL_VALIDATION_CHECK_NAME }}
 
-      - name: Detect secret availability
+      - name: Detect GCP E2E secret availability
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
@@ -938,7 +938,7 @@ jobs:
           steps.wait_validation.outputs.ok == 'true'
         id: have_secrets
         run: |
-          if [ -n "${{ secrets.E2E_APP_ID }}" ] && [ -n "${{ secrets.E2E_APP_PRIVATE_KEY }}" ]; then
+          if [ -n "${{ secrets.GCP_PROJECT_ID }}" ] && [ -n "${{ secrets.GCP_WIF_PROVIDER }}" ] && [ -n "${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
