@@ -543,7 +543,20 @@ jobs:
             echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
           fi
 
+      - name: Detect E2E app token secrets
+        id: app_token_secrets
+        env:
+          E2E_APP_ID: ${{ secrets.E2E_APP_ID }}
+          E2E_APP_PRIVATE_KEY: ${{ secrets.E2E_APP_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$E2E_APP_ID" && -n "$E2E_APP_PRIVATE_KEY" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Generate App Token for Stable E2E Check
+        if: steps.app_token_secrets.outputs.available == 'true'
         id: check_run_token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
@@ -559,7 +572,7 @@ jobs:
         id: security_release_version
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ steps.check_run_token.outputs.token }}
+          github-token: ${{ steps.check_run_token.outputs.token || github.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -670,7 +683,7 @@ jobs:
           steps.pr_scope.outputs.mode == 'ci_only'
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ steps.check_run_token.outputs.token }}
+          github-token: ${{ steps.check_run_token.outputs.token || github.token }}
           script: |
             const checkName = process.env.CHECK_RUN_NAME;
             const headSha = context.payload.pull_request.head.sha;
@@ -707,7 +720,7 @@ jobs:
         id: manual_check
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ steps.check_run_token.outputs.token }}
+          github-token: ${{ steps.check_run_token.outputs.token || github.token }}
           script: |
             const checkName = 'E2E Tests (GCP)';
             const sha = context.payload.pull_request.head.sha;
@@ -727,7 +740,7 @@ jobs:
           steps.pr_scope.outputs.mode == 'normal'
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ steps.check_run_token.outputs.token }}
+          github-token: ${{ steps.check_run_token.outputs.token || github.token }}
           script: |
             await github.rest.checks.update({
               owner: context.repo.owner,
@@ -785,7 +798,7 @@ jobs:
         id: create_run_check
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ steps.check_run_token.outputs.token }}
+          github-token: ${{ steps.check_run_token.outputs.token || github.token }}
           script: |
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
             const mode = '${{ steps.pr_scope.outputs.mode }}';
@@ -823,7 +836,7 @@ jobs:
         id: wait_validation
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ steps.check_run_token.outputs.token }}
+          github-token: ${{ steps.check_run_token.outputs.token || github.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -991,7 +1004,7 @@ jobs:
         id: finalize_check
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ steps.check_run_token.outputs.token }}
+          github-token: ${{ steps.check_run_token.outputs.token || github.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -1046,7 +1059,7 @@ jobs:
         id: auto_merge
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ steps.check_run_token.outputs.token }}
+          github-token: ${{ steps.check_run_token.outputs.token || github.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -1114,7 +1127,7 @@ jobs:
         id: finalize_no_cloud
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ steps.check_run_token.outputs.token }}
+          github-token: ${{ steps.check_run_token.outputs.token || github.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -1156,7 +1169,7 @@ jobs:
            steps.have_secrets.outputs.ok != 'true')
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ steps.check_run_token.outputs.token }}
+          github-token: ${{ steps.check_run_token.outputs.token || github.token }}
           script: |
             await github.rest.checks.update({
               owner: context.repo.owner,
