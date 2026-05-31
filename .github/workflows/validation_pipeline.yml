@@ -46,8 +46,13 @@ jobs:
               const onlyExampleModuleMetadata = paths.length > 0 &&
                 paths.every(p => /^\.examples\/.+\/go\.(mod|sum)$/.test(p));
               const touchesRootGoModuleMetadata = paths.some(p => /^go\.(mod|sum)$/.test(p));
+              const allowedSecurityFloorMetadata = p =>
+                p === 'go.mod' ||
+                p === 'go.sum' ||
+                p === 'version.go' ||
+                /^\.examples\/.+\/go\.(mod|sum)$/.test(p);
               const securityFloorFileScope = paths.length > 0 &&
-                paths.every(p => p === 'go.mod' || p === 'go.sum' || p === 'version.go');
+                paths.every(allowedSecurityFloorMetadata);
               const pr = context.payload.pull_request;
               const sameRepo = pr.head.repo.full_name === context.payload.repository.full_name;
               const actor = pr.user.login;
@@ -484,8 +489,13 @@ jobs:
             const onlyExampleModuleMetadata = paths.length > 0 &&
               paths.every(p => /^\.examples\/.+\/go\.(mod|sum)$/.test(p));
             const touchesRootGoModuleMetadata = paths.some(p => /^go\.(mod|sum)$/.test(p));
+            const allowedSecurityFloorMetadata = p =>
+              p === 'go.mod' ||
+              p === 'go.sum' ||
+              p === 'version.go' ||
+              /^\.examples\/.+\/go\.(mod|sum)$/.test(p);
             const securityFloorFileScope = paths.length > 0 &&
-              paths.every(p => p === 'go.mod' || p === 'go.sum' || p === 'version.go');
+              paths.every(allowedSecurityFloorMetadata);
             const pr = context.payload.pull_request;
             const sameRepo = pr.head.repo.full_name === context.payload.repository.full_name;
             const actor = pr.user.login;
