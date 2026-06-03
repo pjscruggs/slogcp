@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/examples/timberjack
 
-go 1.26.2
+go 1.26.4
 
 require github.com/DeRuina/timberjack v1.4.1
 
@@ -17,7 +17,7 @@ require (
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 )
 
 replace github.com/pjscruggs/slogcp => ../..
