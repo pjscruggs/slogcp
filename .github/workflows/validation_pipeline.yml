@@ -222,6 +222,7 @@ jobs:
           fi
 
       - name: 🧹 Sync example Go directives
+        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'renovate:go-version')
         run: python3 .github/scripts/sync_example_go_versions.py
 
       - name: 📅🕰️ Get current year in US Central Time
@@ -310,6 +311,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ✅ Verify example Go directives
+        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'renovate:go-version')
         run: python3 .github/scripts/sync_example_go_versions.py --check
 
       - name: ♻️ Restore Go toolchain (pre-tests)
