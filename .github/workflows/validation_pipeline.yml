@@ -43,6 +43,8 @@ jobs:
               const paths = files.map(f => f.filename);
               const touchesGoModuleMetadata = paths.some(p => /(^|\/)go\.(mod|sum)$/.test(p));
               const onlyCiFiles = paths.length > 0 && paths.every(p => p.startsWith('.github/'));
+              const onlyAutomationConfigFiles = paths.length > 0 &&
+                paths.every(p => p === 'renovate.json');
               const onlyExampleModuleMetadata = paths.length > 0 &&
                 paths.every(p => /^\.examples\/.+\/go\.(mod|sum)$/.test(p));
               const touchesRootGoModuleMetadata = paths.some(p => /^go\.(mod|sum)$/.test(p));
@@ -83,6 +85,8 @@ jobs:
 
               if (onlyCiFiles && !touchesGoModuleMetadata) {
                 mode = 'ci_only';
+              } else if (onlyAutomationConfigFiles) {
+                mode = 'automation_config_only';
               } else if (sameRepo && trustedRenovate && onlyExampleModuleMetadata) {
                 mode = 'examples_dependency';
               } else if (sameRepo && trustedRenovate && isRootToolchainOnly) {
@@ -108,7 +112,7 @@ jobs:
     name: Fix and Validate Code
     needs: classify_validation_scope
     # Skip validation on pull_request_target to avoid running the full pipeline twice per PR update.
-    if: github.event_name != 'pull_request_target' && needs.classify_validation_scope.outputs.mode != 'ci_only'
+    if: github.event_name != 'pull_request_target' && needs.classify_validation_scope.outputs.mode != 'ci_only' && needs.classify_validation_scope.outputs.mode != 'automation_config_only'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -413,8 +417,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$MODE" == "ci_only" ]]; then
-            echo "CI-only change with no go.mod/go.sum updates requires no local or cloud tests."
+          if [[ "$MODE" == "ci_only" || "$MODE" == "automation_config_only" ]]; then
+            echo "CI-only or automation config-only change requires no local or cloud tests."
             exit 0
           fi
 
@@ -488,6 +492,8 @@ jobs:
             const paths = files.map(f => f.filename);
             const touchesGoModuleMetadata = paths.some(p => /(^|\/)go\.(mod|sum)$/.test(p));
             const onlyCiFiles = paths.length > 0 && paths.every(p => p.startsWith('.github/'));
+            const onlyAutomationConfigFiles = paths.length > 0 &&
+              paths.every(p => p === 'renovate.json');
             const onlyExampleModuleMetadata = paths.length > 0 &&
               paths.every(p => /^\.examples\/.+\/go\.(mod|sum)$/.test(p));
             const touchesRootGoModuleMetadata = paths.some(p => /^go\.(mod|sum)$/.test(p));
@@ -529,6 +535,8 @@ jobs:
             let mode = 'normal';
             if (onlyCiFiles && !touchesGoModuleMetadata) {
               mode = 'ci_only';
+            } else if (onlyAutomationConfigFiles) {
+              mode = 'automation_config_only';
             } else if (sameRepo && trustedRenovate && onlyExampleModuleMetadata) {
               mode = 'examples_dependency';
             } else if (sameRepo && trustedRenovate && isRootToolchainOnly) {
@@ -549,7 +557,7 @@ jobs:
       - name: Determine Automatic Policy Path
         id: trigger_type
         run: |
-          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" && ("${{ steps.pr_scope.outputs.mode }}" == "ci_only" || "${{ steps.pr_scope.outputs.mode }}" == "examples_dependency" || "${{ steps.pr_scope.outputs.mode }}" == "toolchain_update" || "${{ steps.pr_scope.outputs.mode }}" == "security_floor") ]]; then
+          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" && ("${{ steps.pr_scope.outputs.mode }}" == "ci_only" || "${{ steps.pr_scope.outputs.mode }}" == "automation_config_only" || "${{ steps.pr_scope.outputs.mode }}" == "examples_dependency" || "${{ steps.pr_scope.outputs.mode }}" == "toolchain_update" || "${{ steps.pr_scope.outputs.mode }}" == "security_floor") ]]; then
             echo "should_auto_trigger=true" >> $GITHUB_OUTPUT
           else
             echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
@@ -710,25 +718,32 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
 
-      - name: Finalize E2E check for CI-only manual PRs
+      - name: Finalize E2E check for no-cloud manual PRs
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'false' &&
-          steps.pr_scope.outputs.mode == 'ci_only'
+          (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only')
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ steps.check_start_token.outputs.token }}
           script: |
             const checkName = process.env.CHECK_RUN_NAME;
+            const mode = '${{ steps.pr_scope.outputs.mode }}';
             const headSha = context.payload.pull_request.head.sha;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const queuedSummary = mode === 'automation_config_only'
+              ? 'Skipping E2E for an automation config-only PR.'
+              : 'Skipping E2E for a CI-only PR.';
+            const finalSummary = mode === 'automation_config_only'
+              ? 'PR touches only Renovate configuration. Cloud E2E is skipped by policy.'
+              : 'PR touches only CI files and no go.mod/go.sum files. Cloud E2E is skipped by policy.';
             const { data: checkRun } = await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               name: checkName,
               head_sha: headSha,
               status: 'queued',
-              output: { title: checkName, summary: 'Skipping E2E for a CI-only PR.' }
+              output: { title: checkName, summary: queuedSummary }
             });
 
             await github.rest.checks.update({
@@ -740,7 +755,7 @@ jobs:
               completed_at: new Date().toISOString(),
               output: {
                 title: checkName,
-                summary: 'PR touches only CI files and no go.mod/go.sum files. Cloud E2E is skipped by policy.'
+                summary: finalSummary
               }
             });
         env:
@@ -839,6 +854,8 @@ jobs:
             let summary = `Waiting for local validation to pass before starting Google Cloud Build E2E run ${runId}.`;
             if (mode === 'ci_only') {
               summary = 'No local or cloud tests are required for a PR that touched only CI files and no go.mod/go.sum files. The cloud E2E check will be skipped after the fast-path policy check passes.';
+            } else if (mode === 'automation_config_only') {
+              summary = 'Automation config-only change detected. The cloud E2E check will be skipped after the fast-path policy check passes.';
             } else if (mode === 'examples_dependency') {
               summary = 'Example module dependency update detected. Local validation includes example module smoke tests; cloud E2E will be skipped after that policy check passes.';
             } else if (mode === 'toolchain_update') {
@@ -1169,7 +1186,7 @@ jobs:
           steps.app_token_secrets.outputs.available == 'true' &&
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
-          (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
+          (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
           steps.wait_validation.outputs.ok == 'true'
         id: no_cloud_finalize_token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
@@ -1182,7 +1199,7 @@ jobs:
       - name: Finalize stable E2E check for updates that do not require cloud E2E
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
-          (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
+          (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
           steps.wait_validation.outputs.ok == 'true'
         id: finalize_no_cloud
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -1197,6 +1214,8 @@ jobs:
             let summary = 'Local validation policy succeeded, so cloud E2E was skipped by policy.';
             if (mode === 'ci_only') {
               summary = 'PR touched only CI files and no go.mod/go.sum files. Local validation policy succeeded, so cloud E2E was skipped by policy.';
+            } else if (mode === 'automation_config_only') {
+              summary = 'PR touched only Renovate configuration. Local validation policy succeeded, so cloud E2E was skipped by policy.';
             } else if (mode === 'examples_dependency') {
               summary = 'Renovate updated only checked-in example module metadata. Local validation includes example smoke tests, so cloud E2E was skipped by policy.';
             } else if (mode === 'toolchain_update') {
