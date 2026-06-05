@@ -17,6 +17,7 @@ package slogcp
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 )
 
 // Level represents the severity of a log event, extending slog.Level
@@ -80,6 +81,8 @@ const (
 	LevelDefault Level = 30
 )
 
+const severityNoticeName = "NOTICE"
+
 type severityDescriptor struct {
 	threshold Level
 	levelName string
@@ -90,7 +93,7 @@ type severityDescriptor struct {
 var severityDescriptors = []severityDescriptor{
 	{threshold: LevelDebug, levelName: "DEBUG", fullName: "DEBUG", alias: "D"},
 	{threshold: LevelInfo, levelName: "INFO", fullName: "INFO", alias: "I"},
-	{threshold: LevelNotice, levelName: "NOTICE", fullName: "NOTICE", alias: "N"},
+	{threshold: LevelNotice, levelName: severityNoticeName, fullName: severityNoticeName, alias: "N"},
 	{threshold: LevelWarn, levelName: "WARN", fullName: "WARNING", alias: "W"},
 	{threshold: LevelError, levelName: "ERROR", fullName: "ERROR", alias: "E"},
 	{threshold: LevelCritical, levelName: "CRITICAL", fullName: "CRITICAL", alias: "C"},
@@ -104,9 +107,9 @@ var severityDescriptors = []severityDescriptor{
 // match.
 func descriptorForLevel(level Level) severityDescriptor {
 	desc := severityDescriptors[0]
-	for i := len(severityDescriptors) - 1; i >= 0; i-- {
-		if level >= severityDescriptors[i].threshold {
-			return severityDescriptors[i]
+	for _, severityDescriptor := range slices.Backward(severityDescriptors) {
+		if level >= severityDescriptor.threshold {
+			return severityDescriptor
 		}
 	}
 	return desc

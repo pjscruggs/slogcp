@@ -19,6 +19,7 @@ import (
 	"time"
 )
 
+// TestHarnessTimeoutDefaultUsesEnvironmentSeconds verifies the harness timeout honors the environment override.
 func TestHarnessTimeoutDefaultUsesEnvironmentSeconds(t *testing.T) {
 	t.Setenv("E2E_TIMEOUT_SECONDS", "5400")
 
@@ -32,6 +33,7 @@ func TestHarnessTimeoutDefaultUsesEnvironmentSeconds(t *testing.T) {
 	}
 }
 
+// TestHarnessTimeoutDefaultRejectsInvalidEnvironmentSeconds verifies invalid environment overrides are rejected.
 func TestHarnessTimeoutDefaultRejectsInvalidEnvironmentSeconds(t *testing.T) {
 	t.Setenv("E2E_TIMEOUT_SECONDS", "25m")
 

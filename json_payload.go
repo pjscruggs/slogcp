@@ -29,6 +29,8 @@ const (
 	stackTraceKey  = "stack_trace"
 	httpRequestKey = "httpRequest"
 	labelsGroupKey = "logging.googleapis.com/labels"
+	boolLabelTrue  = "true"
+	boolLabelFalse = "false"
 )
 
 // formattedError holds the processed error details for structured logging.
@@ -230,9 +232,9 @@ func labelValueToStringResolved(rv slog.Value) (string, bool) {
 // boolLabel formats boolean values for labels.
 func boolLabel(value bool) (string, bool) {
 	if value {
-		return "true", true
+		return boolLabelTrue, true
 	}
-	return "false", true
+	return boolLabelFalse, true
 }
 
 // labelFromAny converts arbitrary values into label strings when possible.

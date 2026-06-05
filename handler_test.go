@@ -2223,16 +2223,16 @@ func (l *diagRecorder) Printf(format string, args ...any) {
 type concurrencyTrackingWriter struct {
 	buf                 bytes.Buffer
 	mu                  sync.Mutex
-	activeWriters       int32
-	concurrentWriteSeen int32
+	activeWriters       atomic.Int32
+	concurrentWriteSeen atomic.Int32
 }
 
 // Write records the supplied bytes while detecting overlapping writes.
 func (w *concurrencyTrackingWriter) Write(p []byte) (int, error) {
-	if atomic.AddInt32(&w.activeWriters, 1) > 1 {
-		atomic.StoreInt32(&w.concurrentWriteSeen, 1)
+	if w.activeWriters.Add(1) > 1 {
+		w.concurrentWriteSeen.Store(1)
 	}
-	defer atomic.AddInt32(&w.activeWriters, -1)
+	defer w.activeWriters.Add(-1)
 
 	// Yield briefly to increase the surface for overlapping writes when locks are missing.
 	time.Sleep(500 * time.Microsecond)
@@ -2251,7 +2251,7 @@ func (w *concurrencyTrackingWriter) String() string {
 
 // ConcurrencyDetected reports whether overlapping writes were observed.
 func (w *concurrencyTrackingWriter) ConcurrencyDetected() bool {
-	return atomic.LoadInt32(&w.concurrentWriteSeen) != 0
+	return w.concurrentWriteSeen.Load() != 0
 }
 
 // decodeLogEntries parses newline-delimited JSON records for assertions.
