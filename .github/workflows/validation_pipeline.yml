@@ -99,6 +99,8 @@ jobs:
                 securityFloorFileScope
               ) {
                 mode = 'security_floor';
+              } else if (sameRepo && trustedRenovate) {
+                mode = 'renovate_cloud_e2e';
               }
             }
 
@@ -549,6 +551,8 @@ jobs:
               securityFloorFileScope
             ) {
               mode = 'security_floor';
+            } else if (sameRepo && trustedRenovate) {
+              mode = 'renovate_cloud_e2e';
             }
 
             core.info(`Classified PR mode=${mode}; changed files=${paths.length}`);
@@ -557,7 +561,7 @@ jobs:
       - name: Determine Automatic Policy Path
         id: trigger_type
         run: |
-          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" && ("${{ steps.pr_scope.outputs.mode }}" == "ci_only" || "${{ steps.pr_scope.outputs.mode }}" == "automation_config_only" || "${{ steps.pr_scope.outputs.mode }}" == "examples_dependency" || "${{ steps.pr_scope.outputs.mode }}" == "toolchain_update" || "${{ steps.pr_scope.outputs.mode }}" == "security_floor") ]]; then
+          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" && ("${{ steps.pr_scope.outputs.mode }}" == "ci_only" || "${{ steps.pr_scope.outputs.mode }}" == "automation_config_only" || "${{ steps.pr_scope.outputs.mode }}" == "examples_dependency" || "${{ steps.pr_scope.outputs.mode }}" == "toolchain_update" || "${{ steps.pr_scope.outputs.mode }}" == "security_floor" || "${{ steps.pr_scope.outputs.mode }}" == "renovate_cloud_e2e") ]]; then
             echo "should_auto_trigger=true" >> $GITHUB_OUTPUT
           else
             echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
@@ -831,7 +835,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
-          steps.pr_scope.outputs.mode == 'security_floor'
+          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e')
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 1
@@ -860,6 +864,8 @@ jobs:
               summary = 'Example module dependency update detected. Local validation includes example module smoke tests; cloud E2E will be skipped after that policy check passes.';
             } else if (mode === 'toolchain_update') {
               summary = 'Root go.mod toolchain-only update detected. Local validation runs with the new toolchain; cloud E2E will be skipped after local validation passes because imported slogcp consumers are unaffected.';
+            } else if (mode === 'renovate_cloud_e2e') {
+              summary = `Trusted Renovate PR detected. Waiting for local validation to pass before starting Google Cloud Build E2E run ${runId}.`;
             }
             const sha = context.payload.pull_request.head.sha;
             const { data: checkRun } = await github.rest.checks.create({
@@ -947,7 +953,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
-          steps.pr_scope.outputs.mode == 'security_floor' &&
+          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
           steps.wait_validation.outputs.ok == 'true'
         id: have_secrets
         run: |
@@ -961,7 +967,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
-          steps.pr_scope.outputs.mode == 'security_floor' &&
+          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
@@ -973,7 +979,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
-          steps.pr_scope.outputs.mode == 'security_floor' &&
+          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
@@ -982,7 +988,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
-          steps.pr_scope.outputs.mode == 'security_floor' &&
+          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: cloud_build
@@ -1013,7 +1019,7 @@ jobs:
           steps.app_token_secrets.outputs.available == 'true' &&
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
-          steps.pr_scope.outputs.mode == 'security_floor' &&
+          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: cloud_finalize_token
@@ -1029,7 +1035,7 @@ jobs:
           always() &&
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
-          steps.pr_scope.outputs.mode == 'security_floor' &&
+          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: finalize_check
@@ -1084,7 +1090,7 @@ jobs:
           always() &&
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
-          steps.pr_scope.outputs.mode == 'security_floor' &&
+          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true' &&
           steps.finalize_check.outputs.ok != 'true'
@@ -1246,7 +1252,7 @@ jobs:
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
           (steps.wait_validation.outputs.ok != 'true' ||
-           (steps.pr_scope.outputs.mode == 'security_floor' && steps.have_secrets.outputs.ok != 'true'))
+           ((steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') && steps.have_secrets.outputs.ok != 'true'))
         id: blocked_finalize_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
@@ -1261,7 +1267,7 @@ jobs:
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
           (steps.wait_validation.outputs.ok != 'true' ||
-           (steps.pr_scope.outputs.mode == 'security_floor' && steps.have_secrets.outputs.ok != 'true'))
+           ((steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') && steps.have_secrets.outputs.ok != 'true'))
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.blocked_finalize_token.outputs.token }}
@@ -1271,7 +1277,7 @@ jobs:
             const mode = '${{ steps.pr_scope.outputs.mode }}';
             let conclusion = ${{ toJSON(steps.wait_validation.outputs.conclusion) }} || 'action_required';
             let summary = ${{ toJSON(steps.wait_validation.outputs.summary) }} || 'Local validation did not complete successfully.';
-            if (validationOk && mode === 'security_floor' && !gcpSecretsOk) {
+            if (validationOk && (mode === 'security_floor' || mode === 'renovate_cloud_e2e') && !gcpSecretsOk) {
               conclusion = 'action_required';
               summary = `GCP E2E secrets are unavailable. A maintainer can run the "Manual E2E Test Trigger" workflow with PR #${{ github.event.pull_request.number }} after secrets are configured.`;
             }
@@ -1302,7 +1308,7 @@ jobs:
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
           (steps.wait_validation.outputs.ok != 'true' ||
-           (steps.pr_scope.outputs.mode == 'security_floor' && steps.have_secrets.outputs.ok != 'true'))
+           ((steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') && steps.have_secrets.outputs.ok != 'true'))
         run: |
           echo "Automatic E2E gate did not reach a passable terminal state."
           echo "Local validation ok: ${{ steps.wait_validation.outputs.ok }}"
