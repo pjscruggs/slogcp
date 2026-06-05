@@ -57,6 +57,11 @@ const (
 	RuntimeEnvComputeEngine
 )
 
+const (
+	serviceContextServiceKey = "service"
+	serviceContextVersionKey = "version"
+)
+
 var (
 	runtimeInfoGet           atomic.Value // func() RuntimeInfo
 	runtimeInfoCacheDisabled atomic.Bool
@@ -254,10 +259,10 @@ func detectCloudFunction(info *RuntimeInfo, md *metadataLookup) bool {
 	)
 
 	info.ServiceContext = map[string]string{
-		"service": service,
+		serviceContextServiceKey: service,
 	}
 	if revision != "" {
-		info.ServiceContext["version"] = revision
+		info.ServiceContext[serviceContextVersionKey] = revision
 	}
 
 	labels := map[string]string{
@@ -294,8 +299,8 @@ func detectCloudRunService(info *RuntimeInfo, md *metadataLookup) bool {
 	)
 
 	info.ServiceContext = map[string]string{
-		"service": service,
-		"version": revision,
+		serviceContextServiceKey: service,
+		serviceContextVersionKey: revision,
 	}
 
 	labels := map[string]string{
@@ -336,8 +341,8 @@ func detectCloudRunJob(info *RuntimeInfo, md *metadataLookup) bool {
 	)
 
 	info.ServiceContext = map[string]string{
-		"service": job,
-		"version": execution,
+		serviceContextServiceKey: job,
+		serviceContextVersionKey: execution,
 	}
 
 	labels := map[string]string{
@@ -375,8 +380,8 @@ func detectAppEngine(info *RuntimeInfo, md *metadataLookup) bool {
 	}
 
 	info.ServiceContext = map[string]string{
-		"service": service,
-		"version": version,
+		serviceContextServiceKey: service,
+		serviceContextVersionKey: version,
 	}
 	labels := map[string]string{
 		"appengine.service":  service,
@@ -673,8 +678,7 @@ func metadataLookupDisablesAvailability(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	var nde metadata.NotDefinedError
-	if errors.As(err, &nde) {
+	if _, ok := errors.AsType[metadata.NotDefinedError](err); ok {
 		return false
 	}
 	var netErr net.Error

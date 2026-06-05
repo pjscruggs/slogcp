@@ -91,8 +91,8 @@ func buildErrorReportingConfig(opts []ErrorReportingOption) errorReportingConfig
 		return cfg
 	}
 
-	cfg.service = firstNonEmptyString(cfg.service, info.ServiceContext["service"])
-	cfg.version = firstNonEmptyString(cfg.version, info.ServiceContext["version"])
+	cfg.service = firstNonEmptyString(cfg.service, info.ServiceContext[serviceContextServiceKey])
+	cfg.version = firstNonEmptyString(cfg.version, info.ServiceContext[serviceContextVersionKey])
 	return cfg
 }
 
@@ -125,9 +125,9 @@ func buildServiceContextAttrs(cfg errorReportingConfig) []slog.Attr {
 	if cfg.service == "" {
 		return nil
 	}
-	sc := map[string]any{"service": cfg.service}
+	sc := map[string]any{serviceContextServiceKey: cfg.service}
 	if cfg.version != "" {
-		sc["version"] = cfg.version
+		sc[serviceContextVersionKey] = cfg.version
 	}
 	return []slog.Attr{slog.Any("serviceContext", sc)}
 }

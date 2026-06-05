@@ -26,6 +26,7 @@ import (
 // Constants defining the maximum stack frames to capture for fallback traces.
 const (
 	maxStackFrames = 64
+	runtimeGoexit  = "runtime.goexit"
 )
 
 var stackPCPool = sync.Pool{
@@ -48,9 +49,10 @@ var (
 	goroutineHeaderFunc = defaultGoroutineHeader
 )
 
-// stackTracer defines an interface errors can implement to provide their own stack trace
+// stackTracer defines an error interface that can provide its own stack trace
 // in the form of program counters.
 type stackTracer interface {
+	error
 	StackTrace() []uintptr
 }
 
@@ -76,8 +78,7 @@ func stackPCsFromError(err error) []uintptr {
 		return nil
 	}
 
-	var st stackTracer
-	if errors.As(err, &st) {
+	if st, ok := errors.AsType[stackTracer](err); ok {
 		if pcs := st.StackTrace(); len(pcs) > 0 {
 			return pcs
 		}
@@ -220,7 +221,7 @@ func frameShouldStop(frame runtime.Frame) bool {
 // frameSkipState returns whether to skip the frame and whether iteration should end.
 func frameSkipState(frame runtime.Frame, more bool) (skip bool, stop bool) {
 	switch frame.Function {
-	case "runtime.goexit":
+	case runtimeGoexit:
 		return true, !more
 	case "":
 		return true, !more
@@ -285,7 +286,7 @@ func trimStackPCs(pcs []uintptr, skipFn func(string) bool) []uintptr {
 var (
 	internalStackFrameNames = map[string]struct{}{
 		"runtime.Callers": {},
-		"runtime.goexit":  {},
+		runtimeGoexit:     {},
 	}
 	internalStackFramePrefixes = []string{
 		"runtime.",

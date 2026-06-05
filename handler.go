@@ -21,6 +21,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -473,8 +474,8 @@ func composeFanout(primary slog.Handler, additional []slog.Handler, leveler slog
 
 // applyMiddlewares wraps handler with supplied middlewares from last to first.
 func applyMiddlewares(handler slog.Handler, middlewares []Middleware) slog.Handler {
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		handler = middlewares[i](handler)
+	for _, middleware := range slices.Backward(middlewares) {
+		handler = middleware(handler)
 	}
 	return handler
 }
@@ -1450,17 +1451,24 @@ func resolveLevelFromEnv(current slog.Level, logger *slog.Logger) slog.Level {
 	return parseLevelEnv(os.Getenv(envGenericLogLevel), current, logger)
 }
 
+const (
+	envLevelAliasDefault   = "default"
+	envLevelAliasCritical  = "critical"
+	envLevelAliasAlert     = "alert"
+	envLevelAliasEmergency = "emergency"
+)
+
 var envLevelAliases = map[string]slog.Level{
-	"debug":     slog.LevelDebug,
-	"info":      slog.LevelInfo,
-	"warn":      slog.LevelWarn,
-	"warning":   slog.LevelWarn,
-	"error":     slog.LevelError,
-	"default":   slog.Level(LevelDefault),
-	"notice":    slog.Level(LevelNotice),
-	"critical":  slog.Level(LevelCritical),
-	"alert":     slog.Level(LevelAlert),
-	"emergency": slog.Level(LevelEmergency),
+	"debug":                slog.LevelDebug,
+	"info":                 slog.LevelInfo,
+	"warn":                 slog.LevelWarn,
+	"warning":              slog.LevelWarn,
+	"error":                slog.LevelError,
+	envLevelAliasDefault:   slog.Level(LevelDefault),
+	"notice":               slog.Level(LevelNotice),
+	envLevelAliasCritical:  slog.Level(LevelCritical),
+	envLevelAliasAlert:     slog.Level(LevelAlert),
+	envLevelAliasEmergency: slog.Level(LevelEmergency),
 }
 
 // parseLevelEnv parses slog levels from environment variables, retaining the
