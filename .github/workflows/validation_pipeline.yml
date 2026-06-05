@@ -27,7 +27,7 @@ jobs:
     steps:
       - name: Classify changed files
         id: classify
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             let mode = 'normal';
@@ -120,7 +120,7 @@ jobs:
       GOTOOLCHAIN: auto
     steps:
       - name: 🛒 Checkout Code
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
@@ -175,24 +175,24 @@ jobs:
           GO_VERSION="$GO_VERSION" python3 .github/scripts/resolve_go_version.py
 
       - name: 🏗️ Set up Go
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
 
       - name: 🛠️ Install golangci-lint
-        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9
         with:
-          version: v2.1.5
+          version: v2.12.2
           install-mode: goinstall
           install-only: true
           
       - name: 🧰 Install format/modernize tools
         run: |
           # renovate: datasource=go depName=golang.org/x/tools versioning=semver
-          go install golang.org/x/tools/cmd/goimports@v0.39.1-0.20251201175718-869ced31773a
+          go install golang.org/x/tools/cmd/goimports@v0.45.0
           # renovate: datasource=go depName=golang.org/x/tools/gopls versioning=semver
-          go install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.20.0
+          go install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.22.0
 
       - name: ✨ Apply Go formatting
         run: gofmt -w .
@@ -254,7 +254,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: ♻️ Restore Go toolchain (post-license-fix)
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
@@ -319,7 +319,7 @@ jobs:
         run: python3 .github/scripts/sync_example_go_versions.py --check
 
       - name: ♻️ Restore Go toolchain (pre-tests)
-        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
@@ -394,7 +394,7 @@ jobs:
         run: |
           echo "Installing govulncheck..."
           # renovate: datasource=go depName=golang.org/x/vuln versioning=semver
-          go install golang.org/x/vuln/cmd/govulncheck@v1.1.5-0.20250813145526-b9d319d7ce41
+          go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
           echo "Running vulnerability check..."
           govulncheck ./...
 
@@ -479,7 +479,7 @@ jobs:
     steps:
       - name: Classify PR Scope
         id: pr_scope
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -587,7 +587,7 @@ jobs:
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor'
         id: version_bump_token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -599,7 +599,7 @@ jobs:
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor'
         id: security_release_version
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.version_bump_token.outputs.token }}
           script: |
@@ -711,7 +711,7 @@ jobs:
           steps.app_token_secrets.outputs.available == 'true' &&
           steps.security_release_version.outputs.committed != 'true'
         id: check_start_token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -722,7 +722,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'false' &&
           (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only')
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_start_token.outputs.token }}
           script: |
@@ -766,7 +766,7 @@ jobs:
           steps.trigger_type.outputs.should_auto_trigger == 'false' &&
           steps.pr_scope.outputs.mode == 'normal'
         id: manual_check
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_start_token.outputs.token }}
           script: |
@@ -786,7 +786,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'false' &&
           steps.pr_scope.outputs.mode == 'normal'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_start_token.outputs.token }}
           script: |
@@ -822,7 +822,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true'
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -832,7 +832,7 @@ jobs:
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
           steps.pr_scope.outputs.mode == 'security_floor'
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -844,7 +844,7 @@ jobs:
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true'
         id: create_run_check
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_start_token.outputs.token }}
           script: |
@@ -884,7 +884,7 @@ jobs:
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true'
         id: wait_validation
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ github.token }}
           script: |
@@ -1017,7 +1017,7 @@ jobs:
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: cloud_finalize_token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -1033,7 +1033,7 @@ jobs:
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: finalize_check
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.cloud_finalize_token.outputs.token }}
           script: |
@@ -1103,7 +1103,7 @@ jobs:
           steps.have_secrets.outputs.ok == 'true' &&
           steps.finalize_check.outputs.ok == 'true'
         id: auto_merge_token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -1119,7 +1119,7 @@ jobs:
           steps.have_secrets.outputs.ok == 'true' &&
           steps.finalize_check.outputs.ok == 'true'
         id: auto_merge
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.auto_merge_token.outputs.token }}
           script: |
@@ -1189,7 +1189,7 @@ jobs:
           (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
           steps.wait_validation.outputs.ok == 'true'
         id: no_cloud_finalize_token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -1202,7 +1202,7 @@ jobs:
           (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
           steps.wait_validation.outputs.ok == 'true'
         id: finalize_no_cloud
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.no_cloud_finalize_token.outputs.token }}
           script: |
@@ -1248,7 +1248,7 @@ jobs:
           (steps.wait_validation.outputs.ok != 'true' ||
            (steps.pr_scope.outputs.mode == 'security_floor' && steps.have_secrets.outputs.ok != 'true'))
         id: blocked_finalize_token
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -1262,7 +1262,7 @@ jobs:
           steps.security_release_version.outputs.committed != 'true' &&
           (steps.wait_validation.outputs.ok != 'true' ||
            (steps.pr_scope.outputs.mode == 'security_floor' && steps.have_secrets.outputs.ok != 'true'))
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.blocked_finalize_token.outputs.token }}
           script: |
