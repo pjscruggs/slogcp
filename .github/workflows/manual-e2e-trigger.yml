@@ -19,7 +19,6 @@ name: Manual E2E Test Trigger
 permissions:
   contents: read
   pull-requests: read
-  issues: write
   id-token: write
 
 jobs:
@@ -358,23 +357,3 @@ jobs:
         run: |
           echo "E2E build status: ${{ steps.cloud_build.outputs.build_status }}"
           exit 1
-
-      - name: Add PR Comment
-        if: ${{ steps.target.outputs.pr_number != '' }}
-        # actions/github-script v8 (pinned)
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
-        with:
-          script: |
-            const body = [
-              'E2E tests manually triggered by @' + context.actor,
-              '',
-              'View progress in the E2E Tests (GCP) check:',
-              `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${{ steps.target.outputs.pr_number }}/checks`
-            ].join('\n');
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number('${{ steps.target.outputs.pr_number }}'),
-              body
-            });
