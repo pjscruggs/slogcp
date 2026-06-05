@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.20
+# syntax=docker/dockerfile:1.24
 # Build stage
 ARG GO_VERSION
 ARG DEBIAN_CODENAME
