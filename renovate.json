@@ -127,7 +127,10 @@
       "matchFileNames": [".examples/**"],
       "groupName": "examples module dependencies",
       "labels": ["renovate:examples", "dependency-scope:examples"],
-      "schedule": ["* 4 * * *"],
+      "schedule": ["* 3-6 * * *"],
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
       "prPriority": 5
     },
     {
