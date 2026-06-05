@@ -3,8 +3,8 @@ module github.com/pjscruggs/slogcp/examples/grpc
 go 1.26.4
 
 require (
-	google.golang.org/grpc v1.80.0
-	google.golang.org/grpc/examples v0.0.0-20260408163837-74b3acd1a801
+	google.golang.org/grpc v1.81.1
+	google.golang.org/grpc/examples v0.0.0-20260604061855-fef07fbb2b94
 )
 
 require github.com/pjscruggs/slogcp v0.0.0-unpublished
@@ -16,14 +16,14 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.67.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260311181403-84a4fc48630c // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
