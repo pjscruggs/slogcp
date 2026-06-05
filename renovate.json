@@ -74,20 +74,19 @@
       "prPriority": 10
     },
     {
-      "description": "Normal root Go module dependency updates require maintainer approval from the Dependency Dashboard",
+      "description": "Do not propose routine root go.mod dependency floor updates",
       "matchManagers": ["gomod"],
       "matchFileNames": ["go.mod"],
-      "dependencyDashboardApproval": true,
-      "automerge": false,
-      "groupName": "root dependency floor candidates",
-      "labels": ["dependency-scope:root"],
-      "prPriority": 0
+      "matchDatasources": ["go"],
+      "matchDepTypes": ["require"],
+      "enabled": false
     },
     {
       "description": "Security floor updates must not wait for normal root Dependency Dashboard approval",
       "matchManagers": ["gomod"],
       "matchFileNames": ["go.mod"],
       "matchJsonata": ["$exists(vulnerabilityFixVersion)"],
+      "enabled": true,
       "dependencyDashboardApproval": false,
       "automerge": true,
       "automergeType": "pr",
