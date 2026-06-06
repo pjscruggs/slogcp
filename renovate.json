@@ -134,6 +134,17 @@
       "prPriority": 5
     },
     {
+      "description": "Automerge Docker dependencies used by e2e tests after validation",
+      "matchManagers": ["dockerfile"],
+      "matchFileNames": [".e2e/**"],
+      "groupName": "e2e docker dependencies",
+      "labels": ["renovate:e2e", "dependency-scope:e2e"],
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "prPriority": 5
+    },
+    {
       "description": "Do not update the local unpublished slogcp requirement used by examples",
       "matchManagers": ["gomod"],
       "matchFileNames": [".examples/**"],
