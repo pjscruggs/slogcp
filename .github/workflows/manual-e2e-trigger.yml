@@ -29,10 +29,10 @@ jobs:
     env:
       CHECK_RUN_NAME: E2E Tests (GCP)
       LOCAL_VALIDATION_CHECK_NAME: Local Validation Ready for E2E
-      GCS_BUCKET_NAME: slogcp-e2e-artifacts
-      GCS_SOURCE_STAGING_DIR: gs://slogcp-e2e-artifacts/cloudbuild/source
+      GCS_BUCKET_NAME: ${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}
+      GCS_SOURCE_STAGING_DIR: gs://${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}/cloudbuild/source
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      GITHUB_TOKEN_SECRET_VERSION: projects/slogcp/secrets/GitHub-us-central1-connection-github-oauthtoken-34ff15/versions/latest
+      GITHUB_TOKEN_SECRET_VERSION: projects/${{ secrets.GCP_PROJECT_ID }}/secrets/${{ secrets.GCP_GITHUB_TOKEN_SECRET_NAME }}/versions/latest
       RUN_REGION: us-central1
 
     steps:
