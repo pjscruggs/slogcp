@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	google.golang.org/grpc v1.81.1
-	google.golang.org/grpc/examples v0.0.0-20260609194428-f1864955bbb4
+	google.golang.org/grpc/examples v0.0.0-20260612120310-5c7f93679ec9
 )
 
 require github.com/pjscruggs/slogcp v0.0.0-unpublished
