@@ -233,15 +233,12 @@ fi
 PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT_ID" --format='value(projectNumber)' 2>/dev/null || true)"
 
 if [[ -z "$GCS_BUCKET_NAME" ]]; then
-    for candidate in "${GCP_PROJECT_ID}-slogcp-e2e-artifacts" "slogcp-e2e-artifacts"; do
-        if gcloud storage buckets describe "gs://${candidate}" --project "$GCP_PROJECT_ID" >/dev/null 2>&1; then
-            GCS_BUCKET_NAME="$candidate"
-            break
-        fi
-    done
-fi
-if [[ -z "$GCS_BUCKET_NAME" ]]; then
-    GCS_BUCKET_NAME="${GCP_PROJECT_ID}-slogcp-e2e-artifacts"
+    candidate="${GCP_PROJECT_ID}-slogcp-e2e-artifacts"
+    if gcloud storage buckets describe "gs://${candidate}" --project "$GCP_PROJECT_ID" >/dev/null 2>&1; then
+        GCS_BUCKET_NAME="$candidate"
+    else
+        die "GCS bucket is required; pass --gcs-bucket-name or create gs://${candidate}"
+    fi
 fi
 
 cat > "$ENV_FILE" <<EOF

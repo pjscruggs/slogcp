@@ -413,7 +413,8 @@ if [[ -z "$E2E_TRUSTED_E2E_ROOT" ]]; then
     E2E_TRUSTED_E2E_ROOT=".e2e"
 fi
 if [[ -z "$GCP_PROJECT_ID" ]]; then
-    GCP_PROJECT_ID="slogcp"
+    echo "GCP_PROJECT_ID is required (set it in env or pass --project)" >&2
+    exit 1
 fi
 if [[ -z "$RUN_REGION" ]]; then
     RUN_REGION="us-central1"
@@ -422,7 +423,8 @@ if [[ -z "$ARTIFACT_REGISTRY_REPO" ]]; then
     ARTIFACT_REGISTRY_REPO="${RUN_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/slogcp-images"
 fi
 if [[ -z "$GCS_BUCKET_NAME" ]]; then
-    GCS_BUCKET_NAME="slogcp-e2e-artifacts"
+    echo "GCS_BUCKET_NAME is required (set it in env or pass --gcs-bucket-name)" >&2
+    exit 1
 fi
 if [[ -z "$E2E_SERVICE_ACCOUNT" ]]; then
     E2E_SERVICE_ACCOUNT="core-log-app-runtime@${GCP_PROJECT_ID}.iam.gserviceaccount.com"

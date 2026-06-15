@@ -11,10 +11,10 @@ substitutions:
   _SHORT_SHA: ''
   _BUILD_TIME: '1970-01-01T00:00:00Z'
   _GCP_REGION: 'us-central1'
-  _ARTIFACT_REGISTRY_REPO: 'us-central1-docker.pkg.dev/slogcp/slogcp-images'
-  _GCS_BUCKET_NAME: 'slogcp-e2e-artifacts'
-  _RUNTIME_SERVICE_ACCOUNT: 'core-log-app-runtime@slogcp.iam.gserviceaccount.com'
-  _CALLER_SERVICE_ACCOUNT: 'custom-cloudbuild-runner@slogcp.iam.gserviceaccount.com'
+  _ARTIFACT_REGISTRY_REPO: '${_GCP_REGION}-docker.pkg.dev/${PROJECT_ID}/slogcp-images'
+  _GCS_BUCKET_NAME: ''
+  _RUNTIME_SERVICE_ACCOUNT: 'core-log-app-runtime@${PROJECT_ID}.iam.gserviceaccount.com'
+  _CALLER_SERVICE_ACCOUNT: 'custom-cloudbuild-runner@${PROJECT_ID}.iam.gserviceaccount.com'
   _GITHUB_TOKEN_SECRET_VERSION: ''
   _E2E_SOURCE_MODE: 'github'
   _E2E_DEPENDENCY_MODE: 'floor'
@@ -52,6 +52,10 @@ steps:
             exit 1
             ;;
         esac
+        if [ -z "${_GCS_BUCKET_NAME}" ]; then
+          echo "Error: _GCS_BUCKET_NAME is required" >&2
+          exit 1
+        fi
         echo "${_E2E_DEPENDENCY_MODE}" > /workspace/dependency_mode.txt
         echo "${_E2E_TOOLCHAIN_MODE}" > /workspace/toolchain_mode.txt
         printf '[init]\n  defaultBranch = main\n' >> ~/.gitconfig
