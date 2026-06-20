@@ -417,26 +417,32 @@ if [[ -z "$GCP_PROJECT_ID" ]]; then
     exit 1
 fi
 if [[ -z "$RUN_REGION" ]]; then
-    RUN_REGION="us-central1"
+    echo "RUN_REGION is required (set it in env or pass --region)" >&2
+    exit 1
 fi
 if [[ -z "$ARTIFACT_REGISTRY_REPO" ]]; then
-    ARTIFACT_REGISTRY_REPO="${RUN_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/slogcp-images"
+    echo "ARTIFACT_REGISTRY_REPO is required (set it in env or pass --artifact-registry-repo)" >&2
+    exit 1
 fi
 if [[ -z "$GCS_BUCKET_NAME" ]]; then
     echo "GCS_BUCKET_NAME is required (set it in env or pass --gcs-bucket-name)" >&2
     exit 1
 fi
 if [[ -z "$E2E_SERVICE_ACCOUNT" ]]; then
-    E2E_SERVICE_ACCOUNT="core-log-app-runtime@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+    echo "E2E_SERVICE_ACCOUNT is required (set it in env or pass --runtime-service-account)" >&2
+    exit 1
 fi
 if [[ -z "$E2E_CALLER_SERVICE_ACCOUNT" ]]; then
-    E2E_CALLER_SERVICE_ACCOUNT="custom-cloudbuild-runner@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+    echo "E2E_CALLER_SERVICE_ACCOUNT is required (set it in env or pass --caller-service-account)" >&2
+    exit 1
 fi
 if [[ -z "$TRACE_PUBSUB_TOPIC" ]]; then
-    TRACE_PUBSUB_TOPIC="slogcp-trace-pubsub"
+    echo "TRACE_PUBSUB_TOPIC is required (set it in env or pass --trace-pubsub-topic)" >&2
+    exit 1
 fi
 if [[ -z "$TRACE_PUBSUB_SUBSCRIPTION" ]]; then
-    TRACE_PUBSUB_SUBSCRIPTION="slogcp-trace-pubsub-sub"
+    echo "TRACE_PUBSUB_SUBSCRIPTION is required (set it in env or pass --trace-pubsub-subscription)" >&2
+    exit 1
 fi
 if [[ -z "$LIB_REPO_FULL_NAME" ]]; then
     LIB_REPO_FULL_NAME="$(derive_repo_full_name)"

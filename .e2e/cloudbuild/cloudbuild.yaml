@@ -10,19 +10,19 @@ substitutions:
   _PR_NUMBER: ''
   _SHORT_SHA: ''
   _BUILD_TIME: '1970-01-01T00:00:00Z'
-  _GCP_REGION: 'us-central1'
-  _ARTIFACT_REGISTRY_REPO: '${_GCP_REGION}-docker.pkg.dev/${PROJECT_ID}/slogcp-images'
+  _GCP_REGION: ''
+  _ARTIFACT_REGISTRY_REPO: ''
   _GCS_BUCKET_NAME: ''
-  _RUNTIME_SERVICE_ACCOUNT: 'core-log-app-runtime@${PROJECT_ID}.iam.gserviceaccount.com'
-  _CALLER_SERVICE_ACCOUNT: 'custom-cloudbuild-runner@${PROJECT_ID}.iam.gserviceaccount.com'
+  _RUNTIME_SERVICE_ACCOUNT: ''
+  _CALLER_SERVICE_ACCOUNT: ''
   _GITHUB_TOKEN_SECRET_VERSION: ''
   _E2E_SOURCE_MODE: 'github'
   _E2E_DEPENDENCY_MODE: 'floor'
   _E2E_TOOLCHAIN_MODE: 'repo'
   _E2E_REPO_GO_VERSION: ''
   _SLOGCP_REF_OVERRIDE: ''
-  _TRACE_PUBSUB_TOPIC: 'slogcp-trace-pubsub'
-  _TRACE_PUBSUB_SUBSCRIPTION: 'slogcp-trace-pubsub-sub'
+  _TRACE_PUBSUB_TOPIC: ''
+  _TRACE_PUBSUB_SUBSCRIPTION: ''
   _E2E_HARNESS_TIMEOUT_SECONDS: '5400'
   _E2E_DEBUG: 'true'
   _E2E_RUN_ID: ''
@@ -54,6 +54,30 @@ steps:
         esac
         if [ -z "${_GCS_BUCKET_NAME}" ]; then
           echo "Error: _GCS_BUCKET_NAME is required" >&2
+          exit 1
+        fi
+        if [ -z "${_GCP_REGION}" ]; then
+          echo "Error: _GCP_REGION is required" >&2
+          exit 1
+        fi
+        if [ -z "${_ARTIFACT_REGISTRY_REPO}" ]; then
+          echo "Error: _ARTIFACT_REGISTRY_REPO is required" >&2
+          exit 1
+        fi
+        if [ -z "${_RUNTIME_SERVICE_ACCOUNT}" ]; then
+          echo "Error: _RUNTIME_SERVICE_ACCOUNT is required" >&2
+          exit 1
+        fi
+        if [ -z "${_CALLER_SERVICE_ACCOUNT}" ]; then
+          echo "Error: _CALLER_SERVICE_ACCOUNT is required" >&2
+          exit 1
+        fi
+        if [ -z "${_TRACE_PUBSUB_TOPIC}" ]; then
+          echo "Error: _TRACE_PUBSUB_TOPIC is required" >&2
+          exit 1
+        fi
+        if [ -z "${_TRACE_PUBSUB_SUBSCRIPTION}" ]; then
+          echo "Error: _TRACE_PUBSUB_SUBSCRIPTION is required" >&2
           exit 1
         fi
         echo "${_E2E_DEPENDENCY_MODE}" > /workspace/dependency_mode.txt
@@ -142,6 +166,12 @@ steps:
       - -c
       - |
         set -euo pipefail
+        if ! command -v python3 >/dev/null 2>&1; then
+          apt-get update
+          apt-get install -y --no-install-recommends python3
+          rm -rf /var/lib/apt/lists/*
+        fi
+
         if [ "${_E2E_TOOLCHAIN_MODE}" = "latest" ]; then
           GO_VERSION="$$(python3 scripts/resolve_latest_go_version.py)"
         else
@@ -343,6 +373,12 @@ steps:
       - -c
       - |
         set -euo pipefail
+        if ! command -v python3 >/dev/null 2>&1; then
+          apt-get update
+          apt-get install -y --no-install-recommends python3
+          rm -rf /var/lib/apt/lists/*
+        fi
+
         export PATH="/workspace/go/bin:$$PATH"
         export GO_BINARY="/workspace/go/bin/go"
         GO_VERSION="$$(cat /workspace/go_version.txt)"
@@ -673,6 +709,16 @@ steps:
             --topic "$$TRACE_PUBSUB_TOPIC_ID" \
             --project "${PROJECT_ID}"
         fi
+        gcloud pubsub topics add-iam-policy-binding "$$TRACE_PUBSUB_TOPIC_ID" \
+          --member "serviceAccount:${_RUNTIME_SERVICE_ACCOUNT}" \
+          --role roles/pubsub.publisher \
+          --project "${PROJECT_ID}" \
+          --quiet
+        gcloud pubsub subscriptions add-iam-policy-binding "$$TRACE_PUBSUB_SUBSCRIPTION_ID" \
+          --member "serviceAccount:${_RUNTIME_SERVICE_ACCOUNT}" \
+          --role roles/pubsub.subscriber \
+          --project "${PROJECT_ID}" \
+          --quiet
         trap - ERR
     id: 'Ensure trace pubsub resources'
     waitFor: ['Deploy core service', 'Push e2e-harness']

@@ -203,22 +203,22 @@ if [[ -z "$GCP_PROJECT_ID" ]]; then
     die "GCP project is required; set it in gcloud, the env file, or pass --project"
 fi
 if [[ -z "$RUN_REGION" ]]; then
-    RUN_REGION="us-central1"
+    die "Run region is required; set RUN_REGION or pass --region"
 fi
 if [[ -z "$ARTIFACT_REGISTRY_REPO" ]]; then
-    ARTIFACT_REGISTRY_REPO="${RUN_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/slogcp-images"
+    die "Artifact Registry repository is required; set ARTIFACT_REGISTRY_REPO or pass --artifact-registry-repo"
 fi
 if [[ -z "$E2E_SERVICE_ACCOUNT" ]]; then
-    E2E_SERVICE_ACCOUNT="core-log-app-runtime@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+    die "Runtime service account is required; set E2E_SERVICE_ACCOUNT or pass --runtime-service-account"
 fi
 if [[ -z "$E2E_CALLER_SERVICE_ACCOUNT" ]]; then
-    E2E_CALLER_SERVICE_ACCOUNT="custom-cloudbuild-runner@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+    die "Caller service account is required; set E2E_CALLER_SERVICE_ACCOUNT or pass --caller-service-account"
 fi
 if [[ -z "$TRACE_PUBSUB_TOPIC" ]]; then
-    TRACE_PUBSUB_TOPIC="slogcp-trace-pubsub"
+    die "Trace Pub/Sub topic is required; set TRACE_PUBSUB_TOPIC or pass --trace-pubsub-topic"
 fi
 if [[ -z "$TRACE_PUBSUB_SUBSCRIPTION" ]]; then
-    TRACE_PUBSUB_SUBSCRIPTION="slogcp-trace-pubsub-sub"
+    die "Trace Pub/Sub subscription is required; set TRACE_PUBSUB_SUBSCRIPTION or pass --trace-pubsub-subscription"
 fi
 if [[ -z "$LIB_REPO_FULL_NAME" ]]; then
     LIB_REPO_FULL_NAME="$(detect_repo_full_name)"
@@ -233,12 +233,7 @@ fi
 PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT_ID" --format='value(projectNumber)' 2>/dev/null || true)"
 
 if [[ -z "$GCS_BUCKET_NAME" ]]; then
-    candidate="${GCP_PROJECT_ID}-slogcp-e2e-artifacts"
-    if gcloud storage buckets describe "gs://${candidate}" --project "$GCP_PROJECT_ID" >/dev/null 2>&1; then
-        GCS_BUCKET_NAME="$candidate"
-    else
-        die "GCS bucket is required; pass --gcs-bucket-name or create gs://${candidate}"
-    fi
+    die "GCS bucket is required; set GCS_BUCKET_NAME or pass --gcs-bucket-name"
 fi
 
 cat > "$ENV_FILE" <<EOF
