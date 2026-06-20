@@ -266,6 +266,43 @@ func (c *LoggingClient) WaitForLogs(ctx context.Context, opts QueryOptions, time
 	return nil, fmt.Errorf("timeout waiting for logs after %v", timeout)
 }
 
+// WaitForLogCount queries logs with retries until at least minCount entries are
+// visible or timeout expires.
+func (c *LoggingClient) WaitForLogCount(ctx context.Context, opts QueryOptions, minCount int, timeout time.Duration) ([]*LogEntry, error) {
+	if minCount <= 0 {
+		return c.WaitForLogs(ctx, opts, timeout)
+	}
+
+	deadline := time.Now().Add(timeout)
+	backoff := 1 * time.Second
+	maxBackoff := 10 * time.Second
+	lastCount := 0
+
+	for time.Now().Before(deadline) {
+		entries, err := c.QueryLogs(ctx, opts)
+		if err != nil {
+			return nil, fmt.Errorf("querying logs: %w", err)
+		}
+
+		if len(entries) >= minCount {
+			return entries, nil
+		}
+		lastCount = len(entries)
+
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("waiting for %d logs canceled after finding %d: %w", minCount, lastCount, ctx.Err())
+		case <-time.After(backoff):
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("timeout waiting for at least %d logs after %v; found %d", minCount, timeout, lastCount)
+}
+
 // WaitForLogsJSON queries Cloud Logging via the REST API with retries until entries
 // are found or timeout.
 func (c *LoggingClient) WaitForLogsJSON(ctx context.Context, opts QueryOptions, timeout time.Duration) ([]map[string]any, error) {
