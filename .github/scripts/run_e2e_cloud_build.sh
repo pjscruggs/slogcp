@@ -566,7 +566,7 @@ if [[ -n "$E2E_REPO_GO_VERSION" ]]; then
     echo "Repo Go version: ${E2E_REPO_GO_VERSION}"
 fi
 if [[ -n "$GCS_SOURCE_STAGING_DIR" ]]; then
-    echo "Source staging dir: ${GCS_SOURCE_STAGING_DIR}"
+    echo "Using configured Cloud Build source staging directory."
 fi
 
 submit_args=(
@@ -588,7 +588,6 @@ fi
 
 submit_output=""
 if ! submit_output="$(gcloud builds submit "${submit_args[@]}" 2>&1)"; then
-    printf '%s\n' "$submit_output" >&2
     echo "Failed to start Cloud Build." >&2
     emit_outputs
     exit 1
@@ -606,15 +605,13 @@ if [[ -z "$BUILD_ID" ]]; then
 fi
 
 if [[ -z "$BUILD_ID" ]]; then
-    printf '%s\n' "$submit_output" >&2
     echo "Failed to start Cloud Build and resolve build ID." >&2
     emit_outputs
     exit 1
 fi
 
 BUILD_LOG_URL="https://console.cloud.google.com/cloud-build/builds/${BUILD_ID}?project=${GCP_PROJECT_ID}"
-echo "Cloud Build started: ${BUILD_ID}"
-echo "Logs: ${BUILD_LOG_URL}"
+echo "Cloud Build started."
 
 if [[ "$E2E_NO_WAIT" == "true" ]]; then
     BUILD_STATUS="$(gcloud builds describe "$BUILD_ID" --project="$GCP_PROJECT_ID" --region="$RUN_REGION" --format='value(status)' 2>/dev/null || true)"

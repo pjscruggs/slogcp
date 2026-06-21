@@ -1086,9 +1086,7 @@ jobs:
             const checkRunId = Number('${{ steps.create_run_check.outputs.check_run_id }}') || 0;
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
             const buildStatus = '${{ steps.cloud_build.outputs.build_status }}'.toUpperCase();
-            const buildId = '${{ steps.cloud_build.outputs.build_id }}';
-            const buildLogUrl = '${{ steps.cloud_build.outputs.build_log_url }}';
-            const artifactsUrl = '${{ steps.cloud_build.outputs.artifacts_url }}';
+            const detailsUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             let conclusion = 'failure';
             if (buildStatus === 'SUCCESS') {
@@ -1099,16 +1097,14 @@ jobs:
 
             const summaryLines = [
               `Google Cloud Build E2E run \`${runId}\` finished: **${buildStatus || 'UNKNOWN'}**.`,
-              buildId ? `Build ID: ${buildId}` : null,
-              buildLogUrl ? `[View Cloud Build Logs](${buildLogUrl})` : null,
-              artifactsUrl ? `[Browse Test Artifacts in GCS](${artifactsUrl})` : null
+              'Maintainers can inspect internal Cloud Build logs and artifacts from Google Cloud.'
             ].filter(Boolean);
 
             await github.rest.checks.update({
               owner,
               repo,
               check_run_id: checkRunId,
-              details_url: buildLogUrl || undefined,
+              details_url: detailsUrl,
               external_id: runId,
               status: 'completed',
               conclusion,

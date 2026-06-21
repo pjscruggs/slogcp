@@ -74,9 +74,7 @@ jobs:
             echo "## Weekly Latest Dependency E2E"
             echo
             echo "- Status: ${{ steps.cloud_build.outputs.build_status }}"
-            echo "- Build ID: ${{ steps.cloud_build.outputs.build_id }}"
-            echo "- Logs: ${{ steps.cloud_build.outputs.build_log_url }}"
-            echo "- Artifacts: ${{ steps.cloud_build.outputs.artifacts_url }}"
+            echo "- Internal Cloud Build logs and artifacts are available to maintainers in Google Cloud."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail workflow when E2E failed
