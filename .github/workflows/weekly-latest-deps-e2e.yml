@@ -19,7 +19,12 @@ jobs:
       GCS_SOURCE_STAGING_DIR: gs://${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}/cloudbuild/source
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       GITHUB_TOKEN_SECRET_VERSION: projects/${{ secrets.GCP_PROJECT_ID }}/secrets/${{ secrets.GCP_GITHUB_TOKEN_SECRET_NAME }}/versions/latest
-      RUN_REGION: us-central1
+      ARTIFACT_REGISTRY_REPO: ${{ secrets.GCP_E2E_ARTIFACT_REGISTRY_REPO }}
+      E2E_SERVICE_ACCOUNT: ${{ secrets.GCP_E2E_RUNTIME_SERVICE_ACCOUNT_EMAIL }}
+      E2E_CALLER_SERVICE_ACCOUNT: ${{ secrets.GCP_E2E_CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL }}
+      TRACE_PUBSUB_TOPIC: ${{ secrets.GCP_E2E_TRACE_PUBSUB_TOPIC }}
+      TRACE_PUBSUB_SUBSCRIPTION: ${{ secrets.GCP_E2E_TRACE_PUBSUB_SUBSCRIPTION }}
+      RUN_REGION: ${{ secrets.GCP_E2E_RUN_REGION }}
 
     steps:
       - name: Checkout Code
@@ -31,8 +36,8 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+          workload_identity_provider: ${{ secrets.GCP_WEEKLY_E2E_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WEEKLY_E2E_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
@@ -52,6 +57,11 @@ jobs:
           LIB_RUN_ID: ${{ github.run_id }}
           GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
           GITHUB_TOKEN_SECRET_VERSION: ${{ env.GITHUB_TOKEN_SECRET_VERSION }}
+          ARTIFACT_REGISTRY_REPO: ${{ env.ARTIFACT_REGISTRY_REPO }}
+          E2E_SERVICE_ACCOUNT: ${{ env.E2E_SERVICE_ACCOUNT }}
+          E2E_CALLER_SERVICE_ACCOUNT: ${{ env.E2E_CALLER_SERVICE_ACCOUNT }}
+          TRACE_PUBSUB_TOPIC: ${{ env.TRACE_PUBSUB_TOPIC }}
+          TRACE_PUBSUB_SUBSCRIPTION: ${{ env.TRACE_PUBSUB_SUBSCRIPTION }}
           RUN_REGION: ${{ env.RUN_REGION }}
           GCS_BUCKET_NAME: ${{ env.GCS_BUCKET_NAME }}
           GCS_SOURCE_STAGING_DIR: ${{ env.GCS_SOURCE_STAGING_DIR }}
@@ -64,9 +74,7 @@ jobs:
             echo "## Weekly Latest Dependency E2E"
             echo
             echo "- Status: ${{ steps.cloud_build.outputs.build_status }}"
-            echo "- Build ID: ${{ steps.cloud_build.outputs.build_id }}"
-            echo "- Logs: ${{ steps.cloud_build.outputs.build_log_url }}"
-            echo "- Artifacts: ${{ steps.cloud_build.outputs.artifacts_url }}"
+            echo "- Internal Cloud Build logs and artifacts are available to maintainers in Google Cloud."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail workflow when E2E failed

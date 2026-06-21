@@ -116,8 +116,6 @@ jobs:
     # Skip validation on pull_request_target to avoid running the full pipeline twice per PR update.
     if: github.event_name != 'pull_request_target' && needs.classify_validation_scope.outputs.mode != 'ci_only' && needs.classify_validation_scope.outputs.mode != 'automation_config_only'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     env:
       GOTOOLCHAIN: auto
     steps:
@@ -183,11 +181,10 @@ jobs:
           cache: true
 
       - name: 🛠️ Install golangci-lint
-        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9
-        with:
-          version: v2.12.2
-          install-mode: goinstall
-          install-only: true
+        run: |
+          # renovate: datasource=go depName=github.com/golangci/golangci-lint/v2 versioning=semver
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           
       - name: 🧰 Install format/modernize tools
         run: |
@@ -195,6 +192,8 @@ jobs:
           go install golang.org/x/tools/cmd/goimports@v0.45.0
           # renovate: datasource=go depName=golang.org/x/tools/gopls versioning=semver
           go install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.22.0
+          # renovate: datasource=go depName=github.com/apache/skywalking-eyes versioning=semver
+          go install github.com/apache/skywalking-eyes/cmd/license-eye@v0.8.0
 
       - name: ✨ Apply Go formatting
         run: gofmt -w .
@@ -249,11 +248,7 @@ jobs:
       
       - name: 📄🩹 Fix License Headers
         id: fix-license
-        uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1 # v0.8.0
-        with:
-          mode: fix
-          config: .licenserc.yaml
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: license-eye header fix -c .licenserc.yaml
 
       - name: ♻️ Restore Go toolchain (post-license-fix)
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -265,27 +260,50 @@ jobs:
         run: golangci-lint run --fix ./...
         continue-on-error: true
       
-      - name: 💾 Commit All Fixes
+      - name: Generate Maintenance Push Token
         if: steps.maintenance-policy.outputs.allow_push == 'true'
+        id: maintenance_push_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.E2E_APP_ID }}
+          private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: 💾 Commit All Fixes
+        id: commit-fixes
+        if: steps.maintenance-policy.outputs.allow_push == 'true'
+        env:
+          BRANCH_NAME: ${{ steps.get-branch.outputs.BRANCH_NAME }}
+          GH_TOKEN: ${{ steps.maintenance_push_token.outputs.token }}
         run: |
+          set -euo pipefail
+
+          git check-ref-format --branch "$BRANCH_NAME" >/dev/null
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git diff --quiet || {
-            git add .
-            git commit -m "chore: apply code maintenance (formatting, linting, license headers)"
-            git push origin ${{ steps.get-branch.outputs.BRANCH_NAME }}
-          }
+          if git diff --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git add .
+          git commit -m "chore: apply code maintenance (formatting, linting, license headers)"
+          gh auth setup-git
+          git push origin "HEAD:refs/heads/${BRANCH_NAME}"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
           
       - name: 🔄 Re-checkout after fixes if needed
-        if: steps.maintenance-policy.outputs.allow_push == 'true'
+        if: steps.maintenance-policy.outputs.allow_push == 'true' && steps.commit-fixes.outputs.committed == 'true'
+        env:
+          BRANCH_NAME: ${{ steps.get-branch.outputs.BRANCH_NAME }}
         run: |
-          if git diff --quiet origin/${{ steps.get-branch.outputs.BRANCH_NAME }} HEAD; then
-            echo "No changes were committed, skipping re-checkout"
-          else
-            echo "Changes were committed, re-checking out latest code"
-            git fetch
-            git checkout origin/${{ steps.get-branch.outputs.BRANCH_NAME }}
-          fi
+          set -euo pipefail
+
+          git check-ref-format --branch "$BRANCH_NAME" >/dev/null
+          git fetch origin "refs/heads/${BRANCH_NAME}:refs/remotes/origin/${BRANCH_NAME}"
+          git checkout --detach "refs/remotes/origin/${BRANCH_NAME}"
 
       - name: ✅ Ensure working tree is clean
         run: |
@@ -310,11 +328,7 @@ jobs:
         run: golangci-lint run ./...
       
       - name: 📄✅ Verify License Headers
-        uses: apache/skywalking-eyes/header@61275cc80d0798a405cb070f7d3a8aaf7cf2c2c1 # v0.8.0
-        with:
-          mode: check
-          config: .licenserc.yaml
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: license-eye header check -c .licenserc.yaml
 
       - name: ✅ Verify example Go directives
         if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'renovate:go-version')
@@ -466,16 +480,21 @@ jobs:
       GCS_SOURCE_STAGING_DIR: gs://${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}/cloudbuild/source
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       GITHUB_TOKEN_SECRET_VERSION: projects/${{ secrets.GCP_PROJECT_ID }}/secrets/${{ secrets.GCP_GITHUB_TOKEN_SECRET_NAME }}/versions/latest
-      RUN_REGION: us-central1
+      ARTIFACT_REGISTRY_REPO: ${{ secrets.GCP_E2E_ARTIFACT_REGISTRY_REPO }}
+      E2E_SERVICE_ACCOUNT: ${{ secrets.GCP_E2E_RUNTIME_SERVICE_ACCOUNT_EMAIL }}
+      E2E_CALLER_SERVICE_ACCOUNT: ${{ secrets.GCP_E2E_CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL }}
+      TRACE_PUBSUB_TOPIC: ${{ secrets.GCP_E2E_TRACE_PUBSUB_TOPIC }}
+      TRACE_PUBSUB_SUBSCRIPTION: ${{ secrets.GCP_E2E_TRACE_PUBSUB_SUBSCRIPTION }}
+      RUN_REGION: ${{ secrets.GCP_E2E_RUN_REGION }}
     concurrency:
       group: e2e-gate-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
-      checks: write
-      contents: write
-      pull-requests: write
+      checks: read
+      contents: read
+      pull-requests: read
       id-token: write
     
     steps:
@@ -597,6 +616,8 @@ jobs:
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: read
 
       - name: Ensure security floor release version is committed
         if: |
@@ -721,6 +742,7 @@ jobs:
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          permission-checks: write
 
       - name: Finalize E2E check for no-cloud manual PRs
         if: |
@@ -958,10 +980,16 @@ jobs:
         id: have_secrets
         run: |
           if [ -n "${{ secrets.GCP_PROJECT_ID }}" ] &&
-             [ -n "${{ secrets.GCP_WIF_PROVIDER }}" ] &&
-             [ -n "${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}" ] &&
+             [ -n "${{ secrets.GCP_VALIDATION_E2E_WIF_PROVIDER }}" ] &&
+             [ -n "${{ secrets.GCP_VALIDATION_E2E_SERVICE_ACCOUNT_EMAIL }}" ] &&
              [ -n "${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}" ] &&
-             [ -n "${{ secrets.GCP_GITHUB_TOKEN_SECRET_NAME }}" ]; then
+             [ -n "${{ secrets.GCP_GITHUB_TOKEN_SECRET_NAME }}" ] &&
+             [ -n "${{ secrets.GCP_E2E_ARTIFACT_REGISTRY_REPO }}" ] &&
+             [ -n "${{ secrets.GCP_E2E_RUNTIME_SERVICE_ACCOUNT_EMAIL }}" ] &&
+             [ -n "${{ secrets.GCP_E2E_CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL }}" ] &&
+             [ -n "${{ secrets.GCP_E2E_TRACE_PUBSUB_TOPIC }}" ] &&
+             [ -n "${{ secrets.GCP_E2E_TRACE_PUBSUB_SUBSCRIPTION }}" ] &&
+             [ -n "${{ secrets.GCP_E2E_RUN_REGION }}" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
@@ -976,8 +1004,8 @@ jobs:
           steps.have_secrets.outputs.ok == 'true'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+          workload_identity_provider: ${{ secrets.GCP_VALIDATION_E2E_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_VALIDATION_E2E_SERVICE_ACCOUNT_EMAIL }}
 
       - name: Set up Cloud SDK
         if: |
@@ -1013,6 +1041,11 @@ jobs:
           E2E_RUN_ID: ${{ steps.run_id.outputs.e2e_run_id }}
           GCP_PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
           GITHUB_TOKEN_SECRET_VERSION: ${{ env.GITHUB_TOKEN_SECRET_VERSION }}
+          ARTIFACT_REGISTRY_REPO: ${{ env.ARTIFACT_REGISTRY_REPO }}
+          E2E_SERVICE_ACCOUNT: ${{ env.E2E_SERVICE_ACCOUNT }}
+          E2E_CALLER_SERVICE_ACCOUNT: ${{ env.E2E_CALLER_SERVICE_ACCOUNT }}
+          TRACE_PUBSUB_TOPIC: ${{ env.TRACE_PUBSUB_TOPIC }}
+          TRACE_PUBSUB_SUBSCRIPTION: ${{ env.TRACE_PUBSUB_SUBSCRIPTION }}
           RUN_REGION: ${{ env.RUN_REGION }}
           GCS_BUCKET_NAME: ${{ env.GCS_BUCKET_NAME }}
           GCS_SOURCE_STAGING_DIR: ${{ env.GCS_SOURCE_STAGING_DIR }}
@@ -1033,6 +1066,7 @@ jobs:
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          permission-checks: write
 
       - name: Finalize stable E2E check after Cloud Build
         if: |
@@ -1052,9 +1086,7 @@ jobs:
             const checkRunId = Number('${{ steps.create_run_check.outputs.check_run_id }}') || 0;
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
             const buildStatus = '${{ steps.cloud_build.outputs.build_status }}'.toUpperCase();
-            const buildId = '${{ steps.cloud_build.outputs.build_id }}';
-            const buildLogUrl = '${{ steps.cloud_build.outputs.build_log_url }}';
-            const artifactsUrl = '${{ steps.cloud_build.outputs.artifacts_url }}';
+            const detailsUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             let conclusion = 'failure';
             if (buildStatus === 'SUCCESS') {
@@ -1065,16 +1097,14 @@ jobs:
 
             const summaryLines = [
               `Google Cloud Build E2E run \`${runId}\` finished: **${buildStatus || 'UNKNOWN'}**.`,
-              buildId ? `Build ID: ${buildId}` : null,
-              buildLogUrl ? `[View Cloud Build Logs](${buildLogUrl})` : null,
-              artifactsUrl ? `[Browse Test Artifacts in GCS](${artifactsUrl})` : null
+              'Maintainers can inspect internal Cloud Build logs and artifacts from Google Cloud.'
             ].filter(Boolean);
 
             await github.rest.checks.update({
               owner,
               repo,
               check_run_id: checkRunId,
-              details_url: buildLogUrl || undefined,
+              details_url: detailsUrl,
               external_id: runId,
               status: 'completed',
               conclusion,
@@ -1119,6 +1149,8 @@ jobs:
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Auto-merge security floor PR after E2E
         if: |
@@ -1205,6 +1237,7 @@ jobs:
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          permission-checks: write
 
       - name: Finalize stable E2E check for updates that do not require cloud E2E
         if: |
@@ -1264,6 +1297,7 @@ jobs:
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          permission-checks: write
 
       - name: Update stable E2E check when auto path cannot run
         if: |

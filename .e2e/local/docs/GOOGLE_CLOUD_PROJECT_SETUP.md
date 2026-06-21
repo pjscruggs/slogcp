@@ -19,17 +19,19 @@ Set variables like these before running the setup commands:
 
 ```bash
 PROJECT_ID="your-project-id"
-REGION="us-central1"
+REGION="your-gcp-region"
 
-ARTIFACT_REPO="slogcp-images"
-ARTIFACT_REGISTRY_REPO="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPO}"
-ARTIFACT_BUCKET="${PROJECT_ID}-slogcp-e2e-artifacts"
+ARTIFACT_REPO="your-artifact-registry-repo"
+ARTIFACT_REGISTRY_REPO="your-artifact-registry-repository-path"
+ARTIFACT_BUCKET="your-gcs-artifacts-bucket"
 
-RUNTIME_SA="core-log-app-runtime@${PROJECT_ID}.iam.gserviceaccount.com"
-CALLER_SA="custom-cloudbuild-runner@${PROJECT_ID}.iam.gserviceaccount.com"
+RUNTIME_SA_NAME="your-runtime-service-account"
+CALLER_SA_NAME="your-cloud-build-caller-service-account"
+RUNTIME_SA="${RUNTIME_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+CALLER_SA="${CALLER_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
-TRACE_TOPIC="slogcp-trace-pubsub"
-TRACE_SUBSCRIPTION="slogcp-trace-pubsub-sub"
+TRACE_TOPIC="your-trace-pubsub-topic-base"
+TRACE_SUBSCRIPTION="your-trace-pubsub-subscription-base"
 
 YOUR_MEMBER="user:you@example.com"
 ```
@@ -55,11 +57,11 @@ gcloud services enable \
 ## 2. Create Service Accounts
 
 ```bash
-gcloud iam service-accounts create core-log-app-runtime \
+gcloud iam service-accounts create "${RUNTIME_SA_NAME}" \
   --display-name "Core Logging Target App Runtime SA" \
   --project "${PROJECT_ID}"
 
-gcloud iam service-accounts create custom-cloudbuild-runner \
+gcloud iam service-accounts create "${CALLER_SA_NAME}" \
   --display-name "Custom Cloud Build Runner SA" \
   --project "${PROJECT_ID}"
 ```

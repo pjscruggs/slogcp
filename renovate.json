@@ -90,6 +90,7 @@
       "dependencyDashboardApproval": false,
       "automerge": true,
       "automergeType": "pr",
+      "automergeStrategy": "squash",
       "labels": ["security", "security:floor", "renovate:type-security-floor"]
     },
     {

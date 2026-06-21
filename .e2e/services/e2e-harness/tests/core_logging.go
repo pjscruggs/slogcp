@@ -1340,12 +1340,13 @@ func (s *CoreLoggingTestSuite) testBatchLogging(ctx context.Context) error {
 	log.Println("Testing batch logging")
 
 	testID := fmt.Sprintf("%s-batch-%d", s.testRunID, time.Now().UnixNano())
+	const batchSize = 5
 
 	req := client.LogRequest{
 		Message: "Batch logging test",
 		TestID:  testID,
 		Attributes: map[string]any{
-			"batch_size": 5,
+			"batch_size": batchSize,
 		},
 	}
 
@@ -1356,19 +1357,14 @@ func (s *CoreLoggingTestSuite) testBatchLogging(ctx context.Context) error {
 
 	// Query logs - should find multiple entries
 	filter := fmt.Sprintf(`jsonPayload.test_id="%s"`, testID)
-	entries, err := s.loggingClient.WaitForLogs(ctx, client.QueryOptions{
+	entries, err := s.loggingClient.WaitForLogCount(ctx, client.QueryOptions{
 		Filter:     filter,
 		StartTime:  time.Now().Add(-1 * time.Minute),
 		MaxResults: 10,
-	}, logWaitTimeout)
+	}, batchSize, logWaitTimeout)
 
 	if err != nil {
 		return fmt.Errorf("failed to find batch logs: %w", err)
-	}
-
-	// We expect at least 5 logs from the batch
-	if len(entries) < 5 {
-		return fmt.Errorf("expected at least 5 logs from batch, got %d", len(entries))
 	}
 
 	// Validate each has proper structure
