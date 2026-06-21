@@ -47,8 +47,8 @@ type imageConfig struct {
 
 const (
 	separatorLine                  = "------------------------------------------------------------------------"
-	defaultTracePubSubTopic        = "slogcp-trace-pubsub"
-	defaultTracePubSubSubscription = "slogcp-trace-pubsub-sub"
+	defaultTracePubSubTopic        = "trace-pubsub"
+	defaultTracePubSubSubscription = "trace-pubsub-sub"
 	defaultHarnessTimeout          = 25 * time.Minute
 	maxPubSubResourceIDLength      = 255
 )
