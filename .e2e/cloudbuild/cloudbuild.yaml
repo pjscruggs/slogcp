@@ -401,7 +401,7 @@ steps:
           --slogcp-dir /workspace/lib-repo-checkout \
           --slogcp-reference "$$SLOGCP_REFERENCE" \
           --dependency-mode "${_E2E_DEPENDENCY_MODE}" \
-          --slogcp-shared-ceiling-scope package \
+          --slogcp-shared-parity-scope package \
           --emit-dependency-report "$$REPORT_PATH"
     id: 'Generate module files'
     waitFor: ['Prepare build context']

@@ -1,6 +1,7 @@
 {
   "module_path": "github.com/pjscruggs/slogcp-e2e-internal/services/target-apps/trace-target-app",
   "seed_requirements": {
+    "cloud.google.com/go/trace": "v1.11.6",
     "github.com/grpc-ecosystem/go-grpc-middleware/v2": "v2.3.3"
   },
   "pinned_modules": [

@@ -38,7 +38,7 @@ LOCAL_PJSCRUGGS_PREFIX = "github.com/pjscruggs/"
 GO_BINARY = os.environ.get("GO_BINARY", "go")
 WORKSPACE_FILE_NAME = "go.work"
 STABLE_VERSION_PATTERN = re.compile(r"^v\d+\.\d+\.\d+$")
-MAX_RECONCILIATION_ROUNDS = 6
+DEPENDENCY_REPORT_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ class Attempt:
     output: str
     reason: str
     error: str | None
+    rounds: tuple[dict[str, Any], ...] = ()
 
 
 class DependencyResolutionError(RuntimeError):
@@ -72,6 +73,8 @@ class WorkspaceState:
     editable_members: tuple[Path, ...]
     module_paths: dict[Path, str]
     baselines: dict[Path, tuple[str, str | None]]
+    baseline_directives: dict[Path, tuple[str | None, str | None]]
+    go_work_sum: str | None
 
 
 def run_command(
@@ -245,9 +248,9 @@ def selected_dependency_graph(
     module_dir: Path,
     env: dict[str, str],
     *,
-    ceiling_scope: str,
+    parity_scope: str,
 ) -> dict[str, str]:
-    if ceiling_scope == "package":
+    if parity_scope == "package":
         return build_package_module_graph(module_dir, env)
     return build_module_graph(module_dir, env)
 
@@ -518,17 +521,33 @@ def snapshot_workspace(module_dir: Path, env: dict[str, str]) -> WorkspaceState:
         member for member in members if module_paths.get(member) != SLOGCP_MODULE_PATH
     )
     baselines: dict[Path, tuple[str, str | None]] = {}
+    baseline_directives: dict[Path, tuple[str | None, str | None]] = {}
     for member in editable_members:
         go_mod = (member / "go.mod").read_text(encoding="utf-8")
         go_sum_path = member / "go.sum"
         go_sum = go_sum_path.read_text(encoding="utf-8") if go_sum_path.is_file() else None
         baselines[member] = (go_mod, go_sum)
+        metadata = go_mod_json(member, env)
+        go_directive = metadata.get("Go")
+        toolchain_directive = metadata.get("Toolchain")
+        baseline_directives[member] = (
+            go_directive if isinstance(go_directive, str) else None,
+            toolchain_directive if isinstance(toolchain_directive, str) else None,
+        )
+    go_work_sum_path = module_dir / "go.work.sum"
+    go_work_sum = (
+        go_work_sum_path.read_text(encoding="utf-8")
+        if go_work_sum_path.is_file()
+        else None
+    )
     return WorkspaceState(
         root=module_dir.resolve(),
         members=members,
         editable_members=editable_members,
         module_paths=module_paths,
         baselines=baselines,
+        baseline_directives=baseline_directives,
+        go_work_sum=go_work_sum,
     )
 
 
@@ -541,6 +560,37 @@ def restore_workspace_files(workspace: WorkspaceState) -> None:
                 go_sum_path.unlink()
         else:
             go_sum_path.write_text(go_sum, encoding="utf-8")
+    go_work_sum_path = workspace.root / "go.work.sum"
+    if workspace.go_work_sum is None:
+        if go_work_sum_path.exists():
+            go_work_sum_path.unlink()
+    else:
+        go_work_sum_path.write_text(workspace.go_work_sum, encoding="utf-8")
+
+
+def changed_module_directives(
+    workspace: WorkspaceState,
+    env: dict[str, str],
+) -> dict[str, dict[str, str | None]]:
+    changes: dict[str, dict[str, str | None]] = {}
+    for member in workspace.editable_members:
+        metadata = go_mod_json(member, env)
+        current_go = metadata.get("Go")
+        current_toolchain = metadata.get("Toolchain")
+        current = (
+            current_go if isinstance(current_go, str) else None,
+            current_toolchain if isinstance(current_toolchain, str) else None,
+        )
+        expected = workspace.baseline_directives[member]
+        if current == expected:
+            continue
+        changes[str(member)] = {
+            "expected_go": expected[0],
+            "selected_go": current[0],
+            "expected_toolchain": expected[1],
+            "selected_toolchain": current[1],
+        }
+    return changes
 
 
 def module_require_paths(module_dir: Path, env: dict[str, str]) -> set[str]:
@@ -649,6 +699,26 @@ def direct_candidates(
             seen.add(path)
             candidates.append(Candidate(path=path, current=graph.get(path, version)))
 
+    return sorted(candidates, key=lambda candidate: candidate.path)
+
+
+def declared_direct_candidates(
+    seed_requirements: dict[str, Any],
+    reference_graph: dict[str, str],
+) -> list[Candidate]:
+    candidates: list[Candidate] = []
+    for path, version in sorted(seed_requirements.items()):
+        if not isinstance(path, str) or not isinstance(version, str):
+            raise ValueError(
+                f"seed requirement versions must be strings: {path!r}={version!r}"
+            )
+        if path in reference_graph:
+            continue
+        if path == SLOGCP_MODULE_PATH or path.startswith(LOCAL_E2E_PREFIX):
+            continue
+        if path.startswith(LOCAL_PJSCRUGGS_PREFIX):
+            continue
+        candidates.append(Candidate(path=path, current=version))
     return candidates
 
 
@@ -663,7 +733,10 @@ def available_stable_versions(
         env=env_with_gowork(env, "off"),
     )
     if completed.returncode != 0:
-        return []
+        raise RuntimeError(
+            f"unable to enumerate stable versions for {module_path_value}:\n"
+            f"{completed.stdout}{completed.stderr}"
+        )
     parts = completed.stdout.strip().split()
     return [part for part in parts[1:] if STABLE_VERSION_PATTERN.match(part)]
 
@@ -742,6 +815,7 @@ def attempt_report(attempt: Attempt) -> dict[str, Any]:
         "mismatches": mismatch_report(attempt.mismatches),
         "module_graph": attempt.module_graph,
         "output": attempt.output,
+        "rounds": list(attempt.rounds),
     }
 
 
@@ -766,13 +840,37 @@ def dependency_resolution_error(prefix: str, attempt: Attempt) -> DependencyReso
     )
 
 
+def request_fingerprint(
+    requests_by_member: dict[Path, dict[str, str]],
+) -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
+    return tuple(
+        (str(member), tuple(sorted(requests.items())))
+        for member, requests in sorted(
+            requests_by_member.items(),
+            key=lambda item: str(item[0]),
+        )
+    )
+
+
+def requests_report(
+    requests_by_member: dict[Path, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    return {
+        str(member): dict(sorted(requests.items()))
+        for member, requests in sorted(
+            requests_by_member.items(),
+            key=lambda item: str(item[0]),
+        )
+    }
+
+
 def try_versions(
     workspace: WorkspaceState,
     env: dict[str, str],
     versions: dict[str, str],
     *,
     reference_graph: dict[str, str],
-    ceiling_scope: str,
+    parity_scope: str,
 ) -> Attempt:
     restore_workspace_files(workspace)
     sync_local_workspace_replaces(workspace, env)
@@ -782,22 +880,72 @@ def try_versions(
     last_module_graph: dict[str, str] = {}
     last_selected: dict[str, str] = {}
     workspace_env = env_with_gowork(env, workspace.root / WORKSPACE_FILE_NAME)
+    round_reports: list[dict[str, Any]] = []
+    seen_fingerprints: set[
+        tuple[tuple[str, tuple[tuple[str, str], ...]], ...]
+    ] = set()
+    max_state_count = 1 + len(workspace.editable_members) * len(reference_graph)
+    round_index = 0
 
-    for round_index in range(MAX_RECONCILIATION_ROUNDS):
+    while True:
+        fingerprint = request_fingerprint(requests_by_member)
+        if fingerprint in seen_fingerprints:
+            return Attempt(
+                ok=False,
+                mismatches=last_mismatches,
+                requested=dict(versions),
+                selected=last_selected,
+                module_graph=last_module_graph,
+                output="".join(output_parts),
+                reason="repeated_constraint_state",
+                error="shared dependency reconciliation repeated a constraint state",
+                rounds=tuple(round_reports),
+            )
+        if len(seen_fingerprints) >= max_state_count:
+            return Attempt(
+                ok=False,
+                mismatches=last_mismatches,
+                requested=dict(versions),
+                selected=last_selected,
+                module_graph=last_module_graph,
+                output="".join(output_parts),
+                reason="reconciliation_state_bound_exceeded",
+                error=(
+                    "shared dependency reconciliation exceeded its derived "
+                    f"state bound of {max_state_count}"
+                ),
+                rounds=tuple(round_reports),
+            )
+        seen_fingerprints.add(fingerprint)
+
         if round_index > 0:
             restore_workspace_files(workspace)
             sync_local_workspace_replaces(workspace, env)
 
+        round_report: dict[str, Any] = {
+            "round": round_index + 1,
+            "requests_by_member": requests_report(requests_by_member),
+            "transactions": [],
+        }
         for member in workspace.editable_members:
             member_versions = requests_by_member.get(member, {})
             if not member_versions:
                 continue
             completed = apply_graph_requirements(member, env, member_versions)
             output_parts.append(completed.stdout + completed.stderr)
+            round_report["transactions"].append(
+                {
+                    "member": str(member),
+                    "operation": "go get",
+                    "requests": dict(sorted(member_versions.items())),
+                    "exit_code": completed.returncode,
+                }
+            )
             if completed.returncode != 0:
                 requested_text = " ".join(
                     f"{path}@{version}" for path, version in sorted(member_versions.items())
                 )
+                round_reports.append(round_report)
                 return Attempt(
                     ok=False,
                     mismatches=last_mismatches,
@@ -810,12 +958,21 @@ def try_versions(
                         f"go get failed in {member} for {requested_text}:\n"
                         f"{completed.stdout}{completed.stderr}"
                     ),
+                    rounds=tuple(round_reports),
                 )
 
         for member in workspace.editable_members:
             completed = tidy_module(member, env)
             output_parts.append(completed.stdout + completed.stderr)
+            round_report["transactions"].append(
+                {
+                    "member": str(member),
+                    "operation": "go mod tidy",
+                    "exit_code": completed.returncode,
+                }
+            )
             if completed.returncode != 0:
+                round_reports.append(round_report)
                 return Attempt(
                     ok=False,
                     mismatches=last_mismatches,
@@ -828,12 +985,32 @@ def try_versions(
                         f"go mod tidy failed in {member}:\n"
                         f"{completed.stdout}{completed.stderr}"
                     ),
+                    rounds=tuple(round_reports),
                 )
+
+        directive_changes = changed_module_directives(workspace, env)
+        if directive_changes:
+            round_report["directive_changes"] = directive_changes
+            round_reports.append(round_report)
+            return Attempt(
+                ok=False,
+                mismatches=last_mismatches,
+                requested=dict(versions),
+                selected=last_selected,
+                module_graph=last_module_graph,
+                output="".join(output_parts),
+                reason="module_directive_changed",
+                error=(
+                    "go get or go mod tidy changed an approved go/toolchain "
+                    "directive: " + json.dumps(directive_changes, sort_keys=True)
+                ),
+                rounds=tuple(round_reports),
+            )
 
         selected_graph = selected_dependency_graph(
             workspace.root,
             workspace_env,
-            ceiling_scope=ceiling_scope,
+            parity_scope=parity_scope,
         )
         last_module_graph = build_module_graph(workspace.root, workspace_env)
         last_selected = {
@@ -842,10 +1019,13 @@ def try_versions(
             if (selected := last_module_graph.get(path)) is not None
         }
         last_mismatches = compare_shared_graph(selected_graph, reference_graph)
+        round_report["selected"] = dict(sorted(last_selected.items()))
+        round_report["mismatches"] = mismatch_report(last_mismatches)
         if not last_mismatches:
             exact_request_satisfied = all(
                 last_selected.get(path) == version for path, version in versions.items()
             )
+            round_reports.append(round_report)
             return Attempt(
                 ok=exact_request_satisfied,
                 mismatches={},
@@ -855,14 +1035,30 @@ def try_versions(
                 output="".join(output_parts),
                 reason=("accepted" if exact_request_satisfied else "requested_version_not_selected"),
                 error=None,
+                rounds=tuple(round_reports),
             )
 
+        before_requests = requests_report(requests_by_member)
         added, unassigned = add_reference_requests_for_mismatches(
             workspace,
             env,
             requests_by_member,
             last_mismatches,
         )
+        after_requests = requests_report(requests_by_member)
+        round_report["new_reference_constraints"] = {
+            member: {
+                path: version
+                for path, version in requests.items()
+                if before_requests.get(member, {}).get(path) != version
+            }
+            for member, requests in after_requests.items()
+            if any(
+                before_requests.get(member, {}).get(path) != version
+                for path, version in requests.items()
+            )
+        }
+        round_reports.append(round_report)
         if unassigned:
             return Attempt(
                 ok=False,
@@ -876,6 +1072,7 @@ def try_versions(
                     "shared dependency mismatches could not be assigned to an "
                     "editable workspace member: " + ", ".join(unassigned)
                 ),
+                rounds=tuple(round_reports),
             )
         if not added:
             return Attempt(
@@ -887,30 +1084,48 @@ def try_versions(
                 output="".join(output_parts),
                 reason="constraints_stalled",
                 error="shared dependency reconciliation made no progress",
+                rounds=tuple(round_reports),
             )
-
-    return Attempt(
-        ok=False,
-        mismatches=last_mismatches,
-        requested=dict(versions),
-        selected=last_selected,
-        module_graph=last_module_graph,
-        output="".join(output_parts),
-        reason="maximum_reconciliation_rounds_exceeded",
-        error=(
-            "shared dependency reconciliation exceeded "
-            f"{MAX_RECONCILIATION_ROUNDS} rounds"
-        ),
-    )
+        round_index += 1
 
 
-def find_highest_compatible(
+def enforce_declared_direct_versions(
     workspace: WorkspaceState,
     env: dict[str, str],
     candidates: list[Candidate],
     reference_graph: dict[str, str],
     *,
-    ceiling_scope: str,
+    parity_scope: str,
+) -> dict[str, Any]:
+    requested = {candidate.path: candidate.current for candidate in candidates}
+    final = try_versions(
+        workspace,
+        env,
+        requested,
+        reference_graph=reference_graph,
+        parity_scope=parity_scope,
+    )
+    if not final.ok:
+        raise dependency_resolution_error(
+            "declared direct versions violate slogcp shared dependency parity:",
+            final,
+        )
+    return {
+        "selection_policy": "declared-direct-versions",
+        "requested": requested,
+        "selected": final.selected,
+        "rejected": {},
+        "module_graph": final.module_graph,
+    }
+
+
+def find_lexicographically_highest_compatible(
+    workspace: WorkspaceState,
+    env: dict[str, str],
+    candidates: list[Candidate],
+    reference_graph: dict[str, str],
+    *,
+    parity_scope: str,
 ) -> dict[str, Any]:
     requested = {candidate.path: candidate.current for candidate in candidates}
     rejected: dict[str, dict[str, Any]] = {}
@@ -921,7 +1136,7 @@ def find_highest_compatible(
             env,
             {},
             reference_graph=reference_graph,
-            ceiling_scope=ceiling_scope,
+            parity_scope=parity_scope,
         )
         if not final.ok:
             raise dependency_resolution_error(
@@ -929,12 +1144,15 @@ def find_highest_compatible(
                 final,
             )
         return {
+            "selection_policy": "lexicographic-live-stable-versions",
+            "candidate_order": [],
             "requested": {},
             "selected": {},
             "rejected": rejected,
             "module_graph": final.module_graph,
         }
 
+    candidate_order = [candidate.path for candidate in candidates]
     for candidate in candidates:
         versions = available_stable_versions(candidate.path, env, workspace.root)
         if candidate.current not in versions:
@@ -949,7 +1167,7 @@ def find_highest_compatible(
                 env,
                 trial,
                 reference_graph=reference_graph,
-                ceiling_scope=ceiling_scope,
+                parity_scope=parity_scope,
             )
             if attempt.ok:
                 requested[candidate.path] = version
@@ -974,7 +1192,7 @@ def find_highest_compatible(
         env,
         requested,
         reference_graph=reference_graph,
-        ceiling_scope=ceiling_scope,
+        parity_scope=parity_scope,
     )
     if not final.ok:
         raise dependency_resolution_error(
@@ -983,6 +1201,8 @@ def find_highest_compatible(
         )
 
     return {
+        "selection_policy": "lexicographic-live-stable-versions",
+        "candidate_order": candidate_order,
         "requested": requested,
         "selected": final.selected,
         "rejected": rejected,
@@ -1011,20 +1231,12 @@ def collect_shared_dependency_mismatches(
 def verify_workspace_parity(
     *,
     module_dir: Path,
-    pinned_modules: list[dict[str, Any]],
     env: dict[str, str],
     reference_graph: dict[str, str],
-    ceiling_scope: str,
+    parity_scope: str,
 ) -> None:
-    slogcp_replace_paths: list[str] = []
-    for item in pinned_modules:
-        if item.get("module_path") != SLOGCP_MODULE_PATH:
-            continue
-        replace_path = item.get("replace_path")
-        if isinstance(replace_path, str) and replace_path:
-            slogcp_replace_paths.append(replace_path)
-
-    if not slogcp_replace_paths:
+    members = workspace_member_dirs(module_dir, env)
+    if not any(module_path(member, env) == SLOGCP_MODULE_PATH for member in members):
         return
 
     workspace_file = module_dir / WORKSPACE_FILE_NAME
@@ -1032,7 +1244,7 @@ def verify_workspace_parity(
     module_graph = selected_dependency_graph(
         module_dir,
         graph_env,
-        ceiling_scope=ceiling_scope,
+        parity_scope=parity_scope,
     )
     mismatches = collect_shared_dependency_mismatches(module_graph, reference_graph)
     if not mismatches:
@@ -1052,14 +1264,14 @@ def upgrade_slogcp_direct_dependencies(
     *,
     slogcp_dir: Path,
     env: dict[str, str],
-    ceiling_scope: str,
+    parity_scope: str,
 ) -> dict[str, Any]:
     before_direct = direct_requirements(slogcp_dir, env)
     before_module_graph = build_module_graph(slogcp_dir, env_with_gowork(env, "off"))
     before_package_graph = selected_dependency_graph(
         slogcp_dir,
         env_with_gowork(env, "off"),
-        ceiling_scope=ceiling_scope,
+        parity_scope=parity_scope,
     )
 
     if before_direct:
@@ -1100,7 +1312,7 @@ def upgrade_slogcp_direct_dependencies(
         "package_graph_after": selected_dependency_graph(
             slogcp_dir,
             env_with_gowork(env, "off"),
-            ceiling_scope=ceiling_scope,
+            parity_scope=parity_scope,
         ),
         "output": upgrade_output,
     }
@@ -1113,9 +1325,10 @@ def generate_module(
     slogcp_reference: str,
     slogcp_dir: Path,
     env: dict[str, str],
+    dependency_mode: str,
     generated_dirs: set[Path],
     reference_graph: dict[str, str],
-    ceiling_scope: str,
+    parity_scope: str,
     report: dict[str, Any],
 ) -> None:
     module_dir = module_dir.resolve()
@@ -1160,9 +1373,10 @@ def generate_module(
                 slogcp_reference=slogcp_reference,
                 slogcp_dir=slogcp_dir,
                 env=env,
+                dependency_mode=dependency_mode,
                 generated_dirs=generated_dirs,
                 reference_graph=reference_graph,
-                ceiling_scope=ceiling_scope,
+                parity_scope=parity_scope,
                 report=report,
             )
 
@@ -1228,6 +1442,14 @@ def generate_module(
             encoding="utf-8",
         )
         workspace = snapshot_workspace(module_dir, env)
+        declared_candidates = declared_direct_candidates(
+            seed_requirements,
+            reference_graph,
+        )
+        module_report["declared_direct_candidates"] = [
+            {"path": candidate.path, "version": candidate.current}
+            for candidate in declared_candidates
+        ]
         module_paths = {str(path): value for path, value in workspace.module_paths.items()}
         module_report["workspace_module_paths"] = module_paths
 
@@ -1239,7 +1461,7 @@ def generate_module(
                 env,
                 {},
                 reference_graph=reference_graph,
-                ceiling_scope=ceiling_scope,
+                parity_scope=parity_scope,
             )
             module_report["normalization"] = attempt_report(normalization)
             if not normalization.ok:
@@ -1250,22 +1472,35 @@ def generate_module(
                 )
 
             workspace = snapshot_workspace(module_dir, env)
-            report["failed_stage"] = "candidate_resolution"
-            module_report["constrained_dependencies"] = find_highest_compatible(
-                workspace,
-                env,
-                direct_candidates(workspace, env, reference_graph),
-                reference_graph,
-                ceiling_scope=ceiling_scope,
-            )
+            if dependency_mode == "floor":
+                report["failed_stage"] = "declared_direct_version_enforcement"
+                module_report["constrained_dependencies"] = (
+                    enforce_declared_direct_versions(
+                        workspace,
+                        env,
+                        declared_candidates,
+                        reference_graph,
+                        parity_scope=parity_scope,
+                    )
+                )
+            else:
+                report["failed_stage"] = "advisory_candidate_resolution"
+                module_report["constrained_dependencies"] = (
+                    find_lexicographically_highest_compatible(
+                        workspace,
+                        env,
+                        direct_candidates(workspace, env, reference_graph),
+                        reference_graph,
+                        parity_scope=parity_scope,
+                    )
+                )
 
         report["failed_stage"] = "workspace_parity_verification"
         verify_workspace_parity(
             module_dir=module_dir,
-            pinned_modules=pinned_modules,
             env=env,
             reference_graph=reference_graph,
-            ceiling_scope=ceiling_scope,
+            parity_scope=parity_scope,
         )
         build_module_graph(module_dir, env_with_gowork(env, workspace_file))
     else:
@@ -1279,7 +1514,17 @@ def generate_module(
 
 def collect_go_build_context(slogcp_dir: Path, env: dict[str, str]) -> dict[str, str]:
     completed = run_command(
-        go_command("env", "-json", "GOOS", "GOARCH", "CGO_ENABLED"),
+        go_command(
+            "env",
+            "-json",
+            "GOOS",
+            "GOARCH",
+            "CGO_ENABLED",
+            "GOFLAGS",
+            "GOWORK",
+            "GOENV",
+            "GOPROXY",
+        ),
         cwd=slogcp_dir,
         env=env_with_gowork(env, "off"),
     )
@@ -1289,7 +1534,16 @@ def collect_go_build_context(slogcp_dir: Path, env: dict[str, str]) -> dict[str,
     return {
         key: str(value)
         for key, value in data.items()
-        if key in {"GOOS", "GOARCH", "CGO_ENABLED"}
+        if key
+        in {
+            "GOOS",
+            "GOARCH",
+            "CGO_ENABLED",
+            "GOFLAGS",
+            "GOWORK",
+            "GOENV",
+            "GOPROXY",
+        }
     }
 
 
@@ -1313,7 +1567,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Generate temporary .e2e go.mod/go.sum files plus local go.work files "
-            "and enforce shared dependency ceilings against the staged slogcp checkout."
+            "and enforce exact shared dependency parity against the staged slogcp "
+            "checkout."
         )
     )
     parser.add_argument("--module-dir", action="append", required=True)
@@ -1325,10 +1580,18 @@ def main() -> int:
         choices=["floor", "latest-slogcp"],
         default="floor",
     )
-    parser.add_argument(
-        "--slogcp-shared-ceiling-scope",
+    scope_group = parser.add_mutually_exclusive_group()
+    scope_group.add_argument(
+        "--slogcp-shared-parity-scope",
+        dest="slogcp_shared_parity_scope",
         choices=["package", "module"],
         default="package",
+    )
+    scope_group.add_argument(
+        "--slogcp-shared-ceiling-scope",
+        dest="slogcp_shared_parity_scope",
+        choices=["package", "module"],
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--emit-dependency-report")
     args = parser.parse_args()
@@ -1343,10 +1606,11 @@ def main() -> int:
     env["GOWORK"] = "off"
 
     report: dict[str, Any] = {
+        "schema_version": DEPENDENCY_REPORT_SCHEMA_VERSION,
         "dependency_mode": args.dependency_mode,
         "go_version": go_version,
         "slogcp_reference": slogcp_reference,
-        "slogcp_shared_ceiling_scope": args.slogcp_shared_ceiling_scope,
+        "slogcp_shared_parity_scope": args.slogcp_shared_parity_scope,
         "status": "running",
         "failed_stage": "input_validation",
         "adapter_fixtures": [],
@@ -1370,7 +1634,7 @@ def main() -> int:
             report["slogcp_upgrade"] = upgrade_slogcp_direct_dependencies(
                 slogcp_dir=slogcp_dir,
                 env=env,
-                ceiling_scope=args.slogcp_shared_ceiling_scope,
+                parity_scope=args.slogcp_shared_parity_scope,
             )
         else:
             report["slogcp_upgrade"] = {
@@ -1388,17 +1652,17 @@ def main() -> int:
                 "package_graph_before": selected_dependency_graph(
                     slogcp_dir,
                     env_with_gowork(env, "off"),
-                    ceiling_scope=args.slogcp_shared_ceiling_scope,
+                    parity_scope=args.slogcp_shared_parity_scope,
                 ),
                 "package_graph_after": selected_dependency_graph(
                     slogcp_dir,
                     env_with_gowork(env, "off"),
-                    ceiling_scope=args.slogcp_shared_ceiling_scope,
+                    parity_scope=args.slogcp_shared_parity_scope,
                 ),
             }
 
         reference_graph = report["slogcp_upgrade"]["package_graph_after"]
-        if args.slogcp_shared_ceiling_scope == "module":
+        if args.slogcp_shared_parity_scope == "module":
             reference_graph = report["slogcp_upgrade"]["module_graph_after"]
 
         generated_dirs: set[Path] = set()
@@ -1411,9 +1675,10 @@ def main() -> int:
                 slogcp_reference=slogcp_reference,
                 slogcp_dir=slogcp_dir,
                 env=env,
+                dependency_mode=args.dependency_mode,
                 generated_dirs=generated_dirs,
                 reference_graph=reference_graph,
-                ceiling_scope=args.slogcp_shared_ceiling_scope,
+                parity_scope=args.slogcp_shared_parity_scope,
                 report=report,
             )
             print(f"generated module files for {module_dir}")
