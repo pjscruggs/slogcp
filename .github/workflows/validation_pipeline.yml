@@ -180,6 +180,9 @@ jobs:
           go-version: ${{ steps.go-version.outputs.version }}
           cache: true
 
+      - name: Verify E2E support tooling
+        run: python3 -m unittest discover -s .e2e/scripts -p 'test_*.py' -v
+
       - name: 🛠️ Install golangci-lint
         run: |
           # renovate: datasource=go depName=github.com/golangci/golangci-lint/v2 versioning=semver

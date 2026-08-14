@@ -109,7 +109,7 @@ func TestParseXCloudTrace(t *testing.T) {
 
 // TestParseXCloudTraceFailureCases exercises error branches.
 func TestParseXCloudTraceFailureCases(t *testing.T) {
-	t.Parallel()
+	// This test replaces the package-global randReader, so it must remain serial.
 
 	t.Run("empty_header", func(t *testing.T) {
 		if _, ok := parseXCloudTrace(""); ok {

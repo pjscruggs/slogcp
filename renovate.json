@@ -9,6 +9,9 @@
   ],
   "timezone": "America/Chicago",
   "platformAutomerge": true,
+  "gitIgnoredAuthors": [
+    "230059765+slogcp-e2e-orchestrator[bot]@users.noreply.github.com"
+  ],
   "vulnerabilityAlerts": {
     "enabled": true,
     "labels": ["security", "security:floor", "renovate:type-security-floor"],

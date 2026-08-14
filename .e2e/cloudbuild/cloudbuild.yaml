@@ -383,7 +383,15 @@ steps:
         export GO_BINARY="/workspace/go/bin/go"
         GO_VERSION="$$(cat /workspace/go_version.txt)"
         SLOGCP_REFERENCE="$$(cat /workspace/slogcp_reference.txt)"
-        python3 scripts/generate_go_module.py \
+        STREAM_TAG_DEFAULTED="$$(cat /workspace/stream_tag_defaulted.txt)"
+        RUN_ID="$$(cat /workspace/e2e_run_id.txt)"
+        REPORT_PATH=/workspace/dependency-report.json
+        REPORT_URI="gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA:-${_SHORT_SHA}}/$${RUN_ID}/dependency-report.json"
+        bash cloudbuild/build-tools/generate-and-upload-modules.sh \
+          "$$REPORT_PATH" \
+          "$$REPORT_URI" \
+          -- \
+          python3 scripts/generate_go_module.py \
           --module-dir /workspace/build-context/core \
           --module-dir /workspace/build-context/trace-target \
           --module-dir /workspace/build-context/trace-http \
@@ -393,23 +401,10 @@ steps:
           --slogcp-dir /workspace/lib-repo-checkout \
           --slogcp-reference "$$SLOGCP_REFERENCE" \
           --dependency-mode "${_E2E_DEPENDENCY_MODE}" \
-          --slogcp-shared-ceiling-scope package \
-          --emit-dependency-report /workspace/dependency-report.json
+          --slogcp-shared-parity-scope package \
+          --emit-dependency-report "$$REPORT_PATH"
     id: 'Generate module files'
     waitFor: ['Prepare build context']
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: 'bash'
-    args:
-      - -c
-      - |
-        set -euo pipefail
-        if [ -f /workspace/dependency-report.json ]; then
-          STREAM_TAG_DEFAULTED="$$(cat /workspace/stream_tag_defaulted.txt)"
-          RUN_ID="$$(cat /workspace/e2e_run_id.txt)"
-          gsutil cp /workspace/dependency-report.json "gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA:-${_SHORT_SHA}}/$${RUN_ID}/dependency-report.json"
-        fi
-    id: 'Upload dependency report'
-    waitFor: ['Generate module files']
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'bash'
     args:
@@ -453,7 +448,7 @@ steps:
           /workspace/build-context/e2e-harness/Dockerfile \
           e2e-harness
     id: 'Evaluate image cache'
-    waitFor: ['Upload dependency report']
+    waitFor: ['Generate module files']
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     args:

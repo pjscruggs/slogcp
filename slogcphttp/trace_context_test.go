@@ -75,7 +75,7 @@ func TestContextWithXCloudTraceInvalid(t *testing.T) {
 
 // TestParseXCloudTraceFailureCases covers the early return branches.
 func TestParseXCloudTraceFailureCases(t *testing.T) {
-	t.Parallel()
+	// This test replaces the package-global randRead, so it must remain serial.
 
 	t.Run("empty_header", func(t *testing.T) {
 		if _, ok := parseXCloudTrace(""); ok {
