@@ -3,7 +3,7 @@ module github.com/pjscruggs/slogcp/examples/pubsub
 go 1.26.5
 
 require (
-	cloud.google.com/go/pubsub/v2 v2.6.1
+	cloud.google.com/go/pubsub/v2 v2.6.2
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
