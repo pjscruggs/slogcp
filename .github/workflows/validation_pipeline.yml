@@ -1392,6 +1392,19 @@ jobs:
                 repo,
                 pull_number: pullNumber
               });
+              const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
+              if (
+                pr.base.ref !== 'main' ||
+                String(pr.base.repo?.full_name || '').toLowerCase() !== expectedBaseRepo
+              ) {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'action_required');
+                core.setOutput(
+                  'summary',
+                  `PR #${pullNumber} targets ${pr.base.repo?.full_name || 'unknown'}/${pr.base.ref}; expected ${owner}/${repo}/main.`
+                );
+                return;
+              }
               if (pr.head.sha !== expectedSha) {
                 core.setOutput('ok', 'false');
                 core.setOutput('conclusion', 'action_required');
@@ -1526,6 +1539,141 @@ jobs:
           GCS_BUCKET_NAME: ${{ env.GCS_BUCKET_NAME }}
           GCS_SOURCE_STAGING_DIR: ${{ env.GCS_SOURCE_STAGING_DIR }}
 
+      - name: Revalidate PR authority after Cloud E2E
+        if: |
+          always() &&
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true' &&
+          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
+          steps.wait_validation.outputs.ok == 'true' &&
+          steps.have_secrets.outputs.ok == 'true' &&
+          steps.cloud_build.outputs.build_status == 'SUCCESS'
+        id: post_build_validation
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const expectedSha = process.env.EXPECTED_SHA;
+            const pullNumber = Number(process.env.PR_NUMBER);
+            const workflowFile = 'validation_pipeline.yml';
+            const workflowPath = '.github/workflows/validation_pipeline.yml';
+            const targetJobName = process.env.LOCAL_VALIDATION_CHECK_NAME;
+            const normalizePath = value => String(value || '').split('@', 1)[0];
+            const reject = summary => {
+              core.setOutput('ok', 'false');
+              core.setOutput('summary', summary);
+            };
+
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: workflowFile,
+              head_sha: expectedSha,
+              per_page: 100
+            });
+            const eligibleRuns = data.workflow_runs
+              .filter(run =>
+                run.head_sha === expectedSha &&
+                run.event === 'pull_request' &&
+                normalizePath(run.path) === workflowPath &&
+                (run.pull_requests || []).some(pr => Number(pr.number) === pullNumber)
+              )
+              .sort((a, b) => Number(b.id) - Number(a.id));
+            const run = eligibleRuns[0];
+
+            if (!run || run.status !== 'completed' || run.conclusion !== 'success') {
+              reject(
+                `Newest direct validation run is ${run?.status || 'not_found'}/${run?.conclusion || 'none'} for PR #${pullNumber} at ${expectedSha}.`
+              );
+              return;
+            }
+
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRun,
+              {
+                owner,
+                repo,
+                run_id: run.id,
+                filter: 'latest',
+                per_page: 100
+              }
+            );
+            const matchingJobs = jobs.filter(job =>
+              job.name === targetJobName &&
+              Number(job.run_id) === Number(run.id) &&
+              Number(job.run_attempt) === Number(run.run_attempt) &&
+              job.head_sha === expectedSha
+            );
+            const job = matchingJobs[0];
+            if (
+              matchingJobs.length !== 1 ||
+              job.status !== 'completed' ||
+              job.conclusion !== 'success'
+            ) {
+              reject(
+                `Expected one successful ${targetJobName} job in validation run ${run.id} attempt ${run.run_attempt}; found ${matchingJobs.length}.`
+              );
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber
+            });
+            const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
+            if (
+              pr.base.ref !== 'main' ||
+              String(pr.base.repo?.full_name || '').toLowerCase() !== expectedBaseRepo
+            ) {
+              reject(
+                `PR #${pullNumber} targets ${pr.base.repo?.full_name || 'unknown'}/${pr.base.ref}; expected ${owner}/${repo}/main.`
+              );
+              return;
+            }
+            if (pr.state !== 'open' || pr.head.sha !== expectedSha) {
+              reject(
+                `PR #${pullNumber} is ${pr.state} with head ${pr.head.sha}; expected an open PR at ${expectedSha}.`
+              );
+              return;
+            }
+
+            const { data: baseRef } = await github.rest.git.getRef({
+              owner,
+              repo,
+              ref: `heads/${pr.base.ref}`
+            });
+            const currentBaseSha = baseRef.object.sha;
+            const { data: comparison } = await github.rest.repos.compareCommits({
+              owner,
+              repo,
+              base: currentBaseSha,
+              head: expectedSha,
+              per_page: 1
+            });
+            const containsCurrentBase =
+              ['ahead', 'identical'].includes(comparison.status) &&
+              Number(comparison.behind_by) === 0 &&
+              comparison.merge_base_commit?.sha === currentBaseSha;
+            if (!containsCurrentBase) {
+              reject(
+                `PR #${pullNumber} head ${expectedSha} does not contain current ${pr.base.ref} ${currentBaseSha}.`
+              );
+              return;
+            }
+
+            core.setOutput('ok', 'true');
+            core.setOutput(
+              'summary',
+              `Revalidated run ${run.id} attempt ${run.run_attempt}, job ${job.id}, head ${expectedSha}, base ${currentBaseSha}.`
+            );
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          LOCAL_VALIDATION_CHECK_NAME: ${{ env.LOCAL_VALIDATION_CHECK_NAME }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
       - name: Generate App Token for Cloud E2E Finalization
         if: |
           always() &&
@@ -1561,18 +1709,24 @@ jobs:
             const repo = context.repo.repo;
             const checkRunId = Number('${{ steps.create_run_check.outputs.check_run_id }}') || 0;
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
-            const buildStatus = '${{ steps.cloud_build.outputs.build_status }}'.toUpperCase();
+            const buildStatus = process.env.BUILD_STATUS.toUpperCase();
+            const postBuildAuthorized = process.env.POST_BUILD_VALIDATION_OK === 'true';
             const detailsUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             let conclusion = 'failure';
-            if (buildStatus === 'SUCCESS') {
+            if (buildStatus === 'SUCCESS' && postBuildAuthorized) {
               conclusion = 'success';
+            } else if (buildStatus === 'SUCCESS') {
+              conclusion = 'action_required';
             } else if (buildStatus === 'CANCELLED' || buildStatus === 'TIMEOUT') {
               conclusion = 'cancelled';
             }
 
             const summaryLines = [
               `Google Cloud Build E2E run \`${runId}\` finished: **${buildStatus || 'UNKNOWN'}**.`,
+              buildStatus === 'SUCCESS' && !postBuildAuthorized
+                ? process.env.POST_BUILD_VALIDATION_SUMMARY || 'Post-build PR validation did not authorize this result.'
+                : '',
               'Maintainers can inspect internal Cloud Build logs and artifacts from Google Cloud.'
             ].filter(Boolean);
 
@@ -1593,7 +1747,10 @@ jobs:
 
             core.setOutput('ok', conclusion === 'success' ? 'true' : 'false');
         env:
+          BUILD_STATUS: ${{ steps.cloud_build.outputs.build_status }}
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
+          POST_BUILD_VALIDATION_OK: ${{ steps.post_build_validation.outputs.ok }}
+          POST_BUILD_VALIDATION_SUMMARY: ${{ steps.post_build_validation.outputs.summary }}
 
       - name: Fail workflow when Cloud E2E failed
         if: |
@@ -1663,6 +1820,17 @@ jobs:
 
               if (pr.head.sha !== expectedSha) {
                 core.setFailed(`PR head changed from ${expectedSha} to ${pr.head.sha}; refusing to merge an untested SHA.`);
+                return;
+              }
+
+              const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
+              if (
+                pr.base.ref !== 'main' ||
+                String(pr.base.repo?.full_name || '').toLowerCase() !== expectedBaseRepo
+              ) {
+                core.setFailed(
+                  `PR #${pull_number} targets ${pr.base.repo?.full_name || 'unknown'}/${pr.base.ref}; expected ${owner}/${repo}/main.`
+                );
                 return;
               }
 
