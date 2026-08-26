@@ -195,8 +195,9 @@ func DetectRuntimeInfo() RuntimeInfo {
 
 // detectRuntimeInfo inspects environment variables and metadata endpoints to infer runtime context.
 func detectRuntimeInfo() RuntimeInfo {
-	info := RuntimeInfo{}
-	info.ProjectID = resolveProjectIDFromEnv("", runtimeProjectIDEnvKeys...)
+	info := RuntimeInfo{
+		ProjectID: resolveProjectIDFromEnv("", runtimeProjectIDEnvKeys...),
+	}
 
 	md := newMetadataLookup(getMetadataClientFactory()())
 

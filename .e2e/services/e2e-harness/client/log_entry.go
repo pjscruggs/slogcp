@@ -490,7 +490,7 @@ func structToMap(data any) map[string]any {
 	}
 
 	value := reflect.ValueOf(data)
-	if value.Kind() == reflect.Ptr {
+	if value.Kind() == reflect.Pointer {
 		value = value.Elem()
 	}
 

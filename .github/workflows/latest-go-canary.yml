@@ -1,0 +1,55 @@
+name: Latest Stable Go Canary
+
+on:
+  schedule:
+    - cron: '17 10 * * 3'
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/latest-go-canary.yml'
+      - '.github/workflows/validation_pipeline.yml'
+      - '.github/tools/**'
+      - '.e2e/scripts/generate_go_module.py'
+      - '.e2e/services/**'
+      - '.golangci.yml'
+      - '**/*.go'
+      - '**/go.mod'
+      - '**/go.sum'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: latest-stable-go-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  latest_validation:
+    name: Reuse Local Validation At Latest Stable Go
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/validation_pipeline.yml
+    with:
+      latest_go: true
+
+  latest_go_canary_policy:
+    name: Latest Stable Go Canary Policy
+    needs: latest_validation
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require complete latest-stable validation
+        shell: bash
+        env:
+          REUSABLE_WORKFLOW_RESULT: ${{ needs.latest_validation.result }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$REUSABLE_WORKFLOW_RESULT" != "success" ]]; then
+            echo "Reusable validation expected success, got: $REUSABLE_WORKFLOW_RESULT"
+            exit 1
+          fi
+          echo "Latest-mode repository validation passed."
