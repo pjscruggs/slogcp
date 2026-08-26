@@ -743,7 +743,7 @@ jobs:
   # STABLE LOCAL VALIDATION CHECK FOR MERGE POLICY
   # ---------------------------------------
   local_validation_policy:
-    name: Local Validation Policy
+    name: ${{ github.event_name == 'pull_request_target' && 'Local Validation Policy (not run for pull_request_target)' || 'Local Validation Policy' }}
     needs:
       - classify_validation_scope
       - go_validation_plan
@@ -812,7 +812,7 @@ jobs:
             "$SCOPE_MODE" "$GO_VALIDATION_MODE"
 
   local_validation_ready_for_e2e:
-    name: Local Validation Ready for E2E
+    name: ${{ github.event_name == 'pull_request_target' && 'Local Validation Ready for E2E (not run for pull_request_target)' || 'Local Validation Ready for E2E' }}
     needs:
       - local_validation_policy
     if: >-
@@ -860,6 +860,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
+      actions: read
       checks: read
       contents: read
       pull-requests: read
@@ -1292,55 +1293,156 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const ref = context.payload.pull_request.head.sha;
-            const targetCheckName = process.env.LOCAL_VALIDATION_CHECK_NAME;
+            const expectedSha = context.payload.pull_request.head.sha;
+            const pullNumber = context.payload.pull_request.number;
+            const workflowFile = 'validation_pipeline.yml';
+            const workflowPath = '.github/workflows/validation_pipeline.yml';
+            const targetJobName = process.env.LOCAL_VALIDATION_CHECK_NAME;
+            const normalizePath = value => String(value || '').split('@', 1)[0];
             const sleep = (ms) => new Promise(r => setTimeout(r, ms));
             const maxMinutes = 120;
             const sleepMs = 60_000;
 
             for (let minute = 0; minute < maxMinutes; minute++) {
-              const { data } = await github.rest.checks.listForRef({
+              const { data } = await github.rest.actions.listWorkflowRuns({
                 owner,
                 repo,
-                ref,
+                workflow_id: workflowFile,
+                head_sha: expectedSha,
                 per_page: 100
               });
-              const validationRuns = [...data.check_runs]
-                .filter(run => run.name === targetCheckName);
-              const skippedCount = validationRuns
-                .filter(run => run.status === 'completed' && run.conclusion === 'skipped')
-                .length;
-              const checkRun = validationRuns
-                .filter(run => run.status !== 'completed' || run.conclusion !== 'skipped')
-                .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
-              const status = checkRun?.status ?? 'not_found';
-              const conclusion = checkRun?.conclusion ?? 'unknown';
-              const skippedSummary = skippedCount
-                ? ` Ignored ${skippedCount} skipped ${targetCheckName} duplicate(s).`
-                : '';
+              const eligibleRuns = data.workflow_runs
+                .filter(run =>
+                  run.head_sha === expectedSha &&
+                  run.event === 'pull_request' &&
+                  normalizePath(run.path) === workflowPath &&
+                  (run.pull_requests || []).some(pr => Number(pr.number) === Number(pullNumber))
+                )
+                .sort((a, b) => Number(b.id) - Number(a.id));
+              const run = eligibleRuns[0];
 
-              if (!checkRun || status !== 'completed') {
-                core.info(`Waiting for ${targetCheckName} to finish (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.${skippedSummary}`);
+              if (!run || run.status !== 'completed') {
+                const status = run?.status ?? 'not_found';
+                core.info(
+                  `Waiting for pull_request ${workflowFile} run on ${expectedSha} (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.`
+                );
                 await sleep(sleepMs);
                 continue;
               }
 
-              if (conclusion === 'success') {
-                core.setOutput('ok', 'true');
-                core.setOutput('conclusion', 'success');
-                core.setOutput('summary', `${targetCheckName} succeeded.`);
+              if (run.conclusion !== 'success') {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'failure');
+                core.setOutput(
+                  'summary',
+                  `Validation run ${run.id} attempt ${run.run_attempt} conclusion: ${run.conclusion || 'unknown'}.`
+                );
                 return;
               }
 
-              core.setOutput('ok', 'false');
-              core.setOutput('conclusion', 'failure');
-              core.setOutput('summary', `${targetCheckName} conclusion: ${conclusion}.`);
+              const jobs = await github.paginate(
+                github.rest.actions.listJobsForWorkflowRun,
+                {
+                  owner,
+                  repo,
+                  run_id: run.id,
+                  filter: 'latest',
+                  per_page: 100
+                }
+              );
+              const matchingJobs = jobs.filter(job =>
+                job.name === targetJobName &&
+                Number(job.run_id) === Number(run.id) &&
+                Number(job.run_attempt) === Number(run.run_attempt) &&
+                job.head_sha === expectedSha
+              );
+
+              if (matchingJobs.length > 1) {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'failure');
+                core.setOutput(
+                  'summary',
+                  `Expected one ${targetJobName} job in validation run ${run.id} attempt ${run.run_attempt}; found ${matchingJobs.length}.`
+                );
+                return;
+              }
+
+              if (matchingJobs.length === 0 || matchingJobs[0].status !== 'completed') {
+                const status = matchingJobs[0]?.status ?? 'not_found';
+                core.info(
+                  `Waiting for ${targetJobName} in validation run ${run.id} attempt ${run.run_attempt} (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.`
+                );
+                await sleep(sleepMs);
+                continue;
+              }
+
+              const job = matchingJobs[0];
+              if (matchingJobs.length !== 1 || job.conclusion !== 'success') {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'failure');
+                core.setOutput(
+                  'summary',
+                  `Expected exactly one successful ${targetJobName} job in validation run ${run.id} attempt ${run.run_attempt}; found ${matchingJobs.length} (${job.status}/${job.conclusion || 'unknown'}).`
+                );
+                return;
+              }
+
+              const { data: pr } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pullNumber
+              });
+              if (pr.head.sha !== expectedSha) {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'action_required');
+                core.setOutput(
+                  'summary',
+                  `PR #${pullNumber} head changed from ${expectedSha} to ${pr.head.sha}.`
+                );
+                return;
+              }
+              const { data: baseRef } = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: `heads/${pr.base.ref}`
+              });
+              const currentBaseSha = baseRef.object.sha;
+              const { data: comparison } = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: currentBaseSha,
+                head: expectedSha,
+                per_page: 1
+              });
+              const containsCurrentBase =
+                ['ahead', 'identical'].includes(comparison.status) &&
+                Number(comparison.behind_by) === 0 &&
+                comparison.merge_base_commit?.sha === currentBaseSha;
+              if (!containsCurrentBase) {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'action_required');
+                core.setOutput(
+                  'summary',
+                  `PR #${pullNumber} head ${expectedSha} does not contain current ${pr.base.ref} ${currentBaseSha}.`
+                );
+                return;
+              }
+
+              core.setOutput('ok', 'true');
+              core.setOutput('conclusion', 'success');
+              core.setOutput(
+                'summary',
+                `Authorized validation run ${run.id} attempt ${run.run_attempt}, job ${job.id}, head ${expectedSha}, base ${currentBaseSha}.`
+              );
               return;
             }
 
             core.setOutput('ok', 'false');
             core.setOutput('conclusion', 'action_required');
-            core.setOutput('summary', `${targetCheckName} did not complete within ${maxMinutes} minutes.`);
+            core.setOutput(
+              'summary',
+              `A successful ${targetJobName} job from a pull_request ${workflowFile} run did not complete within ${maxMinutes} minutes.`
+            );
         env:
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
           LOCAL_VALIDATION_CHECK_NAME: ${{ env.LOCAL_VALIDATION_CHECK_NAME }}
@@ -1576,6 +1678,30 @@ jobs:
 
               if (pr.mergeable === false) {
                 core.setFailed(`PR #${pull_number} is not mergeable. mergeable_state=${pr.mergeable_state || 'unknown'}`);
+                return;
+              }
+
+              const { data: baseRef } = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: `heads/${pr.base.ref}`
+              });
+              const currentBaseSha = baseRef.object.sha;
+              const { data: comparison } = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: currentBaseSha,
+                head: expectedSha,
+                per_page: 1
+              });
+              const containsCurrentBase =
+                ['ahead', 'identical'].includes(comparison.status) &&
+                Number(comparison.behind_by) === 0 &&
+                comparison.merge_base_commit?.sha === currentBaseSha;
+              if (!containsCurrentBase) {
+                core.setFailed(
+                  `PR #${pull_number} head ${expectedSha} does not contain current ${pr.base.ref} ${currentBaseSha}; refusing automated merge.`
+                );
                 return;
               }
 
