@@ -8,15 +8,14 @@
     "helpers:pinGitHubActionDigests"
   ],
   "timezone": "America/Chicago",
-  "platformAutomerge": true,
+  "platformAutomerge": false,
   "gitIgnoredAuthors": [
     "230059765+slogcp-e2e-orchestrator[bot]@users.noreply.github.com"
   ],
   "vulnerabilityAlerts": {
     "enabled": true,
-    "labels": ["security", "security:floor", "renovate:type-security-floor"],
-    "vulnerabilityFixStrategy": "lowest",
-    "automerge": true
+    "labels": ["security"],
+    "vulnerabilityFixStrategy": "lowest"
   },
   "osvVulnerabilityAlerts": true,
   "postUpdateOptions": [
@@ -98,6 +97,16 @@
       "enabled": false
     },
     {
+      "description": "Keep CI tools vulnerability fixes separate from public dependency floor updates",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchFileNames": [".github/tools/go.mod"],
+      "matchJsonata": ["$exists(vulnerabilityFixVersion)"],
+      "dependencyDashboardApproval": false,
+      "automerge": false,
+      "addLabels": ["renovate:type1"]
+    },
+    {
       "description": "2. Go module updates run later and require local validation before cloud E2E",
       "matchManagers": ["gomod"],
       "matchFileNames": ["**/go.mod", "!.github/tools/go.mod"],
@@ -125,7 +134,7 @@
       "automerge": true,
       "automergeType": "pr",
       "automergeStrategy": "squash",
-      "labels": ["security", "security:floor", "renovate:type-security-floor"]
+      "addLabels": ["security:floor", "renovate:type-security-floor"]
     },
     {
       "description": "Keep the root go.mod toolchain directive on the latest released Go toolchain without E2E or release",
