@@ -22,28 +22,15 @@
   "postUpdateOptions": [
     "gomodTidy"
   ],
-  "customManagers": [
-    {
-      "customType": "regex",
-      "description": "Update go install tool pins used by GitHub Actions workflows",
-      "managerFilePatterns": [
-        "/^\\.github\\/workflows\\/.*\\.ya?ml$/"
-      ],
-      "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+go install \\S+@(?<currentValue>\\S+)"
-      ],
-      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
-    }
-  ],
   "packageRules": [
     {
-      "description": "Keep the core module pinned to the lowest supported Go patch release",
+      "description": "Do not automate slogcp's public Go compatibility floor",
       "matchManagers": ["gomod"],
       "matchDatasources": ["golang-version"],
       "matchDepTypes": ["golang"],
       "matchDepNames": ["go"],
       "matchFileNames": ["go.mod"],
-      "allowedVersions": "/^{{major}}\\.{{minor}}\\.0$/"
+      "enabled": false
     },
     {
       "description": "Ignore local shared .e2e modules resolved via replace directives",
@@ -60,18 +47,61 @@
       "enabled": false
     },
     {
-      "description": "1. CI-only dependency updates run earlier and stay under .github without touching go.mod/go.sum",
-      "matchManagers": ["github-actions", "custom.regex"],
+      "description": "1a. GitHub Actions updates run earlier and stay separate from executable CI tools",
+      "matchManagers": ["github-actions"],
       "matchFileNames": [".github/**"],
-      "groupName": "daily ci-only deps",
+      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
+      "groupName": "github actions",
       "labels": ["renovate:type1"],
       "schedule": ["* 2 * * *"],
       "prPriority": 20
     },
     {
-      "description": "2. Everything else runs later and requires local validation before cloud E2E",
+      "description": "1b. Compiler-sensitive Go CI tools update together and execute their changed binaries",
       "matchManagers": ["gomod"],
-      "groupName": "daily full-validation deps",
+      "matchDatasources": ["go"],
+      "matchPackageNames": [
+        "github.com/golangci/golangci-lint/v2",
+        "golang.org/x/tools",
+        "golang.org/x/tools/gopls",
+        "golang.org/x/vuln"
+      ],
+      "matchFileNames": [".github/tools/go.mod"],
+      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
+      "groupName": "compiler-sensitive ci tools",
+      "labels": ["renovate:type1"],
+      "schedule": ["* 2 * * *"],
+      "prPriority": 25
+    },
+    {
+      "description": "1c. Auxiliary Go CI tools stay independent of compiler-sensitive tools",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchPackageNames": [
+        "github.com/apache/skywalking-eyes"
+      ],
+      "matchFileNames": [".github/tools/go.mod"],
+      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
+      "groupName": "auxiliary ci tools",
+      "labels": ["renovate:type1"],
+      "schedule": ["* 2 * * *"],
+      "prPriority": 20
+    },
+    {
+      "description": "Do not update the CI tools module Go directive independently",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["golang-version"],
+      "matchDepTypes": ["golang"],
+      "matchDepNames": ["go"],
+      "matchFileNames": [".github/tools/go.mod"],
+      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
+      "enabled": false
+    },
+    {
+      "description": "2. Go module updates run later and require local validation before cloud E2E",
+      "matchManagers": ["gomod"],
+      "matchFileNames": ["**/go.mod", "!.github/tools/go.mod"],
+      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "labels": ["renovate:type2"],
       "schedule": ["* 4 * * *"],
       "prPriority": 10
@@ -80,6 +110,7 @@
       "description": "Do not propose routine root go.mod dependency floor updates",
       "matchManagers": ["gomod"],
       "matchFileNames": ["go.mod"],
+      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "matchDatasources": ["go"],
       "matchDepTypes": ["require"],
       "enabled": false
@@ -103,6 +134,7 @@
       "matchDepTypes": ["toolchain"],
       "matchDepNames": ["go"],
       "matchFileNames": ["go.mod"],
+      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "dependencyDashboardApproval": false,
       "automerge": true,
       "automergeType": "pr",
@@ -117,6 +149,7 @@
       "matchDepTypes": ["golang"],
       "matchDepNames": ["go"],
       "matchFileNames": [".examples/**/go.mod"],
+      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "rangeStrategy": "bump",
       "dependencyDashboardApproval": false,
       "automerge": true,
@@ -128,7 +161,9 @@
     {
       "description": "Routine latest-compatible updates for checked-in example modules",
       "matchManagers": ["gomod"],
-      "matchFileNames": [".examples/**"],
+      "matchDatasources": ["go"],
+      "matchFileNames": [".examples/**/go.mod"],
+      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "groupName": "examples module dependencies",
       "labels": ["renovate:examples", "dependency-scope:examples"],
       "schedule": ["* 3-6 * * *"],
@@ -141,6 +176,7 @@
       "description": "Automerge Docker dependencies used by e2e tests after validation",
       "matchManagers": ["dockerfile"],
       "matchFileNames": [".e2e/**"],
+      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "groupName": "e2e docker dependencies",
       "labels": ["renovate:e2e", "dependency-scope:e2e"],
       "automerge": true,

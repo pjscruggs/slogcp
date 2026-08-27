@@ -288,8 +288,7 @@ func isServiceReady(service *run.Service) bool {
 
 // isTransientServiceError reports whether err is worth retrying during polling.
 func isTransientServiceError(err error) (bool, int) {
-	var gErr *googleapi.Error
-	if errors.As(err, &gErr) {
+	if gErr, ok := errors.AsType[*googleapi.Error](err); ok {
 		switch gErr.Code {
 		case http.StatusNotFound,
 			http.StatusTooManyRequests,

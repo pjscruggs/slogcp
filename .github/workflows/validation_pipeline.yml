@@ -9,6 +9,12 @@ on:
     branches: [ main ]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      latest_go:
+        description: Run root and example validation with the latest stable Go release.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -47,6 +53,8 @@ jobs:
                 paths.every(p => p === 'renovate.json');
               const onlyExampleModuleMetadata = paths.length > 0 &&
                 paths.every(p => /^\.examples\/.+\/go\.(mod|sum)$/.test(p));
+              const onlyCiToolModuleMetadata = paths.length > 0 &&
+                paths.every(p => /^\.github\/tools\/go\.(mod|sum)$/.test(p));
               const touchesRootGoModuleMetadata = paths.some(p => /^go\.(mod|sum)$/.test(p));
               const allowedSecurityFloorMetadata = p =>
                 p === 'go.mod' ||
@@ -83,7 +91,9 @@ jobs:
                     changedLines.every(line => /^[+-]toolchain\s+go\d+\.\d+\.\d+\s*$/.test(line));
                 });
 
-              if (onlyCiFiles && !touchesGoModuleMetadata) {
+              if (onlyCiToolModuleMetadata) {
+                mode = 'ci_tools';
+              } else if (onlyCiFiles && !touchesGoModuleMetadata) {
                 mode = 'ci_only';
               } else if (onlyAutomationConfigFiles) {
                 mode = 'automation_config_only';
@@ -107,23 +117,209 @@ jobs:
             core.info(`Validation scope mode=${mode}`);
             core.setOutput('mode', mode);
 
-  # -----------------------------
-  # VALIDATION (runs actual code)
-  # -----------------------------
-  validation:
-    name: Fix and Validate Code
+  # ----------------------------------------
+  # PLAN THE GO VERSION FOR TRACKED MODULES
+  # ----------------------------------------
+  go_validation_plan:
+    name: Plan Go Validation
     needs: classify_validation_scope
-    # Skip validation on pull_request_target to avoid running the full pipeline twice per PR update.
-    if: github.event_name != 'pull_request_target' && needs.classify_validation_scope.outputs.mode != 'ci_only' && needs.classify_validation_scope.outputs.mode != 'automation_config_only'
+    if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     env:
-      GOTOOLCHAIN: auto
+      LATEST_GO: ${{ inputs.latest_go || false }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      root_floor_version: ${{ steps.plan.outputs.root_floor_version }}
+      root_version: ${{ steps.plan.outputs.root_version }}
+      has_examples: ${{ steps.plan.outputs.has_examples }}
+      example_matrix: ${{ steps.plan.outputs.example_matrix }}
+    steps:
+      - name: Checkout validation source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Require current PR base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          current_base="$(
+            git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" \
+              "refs/heads/${BASE_REF}" | awk 'NR == 1 { print $1 }'
+          )"
+          test -n "$current_base"
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          if ! git merge-base --is-ancestor "$current_base" "$HEAD_SHA"; then
+            echo "PR head $HEAD_SHA does not contain current $BASE_REF ($current_base)." >&2
+            echo "Update the branch and rerun validation before merging." >&2
+            exit 1
+          fi
+
+      - name: Validate CI shell syntax
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            echo "Checking shell syntax: $script"
+            bash -n "$script"
+          done < <(find .github/scripts .e2e/scripts .e2e/cloudbuild/build-tools -type f -name '*.sh' -print0 | sort -z)
+
+      - name: Plan Go validation
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from collections import defaultdict
+          from pathlib import Path
+
+          version_re = re.compile(r"^(?:go)?(\d+)\.(\d+)(?:\.(\d+))?$")
+
+          def directives(path: str) -> tuple[str, str | None]:
+              go_versions = []
+              toolchains = []
+              for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
+                  fields = raw_line.split("//", 1)[0].split()
+                  if len(fields) == 2 and fields[0] == "go":
+                      go_versions.append(fields[1])
+                  elif len(fields) == 2 and fields[0] == "toolchain":
+                      toolchains.append(fields[1])
+              if len(go_versions) != 1 or len(toolchains) > 1:
+                  raise SystemExit(f"{path}: expected one go and at most one toolchain directive")
+              return go_versions[0], toolchains[0] if toolchains else None
+
+          def minor_spec(version: str) -> str:
+              match = version_re.fullmatch(version)
+              if not match:
+                  raise SystemExit(f"invalid Go version: {version!r}")
+              return f"{match.group(1)}.{match.group(2)}.x"
+
+          def setup_spec(version: str) -> str:
+              match = version_re.fullmatch(version)
+              if not match:
+                  raise SystemExit(f"invalid Go version: {version!r}")
+              patch = match.group(3)
+              return (
+                  f"{match.group(1)}.{match.group(2)}.{patch}"
+                  if patch is not None
+                  else f"{match.group(1)}.{match.group(2)}.x"
+              )
+
+          tracked = subprocess.run(
+              ["git", "ls-files", "-z", "--", "go.mod", ":(glob).examples/**/go.mod"],
+              check=True,
+              capture_output=True,
+          ).stdout.split(b"\0")
+          paths = sorted(part.decode("utf-8") for part in tracked if part)
+          if "go.mod" not in paths:
+              raise SystemExit("tracked root go.mod was not found")
+
+          latest = os.environ["LATEST_GO"].lower() == "true"
+          root_go, root_toolchain = directives("go.mod")
+          root_floor_version = minor_spec(root_go)
+          root_version = "stable" if latest else setup_spec(root_toolchain or root_go)
+
+          grouped_examples: dict[str, list[str]] = defaultdict(list)
+          for path in paths:
+              if path == "go.mod":
+                  continue
+              go_version, _ = directives(path)
+              selected = "stable" if latest else setup_spec(go_version)
+              grouped_examples[selected].append(path.removesuffix("/go.mod"))
+
+          matrix = {
+              "include": [
+                  {"go_version": version, "modules": modules}
+                  for version, modules in sorted(grouped_examples.items())
+              ]
+          }
+          mode = "latest" if latest else "requirements"
+          print(f"Validation mode: {mode}")
+          print(f"Root compatibility runtime: {root_floor_version}")
+          print(f"Root selected runtime: {root_version}")
+          print(f"Tracked example modules: {sum(len(row['modules']) for row in matrix['include'])}")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"mode={mode}\n")
+              output.write(f"root_floor_version={root_floor_version}\n")
+              output.write(f"root_version={root_version}\n")
+              output.write(f"has_examples={str(bool(grouped_examples)).lower()}\n")
+              output.write(f"example_matrix={json.dumps(matrix, separators=(',', ':'))}\n")
+          PY
+
+  # ----------------------------------------------------
+  # ROOT COMPATIBILITY (public go directive, not toolchain)
+  # ----------------------------------------------------
+  root_floor_validation:
+    name: Validate Root Compatibility Floor (Go ${{ needs.go_validation_plan.outputs.root_floor_version }})
+    needs:
+      - classify_validation_scope
+      - go_validation_plan
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout validation source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Set up root compatibility Go runtime
+        id: setup-floor-go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: ${{ needs.go_validation_plan.outputs.root_floor_version }}
+          check-latest: true
+          cache: false
+
+      - name: Assert root compatibility Go runtime
+        env:
+          SETUP_GO_VERSION: ${{ steps.setup-floor-go.outputs.go-version }}
+        run: |
+          set -euo pipefail
+          test "$(go env GOTOOLCHAIN)" = "local"
+          test "$(go env GOVERSION)" = "go${SETUP_GO_VERSION}"
+          printf 'Root compatibility runtime: GOVERSION=%s GOTOOLCHAIN=%s\n' \
+            "$(go env GOVERSION)" "$(go env GOTOOLCHAIN)"
+
+      - name: Test root module at its compatibility floor
+        run: go test -mod=readonly -race -count=1 ./...
+
+  # --------------------------------------
+  # ROOT VALIDATION (runs root module code)
+  # --------------------------------------
+  validation:
+    name: Fix and Validate Code
+    needs:
+      - classify_validation_scope
+      - go_validation_plan
+    # Skip validation on pull_request_target to avoid running the full pipeline twice per PR update.
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+      GO_VALIDATION_MODE: ${{ needs.go_validation_plan.outputs.mode }}
+      TOOLS_MODULE: ${{ github.workspace }}/.github/tools
     steps:
       - name: 🛒 Checkout Code
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           token: ${{ secrets.GITHUB_TOKEN }}
       
@@ -143,18 +339,20 @@ jobs:
         id: maintenance-policy
         env:
           EVENT_NAME: ${{ github.event_name }}
+          GO_VALIDATION_MODE: ${{ needs.go_validation_plan.outputs.mode }}
           PR_HEAD_REPO_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           BRANCH_NAME: ${{ steps.get-branch.outputs.BRANCH_NAME }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          VALIDATION_MODE: ${{ needs.classify_validation_scope.outputs.mode }}
         run: |
           allow_push=false
           allow_go_sum_only_drift=false
 
-          if [[ "$EVENT_NAME" == "pull_request" && "$PR_HEAD_REPO_FULL_NAME" == "$REPOSITORY" ]]; then
+          if [[ "$GO_VALIDATION_MODE" == "requirements" ]] &&
+            [[ "$EVENT_NAME" == "pull_request" ]] &&
+            [[ "$PR_HEAD_REPO_FULL_NAME" == "$REPOSITORY" ]]; then
             allow_push=true
-            if [[ "$VALIDATION_MODE" != "examples_dependency" && "$BRANCH_NAME" == renovate/* && ("$PR_AUTHOR" == "app/renovate" || "$PR_AUTHOR" == "renovate[bot]") ]]; then
+            if [[ "$BRANCH_NAME" == renovate/* && ("$PR_AUTHOR" == "app/renovate" || "$PR_AUTHOR" == "renovate[bot]") ]]; then
               allow_push=false
               allow_go_sum_only_drift=true
             fi
@@ -163,75 +361,67 @@ jobs:
           echo "allow_push=$allow_push" >> "$GITHUB_OUTPUT"
           echo "allow_go_sum_only_drift=$allow_go_sum_only_drift" >> "$GITHUB_OUTPUT"
 
-      - name: 🔢 Determine Go version
-        id: go-version
-        run: |
-          GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')
-          if [ -z "$GO_VERSION" ]; then
-            echo "Unable to determine Go version from go.mod" >&2
-            exit 1
-          fi
-
-          GO_VERSION="$GO_VERSION" python3 .github/scripts/resolve_go_version.py
-
       - name: 🏗️ Set up Go
+        id: setup-root-go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: ${{ steps.go-version.outputs.version }}
+          go-version: ${{ needs.go_validation_plan.outputs.root_version }}
+          check-latest: true
           cache: true
+          cache-dependency-path: |
+            go.sum
+            .github/tools/go.sum
+
+      - name: Assert selected Go runtime
+        env:
+          SETUP_GO_VERSION: ${{ steps.setup-root-go.outputs.go-version }}
+        run: |
+          set -euo pipefail
+          test "$(go env GOTOOLCHAIN)" = "local"
+          test "$(go env GOVERSION)" = "go${SETUP_GO_VERSION}"
+          printf 'Selected root runtime: GOVERSION=%s GOTOOLCHAIN=%s\n' \
+            "$(go env GOVERSION)" "$(go env GOTOOLCHAIN)"
 
       - name: Verify E2E support tooling
         run: python3 -m unittest discover -s .e2e/scripts -p 'test_*.py' -v
 
-      - name: 🛠️ Install golangci-lint
+      - name: Show pinned CI tool modules
         run: |
-          # renovate: datasource=go depName=github.com/golangci/golangci-lint/v2 versioning=semver
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-          
-      - name: 🧰 Install format/modernize tools
-        run: |
-          # renovate: datasource=go depName=golang.org/x/tools versioning=semver
-          go install golang.org/x/tools/cmd/goimports@v0.45.0
-          # renovate: datasource=go depName=golang.org/x/tools/gopls versioning=semver
-          go install golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.22.0
-          # renovate: datasource=go depName=github.com/apache/skywalking-eyes versioning=semver
-          go install github.com/apache/skywalking-eyes/cmd/license-eye@v0.8.0
+          set -euo pipefail
+          go -C "$TOOLS_MODULE" mod tidy
+          git diff --exit-code -- .github/tools/go.mod .github/tools/go.sum
+          go -C "$TOOLS_MODULE" list -m \
+            github.com/apache/skywalking-eyes \
+            github.com/golangci/golangci-lint/v2 \
+            golang.org/x/tools \
+            golang.org/x/tools/gopls \
+            golang.org/x/vuln
+          "$(go -C "$TOOLS_MODULE" tool -n golangci-lint)" version
+          "$(go -C "$TOOLS_MODULE" tool -n govulncheck)" -version
 
-      - name: ✨ Apply Go formatting
-        run: gofmt -w .
+      - name: ✨ Apply root Go formatting and imports
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' root_go_files < <(
+            git ls-files -z -- '*.go' \
+              ':(exclude).examples/**' \
+              ':(exclude).e2e/**' \
+              ':(exclude)instructions_for_LLMs/**'
+          )
+          if (( ${#root_go_files[@]} == 0 )); then
+            echo "No tracked root Go files found." >&2
+            exit 1
+          fi
+          gofmt -w "${root_go_files[@]}"
+          "$(go -C "$TOOLS_MODULE" tool -n goimports)" -w "${root_go_files[@]}"
 
       - name: 🔧 Apply modernize fixes
-        run: modernize -fix -test ./...
+        run: '"$(go -C "$TOOLS_MODULE" tool -n modernize)" -fix -test ./...'
 
       - name: 🧹 Ensure module metadata is tidy
         run: |
           go mod tidy
-
-      - name: 🧹 Ensure example module metadata is tidy
-        run: |
-          set -euo pipefail
-          if [ ! -d ".examples" ]; then
-            echo "No .examples directory found; skipping example module tidy."
-            exit 0
-          fi
-
-          modules_found=0
-          while IFS= read -r -d '' mod; do
-            modules_found=1
-            dir=$(dirname "$mod")
-            echo "::group::go mod tidy $dir"
-            (cd "$dir" && go mod tidy)
-            echo "::endgroup::"
-          done < <(find .examples -name go.mod -print0)
-
-          if [ "$modules_found" -eq 0 ]; then
-            echo "No example go.mod files found under .examples; skipping."
-          fi
-
-      - name: 🧹 Sync example Go directives
-        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'renovate:go-version')
-        run: python3 .github/scripts/sync_example_go_versions.py
 
       - name: 📅🕰️ Get current year in US Central Time
         id: year
@@ -251,16 +441,26 @@ jobs:
       
       - name: 📄🩹 Fix License Headers
         id: fix-license
-        run: license-eye header fix -c .licenserc.yaml
+        run: '"$(go -C "$TOOLS_MODULE" tool -n license-eye)" header fix -c .licenserc.yaml'
 
       - name: ♻️ Restore Go toolchain (post-license-fix)
+        id: restore-post-license-go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: ${{ steps.go-version.outputs.version }}
-          cache: true
+          go-version: ${{ needs.go_validation_plan.outputs.root_version }}
+          check-latest: true
+          cache: false
+
+      - name: Assert selected Go runtime (post-license-fix)
+        env:
+          SETUP_GO_VERSION: ${{ steps.restore-post-license-go.outputs.go-version }}
+        run: |
+          set -euo pipefail
+          test "$(go env GOTOOLCHAIN)" = "local"
+          test "$(go env GOVERSION)" = "go${SETUP_GO_VERSION}"
       
       - name: 🧐 Apply Lint Fixes
-        run: golangci-lint run --fix ./...
+        run: '"$(go -C "$TOOLS_MODULE" tool -n golangci-lint)" run --fix ./...'
         continue-on-error: true
       
       - name: Generate Maintenance Push Token
@@ -328,75 +528,40 @@ jobs:
           exit 1
 
       - name: 🧐 Verify Linting
-        run: golangci-lint run ./...
+        run: '"$(go -C "$TOOLS_MODULE" tool -n golangci-lint)" run ./...'
       
       - name: 📄✅ Verify License Headers
-        run: license-eye header check -c .licenserc.yaml
-
-      - name: ✅ Verify example Go directives
-        if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'renovate:go-version')
-        run: python3 .github/scripts/sync_example_go_versions.py --check
+        run: '"$(go -C "$TOOLS_MODULE" tool -n license-eye)" header check -c .licenserc.yaml'
 
       - name: ♻️ Restore Go toolchain (pre-tests)
+        id: restore-pre-tests-go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: ${{ steps.go-version.outputs.version }}
-          cache: true
+          go-version: ${{ needs.go_validation_plan.outputs.root_version }}
+          check-latest: true
+          cache: false
 
-      - name: Install Go Test Tools
+      - name: Assert selected Go runtime (pre-tests)
+        env:
+          SETUP_GO_VERSION: ${{ steps.restore-pre-tests-go.outputs.go-version }}
         run: |
-          # renovate: datasource=go depName=github.com/mfridman/tparse versioning=semver
-          go install github.com/mfridman/tparse@v0.18.0
+          set -euo pipefail
+          test "$(go env GOTOOLCHAIN)" = "local"
+          test "$(go env GOVERSION)" = "go${SETUP_GO_VERSION}"
 
       - name: Run Go Tests
         if: success()
         id: go-tests
         run: |
-          go test -json -race -coverprofile=coverage.out ./... | tparse -all -notests
-
-      - name: Verify Example Modules
-        if: success()
-        run: |
           set -euo pipefail
-          if [ ! -d ".examples" ]; then
-            echo "No .examples directory found; skipping example verification."
-            exit 0
+          test_args=(-json -race -coverprofile=coverage.out)
+          if [[ "$GO_VALIDATION_MODE" == "latest" ]]; then
+            test_args+=(-count=1)
           fi
-
-          examples_found=0
-          while IFS= read -r -d '' mod; do
-            examples_found=1
-            dir=$(dirname "$mod")
-            echo "::group::go test $dir"
-            (cd "$dir" && go test ./...)
-            echo "::endgroup::"
-          done < <(find .examples -name go.mod -print0)
-
-          if [ "$examples_found" -eq 0 ]; then
-            echo "No example go.mod files found under .examples; skipping."
-          fi
-
-      - name: Verify .e2e Modules
-        if: success()
-        run: |
-          set -euo pipefail
-          if [ ! -d ".e2e" ]; then
-            echo "No .e2e directory found; skipping .e2e local tests."
-            exit 0
-          fi
-
-          modules_found=0
-          while IFS= read -r -d '' mod; do
-            modules_found=1
-            dir=$(dirname "$mod")
-            echo "::group::go test $dir"
-            (cd "$dir" && go test ./...)
-            echo "::endgroup::"
-          done < <(find .e2e -name go.mod -print0)
-
-          if [ "$modules_found" -eq 0 ]; then
-            echo "No .e2e go.mod files found; skipping .e2e local tests."
-          fi
+          printf 'Running root tests in %s mode with arguments:' "$GO_VALIDATION_MODE"
+          printf ' %q' "${test_args[@]}"
+          printf '\n'
+          go test "${test_args[@]}" ./...
 
       - name: Print Coverage Report
         if: always()
@@ -411,49 +576,249 @@ jobs:
       
       - name: 🛡️🔍 Run Vulnerability Check
         run: |
-          echo "Installing govulncheck..."
-          # renovate: datasource=go depName=golang.org/x/vuln versioning=semver
-          go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
-          echo "Running vulnerability check..."
-          govulncheck ./...
+          echo "Running the pinned govulncheck tool..."
+          "$(go -C "$TOOLS_MODULE" tool -n govulncheck)" ./...
+
+  # --------------------------------------------------------
+  # GENERATED E2E HARNESS VALIDATION
+  # --------------------------------------------------------
+  e2e_harness_validation:
+    name: Validate Generated E2E Harness (Go ${{ needs.go_validation_plan.outputs.root_version }})
+    needs:
+      - classify_validation_scope
+      - go_validation_plan
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout validation source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Set up harness Go runtime
+        id: setup-harness-go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: ${{ needs.go_validation_plan.outputs.root_version }}
+          check-latest: true
+          cache: false
+
+      - name: Assert harness Go runtime
+        env:
+          SETUP_GO_VERSION: ${{ steps.setup-harness-go.outputs.go-version }}
+        run: |
+          set -euo pipefail
+          test "$(go env GOTOOLCHAIN)" = "local"
+          test "$(go env GOVERSION)" = "go${SETUP_GO_VERSION}"
+
+      - name: Generate and test the E2E harness
+        shell: bash
+        env:
+          ROOT_GO_VERSION: ${{ steps.setup-harness-go.outputs.go-version }}
+        run: |
+          set -euo pipefail
+          e2e_temp="$(mktemp -d "${RUNNER_TEMP}/generated-e2e-harness.XXXXXX")"
+          harness_dir="$e2e_temp/e2e-harness"
+          mkdir -p "$harness_dir/traceproto"
+          cp -a .e2e/services/e2e-harness/. "$harness_dir/"
+          cp -a .e2e/services/traceproto/. "$harness_dir/traceproto/"
+
+          python3 .e2e/scripts/generate_go_module.py \
+            --module-dir "$harness_dir" \
+            --go-version "$ROOT_GO_VERSION" \
+            --slogcp-dir "$GITHUB_WORKSPACE" \
+            --slogcp-reference v0.0.0 \
+            --dependency-mode floor \
+            --slogcp-shared-parity-scope package
+
+          test -s "$harness_dir/go.mod"
+          test -s "$harness_dir/go.sum"
+          test -s "$harness_dir/go.work"
+          test -s "$harness_dir/traceproto/go.mod"
+          test -s "$harness_dir/traceproto/go.sum"
+          (cd "$harness_dir" && GOWORK=off go test -race -count=1 ./...)
+          (cd "$harness_dir/traceproto" && GOWORK=off go test -race -count=1 ./...)
+          workspace_file="$(realpath "$harness_dir/go.work")"
+          (cd "$harness_dir" && GOWORK="$workspace_file" go test -count=1 ./...)
+
+  # ----------------------------------------------------
+  # EXAMPLE VALIDATION (grouped by resolved Go version)
+  # ----------------------------------------------------
+  example_validation:
+    name: Validate Example Modules (Go ${{ matrix.go_version }})
+    needs:
+      - classify_validation_scope
+      - go_validation_plan
+    if: github.event_name != 'pull_request_target' && needs.go_validation_plan.outputs.has_examples == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.go_validation_plan.outputs.example_matrix) }}
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+      PYTHONDONTWRITEBYTECODE: "1"
+      TOOLS_MODULE: ${{ github.workspace }}/.github/tools
+    steps:
+      - name: Checkout validation source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Set up example Go runtime
+        id: setup-example-go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: ${{ matrix.go_version }}
+          check-latest: true
+          cache: false
+
+      - name: Assert example Go runtime
+        env:
+          SETUP_GO_VERSION: ${{ steps.setup-example-go.outputs.go-version }}
+        run: |
+          set -euo pipefail
+          test "$(go env GOTOOLCHAIN)" = "local"
+          test "$(go env GOVERSION)" = "go${SETUP_GO_VERSION}"
+
+      - name: Format, tidy, test, and scan planned example modules
+        shell: bash
+        env:
+          MODULES_JSON: ${{ toJSON(matrix.modules) }}
+        run: |
+          set -euo pipefail
+          mapfile -t modules < <(
+            python3 -c 'import json, os; print(*json.loads(os.environ["MODULES_JSON"]), sep="\n")'
+          )
+          if (( ${#modules[@]} == 0 )); then
+            echo "The example validation matrix row contained no modules." >&2
+            exit 1
+          fi
+
+          for dir in "${modules[@]}"; do
+            dir="${dir%$'\r'}"
+            if [[ "$dir" != .examples/* || ! -f "$dir/go.mod" ]]; then
+              echo "Invalid planned example module: $dir" >&2
+              exit 1
+            fi
+            git ls-files --error-unmatch -- "$dir/go.mod" >/dev/null
+
+            echo "::group::Format and tidy $dir"
+            (
+              cd "$dir"
+              mapfile -d '' -t go_files < <(git ls-files -z -- '*.go')
+              if (( ${#go_files[@]} > 0 )); then
+                gofmt -w "${go_files[@]}"
+                "$(go -C "$TOOLS_MODULE" tool -n goimports)" -w "${go_files[@]}"
+              fi
+              go mod tidy
+            )
+            echo "::endgroup::"
+
+            echo "::group::Test $dir"
+            (cd "$dir" && go test -race -count=1 ./...)
+            echo "::endgroup::"
+
+            echo "::group::Vulnerability scan $dir"
+            (cd "$dir" && "$(go -C "$TOOLS_MODULE" tool -n govulncheck)" ./...)
+            echo "::endgroup::"
+
+            if [[ -n "$(git status --porcelain=v1 --untracked-files=all -- "$dir")" ]]; then
+              echo "Example validation produced uncommitted changes in $dir." >&2
+              git status --short -- "$dir"
+              git diff -- "$dir"
+              exit 1
+            fi
+          done
 
   # ---------------------------------------
   # STABLE LOCAL VALIDATION CHECK FOR MERGE POLICY
   # ---------------------------------------
   local_validation_policy:
-    name: Local Validation Policy
+    name: ${{ github.event_name == 'pull_request_target' && 'Local Validation Policy (not run for pull_request_target)' || 'Local Validation Policy' }}
     needs:
       - classify_validation_scope
+      - go_validation_plan
+      - root_floor_validation
       - validation
+      - e2e_harness_validation
+      - example_validation
     if: always() && github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate scoped local validation result
         shell: bash
         env:
-          MODE: ${{ needs.classify_validation_scope.outputs.mode }}
-          REPO_VALIDATION_RESULT: ${{ needs.validation.result }}
+          SCOPE_MODE: ${{ needs.classify_validation_scope.outputs.mode }}
+          GO_VALIDATION_MODE: ${{ needs.go_validation_plan.outputs.mode }}
+          GO_PLAN_RESULT: ${{ needs.go_validation_plan.result }}
+          ROOT_FLOOR_VALIDATION_RESULT: ${{ needs.root_floor_validation.result }}
+          ROOT_VALIDATION_RESULT: ${{ needs.validation.result }}
+          E2E_HARNESS_VALIDATION_RESULT: ${{ needs.e2e_harness_validation.result }}
+          HAS_EXAMPLES: ${{ needs.go_validation_plan.outputs.has_examples }}
+          EXAMPLE_VALIDATION_RESULT: ${{ needs.example_validation.result }}
         run: |
           set -euo pipefail
 
-          if [[ "$MODE" == "ci_only" || "$MODE" == "automation_config_only" ]]; then
-            echo "CI-only or automation config-only change requires no local or cloud tests."
-            exit 0
+          if [[ "$GO_PLAN_RESULT" != "success" ]]; then
+            echo "Go validation plan expected success, got: $GO_PLAN_RESULT"
+            exit 1
           fi
 
-          if [[ "$REPO_VALIDATION_RESULT" == "success" ]]; then
-            echo "Repo-wide validation passed."
-            exit 0
+          if [[ "$ROOT_FLOOR_VALIDATION_RESULT" != "success" ]]; then
+            echo "Root compatibility-floor validation expected success, got: $ROOT_FLOOR_VALIDATION_RESULT"
+            exit 1
           fi
 
-          echo "Repo-wide change expected Fix and Validate Code=success, got: $REPO_VALIDATION_RESULT"
-          exit 1
+          if [[ "$ROOT_VALIDATION_RESULT" != "success" ]]; then
+            echo "Root validation expected success, got: $ROOT_VALIDATION_RESULT"
+            exit 1
+          fi
+
+          if [[ "$E2E_HARNESS_VALIDATION_RESULT" != "success" ]]; then
+            echo "Generated E2E harness validation expected success, got: $E2E_HARNESS_VALIDATION_RESULT"
+            exit 1
+          fi
+
+          if [[ "$GO_VALIDATION_MODE" != "requirements" && "$GO_VALIDATION_MODE" != "latest" ]]; then
+            echo "Go validation plan returned invalid mode: $GO_VALIDATION_MODE"
+            exit 1
+          fi
+
+          if [[ "$HAS_EXAMPLES" == "true" ]]; then
+            if [[ "$EXAMPLE_VALIDATION_RESULT" != "success" ]]; then
+              echo "Example validation expected success, got: $EXAMPLE_VALIDATION_RESULT"
+              exit 1
+            fi
+          elif [[ "$HAS_EXAMPLES" == "false" ]]; then
+            if [[ "$EXAMPLE_VALIDATION_RESULT" != "skipped" ]]; then
+              echo "Example validation expected skipped with no examples, got: $EXAMPLE_VALIDATION_RESULT"
+              exit 1
+            fi
+          else
+            echo "Go validation plan returned invalid has_examples value: $HAS_EXAMPLES"
+            exit 1
+          fi
+
+          printf 'All required local validation jobs passed for scope=%s, mode=%s.\n' \
+            "$SCOPE_MODE" "$GO_VALIDATION_MODE"
 
   local_validation_ready_for_e2e:
-    name: Local Validation Ready for E2E
+    name: ${{ github.event_name == 'pull_request_target' && 'Local Validation Ready for E2E (not run for pull_request_target)' || 'Local Validation Ready for E2E' }}
     needs:
       - local_validation_policy
-    if: always() && github.event_name != 'pull_request_target'
+    if: >-
+      always() &&
+      github.event_name != 'pull_request_target' &&
+      (inputs.latest_go || false) == false
     runs-on: ubuntu-latest
     steps:
       - name: Mirror Local Validation Policy result for E2E gatekeeping
@@ -470,9 +835,9 @@ jobs:
           echo "Local Validation Policy result: $LOCAL_VALIDATION_POLICY_RESULT"
           exit 1
 
-  # -------------------------------------------------------
-  # E2E GATEKEEPER (PR-target; API-only; uses repo secrets)
-  # -------------------------------------------------------
+  # ----------------
+  # E2E GATEKEEPER
+  # ----------------
   e2e_gatekeeper:
     name: E2E Test Gatekeeper
     if: github.event_name == 'pull_request_target'
@@ -495,6 +860,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
+      actions: read
       checks: read
       contents: read
       pull-requests: read
@@ -520,6 +886,8 @@ jobs:
               paths.every(p => p === 'renovate.json');
             const onlyExampleModuleMetadata = paths.length > 0 &&
               paths.every(p => /^\.examples\/.+\/go\.(mod|sum)$/.test(p));
+            const onlyCiToolModuleMetadata = paths.length > 0 &&
+              paths.every(p => /^\.github\/tools\/go\.(mod|sum)$/.test(p));
             const touchesRootGoModuleMetadata = paths.some(p => /^go\.(mod|sum)$/.test(p));
             const allowedSecurityFloorMetadata = p =>
               p === 'go.mod' ||
@@ -557,7 +925,9 @@ jobs:
               });
 
             let mode = 'normal';
-            if (onlyCiFiles && !touchesGoModuleMetadata) {
+            if (onlyCiToolModuleMetadata) {
+              mode = 'ci_tools';
+            } else if (onlyCiFiles && !touchesGoModuleMetadata) {
               mode = 'ci_only';
             } else if (onlyAutomationConfigFiles) {
               mode = 'automation_config_only';
@@ -583,7 +953,7 @@ jobs:
       - name: Determine Automatic Policy Path
         id: trigger_type
         run: |
-          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" && ("${{ steps.pr_scope.outputs.mode }}" == "ci_only" || "${{ steps.pr_scope.outputs.mode }}" == "automation_config_only" || "${{ steps.pr_scope.outputs.mode }}" == "examples_dependency" || "${{ steps.pr_scope.outputs.mode }}" == "toolchain_update" || "${{ steps.pr_scope.outputs.mode }}" == "security_floor" || "${{ steps.pr_scope.outputs.mode }}" == "renovate_cloud_e2e") ]]; then
+          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" && ("${{ steps.pr_scope.outputs.mode }}" == "ci_tools" || "${{ steps.pr_scope.outputs.mode }}" == "ci_only" || "${{ steps.pr_scope.outputs.mode }}" == "automation_config_only" || "${{ steps.pr_scope.outputs.mode }}" == "examples_dependency" || "${{ steps.pr_scope.outputs.mode }}" == "toolchain_update" || "${{ steps.pr_scope.outputs.mode }}" == "security_floor" || "${{ steps.pr_scope.outputs.mode }}" == "renovate_cloud_e2e") ]]; then
             echo "should_auto_trigger=true" >> $GITHUB_OUTPUT
           else
             echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
@@ -750,7 +1120,7 @@ jobs:
       - name: Finalize E2E check for no-cloud manual PRs
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'false' &&
-          (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only')
+          (steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_start_token.outputs.token }}
@@ -882,9 +1252,11 @@ jobs:
             const name = process.env.CHECK_RUN_NAME;
             let summary = `Waiting for local validation to pass before starting Google Cloud Build E2E run ${runId}.`;
             if (mode === 'ci_only') {
-              summary = 'No local or cloud tests are required for a PR that touched only CI files and no go.mod/go.sum files. The cloud E2E check will be skipped after the fast-path policy check passes.';
+              summary = 'Substantive local validation is required for a PR that touched only CI files and no go.mod/go.sum files. Cloud E2E will be skipped after local validation passes.';
+            } else if (mode === 'ci_tools') {
+              summary = 'CI tool module update detected. Local validation executes the updated tools; cloud E2E will be skipped after local validation passes.';
             } else if (mode === 'automation_config_only') {
-              summary = 'Automation config-only change detected. The cloud E2E check will be skipped after the fast-path policy check passes.';
+              summary = 'Automation config-only change detected. Substantive local validation is required, and cloud E2E will be skipped after local validation passes.';
             } else if (mode === 'examples_dependency') {
               summary = 'Example module dependency update detected. Local validation includes example module smoke tests; cloud E2E will be skipped after that policy check passes.';
             } else if (mode === 'toolchain_update') {
@@ -921,55 +1293,169 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const ref = context.payload.pull_request.head.sha;
-            const targetCheckName = process.env.LOCAL_VALIDATION_CHECK_NAME;
+            const expectedSha = context.payload.pull_request.head.sha;
+            const pullNumber = context.payload.pull_request.number;
+            const workflowFile = 'validation_pipeline.yml';
+            const workflowPath = '.github/workflows/validation_pipeline.yml';
+            const targetJobName = process.env.LOCAL_VALIDATION_CHECK_NAME;
+            const normalizePath = value => String(value || '').split('@', 1)[0];
             const sleep = (ms) => new Promise(r => setTimeout(r, ms));
             const maxMinutes = 120;
             const sleepMs = 60_000;
 
             for (let minute = 0; minute < maxMinutes; minute++) {
-              const { data } = await github.rest.checks.listForRef({
+              const { data } = await github.rest.actions.listWorkflowRuns({
                 owner,
                 repo,
-                ref,
+                workflow_id: workflowFile,
+                head_sha: expectedSha,
                 per_page: 100
               });
-              const validationRuns = [...data.check_runs]
-                .filter(run => run.name === targetCheckName);
-              const skippedCount = validationRuns
-                .filter(run => run.status === 'completed' && run.conclusion === 'skipped')
-                .length;
-              const checkRun = validationRuns
-                .filter(run => run.status !== 'completed' || run.conclusion !== 'skipped')
-                .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
-              const status = checkRun?.status ?? 'not_found';
-              const conclusion = checkRun?.conclusion ?? 'unknown';
-              const skippedSummary = skippedCount
-                ? ` Ignored ${skippedCount} skipped ${targetCheckName} duplicate(s).`
-                : '';
+              const eligibleRuns = data.workflow_runs
+                .filter(run =>
+                  run.head_sha === expectedSha &&
+                  run.event === 'pull_request' &&
+                  normalizePath(run.path) === workflowPath &&
+                  (run.pull_requests || []).some(pr => Number(pr.number) === Number(pullNumber))
+                )
+                .sort((a, b) => Number(b.id) - Number(a.id));
+              const run = eligibleRuns[0];
 
-              if (!checkRun || status !== 'completed') {
-                core.info(`Waiting for ${targetCheckName} to finish (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.${skippedSummary}`);
+              if (!run || run.status !== 'completed') {
+                const status = run?.status ?? 'not_found';
+                core.info(
+                  `Waiting for pull_request ${workflowFile} run on ${expectedSha} (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.`
+                );
                 await sleep(sleepMs);
                 continue;
               }
 
-              if (conclusion === 'success') {
-                core.setOutput('ok', 'true');
-                core.setOutput('conclusion', 'success');
-                core.setOutput('summary', `${targetCheckName} succeeded.`);
+              if (run.conclusion !== 'success') {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'failure');
+                core.setOutput(
+                  'summary',
+                  `Validation run ${run.id} attempt ${run.run_attempt} conclusion: ${run.conclusion || 'unknown'}.`
+                );
                 return;
               }
 
-              core.setOutput('ok', 'false');
-              core.setOutput('conclusion', 'failure');
-              core.setOutput('summary', `${targetCheckName} conclusion: ${conclusion}.`);
+              const jobs = await github.paginate(
+                github.rest.actions.listJobsForWorkflowRun,
+                {
+                  owner,
+                  repo,
+                  run_id: run.id,
+                  filter: 'latest',
+                  per_page: 100
+                }
+              );
+              const matchingJobs = jobs.filter(job =>
+                job.name === targetJobName &&
+                Number(job.run_id) === Number(run.id) &&
+                Number(job.run_attempt) === Number(run.run_attempt) &&
+                job.head_sha === expectedSha
+              );
+
+              if (matchingJobs.length > 1) {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'failure');
+                core.setOutput(
+                  'summary',
+                  `Expected one ${targetJobName} job in validation run ${run.id} attempt ${run.run_attempt}; found ${matchingJobs.length}.`
+                );
+                return;
+              }
+
+              if (matchingJobs.length === 0 || matchingJobs[0].status !== 'completed') {
+                const status = matchingJobs[0]?.status ?? 'not_found';
+                core.info(
+                  `Waiting for ${targetJobName} in validation run ${run.id} attempt ${run.run_attempt} (elapsed ${minute + 1}/${maxMinutes} minutes). Current status: ${status}.`
+                );
+                await sleep(sleepMs);
+                continue;
+              }
+
+              const job = matchingJobs[0];
+              if (matchingJobs.length !== 1 || job.conclusion !== 'success') {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'failure');
+                core.setOutput(
+                  'summary',
+                  `Expected exactly one successful ${targetJobName} job in validation run ${run.id} attempt ${run.run_attempt}; found ${matchingJobs.length} (${job.status}/${job.conclusion || 'unknown'}).`
+                );
+                return;
+              }
+
+              const { data: pr } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pullNumber
+              });
+              const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
+              if (
+                pr.base.ref !== 'main' ||
+                String(pr.base.repo?.full_name || '').toLowerCase() !== expectedBaseRepo
+              ) {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'action_required');
+                core.setOutput(
+                  'summary',
+                  `PR #${pullNumber} targets ${pr.base.repo?.full_name || 'unknown'}/${pr.base.ref}; expected ${owner}/${repo}/main.`
+                );
+                return;
+              }
+              if (pr.head.sha !== expectedSha) {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'action_required');
+                core.setOutput(
+                  'summary',
+                  `PR #${pullNumber} head changed from ${expectedSha} to ${pr.head.sha}.`
+                );
+                return;
+              }
+              const { data: baseRef } = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: `heads/${pr.base.ref}`
+              });
+              const currentBaseSha = baseRef.object.sha;
+              const { data: comparison } = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: currentBaseSha,
+                head: expectedSha,
+                per_page: 1
+              });
+              const containsCurrentBase =
+                ['ahead', 'identical'].includes(comparison.status) &&
+                Number(comparison.behind_by) === 0 &&
+                comparison.merge_base_commit?.sha === currentBaseSha;
+              if (!containsCurrentBase) {
+                core.setOutput('ok', 'false');
+                core.setOutput('conclusion', 'action_required');
+                core.setOutput(
+                  'summary',
+                  `PR #${pullNumber} head ${expectedSha} does not contain current ${pr.base.ref} ${currentBaseSha}.`
+                );
+                return;
+              }
+
+              core.setOutput('ok', 'true');
+              core.setOutput('conclusion', 'success');
+              core.setOutput(
+                'summary',
+                `Authorized validation run ${run.id} attempt ${run.run_attempt}, job ${job.id}, head ${expectedSha}, base ${currentBaseSha}.`
+              );
               return;
             }
 
             core.setOutput('ok', 'false');
             core.setOutput('conclusion', 'action_required');
-            core.setOutput('summary', `${targetCheckName} did not complete within ${maxMinutes} minutes.`);
+            core.setOutput(
+              'summary',
+              `A successful ${targetJobName} job from a pull_request ${workflowFile} run did not complete within ${maxMinutes} minutes.`
+            );
         env:
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
           LOCAL_VALIDATION_CHECK_NAME: ${{ env.LOCAL_VALIDATION_CHECK_NAME }}
@@ -1053,6 +1539,141 @@ jobs:
           GCS_BUCKET_NAME: ${{ env.GCS_BUCKET_NAME }}
           GCS_SOURCE_STAGING_DIR: ${{ env.GCS_SOURCE_STAGING_DIR }}
 
+      - name: Revalidate PR authority after Cloud E2E
+        if: |
+          always() &&
+          steps.trigger_type.outputs.should_auto_trigger == 'true' &&
+          steps.security_release_version.outputs.committed != 'true' &&
+          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
+          steps.wait_validation.outputs.ok == 'true' &&
+          steps.have_secrets.outputs.ok == 'true' &&
+          steps.cloud_build.outputs.build_status == 'SUCCESS'
+        id: post_build_validation
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const expectedSha = process.env.EXPECTED_SHA;
+            const pullNumber = Number(process.env.PR_NUMBER);
+            const workflowFile = 'validation_pipeline.yml';
+            const workflowPath = '.github/workflows/validation_pipeline.yml';
+            const targetJobName = process.env.LOCAL_VALIDATION_CHECK_NAME;
+            const normalizePath = value => String(value || '').split('@', 1)[0];
+            const reject = summary => {
+              core.setOutput('ok', 'false');
+              core.setOutput('summary', summary);
+            };
+
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: workflowFile,
+              head_sha: expectedSha,
+              per_page: 100
+            });
+            const eligibleRuns = data.workflow_runs
+              .filter(run =>
+                run.head_sha === expectedSha &&
+                run.event === 'pull_request' &&
+                normalizePath(run.path) === workflowPath &&
+                (run.pull_requests || []).some(pr => Number(pr.number) === pullNumber)
+              )
+              .sort((a, b) => Number(b.id) - Number(a.id));
+            const run = eligibleRuns[0];
+
+            if (!run || run.status !== 'completed' || run.conclusion !== 'success') {
+              reject(
+                `Newest direct validation run is ${run?.status || 'not_found'}/${run?.conclusion || 'none'} for PR #${pullNumber} at ${expectedSha}.`
+              );
+              return;
+            }
+
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRun,
+              {
+                owner,
+                repo,
+                run_id: run.id,
+                filter: 'latest',
+                per_page: 100
+              }
+            );
+            const matchingJobs = jobs.filter(job =>
+              job.name === targetJobName &&
+              Number(job.run_id) === Number(run.id) &&
+              Number(job.run_attempt) === Number(run.run_attempt) &&
+              job.head_sha === expectedSha
+            );
+            const job = matchingJobs[0];
+            if (
+              matchingJobs.length !== 1 ||
+              job.status !== 'completed' ||
+              job.conclusion !== 'success'
+            ) {
+              reject(
+                `Expected one successful ${targetJobName} job in validation run ${run.id} attempt ${run.run_attempt}; found ${matchingJobs.length}.`
+              );
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber
+            });
+            const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
+            if (
+              pr.base.ref !== 'main' ||
+              String(pr.base.repo?.full_name || '').toLowerCase() !== expectedBaseRepo
+            ) {
+              reject(
+                `PR #${pullNumber} targets ${pr.base.repo?.full_name || 'unknown'}/${pr.base.ref}; expected ${owner}/${repo}/main.`
+              );
+              return;
+            }
+            if (pr.state !== 'open' || pr.head.sha !== expectedSha) {
+              reject(
+                `PR #${pullNumber} is ${pr.state} with head ${pr.head.sha}; expected an open PR at ${expectedSha}.`
+              );
+              return;
+            }
+
+            const { data: baseRef } = await github.rest.git.getRef({
+              owner,
+              repo,
+              ref: `heads/${pr.base.ref}`
+            });
+            const currentBaseSha = baseRef.object.sha;
+            const { data: comparison } = await github.rest.repos.compareCommits({
+              owner,
+              repo,
+              base: currentBaseSha,
+              head: expectedSha,
+              per_page: 1
+            });
+            const containsCurrentBase =
+              ['ahead', 'identical'].includes(comparison.status) &&
+              Number(comparison.behind_by) === 0 &&
+              comparison.merge_base_commit?.sha === currentBaseSha;
+            if (!containsCurrentBase) {
+              reject(
+                `PR #${pullNumber} head ${expectedSha} does not contain current ${pr.base.ref} ${currentBaseSha}.`
+              );
+              return;
+            }
+
+            core.setOutput('ok', 'true');
+            core.setOutput(
+              'summary',
+              `Revalidated run ${run.id} attempt ${run.run_attempt}, job ${job.id}, head ${expectedSha}, base ${currentBaseSha}.`
+            );
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          LOCAL_VALIDATION_CHECK_NAME: ${{ env.LOCAL_VALIDATION_CHECK_NAME }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
       - name: Generate App Token for Cloud E2E Finalization
         if: |
           always() &&
@@ -1088,18 +1709,24 @@ jobs:
             const repo = context.repo.repo;
             const checkRunId = Number('${{ steps.create_run_check.outputs.check_run_id }}') || 0;
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
-            const buildStatus = '${{ steps.cloud_build.outputs.build_status }}'.toUpperCase();
+            const buildStatus = process.env.BUILD_STATUS.toUpperCase();
+            const postBuildAuthorized = process.env.POST_BUILD_VALIDATION_OK === 'true';
             const detailsUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             let conclusion = 'failure';
-            if (buildStatus === 'SUCCESS') {
+            if (buildStatus === 'SUCCESS' && postBuildAuthorized) {
               conclusion = 'success';
+            } else if (buildStatus === 'SUCCESS') {
+              conclusion = 'action_required';
             } else if (buildStatus === 'CANCELLED' || buildStatus === 'TIMEOUT') {
               conclusion = 'cancelled';
             }
 
             const summaryLines = [
               `Google Cloud Build E2E run \`${runId}\` finished: **${buildStatus || 'UNKNOWN'}**.`,
+              buildStatus === 'SUCCESS' && !postBuildAuthorized
+                ? process.env.POST_BUILD_VALIDATION_SUMMARY || 'Post-build PR validation did not authorize this result.'
+                : '',
               'Maintainers can inspect internal Cloud Build logs and artifacts from Google Cloud.'
             ].filter(Boolean);
 
@@ -1120,7 +1747,10 @@ jobs:
 
             core.setOutput('ok', conclusion === 'success' ? 'true' : 'false');
         env:
+          BUILD_STATUS: ${{ steps.cloud_build.outputs.build_status }}
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
+          POST_BUILD_VALIDATION_OK: ${{ steps.post_build_validation.outputs.ok }}
+          POST_BUILD_VALIDATION_SUMMARY: ${{ steps.post_build_validation.outputs.summary }}
 
       - name: Fail workflow when Cloud E2E failed
         if: |
@@ -1193,6 +1823,17 @@ jobs:
                 return;
               }
 
+              const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
+              if (
+                pr.base.ref !== 'main' ||
+                String(pr.base.repo?.full_name || '').toLowerCase() !== expectedBaseRepo
+              ) {
+                core.setFailed(
+                  `PR #${pull_number} targets ${pr.base.repo?.full_name || 'unknown'}/${pr.base.ref}; expected ${owner}/${repo}/main.`
+                );
+                return;
+              }
+
               if (pr.draft) {
                 core.setFailed(`PR #${pull_number} is a draft; refusing automated security-floor merge.`);
                 return;
@@ -1205,6 +1846,30 @@ jobs:
 
               if (pr.mergeable === false) {
                 core.setFailed(`PR #${pull_number} is not mergeable. mergeable_state=${pr.mergeable_state || 'unknown'}`);
+                return;
+              }
+
+              const { data: baseRef } = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: `heads/${pr.base.ref}`
+              });
+              const currentBaseSha = baseRef.object.sha;
+              const { data: comparison } = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: currentBaseSha,
+                head: expectedSha,
+                per_page: 1
+              });
+              const containsCurrentBase =
+                ['ahead', 'identical'].includes(comparison.status) &&
+                Number(comparison.behind_by) === 0 &&
+                comparison.merge_base_commit?.sha === currentBaseSha;
+              if (!containsCurrentBase) {
+                core.setFailed(
+                  `PR #${pull_number} head ${expectedSha} does not contain current ${pr.base.ref} ${currentBaseSha}; refusing automated merge.`
+                );
                 return;
               }
 
@@ -1231,7 +1896,7 @@ jobs:
           steps.app_token_secrets.outputs.available == 'true' &&
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.security_release_version.outputs.committed != 'true' &&
-          (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
+          (steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
           steps.wait_validation.outputs.ok == 'true'
         id: no_cloud_finalize_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
@@ -1245,7 +1910,7 @@ jobs:
       - name: Finalize stable E2E check for updates that do not require cloud E2E
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
-          (steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
+          (steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
           steps.wait_validation.outputs.ok == 'true'
         id: finalize_no_cloud
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
@@ -1260,6 +1925,8 @@ jobs:
             let summary = 'Local validation policy succeeded, so cloud E2E was skipped by policy.';
             if (mode === 'ci_only') {
               summary = 'PR touched only CI files and no go.mod/go.sum files. Local validation policy succeeded, so cloud E2E was skipped by policy.';
+            } else if (mode === 'ci_tools') {
+              summary = 'The updated CI tools executed successfully during local validation, so cloud E2E was skipped by policy.';
             } else if (mode === 'automation_config_only') {
               summary = 'PR touched only Renovate configuration. Local validation policy succeeded, so cloud E2E was skipped by policy.';
             } else if (mode === 'examples_dependency') {
