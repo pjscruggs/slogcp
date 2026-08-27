@@ -27,8 +27,13 @@ jobs:
     name: Manually Trigger E2E Tests
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    concurrency:
+      group: e2e-gate-${{ inputs.mode == 'pr' && inputs.pr_number || 'main-latest' }}
+      cancel-in-progress: false
     env:
       CHECK_RUN_NAME: E2E Tests (GCP)
+      DISPATCH_MODE: ${{ inputs.mode }}
+      DISPATCH_PR_NUMBER: ${{ inputs.pr_number }}
       LOCAL_VALIDATION_CHECK_NAME: Local Validation Ready for E2E
       GCS_BUCKET_NAME: ${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}
       GCS_SOURCE_STAGING_DIR: gs://${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}/cloudbuild/source
@@ -74,32 +79,58 @@ jobs:
             core.info(`✅ Authorized maintainer: ${actor} (${permission})`);
 
       - name: Validate Inputs
+        shell: bash
         run: |
-          if [[ "${{ github.event.inputs.mode }}" == "pr" && \
-                -z "${{ github.event.inputs.pr_number }}" ]]; then
-            echo "pr_number is required when mode=pr"
-            exit 1
-          fi
+          case "$DISPATCH_MODE" in
+            pr)
+              if [[ ! "$DISPATCH_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+                echo "pr_number must be a positive integer when mode=pr" >&2
+                exit 1
+              fi
+              ;;
+            main_latest)
+              if [[ -n "$DISPATCH_PR_NUMBER" ]]; then
+                echo "pr_number must be empty when mode=main_latest" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "mode must be pr or main_latest" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Get PR Information
-        if: ${{ github.event.inputs.mode == 'pr' }}
+        if: ${{ inputs.mode == 'pr' }}
         id: pr_info
         # actions/github-script v8 (pinned)
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
           script: |
+            const rawPullNumber = process.env.PR_NUMBER || '';
+            if (!/^[1-9][0-9]*$/.test(rawPullNumber)) {
+              core.setFailed('pr_number must be a positive integer.');
+              return;
+            }
+            const pullNumber = Number(rawPullNumber);
+            if (!Number.isSafeInteger(pullNumber)) {
+              core.setFailed('pr_number exceeds the supported integer range.');
+              return;
+            }
             const pr = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: ${{ github.event.inputs.pr_number }}
+              pull_number: pullNumber
             });
             core.setOutput('head_sha', pr.data.head.sha);
             core.setOutput('head_ref', pr.data.head.ref);
             core.setOutput('author', pr.data.user.login);
             return pr.data;
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
 
       - name: Resolve latest main SHA
-        if: ${{ github.event.inputs.mode == 'main_latest' }}
+        if: ${{ inputs.mode == 'main_latest' }}
         id: main_sha
         # actions/github-script v8 (pinned)
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
@@ -114,17 +145,21 @@ jobs:
 
       - name: Select Target SHA
         id: target
+        shell: bash
         run: |
-          if [ "${{ github.event.inputs.mode }}" = "main_latest" ]; then
-            head_sha="${{ steps.main_sha.outputs.sha }}"
+          if [ "$DISPATCH_MODE" = "main_latest" ]; then
+            head_sha="$MAIN_HEAD_SHA"
             pr_number=''
           else
-            head_sha="${{ steps.pr_info.outputs.head_sha }}"
-            pr_number="${{ github.event.inputs.pr_number }}"
+            head_sha="$PR_HEAD_SHA"
+            pr_number="$DISPATCH_PR_NUMBER"
           fi
 
           printf 'head_sha=%s\n' "$head_sha" >>"$GITHUB_OUTPUT"
           printf 'pr_number=%s\n' "$pr_number" >>"$GITHUB_OUTPUT"
+        env:
+          MAIN_HEAD_SHA: ${{ steps.main_sha.outputs.sha }}
+          PR_HEAD_SHA: ${{ steps.pr_info.outputs.head_sha }}
 
       - name: Require successful local validation before manual PR E2E
         if: ${{ steps.target.outputs.pr_number != '' }}
@@ -136,8 +171,17 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const expectedSha = '${{ steps.target.outputs.head_sha }}';
-            const pullNumber = Number('${{ steps.target.outputs.pr_number }}');
+            const expectedSha = process.env.EXPECTED_SHA;
+            const rawPullNumber = process.env.PR_NUMBER || '';
+            if (!/^[1-9][0-9]*$/.test(rawPullNumber)) {
+              core.setFailed('Sanitized pr_number output is invalid.');
+              return;
+            }
+            const pullNumber = Number(rawPullNumber);
+            if (!Number.isSafeInteger(pullNumber)) {
+              core.setFailed('Sanitized pr_number output exceeds the supported integer range.');
+              return;
+            }
             const workflowFile = 'validation_pipeline.yml';
             const workflowPath = '.github/workflows/validation_pipeline.yml';
             const targetJobName = process.env.LOCAL_VALIDATION_CHECK_NAME;
@@ -206,6 +250,10 @@ jobs:
               repo,
               pull_number: pullNumber
             });
+            if (pr.state !== 'open') {
+              core.setFailed(`PR #${pullNumber} is ${pr.state}; expected an open PR.`);
+              return;
+            }
             const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
             if (
               pr.base.ref !== 'main' ||
@@ -249,7 +297,9 @@ jobs:
             );
             core.setOutput('ok', 'true');
         env:
+          EXPECTED_SHA: ${{ steps.target.outputs.head_sha }}
           LOCAL_VALIDATION_CHECK_NAME: ${{ env.LOCAL_VALIDATION_CHECK_NAME }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
 
       - name: Generate E2E Run ID
         id: run_id
@@ -290,9 +340,9 @@ jobs:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
             const checkName = process.env.CHECK_RUN_NAME;
-            const sha = '${{ steps.target.outputs.head_sha }}';
-            const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
-            const existing = '${{ steps.target.outputs.pr_number }}'
+            const sha = process.env.EXPECTED_SHA;
+            const runId = process.env.E2E_RUN_ID;
+            const existing = process.env.PR_NUMBER
               ? (await github.rest.checks.listForRef({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
@@ -337,6 +387,9 @@ jobs:
             core.setOutput('check_run_id', checkRun.id);
         env:
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
+          E2E_RUN_ID: ${{ steps.run_id.outputs.e2e_run_id }}
+          EXPECTED_SHA: ${{ steps.target.outputs.head_sha }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
 
       - name: Authenticate to Google Cloud
         if: ${{ steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true' }}
@@ -526,6 +579,12 @@ jobs:
           github-token: ${{ steps.final_app_token.outputs.token }}
           script: |
             const buildStatus = process.env.BUILD_STATUS.toUpperCase();
+            const checkRunId = Number(process.env.CHECK_RUN_ID);
+            const e2eRunId = process.env.E2E_RUN_ID;
+            if (!Number.isSafeInteger(checkRunId) || checkRunId <= 0 || !e2eRunId) {
+              core.setFailed('E2E finalization identifiers are invalid.');
+              return;
+            }
             const isPullRequest = process.env.PR_NUMBER !== '';
             const postBuildAuthorized =
               !isPullRequest || process.env.POST_BUILD_VALIDATION_OK === 'true';
@@ -551,9 +610,9 @@ jobs:
             await github.rest.checks.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              check_run_id: Number('${{ steps.create_check.outputs.check_run_id }}'),
+              check_run_id: checkRunId,
               details_url: detailsUrl,
-              external_id: '${{ steps.run_id.outputs.e2e_run_id }}',
+              external_id: e2eRunId,
               status: 'completed',
               conclusion,
               completed_at: new Date().toISOString(),
@@ -566,13 +625,17 @@ jobs:
             core.setOutput('ok', conclusion === 'success' ? 'true' : 'false');
         env:
           BUILD_STATUS: ${{ steps.cloud_build.outputs.build_status }}
+          CHECK_RUN_ID: ${{ steps.create_check.outputs.check_run_id }}
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
+          E2E_RUN_ID: ${{ steps.run_id.outputs.e2e_run_id }}
           POST_BUILD_VALIDATION_OK: ${{ steps.post_build_validation.outputs.ok }}
           POST_BUILD_VALIDATION_SUMMARY: ${{ steps.post_build_validation.outputs.summary }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
 
       - name: Fail workflow when E2E failed
         if: ${{ always() && (steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true') && steps.finalize_check.outputs.ok != 'true' }}
+        env:
+          BUILD_STATUS: ${{ steps.cloud_build.outputs.build_status }}
         run: |
-          echo "E2E build status: ${{ steps.cloud_build.outputs.build_status }}"
+          echo "E2E build status: $BUILD_STATUS"
           exit 1
