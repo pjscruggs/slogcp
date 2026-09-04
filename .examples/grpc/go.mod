@@ -3,8 +3,8 @@ module github.com/pjscruggs/slogcp/examples/grpc
 go 1.26.7
 
 require (
-	google.golang.org/grpc v1.83.1
-	google.golang.org/grpc/examples v0.0.0-20260821081038-ef79129ecf05
+	google.golang.org/grpc v1.83.2
+	google.golang.org/grpc/examples v0.0.0-20260904081815-298389d61dd6
 )
 
 require github.com/pjscruggs/slogcp v0.0.0-unpublished
