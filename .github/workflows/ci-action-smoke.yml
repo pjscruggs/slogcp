@@ -1,0 +1,119 @@
+name: CI Action Smoke Tests
+
+on:
+  workflow_call:
+    outputs:
+      validation_passed:
+        description: The candidate action binaries completed their local protocol smoke tests.
+        value: ${{ jobs.smoke.outputs.validation_passed }}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Exercise CI Actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      validation_passed: ${{ steps.policy.outputs.validation_passed }}
+    env:
+      CLOUDSDK_CORE_DISABLE_PROMPTS: "1"
+    steps:
+      - name: Checkout Candidate
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          persist-credentials: false
+
+      - name: Isolate Cloud SDK Configuration
+        run: echo "CLOUDSDK_CONFIG=$RUNNER_TEMP/action-smoke-gcloud" >> "$GITHUB_ENV"
+
+      - name: Install Cloud SDK Without Credentials
+        id: gcloud_setup
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Exercise Installed Cloud SDK
+        id: gcloud_smoke
+        run: |
+          set -euo pipefail
+          gcloud --project=ci-action-smoke version
+          gcloud --project=ci-action-smoke builds submit --help >/dev/null
+
+      - name: Start Local Protocol Fixtures
+        id: fixture
+        run: |
+          set -euo pipefail
+          fixture_dir="$RUNNER_TEMP/action-smoke"
+          python .github/scripts/action_smoke_server.py serve --directory "$fixture_dir" > "$RUNNER_TEMP/action-smoke.log" 2>&1 &
+          for attempt in {1..100}; do
+            [[ -f "$fixture_dir/fixture.json" ]] && break
+            sleep 0.1
+          done
+          test -f "$fixture_dir/fixture.json"
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' "$fixture_dir/fixture.json" >> "$GITHUB_OUTPUT"
+          delimiter="$(openssl rand -hex 16)"
+          printf 'private_key<<%s\n' "$delimiter" >> "$GITHUB_OUTPUT"
+          cat "$(jq -r .private_key_path "$fixture_dir/fixture.json")" >> "$GITHUB_OUTPUT"
+          printf '\n%s\n' "$delimiter" >> "$GITHUB_OUTPUT"
+
+      - name: Exercise App Token Creation
+        id: app_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ steps.fixture.outputs.app_id }}
+          private-key: ${{ steps.fixture.outputs.private_key }}
+          owner: ${{ steps.fixture.outputs.owner }}
+          repositories: ${{ steps.fixture.outputs.repository }}
+          github-api-url: ${{ steps.fixture.outputs.base_url }}
+          permission-contents: read
+          skip-token-revoke: true
+
+      - name: Exercise Workload Identity And Access Token Exchange
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ steps.fixture.outputs.base_url }}/oidc?fixture=1
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ steps.fixture.outputs.oidc_request_token }}
+          GHA_ENDPOINT_OVERRIDE_sts: ${{ steps.fixture.outputs.base_url }}/sts/v1
+          GHA_ENDPOINT_OVERRIDE_iamcredentials: ${{ steps.fixture.outputs.base_url }}/iamcredentials/v1
+        with:
+          project_id: ${{ steps.fixture.outputs.project_id }}
+          workload_identity_provider: ${{ steps.fixture.outputs.provider }}
+          service_account: ${{ steps.fixture.outputs.service_account }}
+          token_format: access_token
+          create_credentials_file: true
+          export_environment_variables: false
+
+      - name: Verify Action Results And Protocol Requests
+        id: verify
+        env:
+          APP_TOKEN: ${{ steps.app_token.outputs.token }}
+          AUTH_TOKEN: ${{ steps.auth.outputs.auth_token }}
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          CREDENTIALS_FILE: ${{ steps.auth.outputs.credentials_file_path }}
+        run: |
+          python .github/scripts/action_smoke_server.py verify --directory "$RUNNER_TEMP/action-smoke" \
+            --credentials-file "$CREDENTIALS_FILE" --app-token "$APP_TOKEN" \
+            --auth-token "$AUTH_TOKEN" --access-token "$ACCESS_TOKEN"
+
+      - name: Stop Local Protocol Fixtures
+        id: cleanup
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/action-smoke/fixture.json" ]]; then
+            python .github/scripts/action_smoke_server.py stop --directory "$RUNNER_TEMP/action-smoke"
+          fi
+
+      - name: Require Successful Action Execution
+        id: policy
+        if: always()
+        env:
+          RESULTS: ${{ steps.gcloud_setup.outcome }} ${{ steps.gcloud_smoke.outcome }} ${{ steps.fixture.outcome }} ${{ steps.app_token.outcome }} ${{ steps.auth.outcome }} ${{ steps.verify.outcome }} ${{ steps.cleanup.outcome }}
+        run: |
+          set -euo pipefail
+          read -r -a results <<< "$RESULTS"
+          test "${#results[@]}" = 7
+          for result in "${results[@]}"; do test "$result" = success; done
+          echo "validation_passed=true" >> "$GITHUB_OUTPUT"
