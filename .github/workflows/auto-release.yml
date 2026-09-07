@@ -3,10 +3,11 @@ name: Auto Release
 on:
   push:
     branches: [ main ]
+    paths: [ version.go ]
   workflow_dispatch:
     inputs:
       version:
-        description: Optional explicit release version, for example v1.2.5.
+        description: Optional release version; must match this mainline Version transition.
         required: false
         type: string
 
@@ -14,105 +15,78 @@ permissions:
   contents: read
 
 concurrency:
-  group: auto-release-${{ github.ref }}
+  group: auto-release-main
   cancel-in-progress: false
+  queue: max
 
 jobs:
-  release:
-    name: Create Signed Tag And Release
+  release_intent:
+    name: Detect Release Intent
     runs-on: ubuntu-latest
-    environment: release-tags
+    outputs:
+      should_release: ${{ steps.intent.outputs.should_release }}
+      version: ${{ steps.intent.outputs.version }}
     steps:
-      - name: Checkout Code
+      - name: Checkout Release Source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Test Release Policy
+        run: python -B -m unittest discover -s .github/scripts -p 'test_release_*.py' -v
+
       - name: Detect Release Intent
-        id: release_intent
-        shell: bash
+        id: intent
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BEFORE_SHA: ${{ github.event.before }}
           INPUT_VERSION: ${{ inputs.version }}
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
+        run: python .github/scripts/release_policy.py plan
 
-          should_release=false
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            should_release=true
-          elif [[ -n "$BEFORE_SHA" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
-            if ! git diff --quiet "$BEFORE_SHA" "$GITHUB_SHA" -- version.go; then
-              should_release=true
-            fi
-          fi
+  release_preflight:
+    name: Validate Release Commit
+    needs: release_intent
+    if: needs.release_intent.outputs.should_release == 'true'
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+      id-token: write
+    uses: ./.github/workflows/validation_pipeline.yml
 
-          if [[ "$should_release" != "true" ]]; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "No release intent detected."
-            exit 0
-          fi
-
-          file_version="$(sed -nE 's/^var Version = "(v[0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' version.go | head -n 1)"
-          if [[ -z "$file_version" ]]; then
-            echo "Unable to parse Version from version.go" >&2
-            exit 1
-          fi
-
-          version="$file_version"
-          if [[ -n "${INPUT_VERSION:-}" ]]; then
-            version="$INPUT_VERSION"
-          fi
-
-          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release version must match vMAJOR.MINOR.PATCH, got: $version" >&2
-            exit 1
-          fi
-
-          if [[ "$version" != "$file_version" ]]; then
-            echo "Requested release version $version does not match version.go $file_version" >&2
-            exit 1
-          fi
-
-          if gh api "repos/${REPOSITORY}/git/ref/tags/${version}" >/dev/null 2>&1; then
-            echo "Release tag already exists: $version" >&2
-            exit 1
-          fi
-
-          echo "should_release=true" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Verify Release Configuration
-        if: steps.release_intent.outputs.should_release == 'true'
-        shell: bash
+  release:
+    name: Create Signed Tag And Release
+    needs: [ release_intent, release_preflight ]
+    if: always() && needs.release_intent.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    environment: release-tags
+    env:
+      VERSION: ${{ needs.release_intent.outputs.version }}
+    steps:
+      - name: Require Successful Release Validation
         env:
-          RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID || secrets.E2E_APP_ID }}
-          RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY || secrets.E2E_APP_PRIVATE_KEY }}
-          RELEASE_SSH_PRIVATE_KEY_B64: ${{ secrets.RELEASE_SSH_PRIVATE_KEY_B64 }}
-          RELEASE_SSH_PUBLIC_KEY: ${{ secrets.RELEASE_SSH_PUBLIC_KEY }}
-          RELEASE_SIGNER_EMAIL: ${{ vars.RELEASE_SIGNER_EMAIL }}
-          RELEASE_SIGNER_NAME: ${{ vars.RELEASE_SIGNER_NAME }}
+          VALIDATION_RESULT: ${{ needs.release_preflight.result }}
+          VALIDATION_PASSED: ${{ needs.release_preflight.outputs.validation_passed }}
         run: |
           set -euo pipefail
+          test "$VALIDATION_RESULT" = success
+          test "$VALIDATION_PASSED" = true
 
-          missing=()
-          [[ -n "${RELEASE_APP_ID:-}" ]] || missing+=("RELEASE_APP_ID or E2E_APP_ID")
-          [[ -n "${RELEASE_APP_PRIVATE_KEY:-}" ]] || missing+=("RELEASE_APP_PRIVATE_KEY or E2E_APP_PRIVATE_KEY")
-          [[ -n "${RELEASE_SSH_PRIVATE_KEY_B64:-}" ]] || missing+=("RELEASE_SSH_PRIVATE_KEY_B64")
-          [[ -n "${RELEASE_SSH_PUBLIC_KEY:-}" ]] || missing+=("RELEASE_SSH_PUBLIC_KEY")
-          [[ -n "${RELEASE_SIGNER_EMAIL:-}" ]] || missing+=("RELEASE_SIGNER_EMAIL")
-          [[ -n "${RELEASE_SIGNER_NAME:-}" ]] || missing+=("RELEASE_SIGNER_NAME")
+      - name: Checkout Validated Commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
-          if (( ${#missing[@]} > 0 )); then
-            printf 'Missing release configuration: %s\n' "${missing[*]}" >&2
-            exit 1
-          fi
+      - name: Check Existing Tag
+        id: tag_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/release_policy.py tag-state
 
       - name: Generate Release App Token
-        if: steps.release_intent.outputs.should_release == 'true'
         id: release_app_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
@@ -123,7 +97,7 @@ jobs:
           permission-contents: write
 
       - name: Configure SSH Tag Signing
-        if: steps.release_intent.outputs.should_release == 'true'
+        if: steps.tag_state.outputs.tag_exists != 'true'
         id: signing
         shell: bash
         env:
@@ -133,164 +107,68 @@ jobs:
           RELEASE_SSH_PUBLIC_KEY: ${{ secrets.RELEASE_SSH_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-
+          : "${RELEASE_SIGNER_EMAIL:?Missing signing identity}"
+          : "${RELEASE_SIGNER_NAME:?Missing signing name}"
+          : "${RELEASE_SSH_PRIVATE_KEY_B64:?Missing signing key}"
+          : "${RELEASE_SSH_PUBLIC_KEY:?Missing signing public key}"
+          umask 077
           key_file="$RUNNER_TEMP/release_signing_key"
-          public_key_file="${key_file}.pub"
-          allowed_signers="$RUNNER_TEMP/allowed_signers"
-
           printf '%s' "$RELEASE_SSH_PRIVATE_KEY_B64" | base64 -d > "$key_file"
-          printf '%s\n' "$RELEASE_SSH_PUBLIC_KEY" > "$public_key_file"
-          chmod 600 "$key_file"
+          printf '%s\n' "$RELEASE_SSH_PUBLIC_KEY" > "${key_file}.pub"
           ssh-keygen -y -f "$key_file" >/dev/null
-
-          printf '%s %s\n' "$RELEASE_SIGNER_EMAIL" "$RELEASE_SSH_PUBLIC_KEY" > "$allowed_signers"
-
+          printf '%s %s\n' "$RELEASE_SIGNER_EMAIL" "$RELEASE_SSH_PUBLIC_KEY" > "$RUNNER_TEMP/release_allowed_signers"
           git config user.name "$RELEASE_SIGNER_NAME"
           git config user.email "$RELEASE_SIGNER_EMAIL"
           git config gpg.format ssh
           git config user.signingkey "$key_file"
-          git config gpg.ssh.allowedSignersFile "$allowed_signers"
+          git config gpg.ssh.allowedSignersFile "$RUNNER_TEMP/release_allowed_signers"
           git config tag.gpgSign true
 
-          echo "key_file=$key_file" >> "$GITHUB_OUTPUT"
-          echo "public_key_file=$public_key_file" >> "$GITHUB_OUTPUT"
-          echo "allowed_signers=$allowed_signers" >> "$GITHUB_OUTPUT"
-
-      - name: Create Signed Annotated Tag
-        if: steps.release_intent.outputs.should_release == 'true'
+      - name: Create And Push Signed Tag
+        if: steps.tag_state.outputs.tag_exists != 'true'
         shell: bash
         env:
-          VERSION: ${{ steps.release_intent.outputs.version }}
+          GH_TOKEN: ${{ steps.release_app_token.outputs.token }}
         run: |
           set -euo pipefail
-
-          git tag -s "$VERSION" -m "Release $VERSION"
+          git tag -s "$VERSION" "$GITHUB_SHA" -m "Release $VERSION"
           git tag -v "$VERSION"
-
-      - name: Push Release Tag
-        if: steps.release_intent.outputs.should_release == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.release_app_token.outputs.token }}
-          VERSION: ${{ steps.release_intent.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          gh api "repos/${GITHUB_REPOSITORY}" --jq .full_name >/dev/null
           gh auth setup-git
-          git push "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/$VERSION"
-
-      - name: Remove Signing Key Material
-        if: always() && steps.signing.outcome == 'success'
-        shell: bash
-        env:
-          KEY_FILE: ${{ steps.signing.outputs.key_file }}
-          PUBLIC_KEY_FILE: ${{ steps.signing.outputs.public_key_file }}
-          ALLOWED_SIGNERS: ${{ steps.signing.outputs.allowed_signers }}
-        run: |
-          set -euo pipefail
-
-          rm -f "$KEY_FILE" "$PUBLIC_KEY_FILE" "$ALLOWED_SIGNERS"
-
-      - name: Confirm GitHub Verified The Tag
-        if: steps.release_intent.outputs.should_release == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.release_app_token.outputs.token }}
-          VERSION: ${{ steps.release_intent.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}")"
-          ref_type="$(jq -r '.object.type' <<<"$ref_json")"
-          tag_sha="$(jq -r '.object.sha' <<<"$ref_json")"
-
-          if [[ "$ref_type" != "tag" ]]; then
-            echo "Release tag must be an annotated tag object, got ref object type: $ref_type" >&2
-            exit 1
-          fi
-
-          tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}")"
-          object_type="$(jq -r '.object.type' <<<"$tag_json")"
-          commit_sha="$(jq -r '.object.sha' <<<"$tag_json")"
-          verified="$(jq -r '.verification.verified' <<<"$tag_json")"
-          reason="$(jq -r '.verification.reason' <<<"$tag_json")"
-
-          if [[ "$object_type" != "commit" ]]; then
-            echo "Release tag must point to a commit, got object type: $object_type" >&2
-            exit 1
-          fi
-
-          if [[ "$commit_sha" != "$GITHUB_SHA" ]]; then
-            echo "Release tag points at $commit_sha, expected $GITHUB_SHA" >&2
-            exit 1
-          fi
-
-          if [[ "$verified" != "true" || "$reason" != "valid" ]]; then
-            echo "GitHub does not consider tag verified: verified=$verified reason=$reason" >&2
-            exit 1
-          fi
-
-      - name: Determine Go Version
-        if: steps.release_intent.outputs.should_release == 'true' && github.event.repository.private == false
-        id: go-version
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          go_version="$(awk '$1 == "go" {print $2; exit}' go.mod)"
-          if [[ -z "$go_version" ]]; then
-            echo "Unable to determine Go version from go.mod" >&2
-            exit 1
-          fi
-
-          GO_VERSION="$go_version" python3 .github/scripts/resolve_go_version.py
-
-      - name: Set Up Go
-        if: steps.release_intent.outputs.should_release == 'true' && github.event.repository.private == false
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
-        with:
-          go-version: ${{ steps.go-version.outputs.version }}
-          cache: false
-
-      - name: Request Go Proxy Indexing
-        if: steps.release_intent.outputs.should_release == 'true' && github.event.repository.private == false
-        shell: bash
-        env:
-          VERSION: ${{ steps.release_intent.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          module_path="$(awk '$1 == "module" {print $2; exit}' go.mod)"
-          if [[ -z "$module_path" ]]; then
-            echo "Unable to determine module path from go.mod" >&2
-            exit 1
-          fi
-
-          for attempt in {1..12}; do
-            if GOPROXY=proxy.golang.org go list -m "${module_path}@${VERSION}"; then
+          for attempt in 1 2 3; do
+            if git push "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/$VERSION"; then
               exit 0
             fi
-
-            echo "Go proxy has not resolved ${VERSION} yet; retrying (${attempt}/12)."
-            sleep 10
+            if python .github/scripts/release_policy.py verify-tag; then
+              exit 0
+            fi
+            sleep "$attempt"
           done
-
-          echo "Go proxy did not resolve ${VERSION} after retries." >&2
           exit 1
 
-      - name: Create GitHub Release
-        if: steps.release_intent.outputs.should_release == 'true'
+      - name: Remove Signing Key Material
+        if: always() && steps.tag_state.outputs.tag_exists != 'true'
         shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/release_signing_key" "$RUNNER_TEMP/release_signing_key.pub" "$RUNNER_TEMP/release_allowed_signers"
+
+      - name: Verify Tag And Publish Or Resume Release
         env:
           GH_TOKEN: ${{ steps.release_app_token.outputs.token }}
-          VERSION: ${{ steps.release_intent.outputs.version }}
+        run: python .github/scripts/release_policy.py publish
+
+      - name: Request Go Proxy Indexing
+        if: github.event.repository.private == false
+        continue-on-error: true
+        shell: bash
         run: |
           set -euo pipefail
-
-          gh release create "$VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --generate-notes \
-            --title "$VERSION" \
-            --fail-on-no-commits
+          module_path="$(awk '$1 == "module" {print $2; exit}' go.mod)"
+          [[ -n "$module_path" ]]
+          for attempt in 1 2 3; do
+            if curl --fail --silent --show-error --max-time 30 \
+              "https://proxy.golang.org/${module_path}/@v/${VERSION}.info" >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::Go proxy indexing is pending; the signed tag and GitHub release are complete."

@@ -48,10 +48,11 @@ jobs:
         shell: bash
         env:
           REUSABLE_WORKFLOW_RESULT: ${{ needs.latest_validation.result }}
+          VALIDATION_PASSED: ${{ needs.latest_validation.outputs.validation_passed }}
         run: |
           set -euo pipefail
 
-          if [[ "$REUSABLE_WORKFLOW_RESULT" != "success" ]]; then
+          if [[ "$REUSABLE_WORKFLOW_RESULT" != "success" || "$VALIDATION_PASSED" != "true" ]]; then
             echo "Reusable validation expected success, got: $REUSABLE_WORKFLOW_RESULT"
             exit 1
           fi
