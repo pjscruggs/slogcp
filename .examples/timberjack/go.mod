@@ -2,7 +2,7 @@ module github.com/pjscruggs/slogcp/examples/timberjack
 
 go 1.26.7
 
-require github.com/DeRuina/timberjack v1.4.6
+require github.com/DeRuina/timberjack v1.4.7
 
 require github.com/pjscruggs/slogcp v0.0.0-unpublished
 
