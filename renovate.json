@@ -2,12 +2,18 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
-    "config:semverAllWeekly",
     ":gomod",
-    ":noUnscheduledUpdates",
-    "helpers:pinGitHubActionDigests"
+    "helpers:pinGitHubActionDigests",
+    "security:gomodIndirectSecurityUpdates"
   ],
   "timezone": "America/Chicago",
+  "schedule": ["* * * * 1"],
+  "updateNotScheduled": true,
+  "rebaseWhen": "behind-base-branch",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["* * * * 1"]
+  },
   "platformAutomerge": false,
   "gitIgnoredAuthors": [
     "230059765+slogcp-e2e-orchestrator[bot]@users.noreply.github.com"
@@ -19,7 +25,7 @@
   },
   "osvVulnerabilityAlerts": true,
   "postUpdateOptions": [
-    "gomodTidy"
+    "gomodTidyAll"
   ],
   "packageRules": [
     {
@@ -46,13 +52,14 @@
       "enabled": false
     },
     {
-      "description": "1a. GitHub Actions updates run earlier and stay separate from executable CI tools",
+      "description": "GitHub Actions updates stay separate from executable CI tools",
       "matchManagers": ["github-actions"],
       "matchFileNames": [".github/**"],
-      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "groupName": "github actions",
       "labels": ["renovate:type1"],
-      "schedule": ["* 2 * * *"],
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
       "prPriority": 20
     },
     {
@@ -66,10 +73,12 @@
         "golang.org/x/vuln"
       ],
       "matchFileNames": [".github/tools/go.mod"],
-      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
+      "enabled": true,
       "groupName": "compiler-sensitive ci tools",
       "labels": ["renovate:type1"],
-      "schedule": ["* 2 * * *"],
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
       "prPriority": 25
     },
     {
@@ -80,10 +89,12 @@
         "github.com/apache/skywalking-eyes"
       ],
       "matchFileNames": [".github/tools/go.mod"],
-      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
+      "enabled": true,
       "groupName": "auxiliary ci tools",
       "labels": ["renovate:type1"],
-      "schedule": ["* 2 * * *"],
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
       "prPriority": 20
     },
     {
@@ -93,7 +104,6 @@
       "matchDepTypes": ["golang"],
       "matchDepNames": ["go"],
       "matchFileNames": [".github/tools/go.mod"],
-      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "enabled": false
     },
     {
@@ -101,39 +111,44 @@
       "matchManagers": ["gomod"],
       "matchDatasources": ["go"],
       "matchFileNames": [".github/tools/go.mod"],
-      "matchJsonata": ["$exists(vulnerabilityFixVersion)"],
+      "matchJsonata": ["isVulnerabilityAlert = true or $exists(vulnerabilityFixVersion)"],
       "dependencyDashboardApproval": false,
-      "automerge": false,
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "additionalBranchPrefix": "ci-tools-",
       "addLabels": ["renovate:type1"]
-    },
-    {
-      "description": "2. Go module updates run later and require local validation before cloud E2E",
-      "matchManagers": ["gomod"],
-      "matchFileNames": ["**/go.mod", "!.github/tools/go.mod"],
-      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
-      "labels": ["renovate:type2"],
-      "schedule": ["* 4 * * *"],
-      "prPriority": 10
     },
     {
       "description": "Do not propose routine root go.mod dependency floor updates",
       "matchManagers": ["gomod"],
       "matchFileNames": ["go.mod"],
-      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
+      "matchJsonata": ["$not(isVulnerabilityAlert = true or $exists(vulnerabilityFixVersion))"],
       "matchDatasources": ["go"],
-      "matchDepTypes": ["require"],
+      "matchDepTypes": ["require", "indirect"],
+      "matchUpdateTypes": ["major", "minor", "patch", "pin", "digest", "pinDigest", "lockFileMaintenance", "rollback", "replacement"],
       "enabled": false
     },
     {
       "description": "Security floor updates must not wait for normal root Dependency Dashboard approval",
       "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchDepTypes": ["require", "indirect"],
       "matchFileNames": ["go.mod"],
-      "matchJsonata": ["$exists(vulnerabilityFixVersion)"],
+      "matchJsonata": ["isVulnerabilityAlert = true or $exists(vulnerabilityFixVersion)"],
       "enabled": true,
       "dependencyDashboardApproval": false,
       "automerge": true,
       "automergeType": "pr",
       "automergeStrategy": "squash",
+      "additionalBranchPrefix": "root-security-",
+      "bumpVersions": [
+        {
+          "filePatterns": ["version.go"],
+          "matchStrings": ["(?:var|const) Version = \"v(?<version>\\d+\\.\\d+\\.\\d+)\""],
+          "bumpType": "patch"
+        }
+      ],
       "addLabels": ["security:floor", "renovate:type-security-floor"]
     },
     {
@@ -143,10 +158,10 @@
       "matchDepTypes": ["toolchain"],
       "matchDepNames": ["go"],
       "matchFileNames": ["go.mod"],
-      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "dependencyDashboardApproval": false,
       "automerge": true,
       "automergeType": "pr",
+      "automergeStrategy": "squash",
       "groupName": "root go toolchain",
       "labels": ["renovate:toolchain", "dependency-scope:toolchain"],
       "prPriority": 15
@@ -158,34 +173,40 @@
       "matchDepTypes": ["golang"],
       "matchDepNames": ["go"],
       "matchFileNames": [".examples/**/go.mod"],
-      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "rangeStrategy": "bump",
       "dependencyDashboardApproval": false,
       "automerge": true,
       "automergeType": "pr",
+      "automergeStrategy": "squash",
       "groupName": "examples go directives",
       "labels": ["renovate:examples", "dependency-scope:examples", "renovate:go-version"],
       "prPriority": 6
     },
     {
-      "description": "Routine latest-compatible updates for checked-in example modules",
+      "description": "Keep direct and indirect example dependencies on latest compatible versions",
       "matchManagers": ["gomod"],
       "matchDatasources": ["go"],
       "matchFileNames": [".examples/**/go.mod"],
-      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
+      "enabled": true,
       "groupName": "examples module dependencies",
       "labels": ["renovate:examples", "dependency-scope:examples"],
-      "schedule": ["* 3-6 * * *"],
       "automerge": true,
       "automergeType": "pr",
       "automergeStrategy": "squash",
       "prPriority": 5
     },
     {
+      "description": "Keep example security repairs separate from root and tooling repairs",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchFileNames": [".examples/**/go.mod"],
+      "matchJsonata": ["isVulnerabilityAlert = true or $exists(vulnerabilityFixVersion)"],
+      "additionalBranchPrefix": "examples-"
+    },
+    {
       "description": "Automerge Docker dependencies used by e2e tests after validation",
       "matchManagers": ["dockerfile"],
       "matchFileNames": [".e2e/**"],
-      "matchJsonata": ["$not($exists(vulnerabilityFixVersion))"],
       "groupName": "e2e docker dependencies",
       "labels": ["renovate:e2e", "dependency-scope:e2e"],
       "automerge": true,
