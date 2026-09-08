@@ -148,7 +148,7 @@ jobs:
       example_matrix: ${{ steps.plan.outputs.example_matrix }}
     steps:
       - name: Checkout validation source
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -304,7 +304,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Checkout validation source
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -313,7 +313,7 @@ jobs:
 
       - name: Set up root compatibility Go runtime
         id: setup-floor-go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ needs.go_validation_plan.outputs.root_floor_version }}
           check-latest: true
@@ -349,7 +349,7 @@ jobs:
       TOOLS_MODULE: ${{ github.workspace }}/.github/tools
     steps:
       - name: 🛒 Checkout Code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -359,7 +359,7 @@ jobs:
 
       - name: Set up CI tools compiler
         id: setup-tools-go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ needs.go_validation_plan.outputs.tools_version }}
           check-latest: true
@@ -377,7 +377,7 @@ jobs:
 
       - name: 🏗️ Set up Go
         id: setup-root-go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ needs.go_validation_plan.outputs.root_version }}
           check-latest: true
@@ -459,7 +459,7 @@ jobs:
 
       - name: ♻️ Restore Go toolchain (post-license-fix)
         id: restore-post-license-go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ needs.go_validation_plan.outputs.root_version }}
           check-latest: true
@@ -498,7 +498,7 @@ jobs:
 
       - name: ♻️ Restore Go toolchain (pre-tests)
         id: restore-pre-tests-go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ needs.go_validation_plan.outputs.root_version }}
           check-latest: true
@@ -557,7 +557,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - name: Checkout validation source
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -566,7 +566,7 @@ jobs:
 
       - name: Set up harness Go runtime
         id: setup-harness-go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ needs.go_validation_plan.outputs.root_version }}
           check-latest: true
@@ -629,7 +629,7 @@ jobs:
       TOOLS_MODULE: ${{ github.workspace }}/.github/tools
     steps:
       - name: Checkout validation source
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -638,7 +638,7 @@ jobs:
 
       - name: Set up CI tools compiler
         id: setup-tools-go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ needs.go_validation_plan.outputs.tools_version }}
           check-latest: true
@@ -656,7 +656,7 @@ jobs:
 
       - name: Set up example Go runtime
         id: setup-example-go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ matrix.go_version }}
           check-latest: true
@@ -1087,7 +1087,7 @@ jobs:
       - name: Checkout Workflow Repository
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true'
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -1096,7 +1096,7 @@ jobs:
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e')
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 1
           persist-credentials: false
