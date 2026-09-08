@@ -18,6 +18,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -97,14 +98,23 @@ class WorkflowPolicyTests(unittest.TestCase):
                 )
                 self.assertIn("CI tools compiler:", result.stdout)
 
-    def classify(self, files, *, actor="renovate[bot]", labels=(), same_repo=True):
+    def classify(
+        self,
+        files,
+        *,
+        actor="renovate[bot]",
+        labels=(),
+        same_repo=True,
+        title="Update dependency",
+        head_ref="renovate/update",
+    ):
         pr = {
             "number": 1,
             "user": {"login": actor},
-            "title": "Update dependency",
+            "title": title,
             "labels": [{"name": label} for label in labels],
             "head": {
-                "ref": "renovate/update",
+                "ref": head_ref,
                 "repo": {"full_name": "owner/repo" if same_repo else "fork/repo"},
             },
         }
@@ -136,6 +146,40 @@ await (async()=>{
             results[0], results[1], "Local and trusted-base classification disagree"
         )
         return results[0]
+
+    def test_target_gate_runs_only_for_candidate_events(self):
+        target = re.search(
+            r"(?ms)^  pull_request_target:\n(.*?)(?=^  \S|\Z)", WORKFLOW
+        )
+        self.assertIsNotNone(target)
+        types = re.search(r"(?m)^    types: \[([^\]]+)\]$", target[1])
+        self.assertIsNotNone(types)
+        self.assertCountEqual(
+            [value.strip() for value in types[1].split(",")],
+            ["opened", "reopened", "synchronize"],
+        )
+        for label_event in ("github.event.label", "context.payload.label"):
+            self.assertNotIn(label_event, WORKFLOW)
+        manual = (ROOT / ".github/workflows/manual-e2e-trigger.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("  workflow_dispatch:\n", manual)
+        self.assertNotIn("  pull_request_target:\n", manual)
+
+    def test_security_classification_does_not_wait_for_labels(self):
+        metadata = [{"filename": "go.mod"}, {"filename": "version.go"}]
+        for hint in (
+            {"title": "fix(deps): update module example.org/lib [SECURITY]"},
+            {"head_ref": "renovate/security-example.org-lib"},
+        ):
+            with self.subTest(hint=hint):
+                self.assertEqual(self.classify(metadata, **hint), "security_floor")
+                self.assertEqual(
+                    self.classify(metadata, actor="human", **hint), "normal"
+                )
+                self.assertEqual(
+                    self.classify(metadata, same_repo=False, **hint), "normal"
+                )
 
     def test_actual_classifiers_keep_module_scopes_separate(self):
         cases = [
