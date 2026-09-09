@@ -7,6 +7,7 @@ options:
 substitutions:
   _LIB_REPO_FULL_NAME: 'pjscruggs/slogcp'
   _PR_SHA: ''
+  _ADAPTER_SHA: ''
   _PR_NUMBER: ''
   _SHORT_SHA: ''
   _BUILD_TIME: '1970-01-01T00:00:00Z'
@@ -52,6 +53,13 @@ steps:
             exit 1
             ;;
         esac
+        if [[ -n "${_ADAPTER_SHA}" ]]; then
+          if [[ ! "${_ADAPTER_SHA}" =~ ^[0-9a-f]{40}$ ||
+                "${_E2E_SOURCE_MODE}" != local || "${_E2E_DEPENDENCY_MODE}" != floor ]]; then
+            echo "Explicit adapter validation requires a full SHA, local sources, and unchanged library dependencies." >&2
+            exit 1
+          fi
+        fi
         if [ -z "${_GCS_BUCKET_NAME}" ]; then
           echo "Error: _GCS_BUCKET_NAME is required" >&2
           exit 1
@@ -387,22 +395,55 @@ steps:
         RUN_ID="$$(cat /workspace/e2e_run_id.txt)"
         REPORT_PATH=/workspace/dependency-report.json
         REPORT_URI="gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA:-${_SHORT_SHA}}/$${RUN_ID}/dependency-report.json"
+        if [[ "${_E2E_SOURCE_MODE}" == local ]]; then
+          python3 - "${_PR_SHA}" "${_ADAPTER_SHA}" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+        identities = json.loads(Path('/workspace/source-identities.json').read_text())
+        if identities.get('root_commit') != sys.argv[1] or identities.get('adapter_commit') != sys.argv[2]:
+            raise SystemExit('Staged source identities do not match requested commits')
+        print('Source identities:', json.dumps(identities, sort_keys=True))
+        PY
+          gsutil -h 'x-goog-if-generation-match:0' cp /workspace/source-identities.json \
+            "gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA}/$${RUN_ID}/source-identities.json"
+        fi
+        ROOT_MODULES=(
+          --module-dir /workspace/build-context/core
+          --module-dir /workspace/build-context/trace-http
+          --module-dir /workspace/build-context/e2e-harness
+        )
+        if [[ -z "${_ADAPTER_SHA}" ]]; then
+          ROOT_MODULES+=(--module-dir /workspace/build-context/trace-target --module-dir /workspace/build-context/trace-grpc)
+        fi
         bash cloudbuild/build-tools/generate-and-upload-modules.sh \
           "$$REPORT_PATH" \
           "$$REPORT_URI" \
           -- \
           python3 scripts/generate_go_module.py \
-          --module-dir /workspace/build-context/core \
-          --module-dir /workspace/build-context/trace-target \
-          --module-dir /workspace/build-context/trace-http \
-          --module-dir /workspace/build-context/trace-grpc \
-          --module-dir /workspace/build-context/e2e-harness \
+          "$${ROOT_MODULES[@]}" \
           --go-version "$$GO_VERSION" \
           --slogcp-dir /workspace/lib-repo-checkout \
           --slogcp-reference "$$SLOGCP_REFERENCE" \
           --dependency-mode "${_E2E_DEPENDENCY_MODE}" \
           --slogcp-shared-parity-scope package \
           --emit-dependency-report "$$REPORT_PATH"
+        if [[ -n "${_ADAPTER_SHA}" ]]; then
+          COMBINED_REPORT=/workspace/combined-dependency-report.json
+          COMBINED_URI="gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA}/$${RUN_ID}/combined-dependency-report.json"
+          bash cloudbuild/build-tools/generate-and-upload-modules.sh \
+            "$$COMBINED_REPORT" "$$COMBINED_URI" -- \
+            python3 scripts/generate_go_module.py \
+            --graph-profile combined-candidate \
+            --adapter-dir /workspace/slogcp-grpc-adapter \
+            --module-dir /workspace/build-context/trace-target \
+            --module-dir /workspace/build-context/trace-grpc \
+            --go-version "$$GO_VERSION" \
+            --slogcp-dir /workspace/lib-repo-checkout \
+            --slogcp-reference "$$SLOGCP_REFERENCE" \
+            --dependency-mode floor \
+            --emit-dependency-report "$$COMBINED_REPORT"
+        fi
     id: 'Generate module files'
     waitFor: ['Prepare build context']
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'

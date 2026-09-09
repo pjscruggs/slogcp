@@ -28,6 +28,8 @@ Options:
   --repo-go-version VERSION
   --no-wait
   --trusted-e2e-root DIR
+  --adapter-checkout DIR
+  --adapter-sha SHA
   --project ID
   --region REGION
   --artifact-registry-repo REPO
@@ -52,6 +54,8 @@ Env-backed defaults:
   E2E_TOOLCHAIN_MODE
   E2E_REPO_GO_VERSION
   E2E_TRUSTED_E2E_ROOT
+  E2E_ADAPTER_CHECKOUT
+  E2E_ADAPTER_SHA
   GCP_PROJECT_ID
   RUN_REGION
   ARTIFACT_REGISTRY_REPO
@@ -146,22 +150,29 @@ normalize_service_account_resource() {
 stage_go_module_checkout() {
     local source_dir="$1"
     local destination_dir="$2"
+    local revision="${3:?exact commit required}"
 
+    if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]] ||
+       [[ "$(git -C "$source_dir" rev-parse --verify "${revision}^{commit}")" != "$revision" ]]; then
+        echo "Source must identify an existing full commit SHA: $revision" >&2
+        return 1
+    fi
+    if [[ -e "$destination_dir" ]]; then
+        echo "Export destination must not already exist: $destination_dir" >&2
+        return 1
+    fi
     mkdir -p "$destination_dir"
-    (
-        cd "$source_dir"
-        find . -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" \) \
-            ! -path './.git/*' \
-            -exec cp --parents {} "$destination_dir" \;
-    )
+    git -C "$source_dir" archive --format=tar "$revision" | tar -xf - -C "$destination_dir"
 }
 
 stage_local_build_source() {
     local staging_root="$1"
     local trusted_e2e_root="$2"
-    local adapter_checkout="../slogcp-grpc-adapter"
-
-    rm -rf "$staging_root"
+    local infrastructure_repo infrastructure_sha infrastructure_path
+    if [[ -d "$staging_root" && -n "$(ls -A "$staging_root")" ]]; then
+        echo "Build staging directory must be empty: $staging_root" >&2
+        return 1
+    fi
     mkdir -p "$staging_root"
 
     if [[ ! -d "$trusted_e2e_root" ]]; then
@@ -173,19 +184,23 @@ stage_local_build_source() {
         exit 1
     fi
 
-    # Use trusted build/config infrastructure, but stage service code and
-    # module manifests from the current checkout so cloud E2E exercises the
-    # exact dependency graph under test.
-    cp -R "$trusted_e2e_root/." "$staging_root/"
+    # Export build infrastructure independently from the candidate library.
+    infrastructure_repo="$(git -C "$trusted_e2e_root" rev-parse --show-toplevel)"
+    infrastructure_sha="$(git -C "$trusted_e2e_root" rev-parse HEAD)"
+    infrastructure_path="$(git -C "$trusted_e2e_root" rev-parse --show-prefix)"
+    git -C "$infrastructure_repo" archive --format=tar "${infrastructure_sha}:${infrastructure_path%/}" \
+        | tar -xf - -C "$staging_root"
     rm -rf "$staging_root/services"
+    stage_go_module_checkout "." "$staging_root/lib-repo-checkout" "$PR_SHA"
     mkdir -p "$staging_root/services"
-    cp -R ".e2e/services/." "$staging_root/services/"
-    stage_go_module_checkout "." "$staging_root/lib-repo-checkout"
+    cp -R "$staging_root/lib-repo-checkout/.e2e/services/." "$staging_root/services/"
 
-    if [[ -f "$adapter_checkout/go.mod" ]]; then
-        echo "Staging local slogcp-grpc-adapter checkout from $adapter_checkout"
-        stage_go_module_checkout "$adapter_checkout" "$staging_root/slogcp-grpc-adapter"
+    if [[ -n "$E2E_ADAPTER_SHA" ]]; then
+        echo "Staging explicit adapter commit $E2E_ADAPTER_SHA"
+        stage_go_module_checkout "$E2E_ADAPTER_CHECKOUT" "$staging_root/slogcp-grpc-adapter" "$E2E_ADAPTER_SHA"
     fi
+    printf '{"root_commit":"%s","adapter_commit":"%s","infrastructure_commit":"%s"}\n' \
+        "$PR_SHA" "$E2E_ADAPTER_SHA" "$infrastructure_sha" > "$staging_root/source-identities.json"
 }
 
 E2E_SOURCE_MODE="${E2E_SOURCE_MODE:-}"
@@ -193,6 +208,8 @@ E2E_DEPENDENCY_MODE="${E2E_DEPENDENCY_MODE:-}"
 E2E_TOOLCHAIN_MODE="${E2E_TOOLCHAIN_MODE:-}"
 E2E_REPO_GO_VERSION="${E2E_REPO_GO_VERSION:-}"
 E2E_TRUSTED_E2E_ROOT="${E2E_TRUSTED_E2E_ROOT:-}"
+E2E_ADAPTER_CHECKOUT="${E2E_ADAPTER_CHECKOUT:-}"
+E2E_ADAPTER_SHA="${E2E_ADAPTER_SHA:-}"
 GCP_PROJECT_ID="${GCP_PROJECT_ID:-}"
 RUN_REGION="${RUN_REGION:-}"
 ARTIFACT_REGISTRY_REPO="${ARTIFACT_REGISTRY_REPO:-}"
@@ -256,6 +273,14 @@ while [[ $# -gt 0 ]]; do
         --no-wait)
             E2E_NO_WAIT="true"
             shift
+            ;;
+        --adapter-checkout)
+            E2E_ADAPTER_CHECKOUT="${2:?missing value for --adapter-checkout}"
+            shift 2
+            ;;
+        --adapter-sha)
+            E2E_ADAPTER_SHA="${2:?missing value for --adapter-sha}"
+            shift 2
             ;;
         --project)
             GCP_PROJECT_ID="${2:?missing value for --project}"
@@ -476,6 +501,13 @@ if [[ "$E2E_SOURCE_MODE" != "github" && "$E2E_SOURCE_MODE" != "local" ]]; then
     echo "E2E_SOURCE_MODE must be 'github' or 'local' (got '$E2E_SOURCE_MODE')" >&2
     exit 1
 fi
+if [[ -n "$E2E_ADAPTER_SHA" || -n "$E2E_ADAPTER_CHECKOUT" ]]; then
+    if [[ ! "$E2E_ADAPTER_SHA" =~ ^[0-9a-f]{40}$ || ! -d "$E2E_ADAPTER_CHECKOUT" ||
+          "$E2E_SOURCE_MODE" != "local" || "$E2E_DEPENDENCY_MODE" != "floor" ]]; then
+        echo "Adapter validation requires an explicit checkout/full SHA, local source mode, and floor dependency mode." >&2
+        exit 1
+    fi
+fi
 if [[ "$E2E_DEPENDENCY_MODE" != "floor" && "$E2E_DEPENDENCY_MODE" != "latest-slogcp" ]]; then
     echo "E2E_DEPENDENCY_MODE must be 'floor' or 'latest-slogcp' (got '$E2E_DEPENDENCY_MODE')" >&2
     exit 1
@@ -556,6 +588,7 @@ emit_outputs() {
 }
 
 SUBSTITUTIONS="_LIB_REPO_FULL_NAME=${LIB_REPO_FULL_NAME},_PR_SHA=${PR_SHA},_PR_NUMBER=${PR_NUMBER},_SHORT_SHA=${SHORT_SHA},_BUILD_TIME=${BUILD_TIME_ISO},_GCP_REGION=${RUN_REGION},_ARTIFACT_REGISTRY_REPO=${ARTIFACT_REGISTRY_REPO},_GCS_BUCKET_NAME=${GCS_BUCKET_NAME},_E2E_RUN_ID=${E2E_RUN_ID},_RUNTIME_SERVICE_ACCOUNT=${E2E_SERVICE_ACCOUNT},_CALLER_SERVICE_ACCOUNT=${E2E_CALLER_SERVICE_ACCOUNT},_GITHUB_TOKEN_SECRET_VERSION=${GITHUB_TOKEN_SECRET_VERSION},_TRACE_PUBSUB_TOPIC=${TRACE_PUBSUB_TOPIC},_TRACE_PUBSUB_SUBSCRIPTION=${TRACE_PUBSUB_SUBSCRIPTION},_E2E_SOURCE_MODE=${E2E_SOURCE_MODE},_SLOGCP_REF_OVERRIDE=${SLOGCP_REF_OVERRIDE},_E2E_DEPENDENCY_MODE=${E2E_DEPENDENCY_MODE},_E2E_TOOLCHAIN_MODE=${E2E_TOOLCHAIN_MODE},_E2E_REPO_GO_VERSION=${E2E_REPO_GO_VERSION}"
+SUBSTITUTIONS+=",_ADAPTER_SHA=${E2E_ADAPTER_SHA}"
 
 echo "Submitting e2e Cloud Build for ${LIB_REPO_FULL_NAME}@${PR_SHA}"
 echo "Run ID: ${E2E_RUN_ID}"
