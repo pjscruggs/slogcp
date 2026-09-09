@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -1563,18 +1564,187 @@ def write_dependency_report(report_path: Path, report: dict[str, Any]) -> None:
             temporary_path.unlink()
 
 
+def source_fingerprint(directory: Path) -> dict[str, str]:
+    """Identify all source bytes, including manifests and embedded assets."""
+    result = {}
+    for path in sorted(directory.rglob("*")):
+        relative = path.relative_to(directory)
+        if ".git" in relative.parts:
+            continue
+        if path.is_symlink():
+            raise ValueError(f"candidate source must not contain symlinks: {path}")
+        if path.is_file():
+            result[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
+def generate_combined_consumer(
+    *,
+    module_dir: Path,
+    slogcp_dir: Path,
+    adapter_dir: Path,
+    go_version: str,
+    slogcp_reference: str,
+    env: dict[str, str],
+) -> dict[str, Any]:
+    """Prepare a disposable consumer; native Go selects its combined graph."""
+    module_dir = module_dir.resolve()
+    compiler = run_command(go_command("env", "GOVERSION"), cwd=module_dir, env=env)
+    if compiler.returncode or compiler.stdout.strip() != f"go{go_version}":
+        raise ValueError(
+            f"consumer compiler does not match go{go_version}: {compiler.stdout}{compiler.stderr}"
+        )
+    sources = {
+        SLOGCP_MODULE_PATH: slogcp_dir.resolve(),
+        ADAPTER_MODULE_PATH: adapter_dir.resolve(),
+    }
+    fingerprints = {}
+    for name, source in sources.items():
+        if (
+            source == module_dir
+            or source in module_dir.parents
+            or module_dir in source.parents
+        ):
+            raise ValueError(
+                "consumer output and library inputs must be separate trees"
+            )
+        if module_path(source, env) != name:
+            raise ValueError(f"wrong candidate module at {source}; expected {name}")
+        fingerprints[name] = source_fingerprint(source)
+
+    destinations = {
+        SLOGCP_MODULE_PATH: module_dir / "slogcp",
+        ADAPTER_MODULE_PATH: module_dir / "slogcp-grpc-adapter",
+    }
+    for name, destination in destinations.items():
+        if not destination.exists():
+            shutil.copytree(
+                sources[name], destination, ignore=shutil.ignore_patterns(".git")
+            )
+        if source_fingerprint(destination) != fingerprints[name]:
+            raise ValueError(
+                f"staged candidate differs from supplied input: {destination}"
+            )
+
+    generated: set[Path] = set()
+    visiting: set[Path] = set()
+
+    def prepare(directory: Path) -> None:
+        directory = directory.resolve()
+        if directory in generated:
+            return
+        if directory in visiting:
+            raise ValueError(f"cyclic generated module metadata: {directory}")
+        visiting.add(directory)
+        metadata = load_metadata(directory)
+        if not str(metadata["module_path"]).startswith(LOCAL_E2E_PREFIX):
+            raise ValueError(f"only generated E2E modules may be edited: {directory}")
+        requirements = dict(metadata.get("seed_requirements", {}))
+        replacements = dict(destinations)
+        for item in metadata.get("pinned_modules", []):
+            name = item["module_path"]
+            requirements[name] = resolve_version(item, slogcp_reference)
+            if name in destinations:
+                continue
+            relative = item.get("replace_path")
+            if relative:
+                child = (directory / relative).resolve()
+                if module_dir not in child.parents or any(
+                    child == library or library in child.parents
+                    for library in destinations.values()
+                ):
+                    raise ValueError(
+                        f"generated module escapes editable output: {child}"
+                    )
+                prepare(child)
+                replacements[name] = child
+        (directory / "go.mod").write_text(
+            render_go_mod(
+                module_path=metadata["module_path"],
+                go_version=go_version,
+                requirements=requirements,
+                replace_directives={
+                    name: "./" + os.path.relpath(target, directory).replace(os.sep, "/")
+                    for name, target in replacements.items()
+                },
+            ),
+            encoding="utf-8",
+        )
+        (directory / WORKSPACE_FILE_NAME).write_text(
+            render_go_work(
+                go_version=go_version,
+                workspace_members=["."],
+            ),
+            encoding="utf-8",
+        )
+        completed = tidy_module(directory, env)
+        if completed.returncode:
+            raise RuntimeError(
+                f"consumer tidy failed: {completed.stdout}{completed.stderr}"
+            )
+        visiting.remove(directory)
+        generated.add(directory)
+
+    try:
+        prepare(module_dir)
+        completed = run_command(
+            go_command("list", "-mod=readonly", "-m", "-json", "all"),
+            cwd=module_dir,
+            env=env_with_gowork(env, "off"),
+        )
+        if completed.returncode:
+            raise RuntimeError(
+                f"consumer graph failed: {completed.stdout}{completed.stderr}"
+            )
+        graph = list(decode_json_stream(completed.stdout))
+        for name, destination in destinations.items():
+            selected = next((item for item in graph if item["Path"] == name), None)
+            if (
+                not selected
+                or Path(selected.get("Dir", "")).resolve() != destination.resolve()
+            ):
+                raise ValueError(
+                    f"consumer did not select the supplied candidate: {name}"
+                )
+        return {
+            "module_dir": str(module_dir),
+            "status": "success",
+            "profile": "combined-candidate",
+            "compiler": compiler.stdout.strip(),
+            "gotoolchain": env.get("GOTOOLCHAIN", ""),
+            "module_graph": graph,
+            "source_fingerprints": fingerprints,
+        }
+    finally:
+        for name, source in sources.items():
+            if (
+                source_fingerprint(source) != fingerprints[name]
+                or source_fingerprint(destinations[name]) != fingerprints[name]
+            ):
+                raise RuntimeError(
+                    f"candidate source changed during generation: {name}"
+                )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Generate temporary .e2e go.mod/go.sum files plus local go.work files "
-            "and enforce exact shared dependency parity against the staged slogcp "
-            "checkout."
+            "using root-only dependency parity or immutable combined candidates."
         )
     )
     parser.add_argument("--module-dir", action="append", required=True)
     parser.add_argument("--go-version", required=True)
     parser.add_argument("--slogcp-dir", required=True)
     parser.add_argument("--slogcp-reference", required=True)
+    parser.add_argument(
+        "--adapter-dir", help="Immutable adapter input for combined-candidate mode"
+    )
+    parser.add_argument(
+        "--graph-profile",
+        choices=["root-parity", "combined-candidate"],
+        default="root-parity",
+    )
     parser.add_argument(
         "--dependency-mode",
         choices=["floor", "latest-slogcp"],
@@ -1608,6 +1778,7 @@ def main() -> int:
     report: dict[str, Any] = {
         "schema_version": DEPENDENCY_REPORT_SCHEMA_VERSION,
         "dependency_mode": args.dependency_mode,
+        "graph_profile": args.graph_profile,
         "go_version": go_version,
         "slogcp_reference": slogcp_reference,
         "slogcp_shared_parity_scope": args.slogcp_shared_parity_scope,
@@ -1628,60 +1799,32 @@ def main() -> int:
             raise ValueError("slogcp reference must not be empty")
         parse_go_version(go_version)
 
-        report["build_context"] = collect_go_build_context(slogcp_dir, env)
-        report["failed_stage"] = "slogcp_reference_graph"
-        if args.dependency_mode == "latest-slogcp":
-            report["slogcp_upgrade"] = upgrade_slogcp_direct_dependencies(
-                slogcp_dir=slogcp_dir,
-                env=env,
-                parity_scope=args.slogcp_shared_parity_scope,
-            )
-        else:
-            report["slogcp_upgrade"] = {
-                "direct_before": direct_requirements(slogcp_dir, env),
-                "direct_after": direct_requirements(slogcp_dir, env),
-                "direct_changed": {},
-                "module_graph_before": build_module_graph(
-                    slogcp_dir,
-                    env_with_gowork(env, "off"),
-                ),
-                "module_graph_after": build_module_graph(
-                    slogcp_dir,
-                    env_with_gowork(env, "off"),
-                ),
-                "package_graph_before": selected_dependency_graph(
-                    slogcp_dir,
-                    env_with_gowork(env, "off"),
-                    parity_scope=args.slogcp_shared_parity_scope,
-                ),
-                "package_graph_after": selected_dependency_graph(
-                    slogcp_dir,
-                    env_with_gowork(env, "off"),
-                    parity_scope=args.slogcp_shared_parity_scope,
-                ),
-            }
+        if args.graph_profile == "combined-candidate":
+            if not args.adapter_dir or args.dependency_mode != "floor":
+                raise ValueError(
+                    "combined-candidate requires --adapter-dir and dependency-mode=floor"
+                )
+            report["slogcp_shared_parity_scope"] = None
+            report["failed_stage"] = "combined_consumer_generation"
+            for module_dir in module_dirs:
+                report["active_module_dir"] = str(module_dir)
+                report["modules"].append(
+                    generate_combined_consumer(
+                        module_dir=module_dir,
+                        slogcp_dir=slogcp_dir,
+                        adapter_dir=Path(args.adapter_dir),
+                        go_version=go_version,
+                        slogcp_reference=slogcp_reference,
+                        env=env,
+                    )
+                )
+        elif args.adapter_dir:
+            raise ValueError("--adapter-dir requires graph-profile=combined-candidate")
 
-        reference_graph = report["slogcp_upgrade"]["package_graph_after"]
-        if args.slogcp_shared_parity_scope == "module":
-            reference_graph = report["slogcp_upgrade"]["module_graph_after"]
-
-        generated_dirs: set[Path] = set()
-        for module_dir in module_dirs:
-            report["failed_stage"] = "module_generation"
-            report["active_module_dir"] = str(module_dir)
-            generate_module(
-                module_dir=module_dir,
-                go_version=go_version,
-                slogcp_reference=slogcp_reference,
-                slogcp_dir=slogcp_dir,
-                env=env,
-                dependency_mode=args.dependency_mode,
-                generated_dirs=generated_dirs,
-                reference_graph=reference_graph,
-                parity_scope=args.slogcp_shared_parity_scope,
-                report=report,
+        if args.graph_profile == "root-parity":
+            generate_root_parity_modules(
+                args, module_dirs, slogcp_dir, go_version, slogcp_reference, env, report
             )
-            print(f"generated module files for {module_dir}")
         report["status"] = "success"
         report["failed_stage"] = None
         report.pop("active_module_dir", None)
@@ -1710,6 +1853,65 @@ def main() -> int:
                 exit_code = 1
 
     return exit_code
+
+
+def generate_root_parity_modules(
+    args, module_dirs, slogcp_dir, go_version, slogcp_reference, env, report
+):
+    report["build_context"] = collect_go_build_context(slogcp_dir, env)
+    report["failed_stage"] = "slogcp_reference_graph"
+    if args.dependency_mode == "latest-slogcp":
+        report["slogcp_upgrade"] = upgrade_slogcp_direct_dependencies(
+            slogcp_dir=slogcp_dir,
+            env=env,
+            parity_scope=args.slogcp_shared_parity_scope,
+        )
+    else:
+        report["slogcp_upgrade"] = {
+            "direct_before": direct_requirements(slogcp_dir, env),
+            "direct_after": direct_requirements(slogcp_dir, env),
+            "direct_changed": {},
+            "module_graph_before": build_module_graph(
+                slogcp_dir,
+                env_with_gowork(env, "off"),
+            ),
+            "module_graph_after": build_module_graph(
+                slogcp_dir,
+                env_with_gowork(env, "off"),
+            ),
+            "package_graph_before": selected_dependency_graph(
+                slogcp_dir,
+                env_with_gowork(env, "off"),
+                parity_scope=args.slogcp_shared_parity_scope,
+            ),
+            "package_graph_after": selected_dependency_graph(
+                slogcp_dir,
+                env_with_gowork(env, "off"),
+                parity_scope=args.slogcp_shared_parity_scope,
+            ),
+        }
+
+    reference_graph = report["slogcp_upgrade"]["package_graph_after"]
+    if args.slogcp_shared_parity_scope == "module":
+        reference_graph = report["slogcp_upgrade"]["module_graph_after"]
+
+    generated_dirs: set[Path] = set()
+    for module_dir in module_dirs:
+        report["failed_stage"] = "module_generation"
+        report["active_module_dir"] = str(module_dir)
+        generate_module(
+            module_dir=module_dir,
+            go_version=go_version,
+            slogcp_reference=slogcp_reference,
+            slogcp_dir=slogcp_dir,
+            env=env,
+            dependency_mode=args.dependency_mode,
+            generated_dirs=generated_dirs,
+            reference_graph=reference_graph,
+            parity_scope=args.slogcp_shared_parity_scope,
+            report=report,
+        )
+        print(f"generated module files for {module_dir}")
 
 
 if __name__ == "__main__":
