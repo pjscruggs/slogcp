@@ -515,6 +515,8 @@ func (s *TraceTestSuite) expectStartupBoolean(payload map[string]any, field stri
 
 // waitForLogsFromServices polls until logs contain all expected services.
 func (s *TraceTestSuite) waitForLogsFromServices(ctx context.Context, opts client.QueryOptions, services []string) ([]*client.LogEntry, error) {
+	ctx, cancel := context.WithTimeout(ctx, logWaitTimeout)
+	defer cancel()
 	deadline := time.Now().Add(logWaitTimeout)
 	expected := make(map[string]struct{}, len(services))
 	for _, svc := range services {
