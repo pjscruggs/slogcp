@@ -186,6 +186,61 @@ class ImageCacheTests(unittest.TestCase):
         self.assertNotEqual(*tags)
         self.assertTrue(all(len(tag) <= 128 for tag in tags))
 
+    def test_every_deployment_uses_the_build_specific_image(self):
+        source = BUILD.read_text(encoding="utf-8")
+        # Capture complete continued commands, without executing deployment steps.
+        commands = []
+        lines = source.splitlines()
+        for index, line in enumerate(lines):
+            if line.strip().startswith(
+                ("gcloud run deploy ", "gcloud run jobs create ")
+            ):
+                command = [line]
+                while command[-1].endswith("\\"):
+                    index += 1
+                    command.append(lines[index])
+                commands.append("\n".join(command).replace("$$", "$"))
+        self.assertEqual(len(commands), 5)
+        shell = (
+            "C:/Program Files/Git/bin/bash.exe"
+            if os.name == "nt"
+            else shutil.which("bash")
+        )
+        version = "pr-81-floor-abcdef0-11111111-1111-1111-1111-111111111111"
+        images = set()
+        for command in commands:
+            with self.subTest(command=command.splitlines()[0]):
+                result = subprocess.run(
+                    [shell, "-c", 'gcloud() { printf "%s\\n" "$@"; }\n' + command],
+                    env={
+                        **os.environ,
+                        "APP_VERSION": version,
+                        "_ARTIFACT_REGISTRY_REPO": "example.invalid/repo",
+                        "STREAM_TAG_DEFAULTED": "pr-81-floor",
+                        "_PR_SHA": "abcdef0",
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = result.stdout.splitlines()
+                image = arguments[arguments.index("--image") + 1]
+                self.assertEqual(image.rsplit(":", 1)[1], version)
+                images.add(image.split("/")[-1].split(":")[0])
+                self.assertTrue(
+                    any(f"BUILD_ID={version}" in argument for argument in arguments)
+                )
+        self.assertEqual(
+            images,
+            {
+                "core-logging-target-app",
+                "trace-target-app",
+                "trace-downstream-http",
+                "trace-downstream-grpc",
+                "e2e-harness",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

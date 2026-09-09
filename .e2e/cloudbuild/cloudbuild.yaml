@@ -577,7 +577,7 @@ steps:
         HARNESS_INVOKER="serviceAccount:${_CALLER_SERVICE_ACCOUNT}"
         echo "Deploying trace-downstream-http service: $$TRACE_HTTP_SERVICE_NAME"
         gcloud run deploy "$$TRACE_HTTP_SERVICE_NAME" \
-          --image "${_ARTIFACT_REGISTRY_REPO}/trace-downstream-http:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/trace-downstream-http:$$APP_VERSION" \
           --platform managed \
           --region "${_GCP_REGION}" \
           --no-allow-unauthenticated \
@@ -604,7 +604,7 @@ steps:
         HARNESS_INVOKER="serviceAccount:${_CALLER_SERVICE_ACCOUNT}"
         echo "Deploying trace-downstream-grpc service: $$TRACE_GRPC_SERVICE_NAME"
         gcloud run deploy "$$TRACE_GRPC_SERVICE_NAME" \
-          --image "${_ARTIFACT_REGISTRY_REPO}/trace-downstream-grpc:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/trace-downstream-grpc:$$APP_VERSION" \
           --platform managed \
           --region "${_GCP_REGION}" \
           --no-allow-unauthenticated \
@@ -641,7 +641,7 @@ steps:
         HARNESS_INVOKER="serviceAccount:${_CALLER_SERVICE_ACCOUNT}"
         echo "Deploying trace-target-app service: $$TRACE_TARGET_SERVICE_NAME"
         gcloud run deploy "$$TRACE_TARGET_SERVICE_NAME" \
-          --image "${_ARTIFACT_REGISTRY_REPO}/trace-target-app:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/trace-target-app:$$APP_VERSION" \
           --platform managed \
           --region "${_GCP_REGION}" \
           --no-allow-unauthenticated \
@@ -703,7 +703,7 @@ steps:
         echo "started" > /workspace/deployment_started.txt
         echo "Deploying core-logging-target-app as Cloud Run service: $$CORE_APP_SERVICE_NAME_CUT"
         gcloud run deploy "$$CORE_APP_SERVICE_NAME_CUT" \
-          --image "${_ARTIFACT_REGISTRY_REPO}/core-logging-target-app:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/core-logging-target-app:$$APP_VERSION" \
           --platform managed \
           --region "${_GCP_REGION}" \
           --no-allow-unauthenticated \
@@ -802,7 +802,7 @@ steps:
         # create and clean up temporary Cloud Run services during the tests.
         set +e
         gcloud run jobs create "$$JOB_NAME" \
-          --image "${_ARTIFACT_REGISTRY_REPO}/e2e-harness:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/e2e-harness:$$APP_VERSION" \
           --region "${_GCP_REGION}" \
           --service-account "${_CALLER_SERVICE_ACCOUNT}" \
           --set-env-vars CORE_TARGET_URL=$$CORE_APP_URL \
