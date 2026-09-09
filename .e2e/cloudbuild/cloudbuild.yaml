@@ -127,7 +127,7 @@ steps:
         fi
         STREAM_TAG_DEFAULTED="$${STREAM_TAG_DEFAULTED}-${_E2E_DEPENDENCY_MODE}"
         echo "$$STREAM_TAG_DEFAULTED" > /workspace/stream_tag_defaulted.txt
-        APP_VERSION="$$STREAM_TAG_DEFAULTED-${_PR_SHA:-${_SHORT_SHA}}"
+        APP_VERSION="$$STREAM_TAG_DEFAULTED-${_PR_SHA:-${_SHORT_SHA}}-${BUILD_ID}"
         echo "$$APP_VERSION" > /workspace/app_version.txt
         echo "$${BUILD_TIME}" > /workspace/build_time.txt
         cut63 () { local x="$$1"; echo "$${x:0:63}"; }
