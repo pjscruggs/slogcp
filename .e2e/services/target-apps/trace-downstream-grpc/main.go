@@ -91,6 +91,7 @@ func main() {
 
 // run initializes dependencies and serves gRPC-over-h2c traffic until shutdown.
 func run(ctx context.Context, cfg config) error {
+	log.Print("startup: initializing propagation and slog handler")
 	slogcp.EnsurePropagation()
 
 	handler, err := slogcp.NewHandler(os.Stdout,
@@ -112,6 +113,7 @@ func run(ctx context.Context, cfg config) error {
 	}()
 	logger := slog.New(handler)
 
+	log.Print("startup: slog handler initialized; creating Trace client")
 	traceClient, err := traceapi.NewClient(ctx)
 	if err != nil {
 		return fmt.Errorf("creating trace client: %w", err)
@@ -123,6 +125,7 @@ func run(ctx context.Context, cfg config) error {
 	}()
 
 	interceptorCfg := parseGRPCInterceptorConfig()
+	log.Print("startup: Trace client initialized; configuring gRPC server")
 
 	serverImpl := &traceWorkerServer{
 		logger:      logger,
@@ -150,6 +153,7 @@ func run(ctx context.Context, cfg config) error {
 
 	errCh := make(chan error, 1)
 	go func() {
+		log.Print("startup: opening HTTP listener")
 		if serveErr := httpServer.ListenAndServe(); serveErr != nil && serveErr != http.ErrServerClosed {
 			errCh <- serveErr
 		}

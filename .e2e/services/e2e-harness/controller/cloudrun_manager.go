@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -140,27 +141,30 @@ func (m *CloudRunManager) DeployService(ctx context.Context, cfg ServiceConfig) 
 	}
 
 	parent := m.location()
-	if _, err := m.servicesAPI.Create(parent, service).Context(ctx).Do(); err != nil {
+	created, err := m.servicesAPI.Create(parent, service).Context(ctx).Do()
+	if err != nil {
 		return nil, fmt.Errorf("creating Cloud Run service %s: %w", cfg.Name, err)
 	}
 
 	resourceName := m.serviceResourceName(cfg.Name)
-	if err := m.ensureInvokerPolicy(ctx, resourceName); err != nil {
-		return nil, fmt.Errorf("updating IAM policy for %s: %w", cfg.Name, err)
-	}
-
-	service, err := m.waitForServiceReady(ctx, resourceName)
-	if err != nil {
-		return nil, fmt.Errorf("waiting for service %s readiness: %w", cfg.Name, err)
-	}
-
-	instance := &ServiceInstance{
-		Name: cfg.Name,
-		URL:  service.Status.Url,
-	}
+	instance := &ServiceInstance{Name: cfg.Name}
 	instance.deleteFn = func(deleteCtx context.Context) error {
 		return m.deleteService(deleteCtx, resourceName)
 	}
+	if err := m.ensureInvokerPolicy(ctx, resourceName); err != nil {
+		return instance, fmt.Errorf("updating IAM policy for %s: %w", cfg.Name, err)
+	}
+
+	readyCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	service, err = waitForServiceReady(readyCtx, created.Metadata, func(pollCtx context.Context) (*run.Service, error) {
+		return m.servicesAPI.Get(resourceName).Context(pollCtx).Do()
+	})
+	if err != nil {
+		return instance, fmt.Errorf("waiting for service %s readiness: %w", cfg.Name, err)
+	}
+
+	instance.URL = service.Status.Url
 	return instance, nil
 }
 
@@ -243,47 +247,80 @@ func (m *CloudRunManager) applyIAMPolicy(ctx context.Context, resource string, p
 }
 
 // waitForServiceReady polls Cloud Run until the service reports Ready.
-func (m *CloudRunManager) waitForServiceReady(ctx context.Context, resource string) (*run.Service, error) {
+func waitForServiceReady(ctx context.Context, expected *run.ObjectMeta, get func(context.Context) (*run.Service, error)) (*run.Service, error) {
 	const pollInterval = 2 * time.Second
-	deadline := time.Now().Add(5 * time.Minute)
+	lastState := "no service response"
+	var lastError error
+	failure := func(err error) (*run.Service, error) {
+		return nil, fmt.Errorf("%w; last API error=%v; last service state=%s", err, lastError, lastState)
+	}
 
 	for {
-		service, err := m.servicesAPI.Get(resource).Context(ctx).Do()
+		if err := ctx.Err(); err != nil {
+			return failure(err)
+		}
+		service, err := get(ctx)
+		lastError = err
+		if service != nil {
+			state, _ := json.Marshal(struct {
+				Metadata *run.ObjectMeta    `json:"metadata"`
+				Status   *run.ServiceStatus `json:"status"`
+			}{service.Metadata, service.Status})
+			if string(state) != lastState {
+				lastState = string(state)
+				log.Printf("Cloud Run readiness: %s", lastState)
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return failure(err)
+		}
 		if err == nil {
-			if isServiceReady(service) && service.Status != nil && service.Status.Url != "" {
+			ready, stateErr := serviceReadiness(service, expected)
+			if stateErr != nil {
+				return failure(stateErr)
+			}
+			if ready {
 				return service, nil
 			}
 		} else {
 			if transient, code := isTransientServiceError(err); transient {
-				log.Printf("Waiting for service %s: transient readiness error (code=%d): %v", resource, code, err)
+				log.Printf("Transient readiness error (code=%d): %v", code, err)
 			} else {
-				return nil, fmt.Errorf("fetching service state: %w", err)
+				return failure(fmt.Errorf("fetching service state: %w", err))
 			}
-		}
-
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("timed out waiting for service to become ready")
 		}
 
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("waiting for service %s canceled: %w", resource, ctx.Err())
+			return failure(ctx.Err())
 		case <-time.After(pollInterval):
 		}
 	}
 }
 
-// isServiceReady reports whether the Cloud Run service is ready.
-func isServiceReady(service *run.Service) bool {
-	if service == nil || service.Status == nil {
-		return false
+// serviceReadiness interprets current-generation reconciliation before serving.
+func serviceReadiness(service *run.Service, expected *run.ObjectMeta) (bool, error) {
+	if service == nil || service.Status == nil || service.Metadata == nil {
+		return false, nil
+	}
+	if service.Metadata.DeletionTimestamp != "" {
+		return false, fmt.Errorf("service is being deleted")
+	}
+	if expected != nil && expected.Uid != "" && service.Metadata.Uid != expected.Uid {
+		return false, fmt.Errorf("service identity changed")
+	}
+	if service.Status.ObservedGeneration != service.Metadata.Generation || (expected != nil && service.Metadata.Generation < expected.Generation) {
+		return false, nil
 	}
 	for _, cond := range service.Status.Conditions {
-		if cond.Type == "Ready" && strings.EqualFold(cond.Status, "True") {
-			return true
+		if cond.Type == "Ready" {
+			if strings.EqualFold(cond.Status, "False") {
+				return false, fmt.Errorf("service readiness failed: %s: %s", cond.Reason, cond.Message)
+			}
+			return strings.EqualFold(cond.Status, "True") && service.Status.Url != "", nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // isTransientServiceError reports whether err is worth retrying during polling.
