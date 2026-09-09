@@ -443,7 +443,7 @@ steps:
 
         cloudbuild/build-tools/evaluate-image-cache.sh \
           e2e-harness \
-          /workspace/services/e2e-harness \
+          /workspace/build-context/e2e-harness \
           /workspace/build-context/e2e-harness \
           /workspace/build-context/e2e-harness/Dockerfile \
           e2e-harness

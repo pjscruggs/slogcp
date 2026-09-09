@@ -73,7 +73,7 @@ HASH="$(
     printf 'DISTROLESS_TAG=%s\n' "${DISTROLESS_TAG}"
     printf 'DEPENDENCY_MODE=%s\n' "${DEPENDENCY_MODE}"
     printf 'TOOLCHAIN_MODE=%s\n' "${TOOLCHAIN_MODE}"
-    tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - -C "${HASH_SOURCE_PATH}" . 2>/dev/null || true
+    tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - -C "${HASH_SOURCE_PATH}" .
   } | sha256sum | cut -d' ' -f1
 )"
 
