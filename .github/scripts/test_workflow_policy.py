@@ -225,6 +225,15 @@ await (async()=>{
             self.classify(metadata, labels=["security"], same_repo=False), "normal"
         )
 
+    def test_license_policy_is_local_but_does_not_hide_runtime_changes(self):
+        policy = [{"filename": ".licenserc.yaml"}]
+        for actor in ("human", "renovate[bot]"):
+            with self.subTest(actor=actor):
+                self.assertEqual(self.classify(policy, actor=actor), "ci_only")
+                self.assertEqual(self.classify(policy + [{"filename": ".github/workflows/validation_pipeline.yml"}], actor=actor), "ci_only")
+                for path in ("handler.go", "go.mod", ".e2e/services/e2e-harness/main.go"):
+                    self.assertNotEqual(self.classify(policy + [{"filename": path}], actor=actor), "ci_only")
+
     def aggregate(self, **overrides):
         env = {
             **os.environ,
