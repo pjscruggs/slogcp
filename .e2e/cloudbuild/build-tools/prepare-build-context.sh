@@ -54,10 +54,7 @@ copy_slogcp_workspace() {
     local dest_dir="$2"
 
     mkdir -p "$dest_dir/slogcp"
-    pushd "$src_dir" > /dev/null
-    find . -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" \) \
-        -exec cp --parents {} "$dest_dir/slogcp" \;
-    popd > /dev/null
+    tar --exclude='./.git' -cf - -C "$src_dir" . | tar -xf - -C "$dest_dir/slogcp"
 }
 
 copy_extra_source_dir() {

@@ -7,6 +7,7 @@ options:
 substitutions:
   _LIB_REPO_FULL_NAME: 'pjscruggs/slogcp'
   _PR_SHA: ''
+  _ADAPTER_SHA: ''
   _PR_NUMBER: ''
   _SHORT_SHA: ''
   _BUILD_TIME: '1970-01-01T00:00:00Z'
@@ -52,6 +53,13 @@ steps:
             exit 1
             ;;
         esac
+        if [[ -n "${_ADAPTER_SHA}" ]]; then
+          if [[ ! "${_ADAPTER_SHA}" =~ ^[0-9a-f]{40}$ ||
+                "${_E2E_SOURCE_MODE}" != local || "${_E2E_DEPENDENCY_MODE}" != floor ]]; then
+            echo "Explicit adapter validation requires a full SHA, local sources, and unchanged library dependencies." >&2
+            exit 1
+          fi
+        fi
         if [ -z "${_GCS_BUCKET_NAME}" ]; then
           echo "Error: _GCS_BUCKET_NAME is required" >&2
           exit 1
@@ -119,7 +127,7 @@ steps:
         fi
         STREAM_TAG_DEFAULTED="$${STREAM_TAG_DEFAULTED}-${_E2E_DEPENDENCY_MODE}"
         echo "$$STREAM_TAG_DEFAULTED" > /workspace/stream_tag_defaulted.txt
-        APP_VERSION="$$STREAM_TAG_DEFAULTED-${_PR_SHA:-${_SHORT_SHA}}"
+        APP_VERSION="$$STREAM_TAG_DEFAULTED-${_PR_SHA:-${_SHORT_SHA}}-${BUILD_ID}"
         echo "$$APP_VERSION" > /workspace/app_version.txt
         echo "$${BUILD_TIME}" > /workspace/build_time.txt
         cut63 () { local x="$$1"; echo "$${x:0:63}"; }
@@ -387,22 +395,55 @@ steps:
         RUN_ID="$$(cat /workspace/e2e_run_id.txt)"
         REPORT_PATH=/workspace/dependency-report.json
         REPORT_URI="gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA:-${_SHORT_SHA}}/$${RUN_ID}/dependency-report.json"
+        if [[ "${_E2E_SOURCE_MODE}" == local ]]; then
+          python3 - "${_PR_SHA}" "${_ADAPTER_SHA}" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+        identities = json.loads(Path('/workspace/source-identities.json').read_text())
+        if identities.get('root_commit') != sys.argv[1] or identities.get('adapter_commit') != sys.argv[2]:
+            raise SystemExit('Staged source identities do not match requested commits')
+        print('Source identities:', json.dumps(identities, sort_keys=True))
+        PY
+          gsutil -h 'x-goog-if-generation-match:0' cp /workspace/source-identities.json \
+            "gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA}/$${RUN_ID}/source-identities.json"
+        fi
+        ROOT_MODULES=(
+          --module-dir /workspace/build-context/core
+          --module-dir /workspace/build-context/trace-http
+          --module-dir /workspace/build-context/e2e-harness
+        )
+        if [[ -z "${_ADAPTER_SHA}" ]]; then
+          ROOT_MODULES+=(--module-dir /workspace/build-context/trace-target --module-dir /workspace/build-context/trace-grpc)
+        fi
         bash cloudbuild/build-tools/generate-and-upload-modules.sh \
           "$$REPORT_PATH" \
           "$$REPORT_URI" \
           -- \
           python3 scripts/generate_go_module.py \
-          --module-dir /workspace/build-context/core \
-          --module-dir /workspace/build-context/trace-target \
-          --module-dir /workspace/build-context/trace-http \
-          --module-dir /workspace/build-context/trace-grpc \
-          --module-dir /workspace/build-context/e2e-harness \
+          "$${ROOT_MODULES[@]}" \
           --go-version "$$GO_VERSION" \
           --slogcp-dir /workspace/lib-repo-checkout \
           --slogcp-reference "$$SLOGCP_REFERENCE" \
           --dependency-mode "${_E2E_DEPENDENCY_MODE}" \
           --slogcp-shared-parity-scope package \
           --emit-dependency-report "$$REPORT_PATH"
+        if [[ -n "${_ADAPTER_SHA}" ]]; then
+          COMBINED_REPORT=/workspace/combined-dependency-report.json
+          COMBINED_URI="gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA}/$${RUN_ID}/combined-dependency-report.json"
+          bash cloudbuild/build-tools/generate-and-upload-modules.sh \
+            "$$COMBINED_REPORT" "$$COMBINED_URI" -- \
+            python3 scripts/generate_go_module.py \
+            --graph-profile combined-candidate \
+            --adapter-dir /workspace/slogcp-grpc-adapter \
+            --module-dir /workspace/build-context/trace-target \
+            --module-dir /workspace/build-context/trace-grpc \
+            --go-version "$$GO_VERSION" \
+            --slogcp-dir /workspace/lib-repo-checkout \
+            --slogcp-reference "$$SLOGCP_REFERENCE" \
+            --dependency-mode floor \
+            --emit-dependency-report "$$COMBINED_REPORT"
+        fi
     id: 'Generate module files'
     waitFor: ['Prepare build context']
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -536,7 +577,7 @@ steps:
         HARNESS_INVOKER="serviceAccount:${_CALLER_SERVICE_ACCOUNT}"
         echo "Deploying trace-downstream-http service: $$TRACE_HTTP_SERVICE_NAME"
         gcloud run deploy "$$TRACE_HTTP_SERVICE_NAME" \
-          --image "${_ARTIFACT_REGISTRY_REPO}/trace-downstream-http:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/trace-downstream-http:$$APP_VERSION" \
           --platform managed \
           --region "${_GCP_REGION}" \
           --no-allow-unauthenticated \
@@ -563,7 +604,7 @@ steps:
         HARNESS_INVOKER="serviceAccount:${_CALLER_SERVICE_ACCOUNT}"
         echo "Deploying trace-downstream-grpc service: $$TRACE_GRPC_SERVICE_NAME"
         gcloud run deploy "$$TRACE_GRPC_SERVICE_NAME" \
-          --image "${_ARTIFACT_REGISTRY_REPO}/trace-downstream-grpc:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/trace-downstream-grpc:$$APP_VERSION" \
           --platform managed \
           --region "${_GCP_REGION}" \
           --no-allow-unauthenticated \
@@ -600,7 +641,7 @@ steps:
         HARNESS_INVOKER="serviceAccount:${_CALLER_SERVICE_ACCOUNT}"
         echo "Deploying trace-target-app service: $$TRACE_TARGET_SERVICE_NAME"
         gcloud run deploy "$$TRACE_TARGET_SERVICE_NAME" \
-          --image "${_ARTIFACT_REGISTRY_REPO}/trace-target-app:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/trace-target-app:$$APP_VERSION" \
           --platform managed \
           --region "${_GCP_REGION}" \
           --no-allow-unauthenticated \
@@ -662,7 +703,7 @@ steps:
         echo "started" > /workspace/deployment_started.txt
         echo "Deploying core-logging-target-app as Cloud Run service: $$CORE_APP_SERVICE_NAME_CUT"
         gcloud run deploy "$$CORE_APP_SERVICE_NAME_CUT" \
-          --image "${_ARTIFACT_REGISTRY_REPO}/core-logging-target-app:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/core-logging-target-app:$$APP_VERSION" \
           --platform managed \
           --region "${_GCP_REGION}" \
           --no-allow-unauthenticated \
@@ -761,7 +802,7 @@ steps:
         # create and clean up temporary Cloud Run services during the tests.
         set +e
         gcloud run jobs create "$$JOB_NAME" \
-          --image "${_ARTIFACT_REGISTRY_REPO}/e2e-harness:$${STREAM_TAG_DEFAULTED}-${_PR_SHA:-${_SHORT_SHA}}" \
+          --image "${_ARTIFACT_REGISTRY_REPO}/e2e-harness:$$APP_VERSION" \
           --region "${_GCP_REGION}" \
           --service-account "${_CALLER_SERVICE_ACCOUNT}" \
           --set-env-vars CORE_TARGET_URL=$$CORE_APP_URL \

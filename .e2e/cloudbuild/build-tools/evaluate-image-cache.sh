@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-# Evaluate whether a service image must be rebuilt or can be reused.
+# Identify build inputs and select a Docker layer-cache seed.
 # Usage: evaluate-image-cache.sh <service-id> <hash-source-path> <build-context> <dockerfile> <image-name>
 
 SERVICE_ID="${1:?service id required}"
@@ -44,7 +44,6 @@ STREAM_TAG_TAG="${ARTIFACT_REPO}/${IMAGE_NAME}:${STREAM_TAG}"
 MANIFEST_PATH="gs://${MANIFEST_BUCKET}/metadata/${SERVICE_ID}/${STREAM_TAG}/${VERSION_TAG}.json"
 STATE_DIR="/workspace/cache"
 STATE_FILE="${STATE_DIR}/${SERVICE_ID}.env"
-MANIFEST_FILE="${STATE_DIR}/${SERVICE_ID}.manifest.json"
 
 mkdir -p "${STATE_DIR}"
 
@@ -63,7 +62,6 @@ DEBIAN_CODENAME="$(cat /workspace/debian_codename.txt)"
 DISTROLESS_TAG="$(cat /workspace/distroless_tag.txt)"
 DEPENDENCY_MODE="$(cat /workspace/dependency_mode.txt 2>/dev/null || echo floor)"
 TOOLCHAIN_MODE="$(cat /workspace/toolchain_mode.txt 2>/dev/null || echo repo)"
-PYTHON_BIN="$(command -v python3 || command -v python || true)"
 
 # Compute a deterministic hash of the build inputs and toolchain metadata
 HASH="$(
@@ -83,7 +81,6 @@ if [[ -z "${HASH}" ]]; then
 fi
 
 HASH_MANIFEST_PATH="gs://${MANIFEST_BUCKET}/metadata/${SERVICE_ID}/${STREAM_TAG}/${HASH}.json"
-HASH_MANIFEST_FILE="${STATE_DIR}/${SERVICE_ID}.${HASH}.manifest.json"
 NEEDS_RETAG=false
 RETAG_SOURCE_VERSION_TAG=""
 RETAG_SOURCE_IMAGE=""
@@ -93,58 +90,11 @@ CACHE_FROM_TAG=""
 
 echo "[${SERVICE_ID}] Input hash: ${HASH}"
 
-if gsutil -q stat "${MANIFEST_PATH}"; then
-  gsutil cp "${MANIFEST_PATH}" "${MANIFEST_FILE}" >/dev/null
-  if [[ -n "${PYTHON_BIN}" ]]; then
-    STORED_HASH="$("${PYTHON_BIN}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("hash",""))' "${MANIFEST_FILE}" 2>/dev/null || true)"
-  else
-    STORED_HASH=""
-  fi
-  if [[ "${STORED_HASH}" == "${HASH}" ]]; then
-    if gcloud artifacts docker images describe "${VERSIONED_TAG}" >/dev/null 2>&1; then
-      echo "[${SERVICE_ID}] Cache manifest hit for ${VERSIONED_TAG}"
-      SHOULD_BUILD=false
-      CACHE_FROM_TAG="${VERSIONED_TAG}"
-    else
-      echo "Manifest exists for ${SERVICE_ID} but ${VERSIONED_TAG} is missing; scheduling rebuild."
-    fi
-  else
-    echo "[${SERVICE_ID}] Manifest hash mismatch (stored=${STORED_HASH}); will rebuild."
-    CACHE_FROM_TAG="${VERSIONED_TAG}"
-  fi
-fi
-
-if [[ "${SHOULD_BUILD}" == true ]]; then
-  if gsutil -q stat "${HASH_MANIFEST_PATH}"; then
-    gsutil cp "${HASH_MANIFEST_PATH}" "${HASH_MANIFEST_FILE}" >/dev/null
-    if [[ -n "${PYTHON_BIN}" ]]; then
-      STORED_VERSION_TAG="$(${PYTHON_BIN} -c 'import json,sys; print(json.load(open(sys.argv[1])).get("versionTag",""))' "${HASH_MANIFEST_FILE}" 2>/dev/null || true)"
-    else
-      STORED_VERSION_TAG=""
-    fi
-    if [[ -n "${STORED_VERSION_TAG}" ]]; then
-      SOURCE_IMAGE="${ARTIFACT_REPO}/${IMAGE_NAME}:${STORED_VERSION_TAG}"
-      if gcloud artifacts docker images describe "${SOURCE_IMAGE}" >/dev/null 2>&1; then
-        echo "[${SERVICE_ID}] Cache hit via hash manifest ${HASH}; will retag from ${SOURCE_IMAGE}"
-        SHOULD_BUILD=false
-        CACHE_FROM_TAG="${SOURCE_IMAGE}"
-        NEEDS_RETAG=true
-        RETAG_SOURCE_VERSION_TAG="${STORED_VERSION_TAG}"
-        RETAG_SOURCE_IMAGE="${SOURCE_IMAGE}"
-      else
-        echo "[${SERVICE_ID}] Hash manifest references missing image ${SOURCE_IMAGE}; will rebuild."
-      fi
-    else
-      echo "[${SERVICE_ID}] Hash manifest ${HASH_MANIFEST_PATH} missing versionTag; ignoring."
-    fi
-  fi
-fi
-
-if [[ "${SHOULD_BUILD}" == true && -z "${CACHE_FROM_TAG}" ]]; then
-  if gcloud artifacts docker images describe "${STREAM_TAG_TAG}" >/dev/null 2>&1; then
-    echo "[${SERVICE_ID}] Will seed cache-from ${STREAM_TAG_TAG}"
-    CACHE_FROM_TAG="${STREAM_TAG_TAG}"
-  fi
+# Always build the staged context. Docker validates reusable layers; a mutable
+# registry tag or an old manifest is not proof of the current image contents.
+if gcloud artifacts docker images describe "${STREAM_TAG_TAG}" >/dev/null 2>&1; then
+  echo "[${SERVICE_ID}] Will seed cache-from ${STREAM_TAG_TAG}"
+  CACHE_FROM_TAG="${STREAM_TAG_TAG}"
 fi
 
 # Warm the Docker cache if we found an image to reuse

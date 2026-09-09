@@ -33,7 +33,7 @@ class ImageCacheTests(unittest.TestCase):
     def hash_context(self, directory, *, fail_tar=False, toolchain="repo"):
         source = CACHE.read_text(encoding="utf-8")
         start = source.index('HASH="$(')
-        end = source.index('HASH_MANIFEST_PATH=', start)
+        end = source.index("HASH_MANIFEST_PATH=", start)
         bash = shutil.which("bash")
         if os.name == "nt":
             bash = "C:/Program Files/Git/bin/bash.exe"
@@ -100,6 +100,146 @@ class ImageCacheTests(unittest.TestCase):
             with self.subTest(service=service):
                 self.assertEqual(hash_source, build_context)
                 self.assertTrue(build_context.startswith("/workspace/build-context/"))
+
+    def test_existing_manifest_cannot_bypass_docker_build(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "context").mkdir()
+            digest = self.hash_context(temporary).stdout.strip()
+            values = {
+                "stream_tag_defaulted": "fixture",
+                "app_version": "fixture-version",
+                "go_version": "1.27.1",
+                "debian_codename": "trixie",
+                "distroless_tag": "nonroot",
+                "dependency_mode": "floor",
+                "toolchain_mode": "repo",
+            }
+            for name, value in values.items():
+                (root / (name + ".txt")).write_text(value)
+            script = 'gsutil() { if [[ "$1" == cp ]]; then printf "%s" "$FIXTURE_JSON" > "$3"; fi; }\n'
+            script += "gcloud() { return 0; }\ndocker() { return 0; }\n"
+            script += CACHE.read_text(encoding="utf-8").replace(
+                "/workspace", root.as_posix()
+            )
+            bash = (
+                "C:/Program Files/Git/bin/bash.exe"
+                if os.name == "nt"
+                else shutil.which("bash")
+            )
+            result = subprocess.run(
+                [
+                    bash,
+                    "-c",
+                    script,
+                    "fixture",
+                    "fixture",
+                    "context",
+                    "context",
+                    "Dockerfile",
+                    "image",
+                ],
+                cwd=root,
+                env={
+                    **os.environ,
+                    "_ARTIFACT_REGISTRY_REPO": "example.invalid/repo",
+                    "_GCS_BUCKET_NAME": "fixture",
+                    "FIXTURE_JSON": '{"hash":"' + digest + '","versionTag":"old"}',
+                },
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state = (root / "cache/fixture.env").read_text()
+            self.assertIn("SHOULD_BUILD=true", state)
+            self.assertIn("NEEDS_RETAG=false", state)
+            self.assertIn("CACHE_FROM_TAG=example.invalid/repo/image:fixture", state)
+
+    def test_image_tags_are_unique_per_cloud_build(self):
+        line = next(
+            line.strip().replace("$$", "$")
+            for line in BUILD.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith('APP_VERSION="')
+        )
+        bash = (
+            "C:/Program Files/Git/bin/bash.exe"
+            if os.name == "nt"
+            else shutil.which("bash")
+        )
+        tags = []
+        for build_id in (
+            "11111111-1111-1111-1111-111111111111",
+            "22222222-2222-2222-2222-222222222222",
+        ):
+            tags.append(
+                subprocess.check_output(
+                    [bash, "-c", line + '\nprintf "%s" "$APP_VERSION"'],
+                    env={
+                        **os.environ,
+                        "STREAM_TAG_DEFAULTED": "pr-81-floor",
+                        "_PR_SHA": "a" * 40,
+                        "BUILD_ID": build_id,
+                    },
+                    text=True,
+                )
+            )
+        self.assertNotEqual(*tags)
+        self.assertTrue(all(len(tag) <= 128 for tag in tags))
+
+    def test_every_deployment_uses_the_build_specific_image(self):
+        source = BUILD.read_text(encoding="utf-8")
+        # Capture complete continued commands, without executing deployment steps.
+        commands = []
+        lines = source.splitlines()
+        for index, line in enumerate(lines):
+            if line.strip().startswith(
+                ("gcloud run deploy ", "gcloud run jobs create ")
+            ):
+                command = [line]
+                while command[-1].endswith("\\"):
+                    index += 1
+                    command.append(lines[index])
+                commands.append("\n".join(command).replace("$$", "$"))
+        self.assertEqual(len(commands), 5)
+        shell = (
+            "C:/Program Files/Git/bin/bash.exe"
+            if os.name == "nt"
+            else shutil.which("bash")
+        )
+        version = "pr-81-floor-abcdef0-11111111-1111-1111-1111-111111111111"
+        images = set()
+        for command in commands:
+            with self.subTest(command=command.splitlines()[0]):
+                result = subprocess.run(
+                    [shell, "-c", 'gcloud() { printf "%s\\n" "$@"; }\n' + command],
+                    env={
+                        **os.environ,
+                        "APP_VERSION": version,
+                        "_ARTIFACT_REGISTRY_REPO": "example.invalid/repo",
+                        "STREAM_TAG_DEFAULTED": "pr-81-floor",
+                        "_PR_SHA": "abcdef0",
+                    },
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = result.stdout.splitlines()
+                image = arguments[arguments.index("--image") + 1]
+                self.assertEqual(image.rsplit(":", 1)[1], version)
+                images.add(image.split("/")[-1].split(":")[0])
+                self.assertTrue(
+                    any(f"BUILD_ID={version}" in argument for argument in arguments)
+                )
+        self.assertEqual(
+            images,
+            {
+                "core-logging-target-app",
+                "trace-target-app",
+                "trace-downstream-http",
+                "trace-downstream-grpc",
+                "e2e-harness",
+            },
+        )
 
 
 if __name__ == "__main__":
