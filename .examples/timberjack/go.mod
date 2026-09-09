@@ -1,10 +1,11 @@
 module github.com/pjscruggs/slogcp/examples/timberjack
 
-go 1.26.7
+go 1.27.1
 
-require github.com/DeRuina/timberjack v1.4.7
-
-require github.com/pjscruggs/slogcp v0.0.0-unpublished
+require (
+	github.com/DeRuina/timberjack v1.4.7
+	github.com/pjscruggs/slogcp v0.0.0-unpublished
+)
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect

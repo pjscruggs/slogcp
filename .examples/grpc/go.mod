@@ -1,13 +1,12 @@
 module github.com/pjscruggs/slogcp/examples/grpc
 
-go 1.26.7
+go 1.27.1
 
 require (
+	github.com/pjscruggs/slogcp v0.0.0-unpublished
 	google.golang.org/grpc v1.83.2
 	google.golang.org/grpc/examples v0.0.0-20260904081815-298389d61dd6
 )
-
-require github.com/pjscruggs/slogcp v0.0.0-unpublished
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
