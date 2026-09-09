@@ -314,5 +314,14 @@ await (async()=>{
         )
 
 
+class LicensePolicyTests(unittest.TestCase):
+    def test_license_validation_uses_versioned_policy(self):
+        self.assertNotIn("date +%Y", WORKFLOW)
+        self.assertNotIn("steps.year.outputs.YEAR", WORKFLOW)
+        self.assertNotRegex(WORKFLOW, r"sed[^\n]*copyright-year:")
+        self.assertIn("header check", WORKFLOW)
+        self.assertIn(".licenserc.yaml", WORKFLOW)
+
+
 if __name__ == "__main__":
     unittest.main()

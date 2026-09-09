@@ -437,17 +437,6 @@ jobs:
         run: |
           go mod tidy
 
-      - name: 📅🕰️ Get current year in US Central Time
-        id: year
-        run: |
-          YEAR=$(TZ='America/Chicago' date +%Y)
-          echo "YEAR=$YEAR" >> $GITHUB_OUTPUT
-      
-      - name: 📄⚙️📅 Update license year in config
-        run: |
-          sed -i 's/copyright-year: .*/copyright-year: "2025-${{ steps.year.outputs.YEAR }}"/g' .licenserc.yaml
-          echo "📅⬆️ Updated year to 2025-${{ steps.year.outputs.YEAR }}"
-
       - name: 📄🧭 Verify `.e2e` license header scope
         run: |
           grep -Fq ".e2e/scripts/**/*.sh" .licenserc.yaml
