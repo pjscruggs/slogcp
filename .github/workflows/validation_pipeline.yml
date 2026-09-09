@@ -59,7 +59,7 @@ jobs:
 
               const paths = files.map(f => f.filename);
               const touchesGoModuleMetadata = paths.some(p => /(^|\/)go\.(mod|sum)$/.test(p));
-              const onlyCiFiles = paths.length > 0 && paths.every(p => p.startsWith('.github/'));
+              const onlyCiFiles = paths.length > 0 && paths.every(p => p.startsWith('.github/') || p === '.licenserc.yaml');
               const onlyAutomationConfigFiles = paths.length > 0 &&
                 paths.every(p => p === 'renovate.json' || p === '.github/scripts/test_renovate_policy.py');
               const onlyExampleModuleMetadata = paths.length > 0 &&
@@ -876,7 +876,7 @@ jobs:
 
             const paths = files.map(f => f.filename);
             const touchesGoModuleMetadata = paths.some(p => /(^|\/)go\.(mod|sum)$/.test(p));
-            const onlyCiFiles = paths.length > 0 && paths.every(p => p.startsWith('.github/'));
+            const onlyCiFiles = paths.length > 0 && paths.every(p => p.startsWith('.github/') || p === '.licenserc.yaml');
             const onlyAutomationConfigFiles = paths.length > 0 &&
               paths.every(p => p === 'renovate.json' || p === '.github/scripts/test_renovate_policy.py');
             const onlyExampleModuleMetadata = paths.length > 0 &&
