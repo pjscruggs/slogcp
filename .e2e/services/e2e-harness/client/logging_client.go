@@ -26,9 +26,11 @@ import (
 	"time"
 
 	"cloud.google.com/go/logging/logadmin"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/api/transport"
+	"google.golang.org/grpc"
 )
 
 // LoggingClient wraps the Google Cloud Logging API clients
@@ -40,7 +42,9 @@ type LoggingClient struct {
 
 // NewLoggingClient creates a new Cloud Logging client
 func NewLoggingClient(ctx context.Context, projectID string, opts ...option.ClientOption) (*LoggingClient, error) {
-	adminClient, err := logadmin.NewClient(ctx, projectID, opts...)
+	adminOpts := append([]option.ClientOption{}, opts...)
+	adminOpts = append(adminOpts, option.WithGRPCDialOption(grpc.WithChainUnaryInterceptor(retryLogQuotaRPC)))
+	adminClient, err := logadmin.NewClient(ctx, projectID, adminOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating log admin client: %w", err)
 	}
@@ -192,7 +196,7 @@ func (c *LoggingClient) queryLogsJSONPages(ctx context.Context, reqBody listEntr
 		if len(out) >= maxResults {
 			return out[:maxResults], nil
 		}
-		if decoded.NextPageToken == "" || len(decoded.Entries) == 0 {
+		if decoded.NextPageToken == "" {
 			return out, nil
 		}
 		reqBody.PageToken = decoded.NextPageToken
@@ -201,6 +205,16 @@ func (c *LoggingClient) queryLogsJSONPages(ctx context.Context, reqBody listEntr
 
 // fetchEntriesListPage executes one entries.list request.
 func (c *LoggingClient) fetchEntriesListPage(ctx context.Context, reqBody listEntriesRequest) (*listEntriesResponse, error) {
+	var page *listEntriesResponse
+	err := retryLogQuota(ctx, func() error {
+		var err error
+		page, err = c.fetchEntriesListPageOnce(ctx, reqBody)
+		return err
+	})
+	return page, err
+}
+
+func (c *LoggingClient) fetchEntriesListPageOnce(ctx context.Context, reqBody listEntriesRequest) (*listEntriesResponse, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("encoding entries.list request: %w", err)
@@ -222,7 +236,7 @@ func (c *LoggingClient) fetchEntriesListPage(ctx context.Context, reqBody listEn
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return nil, fmt.Errorf("entries.list failed: %s: %s", resp.Status, strings.TrimSpace(string(payload)))
+		return nil, &googleapi.Error{Code: resp.StatusCode, Message: strings.TrimSpace(string(payload))}
 	}
 
 	var decoded listEntriesResponse
@@ -236,6 +250,8 @@ func (c *LoggingClient) fetchEntriesListPage(ctx context.Context, reqBody listEn
 
 // WaitForLogs queries logs with retries until entries are found or timeout
 func (c *LoggingClient) WaitForLogs(ctx context.Context, opts QueryOptions, timeout time.Duration) ([]*LogEntry, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	deadline := time.Now().Add(timeout)
 	backoff := 1 * time.Second
 	maxBackoff := 10 * time.Second
@@ -269,6 +285,8 @@ func (c *LoggingClient) WaitForLogs(ctx context.Context, opts QueryOptions, time
 // WaitForLogCount queries logs with retries until at least minCount entries are
 // visible or timeout expires.
 func (c *LoggingClient) WaitForLogCount(ctx context.Context, opts QueryOptions, minCount int, timeout time.Duration) ([]*LogEntry, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if minCount <= 0 {
 		return c.WaitForLogs(ctx, opts, timeout)
 	}
@@ -306,6 +324,8 @@ func (c *LoggingClient) WaitForLogCount(ctx context.Context, opts QueryOptions, 
 // WaitForLogsJSON queries Cloud Logging via the REST API with retries until entries
 // are found or timeout.
 func (c *LoggingClient) WaitForLogsJSON(ctx context.Context, opts QueryOptions, timeout time.Duration) ([]map[string]any, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	deadline := time.Now().Add(timeout)
 	backoff := 1 * time.Second
 	maxBackoff := 10 * time.Second
