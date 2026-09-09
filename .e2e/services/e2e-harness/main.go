@@ -350,6 +350,16 @@ func closeTraceClient(traceClient *client.TraceClient) {
 // runAllScenarios executes all configured scenarios and aggregates totals.
 func runAllScenarios(ctx context.Context, cfg harnessConfig, manager *controller.CloudRunManager, loggingClient *client.LoggingClient, traceClient *client.TraceClient) (int, []string, int, int, int) {
 	scenarios := buildScenarios(cfg.projectID)
+	plannedTests := 0
+	for _, scenario := range scenarios {
+		count, err := plannedScenarioTests(scenario)
+		if err != nil {
+			return 1, []string{fmt.Sprintf("invalid scenario %s: %v", scenario.Name, err)}, 0, 0, 0
+		}
+		plannedTests += count
+	}
+	completedScenarios := 0
+	log.Printf("Planned scenarios: %d; assertions: %d", len(scenarios), plannedTests)
 
 	var (
 		totalTests  int
@@ -374,6 +384,7 @@ func runAllScenarios(ctx context.Context, cfg harnessConfig, manager *controller
 		}
 
 		totalTests += scenarioStats.total
+		completedScenarios++
 		totalPassed += scenarioStats.passed
 		totalFailed += scenarioStats.failed
 		allFailures = append(allFailures, scenarioStats.failures...)
@@ -383,6 +394,11 @@ func runAllScenarios(ctx context.Context, cfg harnessConfig, manager *controller
 		}
 	}
 
+	log.Printf("Completed scenarios: %d/%d; assertions: %d/%d", completedScenarios, len(scenarios), totalPassed+totalFailed, plannedTests)
+	if completedScenarios != len(scenarios) || totalPassed+totalFailed != plannedTests {
+		exitCode = 1
+		allFailures = append(allFailures, "scenario matrix did not complete all planned assertions")
+	}
 	return exitCode, allFailures, totalTests, totalPassed, totalFailed
 }
 
@@ -527,6 +543,11 @@ type scenarioStats struct {
 
 // runScenario deploys one scenario's services and executes its selected tests.
 func runScenario(ctx context.Context, definition scenarioDefinition, manager *controller.CloudRunManager, images imageConfig, projectID, pubsubTopic, pubsubSubscription string, loggingClient *client.LoggingClient, traceClient *client.TraceClient) (scenarioStats, error) {
+	planned, err := plannedScenarioTests(definition)
+	if err != nil {
+		return scenarioStats{}, err
+	}
+	log.Printf("Scenario %s planned assertions: %d", definition.Name, planned)
 	scenarioCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -553,7 +574,7 @@ func runScenario(ctx context.Context, definition scenarioDefinition, manager *co
 
 	if shouldSkipTraceSuite(definition) {
 		log.Printf("Skipping trace suite for scenario %s (no tests selected)", definition.Name)
-		return stats, nil
+		return stats, validateScenarioCompletion(planned, stats)
 	}
 
 	traceStats, err := runTraceSuiteForScenario(scenarioCtx, definition, deployment, traceTargetClient, loggingClient, traceClient, projectID)
@@ -562,7 +583,31 @@ func runScenario(ctx context.Context, definition scenarioDefinition, manager *co
 	}
 	mergeScenarioStats(&stats, traceStats)
 
-	return stats, nil
+	return stats, validateScenarioCompletion(planned, stats)
+}
+
+// plannedScenarioTests validates selections before any service is provisioned.
+func plannedScenarioTests(definition scenarioDefinition) (int, error) {
+	core, err := selectTests(tests.NewCoreLoggingTestSuite(nil, nil, "", tests.CoreScenarioConfig{}).GetTests(), definition.CoreTests)
+	if err != nil {
+		return 0, err
+	}
+	trace, err := selectTests(tests.NewTraceTestSuite(nil, nil, nil, "", tests.TraceScenarioConfig{}).GetTests(), definition.TraceTests)
+	if err != nil {
+		return 0, err
+	}
+	if len(core)+len(trace) == 0 {
+		return 0, fmt.Errorf("scenario %s selects no assertions", definition.Name)
+	}
+	return len(core) + len(trace), nil
+}
+
+// validateScenarioCompletion rejects incomplete execution even if executed tests passed.
+func validateScenarioCompletion(planned int, stats scenarioStats) error {
+	if stats.total != planned || stats.passed+stats.failed != planned {
+		return fmt.Errorf("incomplete scenario: planned=%d selected=%d passed=%d failed=%d", planned, stats.total, stats.passed, stats.failed)
+	}
+	return nil
 }
 
 // initializeScenarioTargetClients creates per-scenario target clients and
@@ -573,16 +618,21 @@ func initializeScenarioTargetClients(ctx context.Context, deployment *scenarioDe
 		return nil, nil, fmt.Errorf("creating core target client: %w", err)
 	}
 
-	traceTargetClient, err := client.NewTargetClient(ctx, deployment.trace.URL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating trace target client: %w", err)
-	}
-
 	log.Printf("Performing health check on core target app (%s)...", deployment.core.Name)
 	if err := coreClient.HealthCheck(ctx); err != nil {
 		return nil, nil, fmt.Errorf("core target health check failed: %w", err)
 	}
 	log.Printf("Core target app healthy (%s)", deployment.core.URL)
+	if shouldSkipTraceSuite(deployment.definition) {
+		return coreClient, nil, nil
+	}
+	if deployment.trace == nil {
+		return nil, nil, fmt.Errorf("required trace target was not deployed")
+	}
+	traceTargetClient, err := client.NewTargetClient(ctx, deployment.trace.URL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating trace target client: %w", err)
+	}
 
 	log.Printf("Performing health check on trace target app (%s)...", deployment.trace.Name)
 	if err := traceTargetClient.HealthCheck(ctx); err != nil {
@@ -684,83 +734,94 @@ func selectTests(all []tests.TestCase, selected []string) ([]tests.TestCase, err
 	return filtered, nil
 }
 
+// scenarioDeployer supplies the service operations used by scenario setup.
+type scenarioDeployer interface {
+	GenerateServiceName(string) string
+	DeployService(context.Context, controller.ServiceConfig) (*controller.ServiceInstance, error)
+}
+
 // deployScenarioServices provisions the Cloud Run services needed for a scenario.
-func deployScenarioServices(ctx context.Context, definition scenarioDefinition, manager *controller.CloudRunManager, images imageConfig, projectID, pubsubTopic, pubsubSubscription string) (*scenarioDeployment, error) {
+func deployScenarioServices(ctx context.Context, definition scenarioDefinition, manager scenarioDeployer, images imageConfig, projectID, pubsubTopic, pubsubSubscription string) (*scenarioDeployment, error) {
 	deployment := &scenarioDeployment{definition: definition}
-
-	downHTTPName := manager.GenerateServiceName("trace-downstream-http")
-	downHTTPEnv := mergeEnvs(map[string]string{
-		"GOOGLE_CLOUD_PROJECT":        projectID,
-		"SLOGCP_LOGICAL_SERVICE":      "trace-downstream-http",
-		"SLOGCP_RUNTIME_SERVICE_NAME": downHTTPName,
-		"SLOGCP_BUILD_ID":             definition.Name,
-		"TRACE_PUBSUB_TOPIC":          pubsubTopic,
-		"TRACE_PUBSUB_SUBSCRIPTION":   pubsubSubscription,
-	}, definition.DownstreamHTTPEnv)
-
-	downHTTPService, err := manager.DeployService(ctx, controller.ServiceConfig{
-		Name:   downHTTPName,
-		Image:  images.downstreamHTTP,
-		Env:    downHTTPEnv,
-		Labels: map[string]string{"e2e-scenario": definition.Name},
-	})
-	if err != nil {
-		return deployment, fmt.Errorf("deploying downstream HTTP service %s: %w", downHTTPName, err)
-	}
-	deployment.downHTTP = downHTTPService
-	if downHTTPService.URL == "" {
-		return deployment, fmt.Errorf("downstream HTTP service %s has empty URL", downHTTPName)
+	if _, err := plannedScenarioTests(definition); err != nil {
+		return deployment, err
 	}
 
-	downGRPCName := manager.GenerateServiceName("trace-downstream-grpc")
-	downGRPCEnv := mergeEnvs(map[string]string{
-		"GOOGLE_CLOUD_PROJECT":        projectID,
-		"SLOGCP_LOGICAL_SERVICE":      "trace-downstream-grpc",
-		"SLOGCP_RUNTIME_SERVICE_NAME": downGRPCName,
-		"SLOGCP_BUILD_ID":             definition.Name,
-	}, definition.DownstreamGRPCEnv)
+	if !shouldSkipTraceSuite(definition) {
+		downHTTPName := manager.GenerateServiceName("trace-downstream-http")
+		downHTTPEnv := mergeEnvs(map[string]string{
+			"GOOGLE_CLOUD_PROJECT":        projectID,
+			"SLOGCP_LOGICAL_SERVICE":      "trace-downstream-http",
+			"SLOGCP_RUNTIME_SERVICE_NAME": downHTTPName,
+			"SLOGCP_BUILD_ID":             definition.Name,
+			"TRACE_PUBSUB_TOPIC":          pubsubTopic,
+			"TRACE_PUBSUB_SUBSCRIPTION":   pubsubSubscription,
+		}, definition.DownstreamHTTPEnv)
 
-	downGRPCService, err := manager.DeployService(ctx, controller.ServiceConfig{
-		Name:   downGRPCName,
-		Image:  images.downstreamGRPC,
-		Env:    downGRPCEnv,
-		Labels: map[string]string{"e2e-scenario": definition.Name},
-	})
-	if err != nil {
-		return deployment, fmt.Errorf("deploying downstream gRPC service %s: %w", downGRPCName, err)
-	}
-	deployment.downGRPC = downGRPCService
-	if downGRPCService.URL == "" {
-		return deployment, fmt.Errorf("downstream gRPC service %s has empty URL", downGRPCName)
-	}
+		downHTTPService, err := manager.DeployService(ctx, controller.ServiceConfig{
+			Name:   downHTTPName,
+			Image:  images.downstreamHTTP,
+			Env:    downHTTPEnv,
+			Labels: map[string]string{"e2e-scenario": definition.Name},
+		})
+		deployment.downHTTP = downHTTPService
+		if err != nil {
+			return deployment, fmt.Errorf("deploying downstream HTTP service %s: %w", downHTTPName, err)
+		}
+		if downHTTPService.URL == "" {
+			return deployment, fmt.Errorf("downstream HTTP service %s has empty URL", downHTTPName)
+		}
 
-	deployment.traceDownstreamHTTP = downHTTPService.URL
-	deployment.traceDownstreamGRPC = deriveGRPCTarget(downGRPCService.URL)
+		downGRPCName := manager.GenerateServiceName("trace-downstream-grpc")
+		downGRPCEnv := mergeEnvs(map[string]string{
+			"GOOGLE_CLOUD_PROJECT":        projectID,
+			"SLOGCP_LOGICAL_SERVICE":      "trace-downstream-grpc",
+			"SLOGCP_RUNTIME_SERVICE_NAME": downGRPCName,
+			"SLOGCP_BUILD_ID":             definition.Name,
+		}, definition.DownstreamGRPCEnv)
 
-	traceName := manager.GenerateServiceName("trace-target-app")
-	traceEnv := mergeEnvs(map[string]string{
-		"GOOGLE_CLOUD_PROJECT":        projectID,
-		"DOWNSTREAM_HTTP_URL":         deployment.traceDownstreamHTTP,
-		"DOWNSTREAM_GRPC_TARGET":      deployment.traceDownstreamGRPC,
-		"SLOGCP_LOGICAL_SERVICE":      "trace-target-app",
-		"SLOGCP_RUNTIME_SERVICE_NAME": traceName,
-		"SLOGCP_BUILD_ID":             definition.Name,
-		"TRACE_PUBSUB_TOPIC":          pubsubTopic,
-		"TRACE_PUBSUB_SUBSCRIPTION":   pubsubSubscription,
-	}, definition.TraceEnv)
+		downGRPCService, err := manager.DeployService(ctx, controller.ServiceConfig{
+			Name:   downGRPCName,
+			Image:  images.downstreamGRPC,
+			Env:    downGRPCEnv,
+			Labels: map[string]string{"e2e-scenario": definition.Name},
+		})
+		deployment.downGRPC = downGRPCService
+		if err != nil {
+			return deployment, fmt.Errorf("deploying downstream gRPC service %s: %w", downGRPCName, err)
+		}
+		if downGRPCService.URL == "" {
+			return deployment, fmt.Errorf("downstream gRPC service %s has empty URL", downGRPCName)
+		}
 
-	traceService, err := manager.DeployService(ctx, controller.ServiceConfig{
-		Name:   traceName,
-		Image:  images.traceTarget,
-		Env:    traceEnv,
-		Labels: map[string]string{"e2e-scenario": definition.Name},
-	})
-	if err != nil {
-		return deployment, fmt.Errorf("deploying trace target service %s: %w", traceName, err)
-	}
-	deployment.trace = traceService
-	if traceService.URL == "" {
-		return deployment, fmt.Errorf("trace target service %s has empty URL", traceName)
+		deployment.traceDownstreamHTTP = downHTTPService.URL
+		deployment.traceDownstreamGRPC = deriveGRPCTarget(downGRPCService.URL)
+
+		traceName := manager.GenerateServiceName("trace-target-app")
+		traceEnv := mergeEnvs(map[string]string{
+			"GOOGLE_CLOUD_PROJECT":        projectID,
+			"DOWNSTREAM_HTTP_URL":         deployment.traceDownstreamHTTP,
+			"DOWNSTREAM_GRPC_TARGET":      deployment.traceDownstreamGRPC,
+			"SLOGCP_LOGICAL_SERVICE":      "trace-target-app",
+			"SLOGCP_RUNTIME_SERVICE_NAME": traceName,
+			"SLOGCP_BUILD_ID":             definition.Name,
+			"TRACE_PUBSUB_TOPIC":          pubsubTopic,
+			"TRACE_PUBSUB_SUBSCRIPTION":   pubsubSubscription,
+		}, definition.TraceEnv)
+
+		traceService, err := manager.DeployService(ctx, controller.ServiceConfig{
+			Name:   traceName,
+			Image:  images.traceTarget,
+			Env:    traceEnv,
+			Labels: map[string]string{"e2e-scenario": definition.Name},
+		})
+		deployment.trace = traceService
+		if err != nil {
+			return deployment, fmt.Errorf("deploying trace target service %s: %w", traceName, err)
+		}
+		if traceService.URL == "" {
+			return deployment, fmt.Errorf("trace target service %s has empty URL", traceName)
+		}
 	}
 
 	coreName := manager.GenerateServiceName("core-logging-target-app")
@@ -777,10 +838,10 @@ func deployScenarioServices(ctx context.Context, definition scenarioDefinition, 
 		Env:    coreEnv,
 		Labels: map[string]string{"e2e-scenario": definition.Name},
 	})
+	deployment.core = coreService
 	if err != nil {
 		return deployment, fmt.Errorf("deploying core target service %s: %w", coreName, err)
 	}
-	deployment.core = coreService
 	if coreService.URL == "" {
 		return deployment, fmt.Errorf("core service %s has empty URL", coreName)
 	}
@@ -790,6 +851,8 @@ func deployScenarioServices(ctx context.Context, definition scenarioDefinition, 
 
 // cleanup tears down any services deployed for the scenario.
 func (d *scenarioDeployment) cleanup(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
 	services := []*controller.ServiceInstance{d.core, d.trace, d.downHTTP, d.downGRPC}
 	for _, svc := range services {
 		if svc == nil {
