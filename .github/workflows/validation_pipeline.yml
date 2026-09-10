@@ -1639,7 +1639,11 @@ jobs:
               completed_at: new Date().toISOString(),
               output: {
                 title: process.env.CHECK_RUN_NAME,
-                summary: summaryLines.join('\n')
+                summary: summaryLines.join('\n'),
+                text: JSON.stringify({schema: 1, root_sha: context.payload.pull_request.head.sha,
+                  infrastructure_sha: context.sha, profile: 'root-parity',
+                  dependency_mode: 'floor', toolchain_mode: 'repo', result: buildStatus,
+                  run_id: context.runId, run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT)})
               }
             });
 

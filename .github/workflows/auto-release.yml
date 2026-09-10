@@ -60,6 +60,11 @@ jobs:
     needs: [ release_intent, release_preflight ]
     if: always() && needs.release_intent.outputs.should_release == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      actions: read
     environment: release-tags
     env:
       VERSION: ${{ needs.release_intent.outputs.version }}
@@ -85,6 +90,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python .github/scripts/release_policy.py tag-state
+
+      - name: Require Complete Release Evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_E2E_APP_ID: ${{ secrets.E2E_APP_ID }}
+        run: python .github/scripts/release_policy.py release-gate
 
       - name: Generate Release App Token
         id: release_app_token

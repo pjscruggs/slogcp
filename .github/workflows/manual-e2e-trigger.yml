@@ -618,7 +618,11 @@ jobs:
               completed_at: new Date().toISOString(),
               output: {
                 title: process.env.CHECK_RUN_NAME,
-                summary: summaryLines.join('\n')
+                summary: summaryLines.join('\n'),
+                text: JSON.stringify({schema: 1, root_sha: process.env.TARGET_ROOT_SHA,
+                  infrastructure_sha: context.sha, profile: 'root-parity',
+                  dependency_mode: 'floor', toolchain_mode: 'repo', result: buildStatus,
+                  run_id: context.runId, run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT)})
               }
             });
 
@@ -626,6 +630,7 @@ jobs:
         env:
           BUILD_STATUS: ${{ steps.cloud_build.outputs.build_status }}
           CHECK_RUN_ID: ${{ steps.create_check.outputs.check_run_id }}
+          TARGET_ROOT_SHA: ${{ steps.target.outputs.head_sha }}
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
           E2E_RUN_ID: ${{ steps.run_id.outputs.e2e_run_id }}
           POST_BUILD_VALIDATION_OK: ${{ steps.post_build_validation.outputs.ok }}
