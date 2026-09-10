@@ -146,6 +146,7 @@ jobs:
       tools_version: ${{ steps.plan.outputs.tools_version }}
       has_examples: ${{ steps.plan.outputs.has_examples }}
       example_matrix: ${{ steps.plan.outputs.example_matrix }}
+      validated_base: ${{ steps.current_base.outputs.sha }}
     steps:
       - name: Checkout validation source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -156,6 +157,7 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
 
       - name: Require current PR base
+        id: current_base
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -175,6 +177,7 @@ jobs:
             exit 1
           fi
           echo "CURRENT_BASE_SHA=$current_base" >> "$GITHUB_ENV"
+          echo "sha=$current_base" >> "$GITHUB_OUTPUT"
 
       - name: Validate automated compatibility and release intent
         if: github.event_name == 'pull_request'
@@ -726,7 +729,55 @@ jobs:
       - example_validation
     if: always() && github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
     steps:
+      - name: Recheck validated PR identity
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          VALIDATED_BASE: ${{ needs.go_validation_plan.outputs.validated_base }}
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const expected = context.payload.pull_request;
+            const base = process.env.VALIDATED_BASE;
+            if (!/^[0-9a-f]{40}$/.test(base || '')) {
+              throw new Error('Validation did not record a current base.');
+            }
+            const {data: run} = await github.rest.actions.getWorkflowRun({
+              owner, repo, run_id: context.runId
+            });
+            if (Number(run.run_attempt) !== Number(process.env.GITHUB_RUN_ATTEMPT)) {
+              throw new Error('This validation attempt has been superseded.');
+            }
+            const {data: runs} = await github.rest.actions.listWorkflowRuns({
+              owner, repo, workflow_id: run.workflow_id,
+              event: 'pull_request', head_sha: expected.head.sha, per_page: 100
+            });
+            if (runs.workflow_runs.some(candidate =>
+              Number(candidate.id) > Number(run.id) &&
+              (candidate.pull_requests || []).some(pr => pr.number === expected.number)
+            )) {
+              throw new Error('A newer validation run exists for this PR head.');
+            }
+            const {data: pr} = await github.rest.pulls.get({
+              owner, repo, pull_number: expected.number
+            });
+            const {data: current} = await github.rest.git.getRef({
+              owner, repo, ref: `heads/${expected.base.ref}`
+            });
+            if (pr.state !== 'open' || pr.head.sha !== expected.head.sha ||
+                pr.head.repo?.full_name !== expected.head.repo.full_name ||
+                pr.base.ref !== expected.base.ref ||
+                pr.base.repo?.full_name !== `${owner}/${repo}` ||
+                current.object.sha !== base || pr.base.sha !== base) {
+              throw new Error('PR head or base changed during validation; update and rerun.');
+            }
+            core.info(`Validated current PR head ${pr.head.sha}, base ${base}, run ${run.id}, attempt ${run.run_attempt}.`);
+
       - name: Evaluate scoped local validation result
         id: policy
         shell: bash
@@ -1387,14 +1438,16 @@ jobs:
           GCS_BUCKET_NAME: ${{ env.GCS_BUCKET_NAME }}
           GCS_SOURCE_STAGING_DIR: ${{ env.GCS_SOURCE_STAGING_DIR }}
 
-      - name: Revalidate PR authority after Cloud E2E
+      - name: Revalidate PR authority before E2E acceptance
         if: |
           always() &&
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
-          (steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
           steps.wait_validation.outputs.ok == 'true' &&
-          steps.have_secrets.outputs.ok == 'true' &&
-          steps.cloud_build.outputs.build_status == 'SUCCESS'
+          ((steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
+           steps.have_secrets.outputs.ok == 'true' && steps.cloud_build.outputs.build_status == 'SUCCESS' ||
+           steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' ||
+           steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' ||
+           steps.pr_scope.outputs.mode == 'toolchain_update')
         id: post_build_validation
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
@@ -1642,6 +1695,7 @@ jobs:
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
             const mode = '${{ steps.pr_scope.outputs.mode }}';
             let summary = 'Local validation policy succeeded, so cloud E2E was skipped by policy.';
+            const current = process.env.FINAL_VALIDATION_OK === 'true';
             if (mode === 'ci_only') {
               summary = 'PR touched only CI files and no go.mod/go.sum files. Local validation policy succeeded, so cloud E2E was skipped by policy.';
             } else if (mode === 'ci_tools') {
@@ -1659,17 +1713,21 @@ jobs:
               repo,
               check_run_id: checkRunId,
               status: 'completed',
-              conclusion: 'skipped',
+              conclusion: current ? 'success' : 'failure',
               completed_at: new Date().toISOString(),
               output: {
                 title: process.env.CHECK_RUN_NAME,
-                summary
+                summary: current ? `${summary}\n${process.env.FINAL_VALIDATION_SUMMARY}` :
+                  (process.env.FINAL_VALIDATION_SUMMARY || 'Final PR validation authority check did not succeed.')
               }
             });
 
-            core.setOutput('ok', 'true');
+            core.setOutput('ok', current ? 'true' : 'false');
+            if (!current) core.setFailed('No-cloud validation is stale or unsuccessful.');
         env:
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
+          FINAL_VALIDATION_OK: ${{ steps.post_build_validation.outputs.ok }}
+          FINAL_VALIDATION_SUMMARY: ${{ steps.post_build_validation.outputs.summary }}
 
       - name: Generate App Token for Blocked Auto-Path Finalization
         if: |
