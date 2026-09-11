@@ -65,3 +65,40 @@ func TestContextWithLoggerHandlesNilInputs(t *testing.T) {
 		t.Fatalf("Logger(nil) = %v, want default logger %v", got, slog.Default())
 	}
 }
+
+// TestLoggerFromContext verifies presence independently of the global fallback.
+func TestLoggerFromContext(t *testing.T) {
+	original := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(original) })
+	first := slog.New(slog.DiscardHandler)
+	second := slog.New(slog.DiscardHandler)
+	slog.SetDefault(first)
+	parent := slogcp.ContextWithLogger(context.Background(), first)
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		want *slog.Logger
+	}{
+		{"nil", nil, nil},
+		{"absent", context.Background(), nil},
+		{"stored default", parent, first},
+		{"inherited", context.WithoutCancel(parent), first},
+		{"nil preserves parent", slogcp.ContextWithLogger(parent, nil), first},
+		{"shadowed", slogcp.ContextWithLogger(parent, second), second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := slogcp.LoggerFromContext(tc.ctx)
+			if got != tc.want || ok != (tc.want != nil) {
+				t.Fatalf("lookup = (%v, %v), want %v", got, ok, tc.want)
+			}
+		})
+	}
+	slog.SetDefault(second)
+	var nilCtx context.Context
+	if slogcp.Logger(nilCtx) != second || slogcp.Logger(context.Background()) != second {
+		t.Fatal("fallback did not follow global default")
+	}
+	if got, ok := slogcp.LoggerFromContext(parent); !ok || got != first {
+		t.Fatal("stored default changed")
+	}
+}
