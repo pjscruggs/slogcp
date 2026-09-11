@@ -2,7 +2,22 @@
 
 <img src="logo.svg" width="50%" alt="slogcp logo">
 
-A "batteries included" `slog.Handler` for Google Cloud Platform with built-in HTTP, gRPC, and Pub/Sub integrations. `slogcp` turns application events into observability-ready telemetry by aligning logs, traces, and error data for Cloud Logging, Cloud Trace, and Error Reporting. It writes structured JSON to stdout/stderr so GCP's logging agent handles ingestion without the overhead of managing gRPC streams, retries, or batching. Its middleware is OpenTelemetry-aware by default, automatically propagating trace context and attaching request-scoped metadata across service boundaries, while the handler auto-detects your GCP runtime and adapts its defaults so you get end-to-end visibility with minimal configuration.
+`slogcp` is a Google Cloud-aware `slog.Handler` for Go applications. It writes structured JSON to stdout/stderr in the format expected by Google Cloud Logging and automatically integrates logs with Cloud Trace and Error Reporting.
+
+Use it for Go services running on **Cloud Run, Cloud Run Jobs, Cloud Functions, GKE, App Engine, or Compute Engine** when you want to keep using the standard library's `log/slog` API instead of adopting a separate logging API.
+
+## What you get
+
+* Google Cloud Logging-compatible `severity` and structured fields
+* automatic OpenTelemetry trace/span correlation
+* clickable Cloud Trace correlation in Logs Explorer
+* Google Cloud Error Reporting-compatible errors and stack traces
+* request-scoped `slog.Logger`s
+* HTTP server/client middleware
+* gRPC server/client interceptors
+* Pub/Sub trace propagation and message-scoped logging
+* automatic Google Cloud runtime/project/service detection
+* stdout/stderr logging with no Cloud Logging client required
 
 ## Installation
 
@@ -80,6 +95,20 @@ If it determines that it is running in a GCP environment, slogcp further reduces
 
 Because, **`cloud.google.com/go/logging` is not logging-pattern agnostic**. It ships its own `Logger` type and never implements the `slog.Handler` interface. That means, even if you're just logging to `stdout`, you cannot hand the client to `slog.SetDefault` for a global pattern, you cannot derive child loggers with `logger.With` for a dependency-injected pattern, and you cannot swap in request-scoped loggers harvested for a request-scoped pattern. You could build an adapter that translates `slog.Record` into the client's `Entry` struct, but then you're re-creating a handler just to regain native `slog` ergonomics, and having to add the boilerplate to do so to each of your services.
 
+### slogcp vs. the alternatives
+
+| Requirement                     | `slog.NewJSONHandler` | `cloud.google.com/go/logging` | `slogcp` |
+| ------------------------------- | --------------------: | ----------------------------: | -------: |
+| Standard `log/slog` API         |                    ✅ |                            ❌ |       ✅ |
+| JSON to stdout/stderr           |                    ✅ |                            ✅ |       ✅ |
+| Cloud Logging severity fields   |                manual |                            ✅ |       ✅ |
+| Cloud Trace correlation         |                manual |                            ✅ |       ✅ |
+| OpenTelemetry-aware correlation |                manual |                 custom wiring |       ✅ |
+| Error Reporting fields/stacks   |                manual |                 custom wiring |       ✅ |
+| HTTP integration                |                manual |                        manual |       ✅ |
+| gRPC integration                |                manual |                        manual |       ✅ |
+| Pub/Sub propagation             |                manual |                        manual |       ✅ |
+
 ## Features
 
 ### Severity fields
@@ -104,7 +133,7 @@ Pub/Sub workflows usually require extra glue code: copy trace context into messa
 > Async wrappers on `stdout`/`stderr` usually add overhead without improving throughput.
 
 ### Tested Out The Wazoo
-slogcp has 100% local test coverage. Each of our [examples](.examples) is its own Go module with its own tests. Some of those tests verify compatibility with popular third-party libraries like [masq](https://github.com/m-mizutani/masq) for redaction and [timberjack](https://github.com/DeRuina/timberjack/) for log rotation. We also run a series of E2E tests **in Google Cloud** that spin up real Cloud Run services wired together with slogcp’s HTTP and gRPC interceptors. Those tests drive HTTP requests and both unary and streaming gRPC calls through chains of downstream services, then query Cloud Logging and Cloud Trace to verify severities, resource labels/serviceContext, log names (`run.googleapis.com/stdout`), and that trace IDs/span IDs propagate correctly so logs and spans from every service correlate into a single end-to-end trace in Google Cloud's UIs.
+slogcp has 100% local test coverage. Each of our [examples](.examples) is its own Go module with its own tests. Some of those tests verify compatibility with popular third-party libraries like [masq](https://github.com/m-mizutani/masq) for redaction and [timberjack](https://github.com/DeRuina/timberjack/) for log rotation. Every library release, including automated security patches, must pass E2E tests **in Google Cloud** under our [release policy](docs/RELEASE_POLICY.md). These tests spin up real Cloud Run services wired together with slogcp’s HTTP and gRPC interceptors. They drive HTTP requests and both unary and streaming gRPC calls through chains of downstream services, then query Cloud Logging and Cloud Trace to verify severities, resource labels/serviceContext, log names (`run.googleapis.com/stdout`), and that trace IDs/span IDs propagate correctly so logs and spans from every service correlate into a single end-to-end trace in Google Cloud's UIs.
 
 ### Easy compatibility with other slog libraries
 Because slogcp is "just" a `slog.Handler` that writes JSON to an `io.Writer`, it slots into existing slog setups instead of replacing them. You still use `slog.New`, `slog.SetDefault`, `logger.With`, and request-scoped loggers, and you can compose slogcp with other slog-based tools like [masq](https://github.com/m-mizutani/masq) for redaction or [timberjack](https://github.com/DeRuina/timberjack/) (the maintained [lumberjack](https://github.com/natefinch/lumberjack) fork) for file rotation without special adapters. When you do write logs to files, the built-in `SwitchableWriter` and `Handler.ReopenLogFile` helpers let you cooperate with external rotation tools without rebuilding handlers or changing how the rest of your code logs.
@@ -172,7 +201,7 @@ levelVar.Set(slog.LevelDebug) // app + audit now allow debug
 When you need fully Error Reporting-optimized entries, slogcp exposes helpers such as `slogcp.ErrorReportingAttrs(err)` and `slogcp.ReportError(...)`. These always attach Error Reporting-friendly fields like `serviceContext`, a Go-formatted `stack_trace`, and `reportLocation`, and accept overrides via `slogcp.WithErrorServiceContext(...)` and `slogcp.WithErrorMessage(...)`.
 
 ```go
-logger.ErrorContext(ctx, "failed operation",
+logger.LogAttrs(ctx, slog.LevelError, "failed operation",
     append(
         []slog.Attr{slog.Any("error", err)},
         slogcp.ErrorReportingAttrs(err)...,
