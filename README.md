@@ -201,7 +201,7 @@ levelVar.Set(slog.LevelDebug) // app + audit now allow debug
 When you need fully Error Reporting-optimized entries, slogcp exposes helpers such as `slogcp.ErrorReportingAttrs(err)` and `slogcp.ReportError(...)`. These always attach Error Reporting-friendly fields like `serviceContext`, a Go-formatted `stack_trace`, and `reportLocation`, and accept overrides via `slogcp.WithErrorServiceContext(...)` and `slogcp.WithErrorMessage(...)`.
 
 ```go
-logger.ErrorContext(ctx, "failed operation",
+logger.LogAttrs(ctx, slog.LevelError, "failed operation",
     append(
         []slog.Attr{slog.Any("error", err)},
         slogcp.ErrorReportingAttrs(err)...,
