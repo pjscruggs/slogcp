@@ -1,6 +1,6 @@
 # slogcp release policy
 
-[slogcp](README.md) provides a Go `log/slog` handler and HTTP, gRPC, and Pub/Sub
+[slogcp](../README.md) provides a Go `log/slog` handler and HTTP, gRPC, and Pub/Sub
 integrations for Google Cloud. The library keeps an intentional Go compatibility
 floor and dependency minimums. Security repairs can advance those minimums
 through automated patch releases. Examples and development tools update
@@ -14,7 +14,7 @@ release, including changes merged before the version bump.
 ## Go compatibility and dependency requirements
 
 The library's compatibility floor is Go 1.26, declared as `go 1.26.0` in
-[`go.mod`](go.mod). Renovate does not update that directive. Raising it requires
+[`go.mod`](../go.mod). Renovate does not update that directive. Raising it requires
 a deliberate compatibility decision.
 
 [The `toolchain` directive](https://go.dev/doc/toolchain) selects the preferred
@@ -39,7 +39,7 @@ go-grpc-middleware out of the core slogcp dependency graph.
 
 ## Automated maintenance and release intent
 
-[`renovate.json`](renovate.json) separates library dependencies, the preferred
+[`renovate.json`](../renovate.json) separates library dependencies, the preferred
 Go toolchain, examples, CI tools, GitHub Actions, and E2E Docker dependencies.
 Eligible updates merge through Renovate after validation, without a routine
 PR-approval step. Renovate rebases branches that fall behind `main` and uses
@@ -52,7 +52,7 @@ to satisfy the module graph. It must still pass the library's compatibility
 tests.
 
 A library security PR also increments the patch version in
-[`version.go`](version.go). That version change is part of the candidate being
+[`version.go`](../version.go). That version change is part of the candidate being
 validated. The release publisher does not make a second version commit or open a
 separate release PR. Security repairs to examples or CI tools do not receive a
 library version bump.
@@ -81,18 +81,18 @@ and build-metadata versions are outside this automated publication path.
 
 ## Validation before merge
 
-The [`Validation Pipeline`](.github/workflows/validation_pipeline.yml) checks
+The [`Validation Pipeline`](../.github/workflows/validation_pipeline.yml) checks
 out immutable commit SHAs. Its normal local validation includes the
 compatibility-floor and preferred-compiler tests, race detection, module
 tidiness, formatting, modernization, linting, license headers, and
 `govulncheck`. It also tests the release and CI helpers, generated E2E harness,
 and checked-in example modules.
 
-CI tool versions come from [the separate tools module](.github/tools/go.mod).
+CI tool versions come from [the separate tools module](../.github/tools/go.mod).
 Validation invokes those tools against the candidate source. Formatters and
 fixers must leave the checked-in source unchanged, and the subsequent
 verification commands must pass. GitHub Action updates also have
-[candidate-action smoke tests](.github/workflows/ci-action-smoke.yml). A
+[candidate-action smoke tests](../.github/workflows/ci-action-smoke.yml). A
 successful download or version printout is not the tool's substantive
 validation.
 
@@ -129,7 +129,7 @@ record should identify that execution.
 
 Eligible same-repository Renovate PRs use the automatic E2E route. Other PRs
 that need cloud validation use the authorized [manual E2E
-workflow](.github/workflows/manual-e2e-trigger.yml). This authorization controls
+workflow](../.github/workflows/manual-e2e-trigger.yml). This authorization controls
 access to the cloud runner, rather than adding routine release approval to
 automated dependency updates.
 
@@ -139,7 +139,7 @@ execution receipt can satisfy the release-time cloud evidence requirement.
 
 ## Validation of the complete release
 
-[`release_policy.py`](.github/scripts/release_policy.py) resolves the previous
+[`release_policy.py`](../.github/scripts/release_policy.py) resolves the previous
 lower-version, published stable release on the candidate's first-parent history.
 It verifies that release's annotated tag and signature and uses the tag's commit
 as the comparison boundary. A moving `main` reference, a draft release, or the
@@ -178,7 +178,7 @@ profiles. Reusing cloud evidence does not remove release-time local validation.
 
 ## Signed tags and publication
 
-[`Auto Release`](.github/workflows/auto-release.yml) runs when a push to `main`
+[`Auto Release`](../.github/workflows/auto-release.yml) runs when a push to `main`
 changes `version.go`. A comment-only edit or an unchanged version does not
 publish a release. Manual dispatch is restricted to a mainline
 version-transition commit, and an explicitly requested version must match that
@@ -219,10 +219,10 @@ reconciler in this workflow.
 
 ## Implementation and release records
 
-The update rules are in [`renovate.json`](renovate.json), with candidate scope
+The update rules are in [`renovate.json`](../renovate.json), with candidate scope
 and version checks in
-[`validate_renovate_pr.py`](.github/scripts/validate_renovate_pr.py). The
-[validation workflow](.github/workflows/validation_pipeline.yml), [release
-policy code](.github/scripts/release_policy.py), and [release
-workflow](.github/workflows/auto-release.yml) define the checks described above.
+[`validate_renovate_pr.py`](../.github/scripts/validate_renovate_pr.py). The
+[validation workflow](../.github/workflows/validation_pipeline.yml), [release
+policy code](../.github/scripts/release_policy.py), and [release
+workflow](../.github/workflows/auto-release.yml) define the checks described above.
 Changes to those rules should update this document in the same PR.
