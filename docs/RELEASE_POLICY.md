@@ -120,7 +120,9 @@ workflow separately validates the resulting release commit.
 Cloud E2E tests deployed logging and tracing behavior on Google Cloud. It is
 used for library and integration changes that those tests exercise. Recognized
 example-dependency, preferred-toolchain-only, and CI-tool updates use local
-validation without launching cloud E2E.
+validation without launching cloud E2E. README-only changes, including
+[benchmark results](BENCHMARKS.md), also follow this path. They still require
+local validation and checks of the current PR head and base.
 
 The PR workflow classifies changes by paths and update scope. Its CI-only
 exemption also covers `.github/` changes without module metadata. That exemption

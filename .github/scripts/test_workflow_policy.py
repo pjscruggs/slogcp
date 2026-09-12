@@ -107,9 +107,11 @@ class WorkflowPolicyTests(unittest.TestCase):
         same_repo=True,
         title="Update dependency",
         head_ref="renovate/update",
+        changed_files="inferred",
     ):
         pr = {
             "number": 1,
+            "changed_files": len(files) if changed_files == "inferred" else changed_files,
             "user": {"login": actor},
             "title": title,
             "labels": [{"name": label} for label in labels],
@@ -234,6 +236,139 @@ await (async()=>{
                 for path in ("handler.go", "go.mod", ".e2e/services/e2e-harness/main.go"):
                     self.assertNotEqual(self.classify(policy + [{"filename": path}], actor=actor), "ci_only")
 
+    def test_readme_modification_is_no_cloud_for_humans_and_bots(self):
+        files = [{"filename": "README.md", "status": "modified"}]
+        for actor in ("human", "benchmark[bot]", "renovate[bot]"):
+            for same_repo in (True, False):
+                with self.subTest(actor=actor, same_repo=same_repo):
+                    self.assertEqual(
+                        self.classify(files, actor=actor, same_repo=same_repo),
+                        "readme_only",
+                    )
+
+    def test_readme_exception_requires_complete_unambiguous_file_scope(self):
+        readme = {"filename": "README.md", "status": "modified"}
+        cases = [
+            [],
+            [{"filename": "README.md"}],
+            [{**readme, "previous_filename": "handler.go"}],
+            [{**readme, "filename": "docs/README.md"}],
+        ]
+        cases.extend(
+            [[{**readme, "status": status}] for status in ("added", "removed", "renamed", "copied")]
+        )
+        cases.extend(
+            [readme, {"filename": path, "status": "modified"}]
+            for path in (
+                "handler.go", "go.mod", "go.sum", "version.go",
+                ".github/workflows/validation_pipeline.yml", ".benchmarks/main.go",
+                "docs/USAGE.md", ".e2e/services/e2e-harness/main.go",
+            )
+        )
+        for files in cases:
+            for actor in ("human", "benchmark[bot]", "renovate[bot]"):
+                with self.subTest(files=files, actor=actor):
+                    self.assertNotEqual(self.classify(files, actor=actor), "readme_only")
+        for count in (None, 0, 2, 3001, "1"):
+            with self.subTest(reported_count=count):
+                self.assertNotEqual(
+                    self.classify([readme], changed_files=count), "readme_only"
+                )
+
+    def readme_step_enabled(self, name, *, validation_ok="true"):
+        fixture = {
+            "pr_scope": {"mode": "readme_only"},
+            "trigger_type": {"should_auto_trigger": "true"},
+            "wait_validation": {"ok": validation_ok},
+            "app_token_secrets": {"available": "true"},
+            "have_secrets": {"ok": "true"},
+            "cloud_build": {"build_status": "SUCCESS"},
+        }
+        script = """
+const steps = Object.fromEntries(Object.entries(JSON.parse(process.env.STEPS)).map(
+  ([name, outputs]) => [name, {outputs}]));
+const always = () => true;
+const success = () => true;
+console.log(Boolean(
+""" + step_body(name, "if") + "\n));"
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            env={**os.environ, "STEPS": json.dumps(fixture)},
+            check=True, capture_output=True, text=True,
+        )
+        return result.stdout.strip() == "true"
+
+    def test_readme_uses_existing_local_validation_and_freshness_gates(self):
+        self.assertTrue(self.readme_step_enabled("Wait for scoped local validation to succeed"))
+        for name in (
+            "Revalidate PR authority before E2E acceptance",
+            "Generate App Token for No-Cloud Finalization",
+            "Finalize stable E2E check for updates that do not require cloud E2E",
+        ):
+            for ok in ("true", "false", ""):
+                with self.subTest(step=name, validation_ok=ok):
+                    self.assertEqual(self.readme_step_enabled(name, validation_ok=ok), ok == "true")
+        for name in (
+            "Checkout Target Source For Cloud E2E",
+            "Detect GCP E2E secret availability",
+            "Run E2E Cloud Build",
+            "Generate App Token for Cloud E2E Finalization",
+            "Finalize stable E2E check after Cloud Build",
+        ):
+            with self.subTest(step=name):
+                self.assertFalse(self.readme_step_enabled(name))
+
+    def test_same_repository_readme_automatically_enters_policy_path(self):
+        condition = step_body("Determine Automatic Policy Path", "run").split(
+            "if [[", 1
+        )[1].split("]]; then", 1)[0]
+        for mode in ("readme_only", "normal"):
+            for same_repo in (True, False):
+                with self.subTest(mode=mode, same_repo=same_repo):
+                    expression = condition
+                    for key, value in (
+                        ("github.event.pull_request.head.repo.full_name", "owner/repo" if same_repo else "fork/repo"),
+                        ("github.repository", "owner/repo"),
+                        ("steps.pr_scope.outputs.mode", mode),
+                    ):
+                        expression = expression.replace("${{ " + key + " }}", value)
+                    result = subprocess.run(
+                        ["node", "--input-type=module", "-e", "console.log(Boolean(" + expression + "));"],
+                        check=True, capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.stdout.strip() == "true", same_repo and mode == "readme_only")
+
+    def test_readme_finalization_rejects_stale_or_missing_validation(self):
+        script = step_body(
+            "Finalize stable E2E check for updates that do not require cloud E2E", "script"
+        )
+        for expression, value in (
+            ("steps.create_run_check.outputs.check_run_id", "17"),
+            ("steps.run_id.outputs.e2e_run_id", "fixture-run"),
+            ("steps.pr_scope.outputs.mode", "readme_only"),
+        ):
+            script = script.replace("${{ " + expression + " }}", value)
+        harness = """
+const context = {repo:{owner:'owner',repo:'repo'}};
+const result = {updates:[],outputs:{},failed:false};
+const github = {rest:{checks:{update:async args=>result.updates.push(args)}}};
+const core = {setOutput:(key,value)=>result.outputs[key]=value,
+  setFailed:()=>{result.failed=true}};
+"""
+        for ok in ("true", "false", ""):
+            with self.subTest(validation_ok=ok):
+                completed = subprocess.run(
+                    ["node", "--input-type=module", "-e", harness + script + "\nconsole.log(JSON.stringify(result));"],
+                    env={**os.environ, "FINAL_VALIDATION_OK": ok,
+                         "FINAL_VALIDATION_SUMMARY": "validation fixture", "CHECK_RUN_NAME": "E2E Tests (GCP)"},
+                    check=True, capture_output=True, text=True,
+                )
+                result = json.loads(completed.stdout)
+                self.assertEqual(len(result["updates"]), 1)
+                self.assertEqual(result["updates"][0]["conclusion"], "success" if ok == "true" else "failure")
+                self.assertEqual(result["outputs"]["ok"], "true" if ok == "true" else "false")
+                self.assertEqual(result["failed"], ok != "true")
+
     def aggregate(self, **overrides):
         env = {
             **os.environ,
@@ -270,6 +405,7 @@ await (async()=>{
 
     def test_actual_aggregate_accepts_real_success(self):
         self.assertEqual(self.aggregate(), (0, "validation_passed=true\n"))
+        self.assertEqual(self.aggregate(SCOPE_MODE="readme_only"), (0, "validation_passed=true\n"))
 
     def test_actual_aggregate_rejects_every_unsuccessful_expected_lane(self):
         for lane in (
@@ -282,9 +418,10 @@ await (async()=>{
         ):
             for result in ("failure", "skipped", "cancelled", ""):
                 with self.subTest(lane=lane, result=result):
-                    code, output = self.aggregate(**{lane: result})
-                    self.assertNotEqual(code, 0)
-                    self.assertNotIn("validation_passed=true", output)
+                    for scope in ("automation_config_only", "readme_only"):
+                        code, output = self.aggregate(SCOPE_MODE=scope, **{lane: result})
+                        self.assertNotEqual(code, 0)
+                        self.assertNotIn("validation_passed=true", output)
 
     def test_deliberately_absent_examples_are_not_a_failure(self):
         self.assertEqual(
