@@ -17,7 +17,9 @@ package slogcp
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	jsonv1 "encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +34,13 @@ type groupedAttr struct {
 	groups []string
 	attr   slog.Attr
 }
+
+// logJSONOptions preserves the existing JSON representation while allowing
+// the native encoder to append directly into the staged record buffer.
+var logJSONOptions = jsonv2.JoinOptions(
+	jsonv1.DefaultOptionsV1(),
+	jsontext.EscapeForHTML(false),
+)
 
 // extractErrorFromResolved unwraps an error from a resolved slog.Value when possible.
 func extractErrorFromResolved(v slog.Value) error {
@@ -811,19 +820,15 @@ func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 		}
 	}()
 
-	enc := json.NewEncoder(buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(jsonPayload); err != nil {
+	if err := encodeJSONLine(buf, jsonPayload); err != nil {
 		// Fallback intentionally works at top-level field granularity. Each probe
-		// uses json.Marshal(value), which recursively validates nested content.
+		// uses the same JSON options and recursively validates nested content.
 		// That catches nested unsupported values while keeping retry logic simple.
 		// If retry still fails, common causes are non-deterministic marshalers or
 		// concurrent mutation, not missed nested validation.
 		sanitized := sanitizeTopLevelJSONValues(jsonPayload)
 		buf.Reset()
-		enc = json.NewEncoder(buf)
-		enc.SetEscapeHTML(false)
-		if retryErr := enc.Encode(jsonPayload); retryErr != nil {
+		if retryErr := encodeJSONLine(buf, jsonPayload); retryErr != nil {
 			h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", retryErr))
 			return fmt.Errorf("encode JSON payload after retry: %w", retryErr)
 		}
@@ -844,11 +849,21 @@ func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 	return nil
 }
 
+// encodeJSONLine appends one JSON value and its line terminator. On error the
+// caller must discard the staged bytes before retrying or writing a record.
+func encodeJSONLine(buf *bytes.Buffer, value any) error {
+	if err := jsonv2.MarshalWrite(buf, value, logJSONOptions); err != nil {
+		return fmt.Errorf("marshal JSON log entry: %w", err)
+	}
+	_ = buf.WriteByte('\n') // bytes.Buffer.WriteByte always returns nil.
+	return nil
+}
+
 // sanitizeTopLevelJSONValues replaces top-level values that cannot be JSON
 // encoded with deterministic placeholder strings, preserving the overall record.
 //
 // This function intentionally operates at top-level field granularity. Each
-// probe uses json.Marshal(value), which recursively validates nested content.
+// probe uses the record's JSON options to recursively validate nested content.
 // If any nested value is unsupported, the entire top-level field is replaced.
 func sanitizeTopLevelJSONValues(jsonPayload map[string]any) bool {
 	if len(jsonPayload) == 0 {
@@ -856,7 +871,7 @@ func sanitizeTopLevelJSONValues(jsonPayload map[string]any) bool {
 	}
 	replaced := false
 	for key, value := range jsonPayload {
-		if _, err := json.Marshal(value); err != nil {
+		if _, err := jsonv2.Marshal(value, logJSONOptions); err != nil {
 			jsonPayload[key] = encodeErrorPlaceholder(err)
 			replaced = true
 		}
