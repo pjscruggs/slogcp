@@ -367,9 +367,9 @@ its own Go module:
 
 The [usage guide][usage-guide] walks through bringing these pieces into your own
 application, from creating a logger to configuration and shutdown. Use the
-[configuration reference][configuration] for individual options and the
-[package documentation][package-docs] for API contracts. For specific
-integrations, see the [integration recipes][recipes].
+[configuration reference][configuration] for individual options and the [package
+documentation][package-docs] for API contracts. For specific integrations, see
+the [integration recipes][recipes].
 
 ## HTTP and gRPC Middleware
 
