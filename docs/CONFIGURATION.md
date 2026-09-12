@@ -38,6 +38,46 @@ defer handler.Close()
 logger := slog.New(handler)
 ```
 
+### Structured entry exporters
+
+Transport integrations can implement `slogcp.EntryExporter` and construct a
+handler with `slogcp.NewHandlerWithExporter(exporter, opts...)`. Applications
+continue using `slog.New(handler)` and their existing logging calls. This is an
+extension point; slogcp does not include an RPC exporter.
+
+`Export(ctx, entry)` receives resolved attributes after grouping, replacement,
+and Cloud Logging enrichment, before JSON encoding. `entry.Payload` contains
+the message, application attributes, service context, and error information.
+Recognized trace, labels, HTTP request, source, and severity metadata is exposed
+separately. Unexpected types at reserved metadata keys remain in the payload.
+`Level` preserves custom slog levels; `Severity` provides the full name with
+any custom-level offset. A transport requiring a severity enum should map
+`Level` to its supported values.
+
+Exporters must support concurrent calls, including calls from derived handlers.
+Entry maps and other reference data are borrowed and read-only. Consume them
+before returning, or copy all retained data into transport-owned storage before
+queuing background delivery. A shallow map copy does not own nested values.
+Payloads contain Go values, including custom marshalers and unsupported JSON
+values; exporters are responsible for encoding and error handling. The JSON
+writer's fallback to `!ERROR:` placeholders does not run on this path.
+
+Output redirects are ignored and no log file is opened. Environment
+configuration is still validated. Timestamps default to enabled on every
+runtime, with `WithTime` and `SLOGCP_TIME` taking precedence. Severity aliases
+apply only to JSON output. `WithAsyncOnFile` does not enable a queue for an
+exporter; explicit `WithAsync` does, but usually adds unnecessary buffering when
+the transport already queues entries.
+
+The caller owns exporter shutdown. Stop producers, successfully drain the
+handler with `Shutdown(ctx)` or `Close()`, then flush or close the exporter.
+Handler shutdown does not flush a transport's queue. `Export` errors propagate
+through `Handler.Handle`; ordinary `slog.Logger` methods do not return them.
+Background delivery errors and backend acknowledgements require the transport's
+own API.
+
+### Handler options
+
 Key options:
 
 | Option | Environment variable(s) | Default | Description |
