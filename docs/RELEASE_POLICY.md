@@ -64,6 +64,7 @@ receive a library version bump.
 | Preferred Go toolchain | Update and test the compiler; retain the library's `go` directive | None |
 | Example Go versions and dependencies | Track the latest stable Go release and compatible dependencies; validate the example modules | None |
 | CI tools and GitHub Actions | Update separately from the library graph; execute the changed tools or actions | None |
+| README benchmark results | Documentation refresh | None (`version.go` stays unchanged) |
 | E2E Docker dependencies | Validate the changed build and integration path before automerge | None |
 | Library Go compatibility floor | Explicit compatibility decision, outside routine automated updates | Explicit release decision |
 
