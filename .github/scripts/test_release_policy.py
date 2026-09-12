@@ -48,6 +48,7 @@ class ReleaseIntentTests(unittest.TestCase):
     def test_semantic_patch_and_human_minor_transition(self):
         self.assertEqual(self.check(), {"should_release": "true", "version": "v1.2.4"})
         self.assertEqual(self.check(current="v1.3.0")["version"], "v1.3.0")
+        self.assertEqual(self.check(current="v2.0.0")["version"], "v2.0.0")
 
     def test_same_version_does_not_release(self):
         self.assertEqual(self.check(current="v1.2.3"), {"should_release": "false"})
@@ -65,7 +66,7 @@ class ReleaseIntentTests(unittest.TestCase):
             self.check(event="workflow_dispatch", requested="v1.2.5")
 
     def test_rejects_decrease_wrong_major_and_noncanonical_versions(self):
-        for current in ("v1.2.2", "v1.02.4", "v2.0.0", "v1.2.4-rc1"):
+        for current in ("v1.2.2", "v1.02.4", "v1.2.4-rc1"):
             with self.subTest(current=current), self.assertRaises(ValueError):
                 self.check(current=current)
 

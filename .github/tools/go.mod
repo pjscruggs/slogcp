@@ -1,4 +1,4 @@
-module github.com/pjscruggs/slogcp/.github/tools
+module github.com/pjscruggs/slogcp/v2/.github/tools
 
 go 1.26.0
 
