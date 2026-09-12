@@ -57,9 +57,13 @@ func main() {
         log.Fatalf("Failed to create handler: %v", err)
     }
 
-    // No need to manually Close() when targeting stdout/stderr
-    // For other targets (e.g., WithRedirectToFile),
-    // `defer handler.Close()` to flush and release resources
+    // Close at application shutdown because environment settings can redirect
+    // output to a file or enable buffering even with stdout as the default.
+    defer func() {
+        if err := handler.Close(); err != nil {
+            log.Printf("Close logging: %v", err)
+        }
+    }()
 
     logger := slog.New(handler)
     // Log a simple message
