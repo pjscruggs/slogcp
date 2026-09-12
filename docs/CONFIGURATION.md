@@ -38,6 +38,51 @@ defer handler.Close()
 logger := slog.New(handler)
 ```
 
+### Structured entry exporters
+
+Transport integrations can implement `slogcp.EntryExporter` and construct a
+handler with `slogcp.NewHandlerWithExporter(exporter, opts...)`. Applications
+continue using `slog.New(handler)` and their existing logging calls. The optional
+[`slogcp-grpc`](https://github.com/pjscruggs/slogcp-grpc) module implements this
+interface for the Cloud Logging gRPC API. Pass an official `logging.Logger` to
+its exporter to retain the client's batching, buffering, concurrency, resource,
+and error settings.
+
+`Export(ctx, entry)` receives resolved attributes after grouping, replacement,
+and Cloud Logging enrichment, before JSON encoding. `entry.Payload` contains
+the message, application attributes, service context, and error information.
+Recognized trace, labels, HTTP request, source, and severity metadata is exposed
+separately. Unexpected types at reserved metadata keys remain in the payload.
+`Level` preserves custom slog levels. `Severity` provides the full name with
+any custom-level offset. A transport requiring a severity enum should map
+`Level` to its supported values.
+
+Exporters must support concurrent calls, including calls from derived handlers.
+Entry maps and other reference data are borrowed and read-only. Consume them
+before returning, or copy all retained data into transport-owned storage before
+queuing background delivery. A shallow map copy does not own nested values.
+Payloads contain Go values, including custom marshalers and unsupported JSON
+values. Exporters are responsible for encoding and error handling. The JSON
+writer's fallback to `!ERROR:` placeholders does not run on this path.
+
+Output redirects are ignored and no log file is opened. Environment
+configuration is still validated. Timestamps default to enabled on every
+runtime, with `WithTime` and `SLOGCP_TIME` taking precedence. Severity aliases
+apply only to JSON output. `WithAsyncOnFile` does not enable a queue for an
+exporter. Explicit `WithAsync` does, but usually adds unnecessary buffering when
+the transport already queues entries.
+
+The caller owns exporter shutdown. Stop producers, successfully drain the
+handler with `Shutdown(ctx)` or `Close()`, then flush or close the exporter.
+Handler shutdown does not flush a transport's queue. Without an async handler
+queue, `Export` errors return through `Handler.Handle`. With `WithAsync`, the
+handler queues each entry and reports exporter errors to the writer configured
+by `slogcpasync.WithErrorWriter`. Ordinary `slog.Logger` methods do not return
+handler errors. Background delivery errors and backend acknowledgements
+require the transport's own API.
+
+### Handler options
+
 Key options:
 
 | Option | Environment variable(s) | Default | Description |
@@ -217,7 +262,7 @@ levels: `DEBUG` < `INFO` < `NOTICE` < `WARNING` < `ERROR` < `CRITICAL` < `ALERT`
 < `EMERGENCY` < `DEFAULT`.
 
 
-## HTTP Integration (`github.com/pjscruggs/slogcp/slogcphttp`)
+## HTTP Integration (`github.com/pjscruggs/slogcp/v2/slogcphttp`)
 
 Use `http.Middleware` to wrap servers and `http.Transport` to instrument
 clients:
@@ -323,7 +368,7 @@ payload sizes available via `ScopeFromContext`. `InjectTraceContextMiddleware`
 remains available for the rare case where you disable `otelhttp` and still need
 to recognize `X-Cloud-Trace-Context` manually.
 
-## gRPC Integration (`github.com/pjscruggs/slogcp/slogcpgrpc`)
+## gRPC Integration (`github.com/pjscruggs/slogcp/v2/slogcpgrpc`)
 
 `grpc.UnaryServerInterceptor`, `grpc.StreamServerInterceptor`,
 `grpc.UnaryClientInterceptor`, and `grpc.StreamClientInterceptor` derive per-RPC
@@ -362,44 +407,12 @@ Helpers:
 - `InfoFromContext(ctx)` retrieves the `RequestInfo` captured by the
   interceptors so handlers can inspect RPC metadata at any point.
 
-## Pub/Sub Integration (`github.com/pjscruggs/slogcp/slogcppubsub`)
+## Pub/Sub integration
 
-`slogcppubsub` provides helpers for carrying trace context across Pub/Sub
-boundaries via `pubsub.Message.Attributes`, and for deriving message-scoped
-loggers in pull subscribers (so `slogcp.Logger(ctx)` works inside receive
-handlers). Use `Inject` before publishing and `WrapReceiveHandler` when
-receiving; `Extract` / `ExtractAttributes` and `InfoFromContext` are available
-when you want manual control or need to inspect message metadata.
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `WithLogger(*slog.Logger)` | `slog.Default()` | Base logger used to derive per-message loggers (used by `WrapReceiveHandler`). |
-| `WithProjectID(string)` | detected at runtime | Project used when formatting Cloud Logging trace correlation fields and `gcp.project_id` span attributes. |
-| `WithSubscription(*pubsub.Subscriber)` | (unset) | Captures a trimmed subscription ID from `sub.ID()` for span/logger enrichment. |
-| `WithSubscriptionID(string)` | (unset) | Sets the trimmed subscription ID used for span/logger enrichment. |
-| `WithTopic(*pubsub.Publisher)` | (unset) | Captures a trimmed topic ID from `topic.ID()` for span/logger enrichment. |
-| `WithTopicID(string)` | (unset) | Sets the trimmed topic ID used for span/logger enrichment. |
-| `WithOTel(bool)` | `true` | Enables/disables creation of an application-level consumer span around message processing. |
-| `WithSpanStrategy(slogcppubsub.SpanStrategy)` | `SpanStrategyAlways` | Controls when consumer spans are started (`SpanStrategyAuto` skips when a local span is already active; `SpanStrategyAlways` always starts). |
-| `WithTracerProvider(trace.TracerProvider)` | global tracer provider | Tracer provider used when consumer spans are created. |
-| `WithSpanName(string)` | `pubsub.process` | Span name used when creating consumer spans. |
-| `WithSpanAttributes(attribute.KeyValue...)` | (none) | Additional OpenTelemetry attributes appended to consumer spans. |
-| `WithPublicEndpoint(bool)` | `false` | Treats producers as untrusted: starts a new root trace and links extracted remote context instead of parenting. |
-| `WithRemoteTrace(bool)` | `false` | When `WithPublicEndpoint(true)` and no local span is created (for example, `WithOTel(false)`), controls whether logs correlate to extracted remote trace context. Also reads `SLOGCP_TRUST_REMOTE_TRACE` when unset. |
-| `WithPropagators(propagation.TextMapPropagator)` | `otel.GetTextMapPropagator()` | Propagator used for attribute injection/extraction; passing `nil` is treated the same as omitting the option (use the global propagator). Disable propagation with `WithTracePropagation(false)`. |
-| `WithTracePropagation(bool)` | `true` | Enables/disables trace context extraction and injection via message attributes. |
-| `WithBaggagePropagation(bool)` | `false` | Enables/disables baggage injection/extraction via message attributes when the propagator supports it. |
-| `WithCaseInsensitiveExtraction(bool)` | `false` | Enables case-insensitive lookup for propagation keys during extraction. |
-| `WithInjectOnlyIfSpanPresent(bool)` | `false` | Only injects when a valid span context is present on `ctx`. |
-| `WithLogMessageID(bool)` | `false` | Adds `messaging.message.id` to derived loggers (high-cardinality). |
-| `WithLogOrderingKey(bool)` | `false` | Adds `messaging.gcp_pubsub.message.ordering_key` to derived loggers (can be high-cardinality). |
-| `WithLogDeliveryAttempt(bool)` | `true` | Adds `messaging.gcp_pubsub.message.delivery_attempt` to derived loggers when present. |
-| `WithLogPublishTime(bool)` | `false` | Adds `pubsub.message.publish_time` to derived loggers. |
-| `WithAttrEnricher(func(context.Context, *pubsub.Message, *MessageInfo) []slog.Attr)` | (none) | Appends additional attributes to the derived message logger. |
-| `WithAttrTransformer(func(context.Context, []slog.Attr, *pubsub.Message, *MessageInfo) []slog.Attr)` | (none) | Mutates/redacts the derived message logger attribute slice before it is applied. |
-| `WithGoogClientCompat(bool)` | `false` | Enables both extraction fallback and injection compatibility via `googclient_`-prefixed keys. |
-| `WithGoogClientExtraction(bool)` | `false` | Enables extraction from `googclient_`-prefixed keys when standard keys are absent. |
-| `WithGoogClientInjection(bool)` | `false` | Enables injection of `googclient_`-prefixed keys in addition to standard keys. |
+Install the optional [`slogcp-pubsub`](https://github.com/pjscruggs/slogcp-pubsub)
+module for message trace propagation, scoped loggers, and consumer spans.
+Its [configuration reference](https://github.com/pjscruggs/slogcp-pubsub/blob/main/docs/CONFIGURATION.md)
+documents propagation, trust boundaries, metadata, and instrumentation options.
 
 ## Trace Propagation Defaults
 

@@ -1,0 +1,160 @@
+# Copyright 2025-2026 Patrick J. Scruggs
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+name: README benchmarks
+
+on:
+  schedule:
+    - cron: '23 8 * * 3'
+  workflow_dispatch:
+
+# Reporting is independent of release/E2E gates and never runs on a result push.
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+concurrency:
+  group: readme-benchmarks
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      measured: ${{ steps.needed.outputs.needed }}
+    steps:
+      - name: Check out the measured source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up the repository Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check whether benchmark inputs changed
+        id: needed
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          status=0
+          python .github/scripts/readme_benchmarks.py check \
+            --repo . --readme README.md --source-sha "$SOURCE_SHA" \
+            --repository "$REPOSITORY" --runner ubuntu-latest || status=$?
+          case "$status" in
+            0) echo 'needed=true' >> "$GITHUB_OUTPUT" ;;
+            3) echo 'needed=false' >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Measure the six synchronous handler cases
+        if: steps.needed.outputs.needed == 'true'
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python .github/scripts/readme_benchmarks.py run \
+            --repo . --readme README.md --source-sha "$SOURCE_SHA" \
+            --repository "$REPOSITORY" --runner ubuntu-latest \
+            --workflow-url "$WORKFLOW_URL" --output-dir "$RUNNER_TEMP/benchmark-results"
+
+      - name: Preserve bounded benchmark evidence
+        if: always() && steps.needed.outputs.needed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: readme-benchmarks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/benchmark-results/benchmark.txt
+            ${{ runner.temp }}/benchmark-results/benchmark.stderr.txt
+            ${{ runner.temp }}/benchmark-results/report.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 9
+
+  publish:
+    needs: measure
+    if: >-
+      github.ref == 'refs/heads/main' && needs.measure.outputs.measured == 'true' &&
+      vars.BENCHMARK_README_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: benchmark-readme
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out the trusted publisher source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download this run's measured results
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: readme-benchmarks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/benchmark-results
+
+      - name: Validate the report before acquiring write credentials
+        run: |
+          PYTHONPATH=.github/scripts python -c \
+            'import os; from pathlib import Path; import readme_benchmarks; readme_benchmarks.load_report(Path(os.environ["RUNNER_TEMP"]) / "benchmark-results")'
+
+      - name: Create a repository-scoped benchmark App token
+        id: benchmark_app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.BENCHMARK_APP_ID }}
+          private-key: ${{ secrets.BENCHMARK_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Publish only the signed README result block
+        env:
+          GH_TOKEN: ${{ steps.benchmark_app.outputs.token }}
+          BENCHMARK_README_PUBLISH: ${{ vars.BENCHMARK_README_PUBLISH }}
+          BENCHMARK_SSH_PRIVATE_KEY_B64: ${{ secrets.BENCHMARK_SSH_PRIVATE_KEY_B64 }}
+          BENCHMARK_SSH_PUBLIC_KEY: ${{ secrets.BENCHMARK_SSH_PUBLIC_KEY }}
+          BENCHMARK_SSH_FINGERPRINT: ${{ vars.BENCHMARK_SSH_FINGERPRINT }}
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python .github/scripts/publish_readme_benchmarks.py \
+            --repo . --repository "$REPOSITORY" --source-sha "$SOURCE_SHA" \
+            --artifact-dir "$RUNNER_TEMP/benchmark-results"
+
+      - name: Remove any remaining signing key material
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/benchmark-readme-signing/key" \
+            "$RUNNER_TEMP/benchmark-readme-signing/key.pub" \
+            "$RUNNER_TEMP/benchmark-readme-signing/allowed_signers"
+          if [ -d "$RUNNER_TEMP/benchmark-readme-signing" ]; then
+            rmdir "$RUNNER_TEMP/benchmark-readme-signing"
+          fi

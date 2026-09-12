@@ -26,7 +26,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pjscruggs/slogcp/slogcpasync"
+	"github.com/pjscruggs/slogcp/v2/slogcpasync"
 )
 
 const (
@@ -83,7 +83,8 @@ var (
 	ErrInvalidRedirectTarget = errors.New("slogcp: invalid redirect target")
 )
 
-// Option mutates Handler construction behavior when supplied to [NewHandler].
+// Option mutates Handler construction behavior when supplied to [NewHandler]
+// or [NewHandlerWithExporter].
 //
 // Options follow the functional options pattern and are applied in the order
 // they are provided by the caller.
@@ -98,8 +99,11 @@ type Middleware func(slog.Handler) slog.Handler
 // Handler routes slog records to Google Cloud Logging with optional
 // middlewares, stack traces and trace correlation.
 //
-// JSON payload emission is best-effort. If a field value cannot be encoded by
-// encoding/json, slogcp replaces the failing top-level field with a stable
+// JSON encoding retains encoding/json-compatible value representations and
+// map-key ordering, with HTML escaping disabled.
+//
+// JSON payload emission is best-effort. If a field value cannot be encoded,
+// slogcp replaces the failing top-level field with a stable
 // "!ERROR:<cause>" placeholder and retries once so one unsupported value does
 // not drop the entire entry.
 type Handler struct {
@@ -199,6 +203,7 @@ func (td *traceDiagnostics) warnNormalizedTraceProjectID(value, normalized, sour
 }
 
 type handlerConfig struct {
+	exporter                 EntryExporter
 	Level                    slog.Level
 	AddSource                bool
 	EmitTimeField            bool
@@ -270,6 +275,11 @@ type options struct {
 //	logger := slog.New(h)
 //	logger.Info("ready")
 func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
+	return newHandler(defaultWriter, nil, opts...)
+}
+
+// newHandler shares configuration and pipeline assembly between output modes.
+func newHandler(defaultWriter io.Writer, exporter EntryExporter, opts ...Option) (*Handler, error) {
 	builder := collectOptions(opts)
 	internalLogger := ensureInternalLogger(builder.internalLogger)
 
@@ -279,6 +289,16 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	}
 
 	applyOptions(&cfg, builder)
+	if exporter != nil {
+		cfg.exporter = exporter
+		cfg.Writer = io.Discard
+		cfg.FilePath = ""
+		cfg.ClosableWriter = nil
+		cfg.writerExternallyOwned = true
+		if !cfg.emitTimeFieldConfigured {
+			cfg.EmitTimeField = true
+		}
+	}
 	ensureWriterDefaults(&cfg, defaultWriter)
 	applyFileTargetTimeDefault(&cfg)
 

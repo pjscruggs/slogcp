@@ -1,10 +1,10 @@
-module github.com/pjscruggs/slogcp/examples/timberjack
+module github.com/pjscruggs/slogcp/v2/examples/timberjack
 
 go 1.27.1
 
 require (
 	github.com/DeRuina/timberjack v1.4.7
-	github.com/pjscruggs/slogcp v0.0.0-unpublished
+	github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
 )
 
 require (
@@ -21,4 +21,4 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 )
 
-replace github.com/pjscruggs/slogcp => ../..
+replace github.com/pjscruggs/slogcp/v2 => ../..

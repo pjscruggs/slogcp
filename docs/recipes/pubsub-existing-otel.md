@@ -8,9 +8,23 @@ guide][tracing].
 
 The core slogcp handler can correlate logs with that callback context directly.
 Add `slogcppubsub.WrapReceiveHandler` when you also want message-scoped fields.
-This recipe uses the Pub/Sub v2 Go client; see the [startup guide](../USAGE.md)
-for constructing the slogcp-backed base logger and the [module's Go
+Install the optional `github.com/pjscruggs/slogcp-pubsub` module for this
+recipe. See the [startup guide](../USAGE.md) for constructing the slogcp base
+logger and the [module's Go
 requirement](../../go.mod).
+
+## Add the optional module
+
+Run these commands from the consuming application's module directory.
+
+```sh
+go get github.com/pjscruggs/slogcp/v2 github.com/pjscruggs/slogcp-pubsub
+go mod tidy
+```
+
+The [runnable Pub/Sub example](../../.examples/pubsub/main.go) imports the optional
+module and demonstrates propagation between a publisher and subscriber. Use
+the callback below when your application already owns instrumentation.
 
 ## Preserve the callback's span
 
@@ -27,8 +41,8 @@ import (
 	"log/slog"
 
 	"cloud.google.com/go/pubsub/v2"
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcppubsub"
+	slogcppubsub "github.com/pjscruggs/slogcp-pubsub"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 func messageHandler(
@@ -67,35 +81,36 @@ wrapper so it receives the span context. Retain the existing handling of
 `WithTracePropagation(false)` prevents message attributes from replacing the
 span context supplied by the existing instrumentation. Disabling only span
 creation still permits extraction. `SpanStrategyAuto` alone is also insufficient
-to promise preservation: extraction happens before the strategy checks the
-current span. See the [receive implementation](../../slogcppubsub/receive.go)
-and [propagation implementation](../../slogcppubsub/propagation.go).
+to promise preservation because extraction happens before the strategy checks the
+current span. See the [receive implementation](https://github.com/pjscruggs/slogcp-pubsub/blob/main/receive.go)
+and [propagation implementation](https://github.com/pjscruggs/slogcp-pubsub/blob/main/propagation.go).
 
 The contextual logger retains base attributes and adds fields such as
 `messaging.system`, `messaging.destination.name`, and `messaging.message.id`.
-Message IDs are explicitly enabled here to help investigate redelivery; omit
+Message IDs are explicitly enabled here to help investigate redelivery. Omit
 that option if your application does not need them. The helper does not log the
-message body. It also emits no automatic receive or completion record: the
+message body. It also emits no automatic receive or completion record. The
 callback above owns those log calls.
 
 The success record means processing returned successfully, before `Ack` was
 called. It does not confirm a server-accepted acknowledgment. Adapt the shown
 Nack-on-error policy to your retry and dead-letter handling. Ack/Nack must
-happen inside the callback; the client's [Receive contract][receive] also
+happen inside the callback. The client's [Receive contract][receive] also
 describes concurrency and shutdown behavior.
 
 ## Verify context preservation and completion behavior
 
 In a local test, supply a recording tracer provider and an in-memory log writer.
 Create a local callback span and give the message a valid `traceparent`
-attribute from a *different* trace. Invoke the returned callback and verify:
+attribute from a *different* trace. Invoke the returned callback and verify the
+following behavior.
 
-- Processing and logging use the callback span, not the message attribute's
-  trace. No additional wrapper span is exported.
+- Processing and logging retain the callback span even when the message
+  attributes contain a different trace. No additional wrapper span is exported.
 - The JSON retains the base fields and contains the subscription and message
   IDs. With the trace project configured, its Cloud trace and span fields match
   the callback span.
-- Success emits one INFO completion record; a processing error emits one ERROR
+- Success emits one INFO completion record. A processing error emits one ERROR
   record. A child span created by processing is used by logs that pass its
   context, even when they reuse the message logger.
 
@@ -107,7 +122,7 @@ subscription separately.
 If the supplied context has no valid span, this configuration creates none and
 does not recover one from message attributes. For a subscriber that needs
 slogcppubsub to own extraction and consumer spans, follow the [Pub/Sub package
-guide](../../slogcppubsub/README.md) instead, including its trust-boundary
+guide](https://github.com/pjscruggs/slogcp-pubsub) instead, including its trust-boundary
 options. HTTP push delivery needs an HTTP integration, as described in the
 [usage guide](../USAGE.md#pubsub-and-other-client-libraries).
 

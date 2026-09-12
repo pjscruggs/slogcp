@@ -18,6 +18,7 @@ import copy
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import textwrap
@@ -47,6 +48,7 @@ class ReleaseIntentTests(unittest.TestCase):
     def test_semantic_patch_and_human_minor_transition(self):
         self.assertEqual(self.check(), {"should_release": "true", "version": "v1.2.4"})
         self.assertEqual(self.check(current="v1.3.0")["version"], "v1.3.0")
+        self.assertEqual(self.check(current="v2.0.0")["version"], "v2.0.0")
 
     def test_same_version_does_not_release(self):
         self.assertEqual(self.check(current="v1.2.3"), {"should_release": "false"})
@@ -64,7 +66,7 @@ class ReleaseIntentTests(unittest.TestCase):
             self.check(event="workflow_dispatch", requested="v1.2.5")
 
     def test_rejects_decrease_wrong_major_and_noncanonical_versions(self):
-        for current in ("v1.2.2", "v1.02.4", "v2.0.0", "v1.2.4-rc1"):
+        for current in ("v1.2.2", "v1.02.4", "v1.2.4-rc1"):
             with self.subTest(current=current), self.assertRaises(ValueError):
                 self.check(current=current)
 
@@ -231,6 +233,23 @@ class PublicationTests(unittest.TestCase):
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_readme_benchmark_results_cannot_trigger_auto_release(self):
+        workflow = (
+            Path(__file__).resolve().parents[1] / "workflows/auto-release.yml"
+        ).read_text(encoding="utf-8")
+        push = re.search(r"(?ms)^  push:\n(.*?)(?=^  \S|\Z)", workflow)
+        self.assertIsNotNone(push)
+        paths = re.search(r"(?m)^    paths: \[([^\]]+)\]$", push[1])
+        self.assertIsNotNone(paths, "Auto release must keep an explicit path allowlist")
+        allowed = {path.strip() for path in paths[1].split(",")}
+        self.assertEqual(allowed, {"version.go"})
+        self.assertFalse(allowed.intersection({"README.md"}))
+        # Even a dispatch cannot release a results-only commit after a version bump.
+        intent = ReleaseIntentTests()
+        self.assertEqual(intent.check(current="v1.2.3"), {"should_release": "false"})
+        with self.assertRaisesRegex(ValueError, "original release workflow"):
+            intent.check(current="v1.2.3", event="workflow_dispatch")
+
     def test_actual_publisher_validation_guard_fails_closed(self):
         workflow = (
             Path(__file__).resolve().parents[1] / "workflows/auto-release.yml"

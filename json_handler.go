@@ -17,7 +17,9 @@ package slogcp
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	jsonv1 "encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +34,13 @@ type groupedAttr struct {
 	groups []string
 	attr   slog.Attr
 }
+
+// logJSONOptions preserves existing JSON value representations and map-key
+// ordering while allowing native encoding directly into the staged buffer.
+var logJSONOptions = jsonv2.JoinOptions(
+	jsonv1.DefaultOptionsV1(),
+	jsontext.EscapeForHTML(false),
+)
 
 // extractErrorFromResolved unwraps an error from a resolved slog.Value when possible.
 func extractErrorFromResolved(v slog.Value) error {
@@ -193,11 +202,7 @@ func getRuntimeFrameResolver() func(uintptr) runtime.Frame {
 	return fn
 }
 
-type sourceLocation struct {
-	File     string `json:"file"`
-	Line     int64  `json:"line"`
-	Function string `json:"function"`
-}
+type sourceLocation = SourceLocation
 
 type jsonHandler struct {
 	// mu serializes writes to the shared output sink across handler clones.
@@ -294,8 +299,8 @@ func (h *jsonHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= minLevel
 }
 
-// Handle serializes r into the Cloud Logging wire format, enriching it with
-// trace context and runtime metadata before writing to the configured writer.
+// Handle enriches r with trace context and runtime metadata before exporting
+// the entry or encoding it as Cloud Logging JSON for the configured writer.
 //
 // Example:
 //
@@ -324,7 +329,7 @@ func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 		payload[labelsGroupKey] = dynamicLabels
 	}
 
-	return h.emitJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, ownsSpan, sampled, errType, errMsg, stackStr)
+	return h.emitEntry(ctx, r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, ownsSpan, sampled, errType, errMsg, stackStr)
 }
 
 // WithAttrs returns a new handler that includes the provided attributes on
@@ -681,9 +686,9 @@ func stackTraceComparisonLevel(level slog.Level) slog.Level {
 	return level
 }
 
-// emitJSON writes the fully constructed Cloud Logging payload to the handler
-// writer.
-func (h *jsonHandler) emitJSON(
+// emitEntry finishes enrichment and dispatches to the exporter or JSON writer.
+func (h *jsonHandler) emitEntry(
+	ctx context.Context,
 	r slog.Record,
 	jsonPayload map[string]any,
 	httpReq *HTTPRequest,
@@ -705,6 +710,12 @@ func (h *jsonHandler) emitJSON(
 	h.applyServiceContext(jsonPayload)
 	h.applyHTTPRequest(jsonPayload, httpReq)
 
+	if h.cfg.exporter != nil {
+		if err := h.cfg.exporter.Export(ctx, h.exportEntry(r, jsonPayload)); err != nil {
+			return fmt.Errorf("slogcp: export entry: %w", err)
+		}
+		return nil
+	}
 	return h.writeJSONPayload(jsonPayload)
 }
 
@@ -811,19 +822,15 @@ func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 		}
 	}()
 
-	enc := json.NewEncoder(buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(jsonPayload); err != nil {
+	if err := encodeJSONLine(buf, jsonPayload); err != nil {
 		// Fallback intentionally works at top-level field granularity. Each probe
-		// uses json.Marshal(value), which recursively validates nested content.
+		// uses the same JSON options and recursively validates nested content.
 		// That catches nested unsupported values while keeping retry logic simple.
 		// If retry still fails, common causes are non-deterministic marshalers or
 		// concurrent mutation, not missed nested validation.
 		sanitized := sanitizeTopLevelJSONValues(jsonPayload)
 		buf.Reset()
-		enc = json.NewEncoder(buf)
-		enc.SetEscapeHTML(false)
-		if retryErr := enc.Encode(jsonPayload); retryErr != nil {
+		if retryErr := encodeJSONLine(buf, jsonPayload); retryErr != nil {
 			h.internalLogger.Error("failed to render JSON log entry", slog.Any("error", retryErr))
 			return fmt.Errorf("encode JSON payload after retry: %w", retryErr)
 		}
@@ -844,11 +851,21 @@ func (h *jsonHandler) writeJSONPayload(jsonPayload map[string]any) error {
 	return nil
 }
 
+// encodeJSONLine appends one JSON value and its line terminator. On error the
+// caller must discard the staged bytes before retrying or writing a record.
+func encodeJSONLine(buf *bytes.Buffer, value any) error {
+	if err := jsonv2.MarshalWrite(buf, value, logJSONOptions); err != nil {
+		return fmt.Errorf("marshal JSON log entry: %w", err)
+	}
+	_ = buf.WriteByte('\n') // bytes.Buffer.WriteByte always returns nil.
+	return nil
+}
+
 // sanitizeTopLevelJSONValues replaces top-level values that cannot be JSON
 // encoded with deterministic placeholder strings, preserving the overall record.
 //
 // This function intentionally operates at top-level field granularity. Each
-// probe uses json.Marshal(value), which recursively validates nested content.
+// probe uses the record's JSON options to recursively validate nested content.
 // If any nested value is unsupported, the entire top-level field is replaced.
 func sanitizeTopLevelJSONValues(jsonPayload map[string]any) bool {
 	if len(jsonPayload) == 0 {
@@ -856,7 +873,7 @@ func sanitizeTopLevelJSONValues(jsonPayload map[string]any) bool {
 	}
 	replaced := false
 	for key, value := range jsonPayload {
-		if _, err := json.Marshal(value); err != nil {
+		if _, err := jsonv2.Marshal(value, logJSONOptions); err != nil {
 			jsonPayload[key] = encodeErrorPlaceholder(err)
 			replaced = true
 		}

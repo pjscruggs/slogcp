@@ -199,7 +199,7 @@ class GenerateGoModuleTests(unittest.TestCase):
                 module_dir=module_dir,
                 pinned_modules=[
                     {
-                        "module_path": "github.com/pjscruggs/slogcp-grpc-adapter",
+                        "module_path": "github.com/pjscruggs/slogcp-grpc-adapter/v2",
                         "replace_path": "./slogcp-grpc-adapter",
                     }
                 ],

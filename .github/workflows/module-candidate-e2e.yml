@@ -1,0 +1,271 @@
+name: Optional Module Candidate E2E
+
+on:
+  workflow_call:
+    inputs:
+      candidate_kind:
+        type: string
+        required: true
+      expected_gcp_project_id:
+        type: string
+        required: true
+      local_check_name:
+        type: string
+        default: Module Local Validation Policy
+      pr_number:
+        type: string
+        default: ''
+    secrets:
+      GCP_PROJECT_ID:
+        required: true
+      GCP_VALIDATION_E2E_WIF_PROVIDER:
+        required: true
+      GCP_VALIDATION_E2E_SERVICE_ACCOUNT_EMAIL:
+        required: true
+      GCP_E2E_ARTIFACTS_BUCKET:
+        required: true
+      GCP_E2E_ARTIFACT_REGISTRY_REPO:
+        required: true
+      GCP_E2E_CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL:
+        required: true
+      GCP_E2E_RUNTIME_SERVICE_ACCOUNT_EMAIL:
+        required: true
+      GCP_E2E_RUN_REGION:
+        required: true
+      GCP_E2E_TRACE_PUBSUB_TOPIC:
+        required: true
+      GCP_E2E_TRACE_PUBSUB_SUBSCRIPTION:
+        required: true
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+jobs:
+  cloud:
+    name: Module E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      checks: read
+      pull-requests: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCS_BUCKET_NAME: ${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}
+      GCS_SOURCE_STAGING_DIR: gs://${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}/cloudbuild/source
+      ARTIFACT_REGISTRY_REPO: ${{ secrets.GCP_E2E_ARTIFACT_REGISTRY_REPO }}
+      E2E_CALLER_SERVICE_ACCOUNT: ${{ secrets.GCP_E2E_CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL }}
+      E2E_SERVICE_ACCOUNT: ${{ secrets.GCP_E2E_RUNTIME_SERVICE_ACCOUNT_EMAIL }}
+      RUN_REGION: ${{ secrets.GCP_E2E_RUN_REGION }}
+      TRACE_PUBSUB_TOPIC: ${{ secrets.GCP_E2E_TRACE_PUBSUB_TOPIC }}
+      TRACE_PUBSUB_SUBSCRIPTION: ${{ secrets.GCP_E2E_TRACE_PUBSUB_SUBSCRIPTION }}
+    steps:
+      - name: Authorize candidate and wait for current local validation
+        id: subject
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          CANDIDATE_KIND: ${{ inputs.candidate_kind }}
+          LOCAL_CHECK_NAME: ${{ inputs.local_check_name }}
+          CALLER_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          DISPATCH_PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_PROJECT: ${{ inputs.expected_gcp_project_id }}
+        with:
+          script: |
+            const repositories = {
+              adapter: 'pjscruggs/slogcp-grpc-adapter',
+              pubsub: 'pjscruggs/slogcp-pubsub',
+              grpc: 'pjscruggs/slogcp-grpc'
+            };
+            const repository = `${context.repo.owner}/${context.repo.repo}`;
+            if (repositories[process.env.CANDIDATE_KIND] !== repository) {
+              throw new Error('Candidate kind does not match the authorized repository');
+            }
+            async function infrastructurePin(ref) {
+              const {data: callerFile} = await github.rest.repos.getContent({
+                owner: context.repo.owner, repo: context.repo.repo,
+                path: '.github/workflows/module-e2e.yml', ref
+              });
+              const callerSource = Buffer.from(callerFile.content, 'base64').toString('utf8');
+              const pins = [...callerSource.matchAll(/uses: pjscruggs\/slogcp\/\.github\/workflows\/module-candidate-e2e\.yml@([0-9a-f]{40})\b/g)];
+              if (pins.length !== 1) throw new Error('Caller must pin one reviewed infrastructure commit');
+              return pins[0][1];
+            }
+            const trustedPin = await infrastructurePin(process.env.CALLER_WORKFLOW_SHA);
+            core.setOutput('infrastructure_revision', trustedPin);
+            if (!process.env.EXPECTED_PROJECT || process.env.EXPECTED_PROJECT !== process.env.GCP_PROJECT_ID) {
+              throw new Error('Configured project differs from the allowed project');
+            }
+            let eventPR = context.payload.pull_request;
+            let manualPR = false;
+            if (process.env.DISPATCH_PR_NUMBER) {
+              if (context.eventName !== 'workflow_dispatch' || !/^[1-9][0-9]*$/.test(process.env.DISPATCH_PR_NUMBER)) {
+                throw new Error('Manual PR validation requires a valid dispatch PR number');
+              }
+              const {data: permission} = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner, repo: context.repo.repo, username: context.actor
+              });
+              if (!['admin', 'write', 'maintain'].includes(permission.permission)) {
+                throw new Error('Manual PR validation requires repository write permission');
+              }
+              const {data: selectedPR} = await github.rest.pulls.get({
+                owner: context.repo.owner, repo: context.repo.repo,
+                pull_number: Number(process.env.DISPATCH_PR_NUMBER)
+              });
+              if (context.ref !== 'refs/heads/main' &&
+                  (context.ref !== `refs/heads/${selectedPR.head.ref}` || context.sha !== selectedPR.head.sha ||
+                   process.env.CALLER_WORKFLOW_SHA !== selectedPR.head.sha)) {
+                throw new Error('Feature dispatch must execute the exact candidate workflow commit');
+              }
+              eventPR = selectedPR;
+              manualPR = true;
+            }
+            if (!eventPR) {
+              if (!['push', 'workflow_dispatch'].includes(context.eventName) || context.ref !== 'refs/heads/main') {
+                throw new Error('Release validation requires an immutable main branch subject');
+              }
+              core.setOutput('sha', context.sha);
+              core.setOutput('base', context.sha);
+              return;
+            }
+            if (context.eventName !== 'pull_request_target' && !manualPR) {
+              throw new Error('PR cloud validation requires the trusted target workflow');
+            }
+            const {owner, repo} = context.repo;
+            const {data: base} = await github.rest.git.getRef({owner, repo, ref: 'heads/main'});
+            const baseSHA = base.object.sha;
+            for (let attempt = 0; attempt < 120; attempt++) {
+              const [{data: pr}, {data: liveBase}] = await Promise.all([
+                github.rest.pulls.get({owner, repo, pull_number: eventPR.number}),
+                github.rest.git.getRef({owner, repo, ref: 'heads/main'})
+              ]);
+              if (pr.state !== 'open' || pr.head.sha !== eventPR.head.sha ||
+                  pr.head.repo?.full_name !== repository || pr.base.repo?.full_name !== repository ||
+                  pr.base.ref !== 'main' || liveBase.object.sha !== baseSHA) {
+                throw new Error('Candidate head or current base changed');
+              }
+              const {data: comparison} = await github.rest.repos.compareCommitsWithBasehead({
+                owner, repo, basehead: `${baseSHA}...${pr.head.sha}`
+              });
+              if (comparison.behind_by !== 0 || comparison.merge_base_commit.sha !== baseSHA) {
+                throw new Error('Candidate must contain current main');
+              }
+              const {data: checks} = await github.rest.checks.listForRef({
+                owner, repo, ref: pr.head.sha, check_name: process.env.LOCAL_CHECK_NAME, filter: 'latest', per_page: 100
+              });
+              const check = checks.check_runs.filter(item => item.name === process.env.LOCAL_CHECK_NAME && item.app?.slug === 'github-actions')
+                .sort((a, b) => b.id - a.id)[0];
+              if (check?.status === 'completed') {
+                if (check.conclusion !== 'success') throw new Error('Required local validation failed');
+                const candidatePin = await infrastructurePin(pr.head.sha);
+                if (candidatePin !== trustedPin) {
+                  const {data: ancestry} = await github.rest.repos.compareCommitsWithBasehead({
+                    owner: 'pjscruggs', repo: 'slogcp', basehead: `${candidatePin}...main`
+                  });
+                  if (ancestry.merge_base_commit?.sha !== candidatePin) {
+                    throw new Error('Updated infrastructure must come from the reviewed core main history');
+                  }
+                  core.setOutput('infrastructure_revision', candidatePin);
+                }
+                core.setOutput('sha', pr.head.sha);
+                core.setOutput('base', baseSHA);
+                core.setOutput('pr_number', String(eventPR.number));
+                return;
+              }
+              await new Promise(resolve => setTimeout(resolve, 60000));
+            }
+            throw new Error('Timed out waiting for current local validation');
+
+      - name: Checkout reviewed infrastructure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: pjscruggs/slogcp
+          ref: ${{ steps.subject.outputs.infrastructure_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: infrastructure
+
+      - name: Checkout exact optional module
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.subject.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: candidate
+
+      - name: Resolve the required core commit
+        id: core
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(awk '$1 == "github.com/pjscruggs/slogcp/v2" {print $2; exit}' candidate/go.mod)"
+          [[ "$version" =~ ^v2\.[0-9]+\.[0-9]+(-[0-9]{14}-[0-9a-f]{12})?$ ]]
+          revision="$version"
+          if [[ "$version" =~ -[0-9]{14}-([0-9a-f]{12})$ ]]; then revision="${BASH_REMATCH[1]}"; fi
+          sha="$(gh api "repos/pjscruggs/slogcp/commits/$revision" --jq .sha)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout required core source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: pjscruggs/slogcp
+          ref: ${{ steps.core.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: core-source
+
+      - name: Authenticate to the configured GCP project
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_VALIDATION_E2E_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_VALIDATION_E2E_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Run the complete cloud suite with immutable candidates
+        id: cloud
+        env:
+          CANDIDATE_KIND: ${{ inputs.candidate_kind }}
+          CANDIDATE_SHA: ${{ steps.subject.outputs.sha }}
+          PR_SHA: ${{ steps.core.outputs.sha }}
+          LIB_REPO_FULL_NAME: pjscruggs/slogcp
+          E2E_RUN_ID: module-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          case "$CANDIDATE_KIND" in adapter|pubsub|grpc) ;; *) exit 1 ;; esac
+          cd core-source
+          bash ../infrastructure/.github/scripts/run_e2e_cloud_build.sh \
+            --source-mode local --dependency-mode floor --toolchain-mode repo \
+            --trusted-e2e-root ../infrastructure/.e2e \
+            "--${CANDIDATE_KIND}-checkout" ../candidate \
+            "--${CANDIDATE_KIND}-sha" "$CANDIDATE_SHA"
+
+      - name: Require successful full cloud validation
+        env:
+          BUILD_STATUS: ${{ steps.cloud.outputs.build_status }}
+        run: test "$BUILD_STATUS" = SUCCESS
+
+      - name: Require unchanged candidate authority
+        if: steps.subject.outputs.pr_number != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          EXPECTED_HEAD: ${{ steps.subject.outputs.sha }}
+          EXPECTED_BASE: ${{ steps.subject.outputs.base }}
+          PR_NUMBER: ${{ steps.subject.outputs.pr_number }}
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const [{data: pr}, {data: base}] = await Promise.all([
+              github.rest.pulls.get({owner, repo, pull_number: Number(process.env.PR_NUMBER)}),
+              github.rest.git.getRef({owner, repo, ref: 'heads/main'})
+            ]);
+            if (pr.state !== 'open' || pr.head.sha !== process.env.EXPECTED_HEAD ||
+                pr.head.repo?.full_name !== `${owner}/${repo}` || pr.base.ref !== 'main' ||
+                base.object.sha !== process.env.EXPECTED_BASE) {
+              throw new Error('Candidate head or base changed during cloud validation');
+            }

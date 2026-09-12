@@ -15,7 +15,7 @@ wrapper creates the request span before calling application handlers.
 From the consuming application's Go module, add the core library.
 
 ```sh
-go get github.com/pjscruggs/slogcp
+go get github.com/pjscruggs/slogcp/v2
 ```
 
 Check the minimum Go requirement in [`go.mod`](../../go.mod). The application's
@@ -36,7 +36,7 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 func newAppLogger(
@@ -84,8 +84,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/v2"
+	"github.com/pjscruggs/slogcp/v2/slogcphttp"
 	"go.opentelemetry.io/otel/trace"
 )
 

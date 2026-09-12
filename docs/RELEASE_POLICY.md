@@ -1,10 +1,11 @@
 # slogcp release policy
 
-[slogcp](../README.md) provides a Go `log/slog` handler and HTTP, gRPC, and
-Pub/Sub integrations for Google Cloud. The library keeps an intentional Go
-compatibility floor and dependency minimums. Security repairs can advance those
-minimums through automated patch releases. Examples and development tools update
-independently.
+[slogcp](../README.md) provides a Go `log/slog` handler and HTTP and gRPC
+integrations for Google Cloud. Optional modules provide Pub/Sub helpers,
+Cloud Logging API delivery, and gRPC middleware event logging. The library keeps
+an intentional Go compatibility floor and dependency minimums. Security repairs
+can advance those minimums through automated patch releases. Examples and
+development tools update independently.
 
 A release identifies an exact source commit, passes local validation, and
 requires matching cloud test evidence when the release affects library or E2E
@@ -13,29 +14,37 @@ release, including changes merged before the version bump.
 
 ## Go compatibility and dependency requirements
 
-The library's compatibility floor is Go 1.26, declared as `go 1.26.0` in
+The library's compatibility floor is the `go` directive in
 [`go.mod`](../go.mod). Renovate does not update that directive. Raising it
 requires a deliberate compatibility decision.
 
 [The `toolchain` directive](https://go.dev/doc/toolchain) selects the preferred
 compiler for work on slogcp itself. It advances independently of the
-compatibility floor. CI tests the library with a patched compiler on the Go 1.26
-line and with the preferred compiler. Those tests set `GOTOOLCHAIN=local` and
-verify the running compiler, so automatic toolchain switching cannot conceal a
-floor-compatibility failure.
+compatibility floor. CI tests the library with a patched compiler on the
+declared compatibility line and with the preferred compiler. Those tests set
+`GOTOOLCHAIN=local` and verify the running compiler, so automatic toolchain
+switching cannot conceal a floor compatibility failure.
 
-Dependency requirements are lower bounds, not a lockfile for consuming
-applications. An application's other dependencies may select newer versions
+Dependency requirements set lower bounds for consuming applications.
+An application's other dependencies may select newer versions
 under [Go's minimal version
 selection](https://go.dev/ref/mod#minimal-version-selection). Routine upstream
 releases do not automatically increase slogcp's library requirements. A security
-repair or a library correctness fix can justify an increase; using a newer
+repair or a library correctness fix can justify an increase. Using a newer
 compiler or example dependency does not.
 
-The optional
-[`slogcp-grpc-adapter`](https://github.com/pjscruggs/slogcp-grpc-adapter) is
-released separately. Keeping that integration in its own module leaves
-go-grpc-middleware out of the core slogcp dependency graph.
+The optional modules are released separately and keep their integration
+dependencies outside the core slogcp module graph.
+
+| Module | Integration |
+| --- | --- |
+| [`slogcp-pubsub`](https://github.com/pjscruggs/slogcp-pubsub) | Pub/Sub trace propagation and message loggers |
+| [`slogcp-grpc`](https://github.com/pjscruggs/slogcp-grpc) | Cloud Logging API delivery through the official client |
+| [`slogcp-grpc-adapter`](https://github.com/pjscruggs/slogcp-grpc-adapter) | gRPC middleware event logging |
+
+Each repository has its own dependency maintenance, validation, cloud E2E
+evidence, and signed release workflow. Application examples import these
+modules through ordinary Go requirements.
 
 ## Automated maintenance and release intent
 
@@ -64,6 +73,7 @@ receive a library version bump.
 | Preferred Go toolchain | Update and test the compiler; retain the library's `go` directive | None |
 | Example Go versions and dependencies | Track the latest stable Go release and compatible dependencies; validate the example modules | None |
 | CI tools and GitHub Actions | Update separately from the library graph; execute the changed tools or actions | None |
+| README benchmark results | Documentation refresh | None (`version.go` stays unchanged) |
 | E2E Docker dependencies | Validate the changed build and integration path before automerge | None |
 | Library Go compatibility floor | Explicit compatibility decision, outside routine automated updates | Explicit release decision |
 
@@ -76,8 +86,9 @@ The publisher recognizes an increase in `Version` relative to the preceding
 mainline commit. A label, PR title, or Conventional Commit prefix is not release
 intent. For non-security library changes, maintainers select the version after
 considering the complete unreleased change. The publisher accepts canonical
-stable `v0.x.y` and `v1.x.y` versions for the unsuffixed module path; prerelease
-and build-metadata versions are outside this automated publication path.
+stable semantic versions across major releases. Module paths follow Go's
+major version suffix rules. Prerelease and build metadata versions are outside
+this automated publication path.
 
 ## Validation before merge
 
@@ -119,7 +130,9 @@ workflow separately validates the resulting release commit.
 Cloud E2E tests deployed logging and tracing behavior on Google Cloud. It is
 used for library and integration changes that those tests exercise. Recognized
 example-dependency, preferred-toolchain-only, and CI-tool updates use local
-validation without launching cloud E2E.
+validation without launching cloud E2E. README-only changes, including
+[benchmark results](BENCHMARKS.md), also follow this path. They still require
+local validation and checks of the current PR head and base.
 
 The PR workflow classifies changes by paths and update scope. Its CI-only
 exemption also covers `.github/` changes without module metadata. That exemption

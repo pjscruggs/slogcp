@@ -32,8 +32,11 @@ from typing import Any
 
 
 METADATA_FILE_NAME = "go.module.json"
-SLOGCP_MODULE_PATH = "github.com/pjscruggs/slogcp"
-ADAPTER_MODULE_PATH = "github.com/pjscruggs/slogcp-grpc-adapter"
+SLOGCP_MODULE_PATH = "github.com/pjscruggs/slogcp/v2"
+ADAPTER_MODULE_PATH = "github.com/pjscruggs/slogcp-grpc-adapter/v2"
+PUBSUB_MODULE_PATH = "github.com/pjscruggs/slogcp-pubsub"
+GRPC_MODULE_PATH = "github.com/pjscruggs/slogcp-grpc"
+OPTIONAL_MODULE_PATHS = {ADAPTER_MODULE_PATH, PUBSUB_MODULE_PATH, GRPC_MODULE_PATH}
 LOCAL_E2E_PREFIX = "github.com/pjscruggs/slogcp-e2e-internal/"
 LOCAL_PJSCRUGGS_PREFIX = "github.com/pjscruggs/"
 GO_BINARY = os.environ.get("GO_BINARY", "go")
@@ -415,7 +418,8 @@ def materialize_adapter_sources(
     for item in pinned_modules:
         if not isinstance(item, dict):
             continue
-        if item.get("module_path") != ADAPTER_MODULE_PATH:
+        optional_module = item.get("module_path")
+        if optional_module not in OPTIONAL_MODULE_PATHS:
             continue
 
         replace_path = item.get("replace_path")
@@ -426,7 +430,7 @@ def materialize_adapter_sources(
         destination_dir = (module_dir / replace_path).resolve()
         fixture: dict[str, Any] = {
             "parent_module_dir": str(module_dir),
-            "module_path": ADAPTER_MODULE_PATH,
+            "module_path": optional_module,
             "version": version,
             "replace_path": replace_path,
             "destination": str(destination_dir),
@@ -439,7 +443,7 @@ def materialize_adapter_sources(
 
         source_dir = download_module_source(
             module_dir=module_dir,
-            module_path_value=ADAPTER_MODULE_PATH,
+            module_path_value=optional_module,
             version=version,
             env=env,
         )
@@ -1582,10 +1586,11 @@ def generate_combined_consumer(
     *,
     module_dir: Path,
     slogcp_dir: Path,
-    adapter_dir: Path,
+    adapter_dir: Path | None,
     go_version: str,
     slogcp_reference: str,
     env: dict[str, str],
+    optional_dirs: dict[str, Path] | None = None,
 ) -> dict[str, Any]:
     """Prepare a disposable consumer; native Go selects its combined graph."""
     module_dir = module_dir.resolve()
@@ -1594,10 +1599,27 @@ def generate_combined_consumer(
         raise ValueError(
             f"consumer compiler does not match go{go_version}: {compiler.stdout}{compiler.stderr}"
         )
-    sources = {
-        SLOGCP_MODULE_PATH: slogcp_dir.resolve(),
-        ADAPTER_MODULE_PATH: adapter_dir.resolve(),
-    }
+    sources = {SLOGCP_MODULE_PATH: slogcp_dir.resolve()}
+    supplied = dict(optional_dirs or {})
+    if adapter_dir is not None:
+        supplied[ADAPTER_MODULE_PATH] = adapter_dir.resolve()
+    for source in (slogcp_dir.resolve(), *(path.resolve() for path in supplied.values())):
+        if source == module_dir or source in module_dir.parents or module_dir in source.parents:
+            raise ValueError("consumer output and library inputs must be separate trees")
+    metadata = load_metadata(module_dir)
+    for item in metadata.get("pinned_modules", []):
+        name = item.get("module_path")
+        if name not in OPTIONAL_MODULE_PATHS:
+            continue
+        if name in supplied:
+            sources[name] = supplied[name].resolve()
+        else:
+            sources[name] = download_module_source(
+                module_dir=module_dir,
+                module_path_value=name,
+                version=resolve_version(item, slogcp_reference),
+                env=env,
+            )
     fingerprints = {}
     for name, source in sources.items():
         if (
@@ -1612,10 +1634,7 @@ def generate_combined_consumer(
             raise ValueError(f"wrong candidate module at {source}; expected {name}")
         fingerprints[name] = source_fingerprint(source)
 
-    destinations = {
-        SLOGCP_MODULE_PATH: module_dir / "slogcp",
-        ADAPTER_MODULE_PATH: module_dir / "slogcp-grpc-adapter",
-    }
+    destinations = {name: module_dir / name.removesuffix("/v2").rsplit("/", 1)[1] for name in sources}
     for name, destination in destinations.items():
         if not destination.exists():
             shutil.copytree(
@@ -1699,6 +1718,9 @@ def generate_combined_consumer(
         graph = list(decode_json_stream(completed.stdout))
         for name, destination in destinations.items():
             selected = next((item for item in graph if item["Path"] == name), None)
+            if selected is None and name == SLOGCP_MODULE_PATH:
+                # The harness queries remote services and has no core library import.
+                continue
             if (
                 not selected
                 or Path(selected.get("Dir", "")).resolve() != destination.resolve()
@@ -1713,6 +1735,7 @@ def generate_combined_consumer(
             "compiler": compiler.stdout.strip(),
             "gotoolchain": env.get("GOTOOLCHAIN", ""),
             "module_graph": graph,
+            "selected_source_modules": [item["Path"] for item in graph if item["Path"] in sources],
             "source_fingerprints": fingerprints,
         }
     finally:
@@ -1740,6 +1763,8 @@ def main() -> int:
     parser.add_argument(
         "--adapter-dir", help="Immutable adapter input for combined-candidate mode"
     )
+    parser.add_argument("--pubsub-dir", help="Immutable Pub/Sub candidate source")
+    parser.add_argument("--grpc-dir", help="Immutable gRPC transport candidate source")
     parser.add_argument(
         "--graph-profile",
         choices=["root-parity", "combined-candidate"],
@@ -1800,9 +1825,9 @@ def main() -> int:
         parse_go_version(go_version)
 
         if args.graph_profile == "combined-candidate":
-            if not args.adapter_dir or args.dependency_mode != "floor":
+            if not (args.adapter_dir or args.pubsub_dir or args.grpc_dir) or args.dependency_mode != "floor":
                 raise ValueError(
-                    "combined-candidate requires --adapter-dir and dependency-mode=floor"
+                    "combined-candidate requires candidate source and dependency-mode=floor"
                 )
             report["slogcp_shared_parity_scope"] = None
             report["failed_stage"] = "combined_consumer_generation"
@@ -1812,14 +1837,22 @@ def main() -> int:
                     generate_combined_consumer(
                         module_dir=module_dir,
                         slogcp_dir=slogcp_dir,
-                        adapter_dir=Path(args.adapter_dir),
+                        adapter_dir=Path(args.adapter_dir) if args.adapter_dir else None,
                         go_version=go_version,
                         slogcp_reference=slogcp_reference,
                         env=env,
+                        optional_dirs={name: Path(directory) for name, directory in (
+                            (PUBSUB_MODULE_PATH, args.pubsub_dir),
+                            (GRPC_MODULE_PATH, args.grpc_dir),
+                        ) if directory},
                     )
                 )
-        elif args.adapter_dir:
-            raise ValueError("--adapter-dir requires graph-profile=combined-candidate")
+            consumed = {name for module in report["modules"] for name in module["selected_source_modules"]}
+            for name, directory in ((ADAPTER_MODULE_PATH, args.adapter_dir), (PUBSUB_MODULE_PATH, args.pubsub_dir), (GRPC_MODULE_PATH, args.grpc_dir)):
+                if directory and name not in consumed:
+                    raise ValueError(f"candidate was not consumed by any E2E service {name}")
+        elif args.adapter_dir or args.pubsub_dir or args.grpc_dir:
+            raise ValueError("candidate source requires graph-profile=combined-candidate")
 
         if args.graph_profile == "root-parity":
             generate_root_parity_modules(

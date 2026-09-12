@@ -10,13 +10,13 @@
       "replace_path": "./traceproto"
     },
     {
-      "module_path": "github.com/pjscruggs/slogcp",
+      "module_path": "github.com/pjscruggs/slogcp/v2",
       "version_source": "slogcp_reference",
       "replace_path": "./slogcp"
     },
     {
-      "module_path": "github.com/pjscruggs/slogcp-grpc-adapter",
-      "version": "v1.0.0",
+      "module_path": "github.com/pjscruggs/slogcp-grpc-adapter/v2",
+      "version": "v2.0.0-20260912111532-1cd3ce824a74",
       "replace_path": "./slogcp-grpc-adapter"
     }
   ]

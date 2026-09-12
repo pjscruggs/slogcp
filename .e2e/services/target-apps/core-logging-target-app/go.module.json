@@ -3,9 +3,14 @@
   "seed_requirements": {},
   "pinned_modules": [
     {
-      "module_path": "github.com/pjscruggs/slogcp",
+      "module_path": "github.com/pjscruggs/slogcp/v2",
       "version_source": "slogcp_reference",
       "replace_path": "./slogcp"
+    },
+    {
+      "module_path": "github.com/pjscruggs/slogcp-grpc",
+      "version": "v0.0.0-20260912111453-931bb73e7329",
+      "replace_path": "./slogcp-grpc"
     }
   ]
 }

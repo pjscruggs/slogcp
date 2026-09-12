@@ -1,9 +1,9 @@
-module github.com/pjscruggs/slogcp/examples/http-client
+module github.com/pjscruggs/slogcp/v2/examples/http-client
 
 go 1.27.1
 
 require (
-	github.com/pjscruggs/slogcp v0.0.0-unpublished
+	github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 )
@@ -23,4 +23,4 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 )
 
-replace github.com/pjscruggs/slogcp => ../..
+replace github.com/pjscruggs/slogcp/v2 => ../..

@@ -30,6 +30,10 @@ Options:
   --trusted-e2e-root DIR
   --adapter-checkout DIR
   --adapter-sha SHA
+  --pubsub-checkout DIR
+  --pubsub-sha SHA
+  --grpc-checkout DIR
+  --grpc-sha SHA
   --project ID
   --region REGION
   --artifact-registry-repo REPO
@@ -56,6 +60,10 @@ Env-backed defaults:
   E2E_TRUSTED_E2E_ROOT
   E2E_ADAPTER_CHECKOUT
   E2E_ADAPTER_SHA
+  E2E_PUBSUB_CHECKOUT
+  E2E_PUBSUB_SHA
+  E2E_GRPC_CHECKOUT
+  E2E_GRPC_SHA
   GCP_PROJECT_ID
   RUN_REGION
   ARTIFACT_REGISTRY_REPO
@@ -109,7 +117,7 @@ derive_slogcp_ref() {
     fi
 
     short_commit="${ref:0:12}"
-    printf 'v0.0.0-%s-%s\n' "$commit_time" "$short_commit"
+    printf 'v2.0.0-%s-%s\n' "$commit_time" "$short_commit"
 }
 
 derive_repo_go_version() {
@@ -193,14 +201,25 @@ stage_local_build_source() {
     rm -rf "$staging_root/services"
     stage_go_module_checkout "." "$staging_root/lib-repo-checkout" "$PR_SHA"
     mkdir -p "$staging_root/services"
-    cp -R "$staging_root/lib-repo-checkout/.e2e/services/." "$staging_root/services/"
+    if [[ -n "$E2E_ADAPTER_SHA${E2E_PUBSUB_SHA:-}${E2E_GRPC_SHA:-}" ]]; then
+        git -C "$infrastructure_repo" archive --format=tar "${infrastructure_sha}:${infrastructure_path%/}/services" \
+            | tar -xf - -C "$staging_root/services"
+    else
+        cp -R "$staging_root/lib-repo-checkout/.e2e/services/." "$staging_root/services/"
+    fi
 
     if [[ -n "$E2E_ADAPTER_SHA" ]]; then
         echo "Staging explicit adapter commit $E2E_ADAPTER_SHA"
         stage_go_module_checkout "$E2E_ADAPTER_CHECKOUT" "$staging_root/slogcp-grpc-adapter" "$E2E_ADAPTER_SHA"
     fi
-    printf '{"root_commit":"%s","adapter_commit":"%s","infrastructure_commit":"%s"}\n' \
-        "$PR_SHA" "$E2E_ADAPTER_SHA" "$infrastructure_sha" > "$staging_root/source-identities.json"
+    if [[ -n "${E2E_PUBSUB_SHA:-}" ]]; then
+        stage_go_module_checkout "$E2E_PUBSUB_CHECKOUT" "$staging_root/slogcp-pubsub" "$E2E_PUBSUB_SHA"
+    fi
+    if [[ -n "${E2E_GRPC_SHA:-}" ]]; then
+        stage_go_module_checkout "$E2E_GRPC_CHECKOUT" "$staging_root/slogcp-grpc" "$E2E_GRPC_SHA"
+    fi
+    printf '{"root_commit":"%s","adapter_commit":"%s","pubsub_commit":"%s","grpc_commit":"%s","infrastructure_commit":"%s"}\n' \
+        "$PR_SHA" "$E2E_ADAPTER_SHA" "${E2E_PUBSUB_SHA:-}" "${E2E_GRPC_SHA:-}" "$infrastructure_sha" > "$staging_root/source-identities.json"
 }
 
 E2E_SOURCE_MODE="${E2E_SOURCE_MODE:-}"
@@ -210,6 +229,10 @@ E2E_REPO_GO_VERSION="${E2E_REPO_GO_VERSION:-}"
 E2E_TRUSTED_E2E_ROOT="${E2E_TRUSTED_E2E_ROOT:-}"
 E2E_ADAPTER_CHECKOUT="${E2E_ADAPTER_CHECKOUT:-}"
 E2E_ADAPTER_SHA="${E2E_ADAPTER_SHA:-}"
+E2E_PUBSUB_CHECKOUT="${E2E_PUBSUB_CHECKOUT:-}"
+E2E_PUBSUB_SHA="${E2E_PUBSUB_SHA:-}"
+E2E_GRPC_CHECKOUT="${E2E_GRPC_CHECKOUT:-}"
+E2E_GRPC_SHA="${E2E_GRPC_SHA:-}"
 GCP_PROJECT_ID="${GCP_PROJECT_ID:-}"
 RUN_REGION="${RUN_REGION:-}"
 ARTIFACT_REGISTRY_REPO="${ARTIFACT_REGISTRY_REPO:-}"
@@ -280,6 +303,22 @@ while [[ $# -gt 0 ]]; do
             ;;
         --adapter-sha)
             E2E_ADAPTER_SHA="${2:?missing value for --adapter-sha}"
+            shift 2
+            ;;
+        --pubsub-checkout)
+            E2E_PUBSUB_CHECKOUT="${2:?missing Pub/Sub checkout}"
+            shift 2
+            ;;
+        --pubsub-sha)
+            E2E_PUBSUB_SHA="${2:?missing Pub/Sub SHA}"
+            shift 2
+            ;;
+        --grpc-checkout)
+            E2E_GRPC_CHECKOUT="${2:?missing gRPC checkout}"
+            shift 2
+            ;;
+        --grpc-sha)
+            E2E_GRPC_SHA="${2:?missing gRPC SHA}"
             shift 2
             ;;
         --project)
@@ -501,13 +540,16 @@ if [[ "$E2E_SOURCE_MODE" != "github" && "$E2E_SOURCE_MODE" != "local" ]]; then
     echo "E2E_SOURCE_MODE must be 'github' or 'local' (got '$E2E_SOURCE_MODE')" >&2
     exit 1
 fi
-if [[ -n "$E2E_ADAPTER_SHA" || -n "$E2E_ADAPTER_CHECKOUT" ]]; then
-    if [[ ! "$E2E_ADAPTER_SHA" =~ ^[0-9a-f]{40}$ || ! -d "$E2E_ADAPTER_CHECKOUT" ||
+for candidate in ADAPTER PUBSUB GRPC; do
+    sha_var="E2E_${candidate}_SHA"
+    checkout_var="E2E_${candidate}_CHECKOUT"
+    if [[ -z "${!sha_var}" && -z "${!checkout_var}" ]]; then continue; fi
+    if [[ ! "${!sha_var}" =~ ^[0-9a-f]{40}$ || ! -d "${!checkout_var}" ||
           "$E2E_SOURCE_MODE" != "local" || "$E2E_DEPENDENCY_MODE" != "floor" ]]; then
-        echo "Adapter validation requires an explicit checkout/full SHA, local source mode, and floor dependency mode." >&2
+        echo "Candidate validation requires an explicit checkout/full SHA, local source mode, and floor dependency mode." >&2
         exit 1
     fi
-fi
+done
 if [[ "$E2E_DEPENDENCY_MODE" != "floor" && "$E2E_DEPENDENCY_MODE" != "latest-slogcp" ]]; then
     echo "E2E_DEPENDENCY_MODE must be 'floor' or 'latest-slogcp' (got '$E2E_DEPENDENCY_MODE')" >&2
     exit 1
@@ -589,6 +631,7 @@ emit_outputs() {
 
 SUBSTITUTIONS="_LIB_REPO_FULL_NAME=${LIB_REPO_FULL_NAME},_PR_SHA=${PR_SHA},_PR_NUMBER=${PR_NUMBER},_SHORT_SHA=${SHORT_SHA},_BUILD_TIME=${BUILD_TIME_ISO},_GCP_REGION=${RUN_REGION},_ARTIFACT_REGISTRY_REPO=${ARTIFACT_REGISTRY_REPO},_GCS_BUCKET_NAME=${GCS_BUCKET_NAME},_E2E_RUN_ID=${E2E_RUN_ID},_RUNTIME_SERVICE_ACCOUNT=${E2E_SERVICE_ACCOUNT},_CALLER_SERVICE_ACCOUNT=${E2E_CALLER_SERVICE_ACCOUNT},_GITHUB_TOKEN_SECRET_VERSION=${GITHUB_TOKEN_SECRET_VERSION},_TRACE_PUBSUB_TOPIC=${TRACE_PUBSUB_TOPIC},_TRACE_PUBSUB_SUBSCRIPTION=${TRACE_PUBSUB_SUBSCRIPTION},_E2E_SOURCE_MODE=${E2E_SOURCE_MODE},_SLOGCP_REF_OVERRIDE=${SLOGCP_REF_OVERRIDE},_E2E_DEPENDENCY_MODE=${E2E_DEPENDENCY_MODE},_E2E_TOOLCHAIN_MODE=${E2E_TOOLCHAIN_MODE},_E2E_REPO_GO_VERSION=${E2E_REPO_GO_VERSION}"
 SUBSTITUTIONS+=",_ADAPTER_SHA=${E2E_ADAPTER_SHA}"
+SUBSTITUTIONS+=",_PUBSUB_SHA=${E2E_PUBSUB_SHA},_GRPC_SHA=${E2E_GRPC_SHA}"
 
 echo "Submitting e2e Cloud Build for ${LIB_REPO_FULL_NAME}@${PR_SHA}"
 echo "Run ID: ${E2E_RUN_ID}"

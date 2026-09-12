@@ -20,7 +20,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // BenchmarkMiddlewareServeHTTP measures the middleware path with and without transformers.

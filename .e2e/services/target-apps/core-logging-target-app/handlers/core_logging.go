@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/v2"
+	"github.com/pjscruggs/slogcp/v2/slogcphttp"
 )
 
 // LogRequest represents the structure of a log request

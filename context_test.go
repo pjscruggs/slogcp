@@ -19,7 +19,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // TestContextWithLoggerStoresAndRetrievesLogger verifies that ContextWithLogger

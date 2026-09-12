@@ -48,7 +48,7 @@
       "description": "Ignore local slogcp module requirements in .e2e modules resolved via replace directives",
       "matchManagers": ["gomod"],
       "matchFileNames": [".e2e/**"],
-      "matchPackageNames": ["github.com/pjscruggs/slogcp"],
+      "matchPackageNames": ["github.com/pjscruggs/slogcp/v2"],
       "enabled": false
     },
     {
@@ -218,7 +218,7 @@
       "description": "Do not update the local unpublished slogcp requirement used by examples",
       "matchManagers": ["gomod"],
       "matchFileNames": [".examples/**"],
-      "matchPackageNames": ["github.com/pjscruggs/slogcp"],
+      "matchPackageNames": ["github.com/pjscruggs/slogcp/v2"],
       "enabled": false
     }
   ],

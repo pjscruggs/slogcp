@@ -1087,6 +1087,13 @@ func TestNormalizeProjectID(t *testing.T) {
 		{name: "reject_slash", input: "my/project", want: "", wantOK: false},
 		{name: "reject_underscore", input: "project_id", want: "", wantOK: false},
 		{name: "reject_extra_path", input: "projects/proj/extra", want: "", wantOK: false},
+		{name: "resource_path", input: " projects/ Alpha-123 /locations/us-central1 ", want: "alpha-123", wantOK: true},
+		{name: "internal_hyphens", input: "a----z", want: "a----z", wantOK: true},
+		{name: "unicode_lowercase", input: "\u212Aelvin-project", want: "kelvin-project", wantOK: true},
+		{name: "reject_unicode", input: "alpha-\u00e9", want: "", wantOK: false},
+		{name: "reject_final_punctuation", input: "alpha!", want: "", wantOK: false},
+		{name: "reject_internal_space", input: "alpha beta", want: "", wantOK: false},
+		{name: "reject_invalid_utf8", input: "alpha\xff", want: "", wantOK: false},
 	}
 
 	for _, tt := range tests {
@@ -1096,5 +1103,128 @@ func TestNormalizeProjectID(t *testing.T) {
 				t.Fatalf("normalizeProjectID(%q) = (%q, %v), want (%q, %v)", tt.input, got, ok, tt.want, tt.wantOK)
 			}
 		})
+	}
+}
+
+// TestResolveProjectIDFromEnvPrecedence verifies normalization and ordered fallbacks.
+func TestResolveProjectIDFromEnvPrecedence(t *testing.T) {
+	keys := []string{"SLOGCP_TEST_PROJECT_FIRST", "SLOGCP_TEST_PROJECT_SECOND"}
+	t.Setenv(keys[0], " PROJECTS/First-Project ")
+	t.Setenv(keys[1], "second-project")
+	if got := resolveProjectIDFromEnv("Current-Project", keys...); got != "current-project" {
+		t.Fatalf("current project = %q, want current-project", got)
+	}
+	if got := resolveProjectIDFromEnv("bad", keys...); got != "first-project" {
+		t.Fatalf("first environment project = %q, want first-project", got)
+	}
+	t.Setenv(keys[0], "bad")
+	if got := resolveProjectIDFromEnv("", keys...); got != "second-project" {
+		t.Fatalf("fallback project = %q, want second-project", got)
+	}
+	t.Setenv(keys[1], " ")
+	if got := resolveProjectIDFromEnv("", keys...); got != "" {
+		t.Fatalf("missing project = %q, want empty", got)
+	}
+}
+
+// TestRuntimeRegionEnvSkipsMetadata verifies region precedence without unnecessary probes.
+func TestRuntimeRegionEnvSkipsMetadata(t *testing.T) {
+	cases := []struct {
+		name       string
+		detect     func(*RuntimeInfo, *metadataLookup) bool
+		env        map[string]string
+		regionKeys []string
+		label      string
+	}{
+		{
+			name: "function", detect: detectCloudFunction,
+			env:        map[string]string{"K_SERVICE": "function", "FUNCTION_TARGET": "target", "FUNCTION_SIGNATURE_TYPE": "http"},
+			regionKeys: []string{"FUNCTION_REGION", "GOOGLE_CLOUD_REGION", "CLOUD_RUN_REGION"},
+			label:      "cloud_function.region",
+		},
+		{
+			name: "service", detect: detectCloudRunService,
+			env:        map[string]string{"K_SERVICE": "service", "K_REVISION": "revision", "K_CONFIGURATION": "config"},
+			regionKeys: []string{"CLOUD_RUN_REGION", "GOOGLE_CLOUD_REGION"},
+			label:      "cloud_run.region",
+		},
+		{
+			name: "job", detect: detectCloudRunJob,
+			env:        map[string]string{"CLOUD_RUN_JOB": "job", "CLOUD_RUN_EXECUTION": "execution", "CLOUD_RUN_TASK_INDEX": "0", "CLOUD_RUN_TASK_ATTEMPT": "0"},
+			regionKeys: []string{"CLOUD_RUN_REGION", "GOOGLE_CLOUD_REGION"},
+			label:      "cloud_run.region",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for key, value := range tc.env {
+				t.Setenv(key, value)
+			}
+			for _, key := range tc.regionKeys {
+				t.Setenv(key, " region-"+key+" ")
+			}
+			for _, key := range tc.regionKeys {
+				client := &countingMetadataClient{onGCE: true}
+				info := RuntimeInfo{ProjectID: "example-project"}
+				if !tc.detect(&info, newMetadataLookup(client)) {
+					t.Fatal("runtime not detected")
+				}
+				if got := info.Labels[tc.label]; got != "region-"+key {
+					t.Fatalf("region = %q, want region-%s", got, key)
+				}
+				if client.calls != 0 {
+					t.Fatalf("metadata probes = %d, want 0", client.calls)
+				}
+				t.Setenv(key, " \t ")
+			}
+			client := &countingGetMetadataClient{stubMetadataClient: &stubMetadataClient{
+				onGCE: true, values: map[string]string{"instance/region": "projects/example-project/regions/us-central1"},
+			}}
+			info := RuntimeInfo{ProjectID: "example-project"}
+			if !tc.detect(&info, newMetadataLookup(client)) {
+				t.Fatal("runtime not detected")
+			}
+			if got := info.Labels[tc.label]; got != "us-central1" {
+				t.Fatalf("metadata region = %q, want us-central1", got)
+			}
+			if client.getCalls != 1 {
+				t.Fatalf("metadata gets = %d, want 1", client.getCalls)
+			}
+
+			// An explicit region must not prevent a missing project from using metadata.
+			for _, key := range serviceProjectIDEnvKeys {
+				t.Setenv(key, "")
+			}
+			t.Setenv(tc.regionKeys[0], "us-east1")
+			client = &countingGetMetadataClient{stubMetadataClient: &stubMetadataClient{
+				onGCE: true, values: map[string]string{"project/project-id": "metadata-project"},
+			}}
+			info = RuntimeInfo{}
+			if !tc.detect(&info, newMetadataLookup(client)) {
+				t.Fatal("runtime not detected")
+			}
+			if info.ProjectID != "metadata-project" {
+				t.Fatalf("project = %q, want metadata-project", info.ProjectID)
+			}
+			if client.getCalls != 1 {
+				t.Fatalf("metadata gets = %d, want only the project lookup", client.getCalls)
+			}
+		})
+	}
+}
+
+// TestClusterLocationEnvSkipsMetadata verifies explicit location avoids metadata access.
+func TestClusterLocationEnvSkipsMetadata(t *testing.T) {
+	t.Setenv("CLUSTER_LOCATION", " us-east1 ")
+	client := &countingMetadataClient{onGCE: true}
+	if got := clusterLocation(newMetadataLookup(client)); got != "us-east1" {
+		t.Fatalf("location = %q, want us-east1", got)
+	}
+	if client.calls != 0 {
+		t.Fatalf("metadata probes = %d, want 0", client.calls)
+	}
+	t.Setenv("CLUSTER_LOCATION", " ")
+	if got := clusterLocation(nil); got != "" {
+		t.Fatalf("missing location = %q, want empty", got)
 	}
 }

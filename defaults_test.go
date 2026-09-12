@@ -14,7 +14,7 @@
 
 package slogcp_test
 
-import "github.com/pjscruggs/slogcp"
+import "github.com/pjscruggs/slogcp/v2"
 
 // prefersManagedDefaults reports whether runtime detection mirrors managed GCP
 // platforms where slogcp opts into Cloud Logging defaults (short severity names,

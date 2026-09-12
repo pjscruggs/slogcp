@@ -20,8 +20,8 @@ import (
 	"net"
 	"testing"
 
-	slogcp "github.com/pjscruggs/slogcp"
 	localtracepb "github.com/pjscruggs/slogcp-e2e-internal/services/traceproto"
+	slogcp "github.com/pjscruggs/slogcp/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"

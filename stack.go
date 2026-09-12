@@ -290,8 +290,8 @@ var (
 	}
 	internalStackFramePrefixes = []string{
 		"runtime.",
-		"github.com/pjscruggs/slogcp/",
-		"github.com/pjscruggs/slogcp.",
+		"github.com/pjscruggs/slogcp/v2/",
+		"github.com/pjscruggs/slogcp/v2.",
 		"log/slog.",
 	}
 )

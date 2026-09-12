@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // TestPrepareHTTPRequestNormalizesFields ensures derived values are populated and sanitized.

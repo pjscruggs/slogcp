@@ -19,7 +19,6 @@ import (
 	"errors"
 	"net"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -256,8 +255,10 @@ func detectCloudFunction(info *RuntimeInfo, md *metadataLookup) bool {
 		trimmedEnv("FUNCTION_REGION"),
 		trimmedEnv("GOOGLE_CLOUD_REGION"),
 		trimmedEnv("CLOUD_RUN_REGION"),
-		md.region(),
 	)
+	if region == "" {
+		region = md.region()
+	}
 
 	info.ServiceContext = map[string]string{
 		serviceContextServiceKey: service,
@@ -296,8 +297,10 @@ func detectCloudRunService(info *RuntimeInfo, md *metadataLookup) bool {
 	region := firstNonEmpty(
 		trimmedEnv("CLOUD_RUN_REGION"),
 		trimmedEnv("GOOGLE_CLOUD_REGION"),
-		md.region(),
 	)
+	if region == "" {
+		region = md.region()
+	}
 
 	info.ServiceContext = map[string]string{
 		serviceContextServiceKey: service,
@@ -338,8 +341,10 @@ func detectCloudRunJob(info *RuntimeInfo, md *metadataLookup) bool {
 	region := firstNonEmpty(
 		trimmedEnv("CLOUD_RUN_REGION"),
 		trimmedEnv("GOOGLE_CLOUD_REGION"),
-		md.region(),
 	)
+	if region == "" {
+		region = md.region()
+	}
 
 	info.ServiceContext = map[string]string{
 		serviceContextServiceKey: job,
@@ -453,10 +458,10 @@ func kubernetesLabels(md *metadataLookup, clusterName string) map[string]string 
 
 // clusterLocation returns the cluster location from metadata or environment.
 func clusterLocation(md *metadataLookup) string {
-	if md == nil {
-		return trimmedEnv("CLUSTER_LOCATION")
+	if location := trimmedEnv("CLUSTER_LOCATION"); location != "" {
+		return location
 	}
-	return firstNonEmpty(trimmedEnv("CLUSTER_LOCATION"), md.clusterLocation())
+	return md.clusterLocation()
 }
 
 // kubernetesNamespace resolves the namespace name from service account files or env.
@@ -520,12 +525,15 @@ func trimmedEnv(key string) string {
 
 // resolveProjectIDFromEnv returns the first valid project ID from the supplied env keys.
 func resolveProjectIDFromEnv(current string, keys ...string) string {
-	candidates := make([]string, 0, len(keys)+1)
-	candidates = append(candidates, current)
-	for _, key := range keys {
-		candidates = append(candidates, trimmedEnv(key))
+	if project, ok := normalizeProjectID(current); ok {
+		return project
 	}
-	return firstValidProjectID(candidates...)
+	for _, key := range keys {
+		if project, ok := normalizeProjectID(os.Getenv(key)); ok {
+			return project
+		}
+	}
+	return ""
 }
 
 // firstNonEmpty returns the first non-empty string after trimming whitespace.
@@ -537,8 +545,6 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
-
-var projectIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 
 // normalizeProjectID normalizes and validates a Cloud project identifier.
 //
@@ -564,10 +570,29 @@ func normalizeProjectID(s string) (string, bool) {
 
 	s = strings.ToLower(strings.TrimSpace(s))
 
-	if !projectIDPattern.MatchString(s) {
+	if !validProjectID(s) {
 		return "", false
 	}
 	return s, true
+}
+
+// validProjectID accepts 6–30 lowercase ASCII letters, digits, or hyphens,
+// starting with a letter and ending with a letter or digit.
+func validProjectID(s string) bool {
+	if len(s) < 6 || len(s) > 30 || s[0] < 'a' || s[0] > 'z' || s[len(s)-1] == '-' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if !validProjectIDChar(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// validProjectIDChar reports whether c is allowed within a normalized project ID.
+func validProjectIDChar(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-'
 }
 
 // firstValidProjectID returns the first valid normalized project ID from values.
@@ -629,7 +654,6 @@ func (defaultMetadataClient) Get(path string) (string, error) {
 func newMetadataLookup(client metadataClient) *metadataLookup {
 	return &metadataLookup{
 		client: client,
-		cache:  make(map[string]metadataCacheEntry),
 	}
 }
 
@@ -654,6 +678,9 @@ func (l *metadataLookup) get(path string) (string, bool) {
 	}
 	if entry, ok := l.cache[path]; ok && entry.populated {
 		return entry.value, entry.ok
+	}
+	if l.cache == nil {
+		l.cache = make(map[string]metadataCacheEntry)
 	}
 	val, err := l.client.Get(path)
 	if err != nil {

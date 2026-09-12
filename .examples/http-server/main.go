@@ -25,8 +25,8 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/v2"
+	"github.com/pjscruggs/slogcp/v2/slogcphttp"
 )
 
 // main starts the HTTP server example with slogcp logging middleware.

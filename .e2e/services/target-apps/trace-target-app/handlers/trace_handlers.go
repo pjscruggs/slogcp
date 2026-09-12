@@ -31,7 +31,7 @@ import (
 	traceapi "cloud.google.com/go/trace/apiv2"
 	tracepb "cloud.google.com/go/trace/apiv2/tracepb"
 	localtracepb "github.com/pjscruggs/slogcp-e2e-internal/services/traceproto"
-	"github.com/pjscruggs/slogcp/slogcppubsub"
+	slogcppubsub "github.com/pjscruggs/slogcp-pubsub"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"

@@ -14,8 +14,8 @@
 
 // Command pubsub demonstrates slogcppubsub trace propagation and per-message logging.
 //
-// This example is both documentation, and a test for `slogcp`.
-// Our Github workflow tests if any changes to `slogcp` break the example.
+// This example imports the optional slogcp-pubsub module into a slogcp application.
+// The repository validation workflow runs its tests with each change.
 package main
 
 import (
@@ -28,8 +28,8 @@ import (
 	"cloud.google.com/go/pubsub/v2"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcppubsub"
+	slogcppubsub "github.com/pjscruggs/slogcp-pubsub"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // main runs the Pub/Sub logging example.

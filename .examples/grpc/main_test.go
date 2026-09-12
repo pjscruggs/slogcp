@@ -28,8 +28,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	pb "google.golang.org/grpc/examples/helloworld/helloworld"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcpgrpc"
+	"github.com/pjscruggs/slogcp/v2"
+	"github.com/pjscruggs/slogcp/v2/slogcpgrpc"
 )
 
 // TestGRPCExampleLogsRequest ensures the gRPC example wires interceptors that

@@ -49,23 +49,25 @@
 //
 // # Subpackages
 //
-//   - [github.com/pjscruggs/slogcp/slogcphttp] offers net/http middleware and
+//   - [github.com/pjscruggs/slogcp/v2/slogcphttp] offers net/http middleware and
 //     client transports that derive request-scoped loggers, propagate trace
 //     context, record latency/size metadata, and expose Cloud Logging friendly
 //     helpers such as [slogcphttp.HTTPRequestAttr] and
 //     [slogcphttp.ScopeFromContext]. Legacy `X-Cloud-Trace-Context` handling is
 //     available when required.
-//   - [github.com/pjscruggs/slogcp/slogcpgrpc] provides client and server
+//   - [github.com/pjscruggs/slogcp/v2/slogcpgrpc] provides client and server
 //     interceptors that capture RPC metadata, surface errors with stack traces,
 //     and propagate trace context. Helper functions such as
 //     [slogcpgrpc.ServerOptions], [slogcpgrpc.DialOptions], and
 //     [slogcpgrpc.InfoFromContext] simplify wiring in both directions.
-//   - [github.com/pjscruggs/slogcp/slogcppubsub] provides Pub/Sub helpers for
-//     injecting and extracting OpenTelemetry trace context via
-//     `pubsub.Message.Attributes`, deriving per-message loggers (so
-//     `slogcp.Logger(ctx)` works inside handlers), and optionally starting an
-//     application-level consumer span. It supports interoperability with the Go
-//     Pub/Sub client's `googclient_`-prefixed attribute keys when enabled.
+//
+// # Optional modules
+//
+// [github.com/pjscruggs/slogcp-pubsub] provides Pub/Sub trace propagation,
+// message scoped loggers, and optional consumer spans. It is installed separately.
+// [github.com/pjscruggs/slogcp-grpc] sends entries through the Cloud Logging gRPC
+// API using [NewHandlerWithExporter]. It accepts an official Cloud Logging logger
+// so applications can configure its batching, buffering, and client options.
 //
 // # Quick Start
 //

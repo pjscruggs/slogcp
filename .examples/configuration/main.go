@@ -24,7 +24,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // main runs the configuration example demonstrating core options.

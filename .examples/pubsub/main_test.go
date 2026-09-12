@@ -27,8 +27,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcppubsub"
+	slogcppubsub "github.com/pjscruggs/slogcp-pubsub"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // TestInjectAddsTraceparent verifies trace context is injected into attributes.

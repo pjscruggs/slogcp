@@ -1,6 +1,6 @@
 # slogcphttp
 
-`github.com/pjscruggs/slogcp/slogcphttp` provides `net/http` helpers for slogcp:
+`github.com/pjscruggs/slogcp/v2/slogcphttp` provides `net/http` helpers for slogcp:
 
 - `Middleware` derives a request-scoped `*slog.Logger`, stores it on the request
   `context.Context`, and enriches logs with request and trace metadata.
@@ -12,10 +12,10 @@ It enriches application logs; it does not emit access logs by itself.
 ## Install
 
 ```bash
-go get github.com/pjscruggs/slogcp
+go get github.com/pjscruggs/slogcp/v2
 ```
 
-Import: `github.com/pjscruggs/slogcp/slogcphttp`
+Import: `github.com/pjscruggs/slogcp/v2/slogcphttp`
 
 ## Server middleware
 
@@ -146,8 +146,9 @@ The derived outbound logger includes request metadata such as `http.method`,
 
 - `WithAttrEnricher(func(*http.Request, *RequestScope) []slog.Attr)` appends
   custom fields to the derived logger.
-- `WithAttrTransformer(func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr)`
-  can redact or reshape the derived attributes before they are applied.
+- `WithAttrTransformer` can redact or reshape derived attributes before they are
+  applied. It accepts a
+  `func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr` callback.
 
 ## Optional: Cloud Logging `httpRequest`
 

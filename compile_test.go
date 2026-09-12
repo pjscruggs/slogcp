@@ -17,7 +17,7 @@ package slogcp_test
 import (
 	"testing"
 
-	_ "github.com/pjscruggs/slogcp"
+	_ "github.com/pjscruggs/slogcp/v2"
 )
 
 // TestCompile ensures that the public package builds and links for consumers.

@@ -25,9 +25,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
 	"github.com/pjscruggs/slogcp-e2e-internal/services/target-apps/core-logging-target-app/handlers"
-	"github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/v2"
+	"github.com/pjscruggs/slogcp/v2/slogcphttp"
 )
 
 // main starts the core logging target app used by e2e tests.
@@ -111,6 +111,7 @@ func main() {
 	mux.HandleFunc("/log/nested", coreLoggingHandler.LogNested)
 	mux.HandleFunc("/log/operation", coreLoggingHandler.LogWithOperation)
 	mux.HandleFunc("/log/labels", coreLoggingHandler.LogWithLabels)
+	mux.HandleFunc("/log/grpc-api", logGRPCAPI)
 	mux.HandleFunc("/log/http-request", coreLoggingHandler.LogHTTPRequest)
 	mux.HandleFunc("/log/http-request-inflight", coreLoggingHandler.LogHTTPRequestInflight)
 	mux.HandleFunc("/log/http-request-parser-residual", coreLoggingHandler.LogHTTPRequestParserResidual)

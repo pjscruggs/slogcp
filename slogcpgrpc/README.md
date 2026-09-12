@@ -1,6 +1,6 @@
 # slogcpgrpc
 
-`github.com/pjscruggs/slogcp/slogcpgrpc` provides gRPC interceptors for slogcp:
+`github.com/pjscruggs/slogcp/v2/slogcpgrpc` provides gRPC interceptors for slogcp:
 
 - Server + client unary/stream interceptors that derive a per-RPC `*slog.Logger`
   and attach it to the RPC `context.Context` (so `slogcp.Logger(ctx)` works in
@@ -15,10 +15,10 @@ It enriches application logs; it does not emit access logs by itself.
 ## Install
 
 ```bash
-go get github.com/pjscruggs/slogcp
+go get github.com/pjscruggs/slogcp/v2
 ```
 
-Import: `github.com/pjscruggs/slogcp/slogcpgrpc`
+Import: `github.com/pjscruggs/slogcp/v2/slogcpgrpc`
 
 ## Server
 
@@ -120,8 +120,9 @@ metadata:
 
 - `WithAttrEnricher(func(context.Context, *RequestInfo) []slog.Attr)` appends
   custom fields to the derived logger.
-- `WithAttrTransformer(func(context.Context, []slog.Attr, *RequestInfo) []slog.Attr)`
-  can redact or reshape derived attributes before they are applied.
+- `WithAttrTransformer` can redact or reshape derived attributes before they are
+  applied. It accepts a
+  `func(context.Context, []slog.Attr, *RequestInfo) []slog.Attr` callback.
 - `WithSpanAttributes(...)` and `WithFilter(...)` mirror `otelgrpc`
   configuration knobs and only apply when OpenTelemetry instrumentation is
   enabled.

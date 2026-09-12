@@ -32,10 +32,10 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
-const instrumentationName = "github.com/pjscruggs/slogcp/slogcphttp"
+const instrumentationName = "github.com/pjscruggs/slogcp/v2/slogcphttp"
 
 const (
 	schemeHTTP  = "http"

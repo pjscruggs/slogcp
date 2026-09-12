@@ -23,7 +23,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // main runs the basic slogcp stdout example.

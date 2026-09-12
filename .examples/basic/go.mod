@@ -1,8 +1,8 @@
-module github.com/pjscruggs/slogcp/examples/google-cloud
+module github.com/pjscruggs/slogcp/v2/examples/google-cloud
 
 go 1.27.1
 
-require github.com/pjscruggs/slogcp v0.0.0-unpublished
+require github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
 
 require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
@@ -17,4 +17,4 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 )
 
-replace github.com/pjscruggs/slogcp => ../..
+replace github.com/pjscruggs/slogcp/v2 => ../..

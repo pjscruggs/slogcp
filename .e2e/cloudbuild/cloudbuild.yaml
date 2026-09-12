@@ -8,6 +8,8 @@ substitutions:
   _LIB_REPO_FULL_NAME: 'pjscruggs/slogcp'
   _PR_SHA: ''
   _ADAPTER_SHA: ''
+  _PUBSUB_SHA: ''
+  _GRPC_SHA: ''
   _PR_NUMBER: ''
   _SHORT_SHA: ''
   _BUILD_TIME: '1970-01-01T00:00:00Z'
@@ -333,6 +335,15 @@ steps:
         fi
         TRACE_TARGET_EXTRA_DIRS="$$TRACEPROTO_DIR"
         TRACE_GRPC_EXTRA_DIRS="$$TRACEPROTO_DIR"
+        TRACE_HTTP_EXTRA_DIRS=""
+        CORE_EXTRA_DIRS=""
+        if [[ -f /workspace/slogcp-pubsub/go.mod ]]; then
+          TRACE_TARGET_EXTRA_DIRS="$$TRACE_TARGET_EXTRA_DIRS,/workspace/slogcp-pubsub"
+          TRACE_HTTP_EXTRA_DIRS="/workspace/slogcp-pubsub"
+        fi
+        if [[ -f /workspace/slogcp-grpc/go.mod ]]; then
+          CORE_EXTRA_DIRS="/workspace/slogcp-grpc"
+        fi
         if [[ -n "$$GRPC_ADAPTER_DIR" ]]; then
           TRACE_TARGET_EXTRA_DIRS="$$TRACE_TARGET_EXTRA_DIRS,$$GRPC_ADAPTER_DIR"
           TRACE_GRPC_EXTRA_DIRS="$$TRACE_GRPC_EXTRA_DIRS,$$GRPC_ADAPTER_DIR"
@@ -342,7 +353,8 @@ steps:
           /workspace/services/target-apps/core-logging-target-app \
           /workspace/build-context/core \
           "$$SLOGCP_GRAPH_DIR" \
-          "$$LOCAL_SLOGCP_DIR"
+          "$$LOCAL_SLOGCP_DIR" \
+          "$$CORE_EXTRA_DIRS"
 
         /workspace/prepare-build-context.sh \
           /workspace/services/target-apps/trace-target-app \
@@ -355,7 +367,8 @@ steps:
           /workspace/services/target-apps/trace-downstream-http \
           /workspace/build-context/trace-http \
           "$$SLOGCP_GRAPH_DIR" \
-          "$$LOCAL_SLOGCP_DIR"
+          "$$LOCAL_SLOGCP_DIR" \
+          "$$TRACE_HTTP_EXTRA_DIRS"
 
         /workspace/prepare-build-context.sh \
           /workspace/services/target-apps/trace-downstream-grpc \
@@ -396,48 +409,53 @@ steps:
         REPORT_PATH=/workspace/dependency-report.json
         REPORT_URI="gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA:-${_SHORT_SHA}}/$${RUN_ID}/dependency-report.json"
         if [[ "${_E2E_SOURCE_MODE}" == local ]]; then
-          python3 - "${_PR_SHA}" "${_ADAPTER_SHA}" <<'PY'
+          python3 - "${_PR_SHA}" "${_ADAPTER_SHA}" "${_PUBSUB_SHA}" "${_GRPC_SHA}" <<'PY'
         import json
         import sys
         from pathlib import Path
         identities = json.loads(Path('/workspace/source-identities.json').read_text())
-        if identities.get('root_commit') != sys.argv[1] or identities.get('adapter_commit') != sys.argv[2]:
+        if any(identities.get(key, '') != value for key, value in zip(
+            ('root_commit', 'adapter_commit', 'pubsub_commit', 'grpc_commit'), sys.argv[1:]
+        )):
             raise SystemExit('Staged source identities do not match requested commits')
         print('Source identities:', json.dumps(identities, sort_keys=True))
         PY
           gsutil -h 'x-goog-if-generation-match:0' cp /workspace/source-identities.json \
             "gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA}/$${RUN_ID}/source-identities.json"
         fi
-        ROOT_MODULES=(
+        ALL_MODULES=(
           --module-dir /workspace/build-context/core
           --module-dir /workspace/build-context/trace-http
           --module-dir /workspace/build-context/e2e-harness
+          --module-dir /workspace/build-context/trace-target
+          --module-dir /workspace/build-context/trace-grpc
         )
-        if [[ -z "${_ADAPTER_SHA}" ]]; then
-          ROOT_MODULES+=(--module-dir /workspace/build-context/trace-target --module-dir /workspace/build-context/trace-grpc)
-        fi
-        bash cloudbuild/build-tools/generate-and-upload-modules.sh \
+        CANDIDATE_ARGS=()
+        if [[ -n "${_ADAPTER_SHA}" ]]; then CANDIDATE_ARGS+=(--adapter-dir /workspace/slogcp-grpc-adapter); fi
+        if [[ -n "${_PUBSUB_SHA}" ]]; then CANDIDATE_ARGS+=(--pubsub-dir /workspace/slogcp-pubsub); fi
+        if [[ -n "${_GRPC_SHA}" ]]; then CANDIDATE_ARGS+=(--grpc-dir /workspace/slogcp-grpc); fi
+        if (( $${#CANDIDATE_ARGS[@]} == 0 )); then
+          bash cloudbuild/build-tools/generate-and-upload-modules.sh \
           "$$REPORT_PATH" \
           "$$REPORT_URI" \
           -- \
           python3 scripts/generate_go_module.py \
-          "$${ROOT_MODULES[@]}" \
+          "$${ALL_MODULES[@]}" \
           --go-version "$$GO_VERSION" \
           --slogcp-dir /workspace/lib-repo-checkout \
           --slogcp-reference "$$SLOGCP_REFERENCE" \
           --dependency-mode "${_E2E_DEPENDENCY_MODE}" \
           --slogcp-shared-parity-scope package \
           --emit-dependency-report "$$REPORT_PATH"
-        if [[ -n "${_ADAPTER_SHA}" ]]; then
+        else
           COMBINED_REPORT=/workspace/combined-dependency-report.json
           COMBINED_URI="gs://${_GCS_BUCKET_NAME}/$${STREAM_TAG_DEFAULTED}/${_PR_SHA}/$${RUN_ID}/combined-dependency-report.json"
           bash cloudbuild/build-tools/generate-and-upload-modules.sh \
             "$$COMBINED_REPORT" "$$COMBINED_URI" -- \
             python3 scripts/generate_go_module.py \
             --graph-profile combined-candidate \
-            --adapter-dir /workspace/slogcp-grpc-adapter \
-            --module-dir /workspace/build-context/trace-target \
-            --module-dir /workspace/build-context/trace-grpc \
+            "$${CANDIDATE_ARGS[@]}" \
+            "$${ALL_MODULES[@]}" \
             --go-version "$$GO_VERSION" \
             --slogcp-dir /workspace/lib-repo-checkout \
             --slogcp-reference "$$SLOGCP_REFERENCE" \
