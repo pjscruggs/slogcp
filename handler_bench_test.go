@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pjscruggs/slogcp/slogcpasync"
+	"github.com/pjscruggs/slogcp/v2/slogcpasync"
 )
 
 // BenchmarkHandlerAsyncModes compares sync/async handler paths for common targets.

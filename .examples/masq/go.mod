@@ -1,10 +1,10 @@
-module github.com/pjscruggs/slogcp/examples/masq
+module github.com/pjscruggs/slogcp/v2/examples/masq
 
 go 1.27.1
 
 require (
 	github.com/m-mizutani/masq v0.2.3
-	github.com/pjscruggs/slogcp v0.0.0-unpublished
+	github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
 )
 
 require (
@@ -20,4 +20,4 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 )
 
-replace github.com/pjscruggs/slogcp => ../..
+replace github.com/pjscruggs/slogcp/v2 => ../..

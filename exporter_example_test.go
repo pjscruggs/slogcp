@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 type consoleExporter struct{}

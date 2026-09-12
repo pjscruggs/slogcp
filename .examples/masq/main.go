@@ -37,7 +37,7 @@ import (
 
 	"github.com/m-mizutani/masq"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 const (

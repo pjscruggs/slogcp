@@ -28,7 +28,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // TestTransportRoundTripDerivesScope verifies RoundTrip attaches a scope and logger.

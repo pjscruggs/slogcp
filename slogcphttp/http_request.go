@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 const httpRequestKey = "httpRequest"

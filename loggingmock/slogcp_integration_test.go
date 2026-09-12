@@ -30,9 +30,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcpgrpc"
-	"github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/v2"
+	"github.com/pjscruggs/slogcp/v2/slogcpgrpc"
+	"github.com/pjscruggs/slogcp/v2/slogcphttp"
 )
 
 // TestSlogcpLogEntryTransforms exercises slogcp JSON output against the logging mock transformer.

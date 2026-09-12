@@ -27,7 +27,7 @@ import (
 
 	"github.com/DeRuina/timberjack"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // TestTimberjackIntegration exercises the timberjack example by writing

@@ -26,7 +26,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pjscruggs/slogcp/slogcpasync"
+	"github.com/pjscruggs/slogcp/v2/slogcpasync"
 )
 
 const (

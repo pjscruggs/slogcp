@@ -1,6 +1,6 @@
 # slogcpasync
 
-`github.com/pjscruggs/slogcp/slogcpasync` provides an opt-in async wrapper for
+`github.com/pjscruggs/slogcp/v2/slogcpasync` provides an opt-in async wrapper for
 `log/slog` handlers, including `slogcp`'s handler:
 
 - `Wrap` queues `slog.Record`s on a bounded channel and drains them with worker
@@ -17,10 +17,10 @@ opt-in for `stdout`/`stderr`.
 ## Install
 
 ```bash
-go get github.com/pjscruggs/slogcp
+go get github.com/pjscruggs/slogcp/v2
 ```
 
-Import: `github.com/pjscruggs/slogcp/slogcpasync`
+Import: `github.com/pjscruggs/slogcp/v2/slogcpasync`
 
 ## Wrap a handler
 

@@ -22,7 +22,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 func newControlledLogger(

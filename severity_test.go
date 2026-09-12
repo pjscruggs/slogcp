@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // decodeLogBuffer splits JSON log lines and converts them into maps for easier assertions.

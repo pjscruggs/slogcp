@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pjscruggs/slogcp/slogcpasync"
+	"github.com/pjscruggs/slogcp/v2/slogcpasync"
 )
 
 // TestAsyncExampleDropsLateWrite ensures the drop handler observes records

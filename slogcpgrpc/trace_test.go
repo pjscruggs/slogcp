@@ -26,7 +26,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 type serverSpanContextKey struct{}

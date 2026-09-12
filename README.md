@@ -7,13 +7,15 @@ structured JSON to stdout/stderr in the format expected by Google Cloud Logging
 and automatically integrates logs with Cloud Trace and Error Reporting.
 
 Use it for Go services running on **Cloud Run, Cloud Run Jobs, Cloud Functions,
-GKE, App Engine, or Compute Engine** when you want to keep using the standard
-library's `log/slog` API instead of adopting a separate logging API. Keep
-idiomatic Go `log/slog`, but make it behave like a first-class Google Cloud
-observability client—without making every service build and maintain the
-integration glue. When something goes wrong, the log entry has the right
-severity, links to the active trace, carries the appropriate span, identifies
-the service, and produces a useful Error Reporting event.
+GKE, App Engine, or Compute Engine**. Application code keeps the standard
+library's `log/slog` API while slogcp adds severity, trace and span identifiers,
+service metadata, and Error Reporting fields.
+
+Version 2 moves Pub/Sub helpers into the optional
+[`slogcp-pubsub`](https://github.com/pjscruggs/slogcp-pubsub) module. The optional
+[`slogcp-grpc`](https://github.com/pjscruggs/slogcp-grpc) module sends enriched
+entries through the Cloud Logging gRPC API. See the
+[v2 migration guide](docs/MIGRATION_V2.md) for the new import paths.
 
 ## What you get
 
@@ -24,14 +26,15 @@ the service, and produces a useful Error Reporting event.
 * request-scoped `slog.Logger`s
 * HTTP server/client middleware
 * gRPC server/client interceptors
-* Pub/Sub trace propagation and message-scoped logging
+* optional Pub/Sub trace propagation and message-scoped logging
 * automatic Google Cloud runtime/project/service detection
 * stdout/stderr logging with no Cloud Logging client required
+* optional Cloud Logging gRPC delivery with the official client settings
 
 ## Installation
 
 ```bash
-go get github.com/pjscruggs/slogcp
+go get github.com/pjscruggs/slogcp/v2
 ```
 
 ## Quick Start
@@ -47,7 +50,7 @@ import (
     "log/slog"
     "os"
 
-    "github.com/pjscruggs/slogcp"
+    "github.com/pjscruggs/slogcp/v2"
 )
 
 func main() {
@@ -225,17 +228,29 @@ instrumentation.
 
 ### Pub/Sub Integration
 
-Pub/Sub workflows usually require extra glue code: copy trace context into
-message attributes, recover it on the subscriber, derive a per-message logger,
-and remember to attach consistent subscription/topic/message fields so Logs
-Explorer stays queryable. slogcp’s `slogcppubsub` package
-(`github.com/pjscruggs/slogcp/slogcppubsub`) collapses that to a couple helpers
-(`Inject` and `WrapReceiveHandler`), giving you message-scoped loggers
-(`slogcp.Logger(ctx)`), Cloud Logging trace correlation, and OpenTelemetry
-messaging semantic-convention fields by default. It also supports optional
-consumer spans, `googclient_` trace attribute interop, and a “public endpoint”
-trust-boundary mode (new root + link) so you can keep end-to-end observability
-without blindly trusting producer trace IDs.
+The optional [`slogcp-pubsub`](https://github.com/pjscruggs/slogcp-pubsub)
+module copies trace context into message attributes and recovers it in
+subscribers. `Inject` and `WrapReceiveHandler` provide message scoped loggers
+through `slogcp.Logger(ctx)`, Cloud Logging trace correlation, and OpenTelemetry
+messaging fields. It also supports consumer spans, `googclient_` trace
+attributes, and a public endpoint mode that starts a new root span with a link
+to the producer's span.
+
+### Cloud Logging gRPC delivery
+
+The optional [`slogcp-grpc`](https://github.com/pjscruggs/slogcp-grpc) module
+connects `slogcp.NewHandlerWithExporter` to the official Cloud Logging client.
+Applications keep their logging calls, enrichment, middleware, and level
+controls while selecting API delivery at startup.
+
+Create the Cloud Logging client and logger with the official settings for
+batch sizes, buffering, concurrency, timeouts, retries, resource metadata, and
+error reporting. The exporter accepts that logger directly. This gives you a
+path to tune throughput when you can allocate more CPU and memory. Measure
+delivery and resource use with your own workload before choosing settings.
+
+Stop producers and drain the slogcp handler before flushing the exporter and
+closing the Cloud Logging client. The module's guide covers setup and shutdown.
 
 ### Async Logging
 
@@ -399,8 +414,8 @@ the [integration recipes][recipes].
 
 slogcp provides ready-to-use middleware for HTTP servers and gRPC services. The
 HTTP helpers live in the `slogcphttp` package
-(`github.com/pjscruggs/slogcp/slogcphttp`) and the gRPC interceptors live in the
-`slogcpgrpc` package (`github.com/pjscruggs/slogcp/slogcpgrpc`).
+(`github.com/pjscruggs/slogcp/v2/slogcphttp`) and the gRPC interceptors live in the
+`slogcpgrpc` package (`github.com/pjscruggs/slogcp/v2/slogcpgrpc`).
 
 Trace correlation reads the current OpenTelemetry span from the request context:
 the handler uses `trace.SpanContextFromContext` to obtain trace and span IDs and
@@ -444,7 +459,7 @@ transport forward W3C trace context to downstream services.
 
 ### Pub/Sub
 
-See [`.examples/pubsub/main.go`][example-pubsub] for a runnable Pub/Sub example
+See the [Pub/Sub example][example-pubsub] for a runnable Pub/Sub example
 that injects trace context and derives message-scoped loggers.
 
 ## Integration with other libraries
@@ -518,7 +533,7 @@ branch, and submit a pull request with your changes.
 [example-masq]:
   .examples/masq/main.go
 [example-pubsub]:
-  .examples/pubsub/main.go
+  https://github.com/pjscruggs/slogcp-pubsub/blob/main/.examples/pubsub/main.go
 [example-timberjack]:
   .examples/timberjack/main.go
 [examples]:
@@ -536,7 +551,7 @@ branch, and submit a pull request with your changes.
 [recipes]:
   docs/recipes/README.md
 [package-docs]:
-  https://pkg.go.dev/github.com/pjscruggs/slogcp
+  https://pkg.go.dev/github.com/pjscruggs/slogcp/v2
 [recipe-background]:
   docs/recipes/background-job-tracing.md
 [recipe-grpc]:

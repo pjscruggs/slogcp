@@ -24,7 +24,7 @@ import (
 	"log"
 	"log/slog"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // main constructs a slogcp handler that redirects to stdout, adds middleware

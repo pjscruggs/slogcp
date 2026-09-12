@@ -29,7 +29,7 @@ import (
 
 	"go.opentelemetry.io/otel/propagation"
 
-	"github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/v2/slogcphttp"
 )
 
 // main issues an HTTP request using slogcp's transport to propagate trace headers.

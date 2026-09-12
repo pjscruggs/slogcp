@@ -37,8 +37,8 @@ parameter. [otelgrpc.NewServerHandler][otelgrpc] constructs this interface.
 Add the modules from the consuming application's module directory.
 
 ```sh
-go get github.com/pjscruggs/slogcp
-go get github.com/pjscruggs/slogcp-grpc-adapter
+go get github.com/pjscruggs/slogcp/v2
+go get github.com/pjscruggs/slogcp-grpc-adapter/v2
 go get github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging
 ```
 
@@ -63,8 +63,8 @@ import (
 	"log/slog"
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/logging"
-	slogcpadapter "github.com/pjscruggs/slogcp-grpc-adapter"
-	"github.com/pjscruggs/slogcp/slogcpgrpc"
+	slogcpadapter "github.com/pjscruggs/slogcp-grpc-adapter/v2"
+	"github.com/pjscruggs/slogcp/v2/slogcpgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/stats"
 )
@@ -110,7 +110,7 @@ contextual logger before the logging interceptor captures its event context. For
 streaming RPCs, it passes a wrapped stream whose `Context` returns that context.
 Application handlers should use `slogcp.Logger(ctx).InfoContext(ctx, ...)` and
 obtain `ctx` from `stream.Context()` in streaming handlers. This call needs an
-import of `github.com/pjscruggs/slogcp` in the service implementation.
+import of `github.com/pjscruggs/slogcp/v2` in the service implementation.
 
 `WithLogger(base)` preserves the existing logger's attributes and pipeline.
 Selection is fixed unless `PreferContext` is enabled. With `PreferContext`, each

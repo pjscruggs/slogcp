@@ -26,7 +26,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/v2/slogcphttp"
 )
 
 // TestTransportForwardsTraceHeaders validates that the example transport

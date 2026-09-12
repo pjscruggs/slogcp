@@ -8,7 +8,8 @@ guide][tracing].
 
 The core slogcp handler can correlate logs with that callback context directly.
 Add `slogcppubsub.WrapReceiveHandler` when you also want message-scoped fields.
-This recipe uses the Pub/Sub v2 Go client; see the [startup guide](../USAGE.md)
+Install the optional `github.com/pjscruggs/slogcp-pubsub` module for this
+recipe. It uses the Pub/Sub v2 Go client. See the [startup guide](../USAGE.md)
 for constructing the slogcp-backed base logger and the [module's Go
 requirement](../../go.mod).
 
@@ -27,8 +28,8 @@ import (
 	"log/slog"
 
 	"cloud.google.com/go/pubsub/v2"
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcppubsub"
+	"github.com/pjscruggs/slogcp/v2"
+	"github.com/pjscruggs/slogcp-pubsub"
 )
 
 func messageHandler(
@@ -68,8 +69,8 @@ wrapper so it receives the span context. Retain the existing handling of
 span context supplied by the existing instrumentation. Disabling only span
 creation still permits extraction. `SpanStrategyAuto` alone is also insufficient
 to promise preservation: extraction happens before the strategy checks the
-current span. See the [receive implementation](../../slogcppubsub/receive.go)
-and [propagation implementation](../../slogcppubsub/propagation.go).
+current span. See the [receive implementation](https://github.com/pjscruggs/slogcp-pubsub/blob/main/receive.go)
+and [propagation implementation](https://github.com/pjscruggs/slogcp-pubsub/blob/main/propagation.go).
 
 The contextual logger retains base attributes and adds fields such as
 `messaging.system`, `messaging.destination.name`, and `messaging.message.id`.
@@ -107,7 +108,7 @@ subscription separately.
 If the supplied context has no valid span, this configuration creates none and
 does not recover one from message attributes. For a subscriber that needs
 slogcppubsub to own extraction and consumer spans, follow the [Pub/Sub package
-guide](../../slogcppubsub/README.md) instead, including its trust-boundary
+guide](https://github.com/pjscruggs/slogcp-pubsub) instead, including its trust-boundary
 options. HTTP push delivery needs an HTTP integration, as described in the
 [usage guide](../USAGE.md#pubsub-and-other-client-libraries).
 

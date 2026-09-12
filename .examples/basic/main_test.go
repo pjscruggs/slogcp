@@ -20,7 +20,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // TestGoogleCloudLoggerEmitsInfo validates the basic Cloud Run oriented

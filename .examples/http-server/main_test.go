@@ -22,8 +22,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcphttp"
+	"github.com/pjscruggs/slogcp/v2"
+	"github.com/pjscruggs/slogcp/v2/slogcphttp"
 )
 
 // TestHTTPMiddlewareLogsRequest covers the HTTP server example by invoking the

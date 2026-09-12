@@ -18,7 +18,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // TestLevel_String verifies the string representation and underlying slog.Level value

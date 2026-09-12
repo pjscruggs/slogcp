@@ -1,9 +1,9 @@
-module github.com/pjscruggs/slogcp/examples/grpc
+module github.com/pjscruggs/slogcp/v2/examples/grpc
 
 go 1.27.1
 
 require (
-	github.com/pjscruggs/slogcp v0.0.0-unpublished
+	github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
 	google.golang.org/grpc v1.83.2
 	google.golang.org/grpc/examples v0.0.0-20260911073300-e4711283ae08
 )
@@ -26,4 +26,4 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-replace github.com/pjscruggs/slogcp => ../..
+replace github.com/pjscruggs/slogcp/v2 => ../..

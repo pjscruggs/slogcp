@@ -31,7 +31,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pjscruggs/slogcp/slogcpasync"
+	"github.com/pjscruggs/slogcp/v2/slogcpasync"
 )
 
 // closingBuffer tracks whether Close is invoked on an io.Writer stand-in.

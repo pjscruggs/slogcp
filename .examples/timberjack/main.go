@@ -26,7 +26,7 @@ import (
 
 	"github.com/DeRuina/timberjack"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // main runs the timberjack rolling file example with slogcp output.

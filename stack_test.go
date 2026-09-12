@@ -397,8 +397,11 @@ func TestSkipInternalStackFrameRecognizesPrefixes(t *testing.T) {
 	if !SkipInternalStackFrame("runtime.Callers") {
 		t.Fatalf("runtime.Callers should be internal")
 	}
-	if !SkipInternalStackFrame("github.com/pjscruggs/slogcp/json_handler.(*jsonHandler).Handle") {
+	if !SkipInternalStackFrame("github.com/pjscruggs/slogcp/v2/json_handler.(*jsonHandler).Handle") {
 		t.Fatalf("slogcp prefix should be treated as internal")
+	}
+	if !SkipInternalStackFrame("github.com/pjscruggs/slogcp/v2.(*jsonHandler).Handle") {
+		t.Fatalf("slogcp root package should be treated as internal")
 	}
 	if SkipInternalStackFrame("main.main") {
 		t.Fatalf("application frames should not be considered internal")

@@ -17,7 +17,7 @@ package slogcp_test
 import (
 	"testing"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // TestGetVersionReflectsVariable ensures GetVersion mirrors manual overrides.

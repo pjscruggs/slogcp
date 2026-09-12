@@ -39,7 +39,7 @@ import (
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 
-	"github.com/pjscruggs/slogcp"
+	"github.com/pjscruggs/slogcp/v2"
 )
 
 // allowAllRPCTags is an otelgrpc.Filter helper that accepts every RPC.

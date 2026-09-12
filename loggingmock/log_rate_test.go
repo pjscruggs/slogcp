@@ -27,8 +27,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pjscruggs/slogcp"
-	"github.com/pjscruggs/slogcp/slogcpasync"
+	"github.com/pjscruggs/slogcp/v2"
+	"github.com/pjscruggs/slogcp/v2/slogcpasync"
 )
 
 // sinkHandler discards output while exercising Handler.Handle.
