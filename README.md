@@ -353,10 +353,23 @@ logger.LogAttrs(ctx, slog.LevelError, "failed operation",
 
 ## Examples
 
-### In Google Cloud
+Start with a runnable application in [`.examples`][examples]. Each example is
+its own Go module:
 
-See [`.examples/basic/main.go`][example-basic] for a minimal bootstrap that
-writes to stdout with slogcp.
+| To get started with… | Example |
+| --- | --- |
+| Basic structured logging | [Basic example][example-basic] |
+| Log levels, source locations, and default attributes | [Configuration example][example-configuration] |
+| An HTTP server | [HTTP server example][example-http-server] |
+| An HTTP client with trace propagation | [HTTP client example][example-http-client] |
+| gRPC services | [gRPC example][example-grpc] |
+| Pub/Sub messaging | [Pub/Sub example][example-pubsub] |
+
+The [usage guide][usage-guide] walks through bringing these pieces into your own
+application, from creating a logger to configuration and shutdown. Use the
+[configuration reference][configuration] for individual options and the
+[package documentation][package-docs] for API contracts. For specific
+integrations, see the [integration recipes][recipes].
 
 ## HTTP and gRPC Middleware
 
@@ -480,6 +493,8 @@ branch, and submit a pull request with your changes.
   https://github.com/m-mizutani/masq
 [recipes]:
   docs/recipes/README.md
+[package-docs]:
+  https://pkg.go.dev/github.com/pjscruggs/slogcp
 [release-policy]:
   docs/RELEASE_POLICY.md
 [slogcp-grpc-adapter]:
