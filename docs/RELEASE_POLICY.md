@@ -13,13 +13,13 @@ release, including changes merged before the version bump.
 
 ## Go compatibility and dependency requirements
 
-The library's compatibility floor is Go 1.26, declared as `go 1.26.0` in
+The library's compatibility floor is Go 1.27, declared as `go 1.27.0` in
 [`go.mod`](../go.mod). Renovate does not update that directive. Raising it
 requires a deliberate compatibility decision.
 
 [The `toolchain` directive](https://go.dev/doc/toolchain) selects the preferred
 compiler for work on slogcp itself. It advances independently of the
-compatibility floor. CI tests the library with a patched compiler on the Go 1.26
+compatibility floor. CI tests the library with a patched compiler on the Go 1.27
 line and with the preferred compiler. Those tests set `GOTOOLCHAIN=local` and
 verify the running compiler, so automatic toolchain switching cannot conceal a
 floor-compatibility failure.

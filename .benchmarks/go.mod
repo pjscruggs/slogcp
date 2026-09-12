@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/benchmarks
 
-go 1.26.0
+go 1.27.0
 
 toolchain go1.27.1
 
