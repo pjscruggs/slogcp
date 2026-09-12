@@ -103,6 +103,39 @@ func TestJSONEncodingCompatibility(t *testing.T) {
 	}
 }
 
+// TestJSONEncodingCollidingUTF8KeysPreservesValues protects the last-wins value
+// when distinct string keys normalize to the same JSON object member name.
+func TestJSONEncodingCollidingUTF8KeysPreservesValues(t *testing.T) {
+	// Without sorting, map iteration can reverse the duplicate members and
+	// change the decoded value. Check the required ordering option as well as
+	// the output so this regression never depends on random map iteration.
+	if deterministic, present := jsonv2.GetOption(logJSONOptions, jsonv2.Deterministic); !present || !deterministic {
+		t.Fatal("compatible invalid-UTF8 key replacement requires deterministic map-key ordering")
+	}
+	collisions := map[string]any{"\xfe": "first", "\xff": "second"}
+	var actual bytes.Buffer
+	handler := &jsonHandler{
+		mu: &sync.Mutex{}, writer: &actual, internalLogger: slog.New(slog.DiscardHandler),
+		bufferPool: &jsonBufferPool,
+	}
+	if err := handler.writeJSONPayload(map[string]any{"payload": collisions}); err != nil {
+		t.Fatalf("writeJSONPayload: %v", err)
+	}
+	want := "{\"payload\":{\"\ufffd\":\"first\",\"\ufffd\":\"second\"}}\n"
+	if actual.String() != want {
+		t.Fatalf("colliding names changed their compatible order: got %q, want %q", actual.String(), want)
+	}
+	var decoded struct {
+		Payload map[string]string `json:"payload"`
+	}
+	if err := json.Unmarshal(actual.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode actual: %v", err)
+	}
+	if got := decoded.Payload["\ufffd"]; got != "second" || len(decoded.Payload) != 1 {
+		t.Fatalf("normalized key decoded as %#v, want one key with value second", decoded.Payload)
+	}
+}
+
 type partialJSONAttribute struct {
 	calls  int
 	failAt map[int]bool

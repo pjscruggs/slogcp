@@ -35,12 +35,11 @@ type groupedAttr struct {
 	attr   slog.Attr
 }
 
-// logJSONOptions preserves existing JSON value representations while allowing
-// native buffered encoding without sorting object members.
+// logJSONOptions preserves existing JSON value representations and map-key
+// ordering while allowing native encoding directly into the staged buffer.
 var logJSONOptions = jsonv2.JoinOptions(
 	jsonv1.DefaultOptionsV1(),
 	jsontext.EscapeForHTML(false),
-	jsonv2.Deterministic(false),
 )
 
 // extractErrorFromResolved unwraps an error from a resolved slog.Value when possible.

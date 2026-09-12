@@ -98,8 +98,8 @@ type Middleware func(slog.Handler) slog.Handler
 // Handler routes slog records to Google Cloud Logging with optional
 // middlewares, stack traces and trace correlation.
 //
-// JSON object member order is unspecified. Values retain encoding/json-compatible
-// representations, with HTML escaping disabled.
+// JSON encoding retains encoding/json-compatible value representations and
+// map-key ordering, with HTML escaping disabled.
 //
 // JSON payload emission is best-effort. If a field value cannot be encoded,
 // slogcp replaces the failing top-level field with a stable
