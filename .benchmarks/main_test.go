@@ -27,6 +27,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"cloud.google.com/go/logging"
+	"google.golang.org/api/option"
 )
 
 // TestLoggingModes exercises concurrent output and compares application fields
@@ -74,6 +77,43 @@ func TestLoggingModes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGRPCExporterWarmupFlush retains the handler for measured events and IDs.
+func TestGRPCExporterWarmupFlush(t *testing.T) {
+	var output bytes.Buffer
+	client, err := logging.NewClient(context.Background(), "benchmark-local",
+		option.WithoutAuthentication(), option.WithTelemetryDisabled())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := client.Logger("benchmark-test", logging.RedirectAsJSON(&output))
+	cfg := testConfig("google-stdout", "nested")
+	cfg.Count = 4
+	sink, err := newSlogcpGRPCSink(client, logger, cfg, map[string]string{
+		"run.googleapis.com/execution_name": "example-execution",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := sink.close(); err != nil {
+			t.Error(err)
+		}
+	})
+	warmup, _ := application(cfg, cfg.TrialID+"-warmup", 0)
+	sink.emit(context.Background(), warmup)
+	if err := sink.flush(); err != nil {
+		t.Fatal(err)
+	}
+	for sequence := range cfg.Count {
+		entry, _ := application(cfg, cfg.TrialID, sequence)
+		sink.emit(context.Background(), entry)
+	}
+	if err := sink.flush(); err != nil {
+		t.Fatal(err)
+	}
+	measuredEntries(t, cfg, output.Bytes())
 }
 
 func testConfig(mode, payload string) config {
@@ -182,9 +222,25 @@ func TestRejectInvalidConfig(t *testing.T) {
 		{"-mode", "unknown"}, {"-payload", "unknown"}, {"-count", "0"},
 		{"-warmup", "0"}, {"-count", "1", "-concurrency", "2"},
 		{"-mode", "google-api", "-sink", "discard"}, {"-sink", "unknown"},
+		{"-mode", "slogcp-grpc", "-sink", "discard"},
 	} {
 		if _, err := parseConfig(append(append([]string{}, base...), args...)); err == nil {
 			t.Errorf("accepted invalid configuration: %v", args)
+		}
+	}
+}
+
+// TestAPIModesRequireProject prevents implicit project selection during delivery.
+func TestAPIModesRequireProject(t *testing.T) {
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+	t.Setenv("CLOUD_RUN_JOB", "")
+	for _, mode := range []string{modeGoogleAPI, modeSlogcpGRPC} {
+		args := []string{"-run-id", "test", "-trial-id", "test", "-result-file", "unused.json", "-mode", mode}
+		if _, err := parseConfig(args); err == nil {
+			t.Errorf("accepted API mode %q without an explicit project", mode)
+		}
+		if _, err := parseConfig(append(args, "-project", "example-project")); err != nil {
+			t.Errorf("rejected configured API mode %q: %v", mode, err)
 		}
 	}
 }

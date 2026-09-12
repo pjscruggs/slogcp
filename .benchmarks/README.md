@@ -18,6 +18,7 @@ implementations.
 | `slogcp` | Structured stdout | Synchronous slogcp encoding and output |
 | `google-stdout` | `logging.RedirectAsJSON` to stdout | Google client using the same Cloud Run collection path |
 | `google-api` | Buffered Cloud Logging API | Google's default asynchronous gRPC transport, with final flush |
+| `slogcp-grpc` | Buffered Cloud Logging API | slogcp enrichment with the optional gRPC exporter and final flush |
 | `none` | No logging | Shared application work without logging |
 
 `slogcp` and `google-stdout` also run with `sink=discard` as an
@@ -26,23 +27,35 @@ cloud logging.
 
 The stdout pair is the primary library comparison. API logging has different
 buffering, transport, and completion behavior. Report producer time and final
-flush time separately; use the completed rate when accounting for buffered work.
+flush time separately and use the completed rate when accounting for buffered work.
 Source location and stack collection are disabled for every client. See the
 [Google client API](https://pkg.go.dev/cloud.google.com/go/logging) and [Cloud
 Run logging guidance](https://cloud.google.com/run/docs/logging).
 
+The `slogcp-grpc` mode uses the same official client defaults and monitored
+resource as `google-api`. It includes slogcp enrichment and conversion to
+Cloud Logging entries. The handler hands each entry to the client synchronously,
+and its completed rate includes flushing the client queue. Both API modes
+require an explicit project and reject the discard sink.
+
+Add `--include-slogcp-grpc` to `manage.py run` when every selected binary
+supports the optional exporter mode. The default matrix remains compatible
+with archived binaries. Enabling it adds 40 trials per variant at the default
+settings, with 100,000 measured API records and 8,000 warmup records.
+The summary includes a direct comparison with `google-api` for these trials.
+
 Each trial runs in its own child process, with setup, warmup, and a pre-trial GC
 outside the measured interval. Final API flush work is included. The process's
-peak RSS includes initialization and warmup; it is distinct from allocated bytes
-measured during the interval. Platform collector CPU is outside the process CPU
+peak RSS includes initialization and warmup. Allocated bytes are measured during
+the trial interval. Platform collector CPU is outside the process CPU
 measurements.
 
 ## Prerequisites and private configuration
 
-Run commands from the `slogcp` checkout. Install Python 3.12 or newer, Go
-1.27.1, Git, and an authenticated Google Cloud CLI. Prepare an Artifact Registry
-Docker repository, a private Cloud Storage result bucket, and build/runtime
-identities in the intended project. Every GCP command must name the project
+Run commands from the `slogcp` checkout. Install Python, the Go toolchain declared
+in [`go.mod`](go.mod), Git, and an authenticated Google Cloud CLI. Prepare an
+Artifact Registry Docker repository, a private Cloud Storage result bucket, and
+build and runtime identities in the intended project. Every GCP command must name the project
 explicitly.
 
 The runtime identity needs `roles/logging.logWriter` for API-mode records and
@@ -86,8 +99,8 @@ python .benchmarks/manage.py freeze --name baseline --archive "$ARCHIVE/baseline
 ```
 
 `freeze` requires a clean checkout. It builds a Linux/amd64 executable with the
-exact Go 1.27.1 toolchain and records its checksum, source archive, module
-graph, source revision, build settings, and harness hashes. Use a fresh archive
+fixed Go toolchain selected in [`manage.py`](manage.py) and records its checksum,
+source archive, module graph, source revision, build settings, and harness hashes. Use a fresh archive
 directory for every freeze. Keep the baseline executable unchanged throughout
 the experiment.
 
@@ -228,9 +241,9 @@ do not measure steady-state API saturation.
 
 Report library-versus-Google results separately from baseline-versus-jsonv2
 results. Compare the same scenarios and include uncertainty, not only favorable
-samples. Both binaries use Go 1.27.1, so a native codec improvement is not
-confused with a toolchain upgrade. Use at least ten predetermined repetitions;
-twenty can improve sensitivity if chosen before measurement. Do not rerun
+samples. Both binaries use the same fixed Go toolchain to keep compiler changes
+outside the comparison. Use at least ten predetermined repetitions.
+Twenty can improve sensitivity if chosen before measurement. Do not rerun
 selectively until a result becomes significant. See the [Go benchstat
 guidance](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat).
 

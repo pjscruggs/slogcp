@@ -1,4 +1,4 @@
-module github.com/pjscruggs/slogcp/benchmarks
+module github.com/pjscruggs/slogcp/v2/benchmarks
 
 go 1.27.0
 
@@ -6,7 +6,8 @@ toolchain go1.27.1
 
 require (
 	cloud.google.com/go/logging v1.19.1
-	github.com/pjscruggs/slogcp v1.3.0
+	github.com/pjscruggs/slogcp-grpc v0.0.0-20260912111453-931bb73e7329
+	github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
 	google.golang.org/api v0.287.1
 	google.golang.org/genproto/googleapis/api v0.0.0-20260630182238-925bb5da69e7
 )
@@ -44,4 +45,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/pjscruggs/slogcp => ..
+replace github.com/pjscruggs/slogcp/v2 => ..

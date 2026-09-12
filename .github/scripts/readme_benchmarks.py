@@ -41,7 +41,7 @@ from pathlib import Path
 START = "<!-- BENCHMARKS:START -->"
 END = "<!-- BENCHMARKS:END -->"
 PROVENANCE = "<!-- BENCHMARKS:PROVENANCE "
-PACKAGE = "github.com/pjscruggs/slogcp"
+PACKAGE = "github.com/pjscruggs/slogcp/v2"
 RUNNER = "ubuntu-latest"
 SAMPLE_COUNT = 10
 CASES = (

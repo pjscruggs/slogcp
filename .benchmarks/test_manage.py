@@ -130,7 +130,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(len(cases), 240)
         self.assertEqual(len(real_logs), 120)
         self.assertEqual(sum(case["count"] for case in real_logs), 300000)
-        self.assertFalse(any(case["mode"] in ("none", "google-api") and case["sink"] == "discard" for case in cases))
+        self.assertFalse(any(case["mode"] in ("none", "google-api", "slogcp-grpc") and case["sink"] == "discard" for case in cases))
 
 
 class RunTests(unittest.TestCase):
@@ -141,6 +141,7 @@ class RunTests(unittest.TestCase):
             image="example.invalid/image@sha256:" + "a" * 64,
             runtime_sa="runtime@example-project.iam.gserviceaccount.com",
             repeats=10, stdout_count=2500, discard_count=100000, warmup=200,
+            include_slogcp_grpc=False,
             variant=["baseline", "candidate"],
         )
         values.update(changes)

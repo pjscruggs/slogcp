@@ -135,6 +135,7 @@ def run(args):
                      GOOGLE_CLOUD_PROJECT=args.project, BENCH_REGION=args.region,
                      BENCH_REPEATS=str(args.repeats), BENCH_STDOUT_COUNT=str(args.stdout_count),
                      BENCH_DISCARD_COUNT=str(args.discard_count), BENCH_WARMUP=str(args.warmup),
+                     BENCH_INCLUDE_SLOGCP_GRPC=str(args.include_slogcp_grpc).lower(),
                      BENCH_VARIANTS=json.dumps({name: "/opt/bench/bin/" + name for name in args.variant}),
                      GOMAXPROCS="2")
     env_path = output / "job-env.json"
@@ -173,6 +174,7 @@ def main():
     launch.add_argument("--stdout-count", type=int, default=2500)
     launch.add_argument("--discard-count", type=int, default=100000)
     launch.add_argument("--warmup", type=int, default=200)
+    launch.add_argument("--include-slogcp-grpc", action="store_true")
     launch.set_defaults(func=run)
     for command in (build, launch):
         command.add_argument("--archive", required=True, type=Path)

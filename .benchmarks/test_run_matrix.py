@@ -33,6 +33,13 @@ class MatrixTest(unittest.TestCase):
         self.assertEqual(a, plan(["baseline", "candidate"], 2, 42, 1, 1))
         self.assertNotEqual(a, plan(["baseline", "candidate"], 2, 43, 1, 1))
 
+    def test_optional_grpc_mode_runs_only_real_cloud_delivery(self):
+        cases = plan(["baseline"], 10, 42, 2500, 100000, include_slogcp_grpc=True)
+        self.assertEqual(len(cases), 280)
+        grpc_cases = [case for case in cases if case["mode"] == "slogcp-grpc"]
+        self.assertEqual(len(grpc_cases), 40)
+        self.assertTrue(all(case["sink"] == "stdout" for case in grpc_cases))
+
 
 if __name__ == "__main__":
     unittest.main()

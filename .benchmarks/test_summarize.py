@@ -150,6 +150,19 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(comparisons[("unsorted", "slogcp")]["metrics"]["cpu_ns_per_request"]["ratio"], 0.25)
         self.assertIn("nativev2", summary.markdown_report(report))
 
+    def test_optional_grpc_exporter_is_compared_with_the_same_api_transport(self):
+        baseline = suite()
+        baseline["trials"].extend(trial(repeat, mode="slogcp-grpc", factor=2)
+                                  for repeat in range(3))
+        report = summary.build_report(baseline)
+        rows = report["suites"][0]["slogcp_grpc_over_google_api"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["measured_mode"], "slogcp-grpc")
+        self.assertEqual(rows[0]["reference_mode"], "google-api")
+        self.assertEqual(rows[0]["metrics"]["cpu_ns_per_request"]["ratio"], 2)
+        self.assertEqual(rows[0]["metrics"]["completed_requests_per_second"]["ratio"], 0.5)
+        self.assertIn("### slogcp gRPC / Google default gRPC ratios", summary.markdown_report(report))
+
 
 if __name__ == "__main__":
     unittest.main()

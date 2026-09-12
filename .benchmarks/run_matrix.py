@@ -56,15 +56,18 @@ def read_optional(path):
         return None
 
 
-def plan(variants, repeats, seed, stdout_count, discard_count):
+def plan(variants, repeats, seed, stdout_count, discard_count, include_slogcp_grpc=False):
     """Keep variants adjacent while balancing/randomizing their order by block."""
     rng = random.Random(seed)
     blocks = []
+    stdout_modes = ("none", "slogcp", "google-stdout", "google-api")
+    if include_slogcp_grpc:
+        stdout_modes += ("slogcp-grpc",)
     for repeat in range(repeats):
         cases = [(payload, concurrency, sink, mode)
                  for payload in ("small", "nested")
                  for concurrency in (1, 16)
-                 for sink, modes in (("stdout", ("none", "slogcp", "google-stdout", "google-api")),
+                 for sink, modes in (("stdout", stdout_modes),
                                      ("discard", ("slogcp", "google-stdout")))
                  for mode in modes]
         rng.shuffle(cases)
@@ -109,7 +112,8 @@ def main():
                        "execution": os.environ.get("CLOUD_RUN_EXECUTION"),
                        "task_attempt": os.environ.get("CLOUD_RUN_TASK_ATTEMPT")},
                  provenance=json.loads(Path("/opt/bench/provenance.json").read_text()))
-    planned = plan(variants, repeats, seed, stdout_count, discard_count)
+    include_slogcp_grpc = os.environ.get("BENCH_INCLUDE_SLOGCP_GRPC", "false") == "true"
+    planned = plan(variants, repeats, seed, stdout_count, discard_count, include_slogcp_grpc)
     for index, case in enumerate(planned):
         result_path = output / (case["trial_id"] + ".json")
         args = [variants[case["variant"]], "-project", project, "-location", region,

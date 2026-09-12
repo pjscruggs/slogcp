@@ -37,14 +37,16 @@ import (
 	"time"
 
 	"cloud.google.com/go/logging"
-	"github.com/pjscruggs/slogcp"
+	slogcpgrpc "github.com/pjscruggs/slogcp-grpc"
+	"github.com/pjscruggs/slogcp/v2"
 	"google.golang.org/api/option"
 	mrpb "google.golang.org/genproto/googleapis/api/monitoredres"
 )
 
 const (
-	eventMessage  = "request completed"
-	modeGoogleAPI = "google-api"
+	eventMessage   = "request completed"
+	modeGoogleAPI  = "google-api"
+	modeSlogcpGRPC = "slogcp-grpc"
 )
 
 type config struct {
@@ -196,24 +198,7 @@ func newLogSink(ctx context.Context, cfg config, writer io.Writer, errs *errorLi
 		if err != nil {
 			return logSink{}, fmt.Errorf("create slogcp handler: %w", err)
 		}
-		logger := slog.New(handler)
-		if len(labels) > 0 {
-			logger = logger.With(slog.Any(slogcp.LabelsGroup, labels))
-		}
-		return logSink{
-			emit: func(ctx context.Context, event event) {
-				logger.LogAttrs(ctx, slog.LevelInfo, eventMessage,
-					slog.String("run_id", event.runID),
-					slog.String("trial_id", event.trialID),
-					slog.Int("sequence", event.sequence),
-					slog.String("logging.googleapis.com/insertId", event.insertID),
-					slog.String("digest", event.digest),
-					slog.Any("request", event.request),
-				)
-			},
-			flush: noop,
-			close: handler.Close,
-		}, nil
+		return slogSink(handler, labels, noop, handler.Close), nil
 	}
 	var clientOptions []option.ClientOption
 	if cfg.Mode == "google-stdout" {
@@ -237,6 +222,9 @@ func newLogSink(ctx context.Context, cfg config, writer io.Writer, errs *errorLi
 		}))
 	}
 	logger := client.Logger("logging-comparison-benchmark", loggerOptions...)
+	if cfg.Mode == modeSlogcpGRPC {
+		return newSlogcpGRPCSink(client, logger, cfg, labels)
+	}
 	return logSink{
 		emit: func(_ context.Context, event event) {
 			payload := map[string]any{
@@ -258,6 +246,50 @@ func newLogSink(ctx context.Context, cfg config, writer io.Writer, errs *errorLi
 		flush: logger.Flush,
 		close: client.Close,
 	}, nil
+}
+
+// newSlogcpGRPCSink applies slogcp enrichment to the configured Google logger.
+func newSlogcpGRPCSink(client *logging.Client, logger *logging.Logger, cfg config, labels map[string]string) (logSink, error) {
+	exporter, err := slogcpgrpc.NewExporter(logger)
+	if err != nil {
+		return logSink{}, errors.Join(err, client.Close())
+	}
+	handler, err := slogcp.NewHandlerWithExporter(exporter,
+		slogcp.WithLevel(slog.LevelInfo),
+		slogcp.WithSourceLocationEnabled(false),
+		slogcp.WithStackTraceEnabled(false),
+		slogcp.WithTime(true),
+		slogcp.WithTraceProjectID(cfg.Project),
+	)
+	if err != nil {
+		return logSink{}, errors.Join(err, client.Close())
+	}
+	// This handler has no slogcp queue. Warmup flush leaves it open for the trial.
+	return slogSink(handler, labels, exporter.Flush, func() error {
+		return errors.Join(handler.Close(), exporter.Flush(), client.Close())
+	}), nil
+}
+
+// slogSink applies the same application attributes to either slogcp transport.
+func slogSink(handler *slogcp.Handler, labels map[string]string, flush, closeSink func() error) logSink {
+	logger := slog.New(handler)
+	if len(labels) > 0 {
+		logger = logger.With(slog.Any(slogcp.LabelsGroup, labels))
+	}
+	return logSink{
+		emit: func(ctx context.Context, event event) {
+			logger.LogAttrs(ctx, slog.LevelInfo, eventMessage,
+				slog.String("run_id", event.runID),
+				slog.String("trial_id", event.trialID),
+				slog.Int("sequence", event.sequence),
+				slog.String("logging.googleapis.com/insertId", event.insertID),
+				slog.String("digest", event.digest),
+				slog.Any("request", event.request),
+			)
+		},
+		flush: flush,
+		close: closeSink,
+	}
 }
 
 func monitoredResource(cfg config) *mrpb.MonitoredResource {
@@ -469,7 +501,7 @@ func buildRuntimeInfo() runtimeInfo {
 func parseConfig(args []string) (config, error) {
 	var cfg config
 	flags := flag.NewFlagSet("logging-benchmark", flag.ContinueOnError)
-	flags.StringVar(&cfg.Mode, "mode", "slogcp", "none, slogcp, google-stdout, or google-api")
+	flags.StringVar(&cfg.Mode, "mode", "slogcp", "none, slogcp, slogcp-grpc, google-stdout, or google-api")
 	flags.StringVar(&cfg.Payload, "payload", "small", "small or nested")
 	flags.IntVar(&cfg.Count, "count", 10000, "measured application requests")
 	flags.IntVar(&cfg.Concurrency, "concurrency", 1, "parallel request workers")
@@ -491,7 +523,7 @@ func parseConfig(args []string) (config, error) {
 }
 
 func (cfg config) validateWorkload() error {
-	if !slices.Contains([]string{"none", "slogcp", "google-stdout", modeGoogleAPI}, cfg.Mode) {
+	if !slices.Contains([]string{"none", "slogcp", modeSlogcpGRPC, "google-stdout", modeGoogleAPI}, cfg.Mode) {
 		return errors.New("unsupported mode")
 	}
 	if cfg.Payload != "small" && cfg.Payload != "nested" {
@@ -510,23 +542,28 @@ func (cfg config) validateOutput() error {
 	if cfg.Sink != "stdout" && cfg.Sink != "discard" {
 		return errors.New("sink must be stdout or discard")
 	}
-	if cfg.Mode == modeGoogleAPI && cfg.Sink == "discard" {
-		return errors.New("google-api cannot use the discard sink")
+	if cfg.usesAPI() && cfg.Sink == "discard" {
+		return errors.New("API delivery cannot use the discard sink")
 	}
 	return nil
 }
 
 func (cfg *config) configureProject() error {
 	if cfg.Project == "" {
-		if cfg.Mode == modeGoogleAPI {
-			return errors.New("google-api requires an explicit project")
+		if cfg.usesAPI() {
+			return errors.New("API delivery requires an explicit project")
 		}
 		cfg.Project = "benchmark-local"
 	}
-	if cfg.Mode == modeGoogleAPI && os.Getenv("CLOUD_RUN_JOB") != "" && cfg.Location == "" {
+	if cfg.usesAPI() && os.Getenv("CLOUD_RUN_JOB") != "" && cfg.Location == "" {
 		return errors.New("cloud Run API logging requires an explicit location")
 	}
 	return nil
+}
+
+// usesAPI reports whether a trial sends entries directly to Cloud Logging.
+func (cfg config) usesAPI() bool {
+	return cfg.Mode == modeGoogleAPI || cfg.Mode == modeSlogcpGRPC
 }
 
 func run(args []string) error {

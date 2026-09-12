@@ -90,7 +90,7 @@ def validate_suite(suite):
         config = trial["config"]
         if config["payload"] not in ("small", "nested"):
             raise ValueError("Unknown application payload")
-        if config["mode"] not in ("none", "slogcp", "google-stdout", "google-api"):
+        if config["mode"] not in ("none", "slogcp", "slogcp-grpc", "google-stdout", "google-api"):
             raise ValueError("Unknown logger mode")
         if config["sink"] not in ("stdout", "discard"):
             raise ValueError("Unknown output sink")
@@ -194,7 +194,7 @@ def summarize_suite(suite, name):
     groups = defaultdict(list)
     for (variant, key, _), trial in indexed.items():
         groups[(variant, key)].append(trial)
-    rows, comparisons, api_comparisons = [], [], []
+    rows, comparisons, api_comparisons, grpc_comparisons = [], [], [], []
     for (variant, key), trials in sorted(groups.items()):
         values = [trial_metrics(trial) for trial in trials]
         rows.append(dict(variant=variant, **describe_case(key), n=len(trials),
@@ -207,9 +207,16 @@ def summarize_suite(suite, name):
                     output.append(dict(variant=variant, **describe_case(key),
                                        reference_mode=mode, measured_mode="slogcp",
                                        metrics=compare_trials(control, trials)))
+        if key[-1] == "slogcp-grpc":
+            control = groups.get((variant, key[:-1] + ("google-api",)))
+            if control:
+                grpc_comparisons.append(dict(variant=variant, **describe_case(key),
+                    reference_mode="google-api", measured_mode="slogcp-grpc",
+                    metrics=compare_trials(control, trials)))
     return dict(name=name, repeats=suite["repeats"], environment=safe_environment(suite),
                 groups=rows, slogcp_over_google_stdout=comparisons,
-                slogcp_over_google_api=api_comparisons)
+                slogcp_over_google_api=api_comparisons,
+                slogcp_grpc_over_google_api=grpc_comparisons)
 
 
 def build_report(baseline, paired=None):
@@ -301,6 +308,14 @@ def markdown_report(report):
                   "same per-repetition pairing and 95% bootstrap method as the stdout comparison.", ""]
         lines.extend(comparison_table(suite["slogcp_over_google_api"], variant=True))
         lines.append("")
+        if suite["slogcp_grpc_over_google_api"]:
+            lines += ["### slogcp gRPC / Google default gRPC ratios", "",
+                      "Both modes use the official client's default buffered API delivery. "
+                      "The slogcp mode also enriches and converts each entry. Completed throughput "
+                      "includes the final client flush for both modes. Compare CPU, allocation, "
+                      "and completed throughput for the measured workload before selecting a transport.", ""]
+            lines.extend(comparison_table(suite["slogcp_grpc_over_google_api"], variant=True))
+            lines.append("")
     if report["candidate_over_baseline"]:
         lines += ["## Candidate / baseline ratios from interleaved pairs", "",
                   "Each pair shares its case and repetition within the second suite. The archived "
