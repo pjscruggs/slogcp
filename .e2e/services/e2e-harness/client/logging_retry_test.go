@@ -39,12 +39,15 @@ import (
 
 type logTransport func(*http.Request) (*http.Response, error)
 
+// RoundTrip implements http.RoundTripper using the test transport function.
 func (f logTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// logResponse creates a JSON response for the retry tests.
 func logResponse(code int, body string) *http.Response {
 	return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
 }
 
+// TestJSONQuotaRetryPreservesPageAndEmptyContinuation checks pagination across quota retries.
 func TestJSONQuotaRetryPreservesPageAndEmptyContinuation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var tokens []string
@@ -79,6 +82,7 @@ func TestJSONQuotaRetryPreservesPageAndEmptyContinuation(t *testing.T) {
 	})
 }
 
+// TestLogQuotaDoesNotHidePermanentErrors checks that permanent failures are returned.
 func TestLogQuotaDoesNotHidePermanentErrors(t *testing.T) {
 	for _, code := range []int{400, 401, 403} {
 		calls := 0
@@ -99,6 +103,7 @@ func TestLogQuotaDoesNotHidePermanentErrors(t *testing.T) {
 	}
 }
 
+// TestLogQuotaDeadlineAndAttemptLimit checks retry bounds.
 func TestLogQuotaDeadlineAndAttemptLimit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		calls := 0
@@ -119,6 +124,7 @@ func TestLogQuotaDeadlineAndAttemptLimit(t *testing.T) {
 	})
 }
 
+// TestLogQuotaCancellationAndMalformedResponse checks cancellation and invalid JSON.
 func TestLogQuotaCancellationAndMalformedResponse(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
@@ -145,6 +151,7 @@ type quotaLogServer struct {
 	alwaysQuota bool
 }
 
+// ListLogEntries simulates throttling followed by a successful page.
 func (s *quotaLogServer) ListLogEntries(_ context.Context, r *logpb.ListLogEntriesRequest) (*logpb.ListLogEntriesResponse, error) {
 	s.tokens = append(s.tokens, r.PageToken)
 	if s.alwaysQuota {
@@ -160,6 +167,7 @@ func (s *quotaLogServer) ListLogEntries(_ context.Context, r *logpb.ListLogEntri
 	}
 }
 
+// TestLogadminRetriesThrottledPage checks the gRPC log client retry path.
 func TestLogadminRetriesThrottledPage(t *testing.T) {
 	for _, persistent := range []bool{false, true} {
 		synctest.Test(t, func(t *testing.T) {
@@ -196,6 +204,7 @@ func TestLogadminRetriesThrottledPage(t *testing.T) {
 	}
 }
 
+// TestMissingLogsStillFailWithinDeadline checks that missing logs cannot pass validation.
 func TestMissingLogsStillFailWithinDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := &LoggingClient{httpClient: &http.Client{Transport: logTransport(func(*http.Request) (*http.Response, error) {

@@ -214,6 +214,7 @@ func (c *LoggingClient) fetchEntriesListPage(ctx context.Context, reqBody listEn
 	return page, err
 }
 
+// fetchEntriesListPageOnce fetches one page without applying the outer retry policy.
 func (c *LoggingClient) fetchEntriesListPageOnce(ctx context.Context, reqBody listEntriesRequest) (*listEntriesResponse, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {

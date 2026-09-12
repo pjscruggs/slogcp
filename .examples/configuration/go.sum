@@ -1,7 +1,7 @@
 cloud.google.com/go/compute/metadata v0.9.0 h1:pDUj4QMoPejqq20dK0Pg2N4yG9zIkYGdBtwLoEkH9Zs=
 cloud.google.com/go/compute/metadata v0.9.0/go.mod h1:E0bWwX5wTnLPedCKqk3pJmVgCBSM6qQI1yTBdEb3C10=
-github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.61.0 h1:BlaRk2cPJNsOCAwSNGpNFz75AieLH/t22bjKB/n/zME=
-github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.61.0/go.mod h1:AdkhdCuEn0PHN0/RiyworzQZlk33fJJDalyZSdOXcm4=
+github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.62.0 h1:TCUUWzznY+7/4H4vGZv78RVJp+A2VACkBBg9tlbMeSw=
+github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.62.0/go.mod h1:AdkhdCuEn0PHN0/RiyworzQZlk33fJJDalyZSdOXcm4=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=

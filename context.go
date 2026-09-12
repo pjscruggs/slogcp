@@ -38,11 +38,20 @@ func ContextWithLogger(ctx context.Context, logger *slog.Logger) context.Context
 // is found, slog.Default() is returned to ensure callers always receive a
 // usable logger.
 func Logger(ctx context.Context) *slog.Logger {
-	if ctx == nil {
-		return slog.Default()
-	}
-	if logger, ok := ctx.Value(loggerContextKey).(*slog.Logger); ok && logger != nil {
+	if logger, ok := LoggerFromContext(ctx); ok {
 		return logger
 	}
 	return slog.Default()
+}
+
+// LoggerFromContext returns the non-nil logger stored by ContextWithLogger,
+// including an inherited logger. It returns (nil, false) for a nil context or
+// when no logger is stored, without consulting slog.Default.
+func LoggerFromContext(ctx context.Context) (*slog.Logger, bool) {
+	if ctx != nil {
+		if logger, ok := ctx.Value(loggerContextKey).(*slog.Logger); ok && logger != nil {
+			return logger, true
+		}
+	}
+	return nil, false
 }
