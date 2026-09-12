@@ -36,8 +36,8 @@ go get github.com/pjscruggs/slogcp
 
 ## Quick Start
 
-For application wiring, see the [usage guide][usage-guide] and [integration
-recipes][recipes].
+Create a handler at application startup and keep logging through the standard
+`log/slog` API.
 
 ```go
 package main
@@ -221,7 +221,7 @@ without blindly trusting producer trace IDs.
 `slogcp` writes synchronously to `stdout`/`stderr` by default. When slogcp
 writes to a file target (`SLOGCP_TARGET=file:...` or
 `slogcp.WithRedirectToFile`), it buffers writes by default so disk I/O doesn't
-sit on hot paths. See `docs/CONFIGURATION.md#async-logging-slogcpasync` to tune
+sit on hot paths. See [async logging configuration][async-configuration] to tune
 or disable buffering (or to opt into async for other targets).
 
 > [!TIP]
@@ -257,11 +257,10 @@ changing how the rest of your code logs.
 
 ## Core Configuration Options
 
-If you don't want to read any more documentation right now, these are the
-configurations you're the most likely to care about. See
-[`.examples/configuration/main.go`][example-configuration] for a runnable
-demonstration that applies custom levels, source location, and default
-attributes.
+The [usage guide][usage-guide] covers handler setup and shutdown. The options
+below cover common adjustments. See the [configuration reference][configuration]
+for all options and environment variables, or try the [configuration
+example][example-configuration].
 
 `slogcp.Handler` also supports attribute rewriting via
 `slogcp.WithReplaceAttr(func(groups []string, attr slog.Attr) slog.Attr)`, which
@@ -392,6 +391,11 @@ which uses the global tracer provider unless you override it. With a standard
 OpenTelemetry setup (global tracer provider and propagator), the logger
 automatically follows whatever span is active on the context.
 
+If your service already owns its OpenTelemetry instrumentation, follow the [HTTP
+recipe][recipe-http] to add logging without duplicating server spans. The [gRPC
+recipe][recipe-grpc] explains how native enrichment and middleware event logging
+fit together.
+
 ### HTTP Example (Server)
 
 See [`.examples/http-server/main.go`][example-http-server] for a runnable HTTP
@@ -426,6 +430,11 @@ that injects trace context and derives message-scoped loggers.
 
 Since slogcp is just a `slog.Handler`, it can easily be integrated with other
 popular slog libraries.
+
+Once the basic examples are working, the [integration recipes][recipes] cover
+adapting slogcp to existing instrumentation and application requirements. They
+include [background jobs][recipe-background], [structured-field
+redaction][recipe-redaction], and [runtime log-level changes][recipe-levels].
 
 ### go-grpc-middleware
 
@@ -465,6 +474,8 @@ branch, and submit a pull request with your changes.
 
 [configuration]:
   docs/CONFIGURATION.md
+[async-configuration]:
+  docs/CONFIGURATION.md#async-logging-slogcpasync
 [example-basic]:
   .examples/basic/main.go
 [example-configuration]:
@@ -499,6 +510,18 @@ branch, and submit a pull request with your changes.
   docs/recipes/README.md
 [package-docs]:
   https://pkg.go.dev/github.com/pjscruggs/slogcp
+[recipe-background]:
+  docs/recipes/background-job-tracing.md
+[recipe-grpc]:
+  docs/recipes/grpc-enrichment-and-access-logs.md
+[recipe-http]:
+  docs/recipes/http-existing-otel.md
+[recipe-levels]:
+  docs/recipes/runtime-log-level.md
+[recipe-pubsub]:
+  docs/recipes/pubsub-existing-otel.md
+[recipe-redaction]:
+  docs/recipes/redact-sensitive-fields.md
 [release-policy]:
   docs/RELEASE_POLICY.md
 [slogcp-grpc-adapter]:
