@@ -266,7 +266,7 @@ func normalizeTraceProjectID(raw string) (normalized string, changed bool, ok bo
 	if lower != s {
 		changed = true
 	}
-	if !projectIDPattern.MatchString(lower) {
+	if !validProjectID(lower) {
 		return "", false, false
 	}
 	return lower, changed, true
