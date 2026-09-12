@@ -106,7 +106,12 @@ func (h *jsonHandler) exportEntry(r slog.Record, payload map[string]any) Entry {
 	takeEntryField(payload, SampledKey, &entry.TraceSampled)
 	takeEntryField(payload, labelsGroupKey, &entry.Labels)
 	takeEntryField(payload, "logging.googleapis.com/sourceLocation", &entry.SourceLocation)
-	takeEntryField(payload, httpRequestKey, &entry.HTTPRequest)
+	if request, ok := payload[httpRequestKey].(*httpRequestPayload); ok {
+		entry.HTTPRequest, _ = httpRequestPayloadValue(request).Any().(map[string]any)
+		delete(payload, httpRequestKey)
+	} else {
+		takeEntryField(payload, httpRequestKey, &entry.HTTPRequest)
+	}
 	delete(payload, "severity")
 	if h.cfg.EmitTimeField {
 		entry.Timestamp = r.Time

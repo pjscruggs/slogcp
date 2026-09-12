@@ -21,6 +21,7 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -109,6 +110,61 @@ func TestExporterMatchesJSON(t *testing.T) {
 	}
 }
 
+// TestExporterPromotesHTTPRequest checks normalized HTTP metadata with and without
+// attribute replacement, including the lazy value used by HTTP integrations.
+func TestExporterPromotesHTTPRequest(t *testing.T) {
+	clearHandlerEnv(t)
+	for _, replace := range []bool{false, true} {
+		for _, form := range []string{"request", "lazy", "map"} {
+			name := form
+			if replace {
+				name += " with replacement"
+			}
+			t.Run(name, func(t *testing.T) {
+				request := httptest.NewRequestWithContext(t.Context(), "POST", "https://example.com/jobs?q=1", nil)
+				request.Header.Set("User-Agent", "exporter-test")
+				request.RemoteAddr = "192.0.2.1:1234"
+				metadata := &HTTPRequest{Request: request, Status: 201, ResponseSize: 42, Latency: 5 * time.Millisecond}
+				attr := slog.Any(httpRequestKey, metadata)
+				switch form {
+				case "lazy":
+					attr.Value = HTTPRequestValue(func() *HTTPRequest { return metadata })
+				case "map":
+					attr.Value = metadata.LogValue()
+				}
+				var got map[string]any
+				opts := []Option{WithSourceLocationEnabled(false)}
+				if replace {
+					opts = append(opts, WithReplaceAttr(func(_ []string, attr slog.Attr) slog.Attr { return attr }))
+				}
+				handler, err := NewHandlerWithExporter(testEntryExporter(func(_ context.Context, entry Entry) error {
+					if _, exists := entry.Payload[httpRequestKey]; exists {
+						t.Errorf("HTTP metadata remains in the application payload")
+					}
+					got = maps.Clone(entry.HTTPRequest)
+					return nil
+				}), opts...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record := slog.NewRecord(time.Now(), slog.LevelInfo, "request", 0)
+				record.AddAttrs(attr)
+				if err := handler.Handle(context.Background(), record); err != nil {
+					t.Fatal(err)
+				}
+				if err := handler.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if got["requestMethod"] != "POST" || got["requestUrl"] != "https://example.com/jobs?q=1" ||
+					got["status"] != 201 || got["responseSize"] != "42" || got["latency"] != "0.005000000s" ||
+					got["remoteIp"] != "192.0.2.1" || got["userAgent"] != "exporter-test" {
+					t.Fatalf("normalized HTTP metadata = %#v", got)
+				}
+			})
+		}
+	}
+}
+
 // TestExporterConstructionAndOwnership prevents file redirects or automatic
 // file buffering from accidentally taking over an exporter handler.
 func TestExporterConstructionAndOwnership(t *testing.T) {
@@ -194,9 +250,12 @@ func TestExporterMetadataFallback(t *testing.T) {
 	t.Parallel()
 	source := &SourceLocation{File: "example.go", Line: 42, Function: "example"}
 	h := &jsonHandler{cfg: &handlerConfig{}}
-	payload := map[string]any{"logging.googleapis.com/sourceLocation": source, TraceKey: 42, "time": "application-time"}
+	payload := map[string]any{"logging.googleapis.com/sourceLocation": source, TraceKey: 42, "time": "application-time", httpRequestKey: (*httpRequestPayload)(nil)}
 	entry := h.exportEntry(slog.NewRecord(time.Time{}, slog.LevelInfo+1, "", 0), payload)
 	if entry.SourceLocation != source || entry.Payload[TraceKey] != 42 || entry.Payload["time"] != "application-time" || entry.Level != slog.LevelInfo+1 {
 		t.Fatalf("unexpected entry: %+v", entry)
+	}
+	if _, exists := entry.Payload[httpRequestKey]; exists || entry.HTTPRequest != nil {
+		t.Fatal("nil HTTP metadata was not removed")
 	}
 }
