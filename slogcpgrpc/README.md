@@ -120,8 +120,9 @@ metadata:
 
 - `WithAttrEnricher(func(context.Context, *RequestInfo) []slog.Attr)` appends
   custom fields to the derived logger.
-- `WithAttrTransformer(func(context.Context, []slog.Attr, *RequestInfo) []slog.Attr)`
-  can redact or reshape derived attributes before they are applied.
+- `WithAttrTransformer` can redact or reshape derived attributes before they are
+  applied. It accepts a
+  `func(context.Context, []slog.Attr, *RequestInfo) []slog.Attr` callback.
 - `WithSpanAttributes(...)` and `WithFilter(...)` mirror `otelgrpc`
   configuration knobs and only apply when OpenTelemetry instrumentation is
   enabled.

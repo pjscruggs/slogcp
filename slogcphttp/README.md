@@ -146,8 +146,9 @@ The derived outbound logger includes request metadata such as `http.method`,
 
 - `WithAttrEnricher(func(*http.Request, *RequestScope) []slog.Attr)` appends
   custom fields to the derived logger.
-- `WithAttrTransformer(func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr)`
-  can redact or reshape the derived attributes before they are applied.
+- `WithAttrTransformer` can redact or reshape derived attributes before they are
+  applied. It accepts a
+  `func([]slog.Attr, *http.Request, *RequestScope) []slog.Attr` callback.
 
 ## Optional: Cloud Logging `httpRequest`
 
