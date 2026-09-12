@@ -1,13 +1,18 @@
 # slogcpasync
 
-`github.com/pjscruggs/slogcp/slogcpasync` provides an opt-in async wrapper for `log/slog` handlers, including `slogcp`'s handler:
+`github.com/pjscruggs/slogcp/slogcpasync` provides an opt-in async wrapper for
+`log/slog` handlers, including `slogcp`'s handler:
 
-- `Wrap` queues `slog.Record`s on a bounded channel and drains them with worker goroutines.
-- `Middleware` returns a `func(slog.Handler) slog.Handler` for use with `slogcp.WithMiddleware(...)`.
+- `Wrap` queues `slog.Record`s on a bounded channel and drains them with worker
+  goroutines.
+- `Middleware` returns a `func(slog.Handler) slog.Handler` for use with
+  `slogcp.WithMiddleware(...)`.
 - Configurable overload behavior: block, drop newest, or drop oldest.
-- `Close()` flushes queued records (optionally with a timeout) and calls `Close` on the wrapped handler when available.
+- `Close()` flushes queued records (optionally with a timeout) and calls `Close`
+  on the wrapped handler when available.
 
-It is used automatically by `slogcp` when logging to file targets, but remains opt-in for `stdout`/`stderr`.
+It is used automatically by `slogcp` when logging to file targets, but remains
+opt-in for `stdout`/`stderr`.
 
 ## Install
 
@@ -67,7 +72,8 @@ defer handler.Close()
 
 ## Environment-driven opt-in
 
-To keep services synchronous by default but enable async via `SLOGCP_ASYNC_*` environment variables, combine `WithEnabled(false)` with `WithEnv()`:
+To keep services synchronous by default but enable async via `SLOGCP_ASYNC_*`
+environment variables, combine `WithEnabled(false)` with `WithEnv()`:
 
 ```go
 handler, err := slogcp.NewHandler(os.Stdout,
@@ -98,12 +104,16 @@ defer handler.Close()
 
 ## Notes
 
-- `DropModeBlock` can still block callers under sustained log throughput if the queue fills.
-- Worker errors and panics are not returned from `Handle`; they are reported via `WithErrorWriter` to avoid silent failure.
+- `DropModeBlock` can still block callers under sustained log throughput if the
+  queue fills.
+- Worker errors and panics are not returned from `Handle`; they are reported via
+  `WithErrorWriter` to avoid silent failure.
 - Panic reports include a stack trace from the worker goroutine.
-- Whenever the async wrapper is in play, call `Close()` on shutdown to flush queued records.
+- Whenever the async wrapper is in play, call `Close()` on shutdown to flush
+  queued records.
 
 ## More
 
-- Configuration reference: `../docs/CONFIGURATION.md` (see "Async logging (`slogcpasync`)")
+- Configuration reference: `../docs/CONFIGURATION.md` (see "Async logging
+  (`slogcpasync`)")
 - Runnable example: `../.examples/async`

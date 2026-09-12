@@ -1,18 +1,25 @@
 # slogcp Configuration
 
-`slogcp` provides a Google Cloud friendly `slog.Handler` together with HTTP and gRPC integrations that derive request-scoped loggers, correlate records with Cloud Trace, and play well with OpenTelemetry instrumentation.
+`slogcp` provides a Google Cloud friendly `slog.Handler` together with HTTP and
+gRPC integrations that derive request-scoped loggers, correlate records with
+Cloud Trace, and play well with OpenTelemetry instrumentation.
 
 ## Configuration Layers
 
 `slogcp` resolves configuration in the following order:
 
 1. **Defaults** - internal sensible defaults baked into each constructor.
-2. **Environment variables** - evaluated when you call `slogcp.NewHandler`, `slogcphttp.Middleware`, or the `slogcpgrpc` helpers.
-3. **Programmatic options** - `With...` overrides take precedence over everything else.
+2. **Environment variables** - evaluated when you call `slogcp.NewHandler`,
+   `slogcphttp.Middleware`, or the `slogcpgrpc` helpers.
+3. **Programmatic options** - `With...` overrides take precedence over
+   everything else.
 
 ## Boolean ENV VARS
 
-Boolean environment variables are always parsed with [strconv.ParseBool](https://pkg.go.dev/strconv#ParseBool) which, "accepts `1`, `t`, `T`, `TRUE`, `true`, `True`, `0`, `f`, `F`, `FALSE`, `false`, `False`." Invalid values are ignored.
+Boolean environment variables are always parsed with
+[strconv.ParseBool](https://pkg.go.dev/strconv#ParseBool) which, "accepts `1`,
+`t`, `T`, `TRUE`, `true`, `True`, `0`, `f`, `F`, `FALSE`, `false`, `False`."
+Invalid values are ignored.
 
 ## Handler Setup
 
@@ -54,17 +61,59 @@ Key options:
 | `WithInternalLogger(*slog.Logger)` | (none) | discarding text logger | Receives configuration warnings. |
 
 Additional notes:
-- File targets: use `SLOGCP_TARGET=file:<path>` (for example, `file:/var/log/app.json` on Linux/macOS or `file:C:\\logs\\app.json` on Windows). slogcp trims surrounding whitespace and passes the remaining path directly to `os.OpenFile` in append mode; it does not create parent directories or rewrite the string. Invalid values still trigger `ErrInvalidRedirectTarget` during handler construction so misconfigurations surface early.
-- When you choose `WithRedirectWriter`, slogcp does not look at file paths at all; configure any file destination on the writer itself (for example, `*os.File` or a rotation helper like timberjack).
-- `WithAdditionalHandlers` does not transfer ownership of the extra handlers. If those handlers need shutdown (for example async wrappers), close them explicitly.
-- Level filtering (`WithLevel`/`WithLevelVar`) and middleware run before fan-out dispatch, so every configured sink receives the same filtered and transformed records.
-- When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor after external tools move the file. Always call `Close` during shutdown to flush buffers and release writers.
-- `SLOGCP_LEVEL` is the preferred knob for minimum severity. When it is empty, slogcp also honors `LOG_LEVEL` so shared conventions still work. When you supply `WithLevelVar`, slogcp seeds the shared var using the same resolution rules.
-- `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust levels at runtime via `SetLevel` or share the var with other handlers.
-- `WithSeverityAliases` controls whether JSON carries the terse severity names; Cloud Logging still renders the full names in the console. slogcp enables the aliases by default only on Cloud Run (services/jobs), Cloud Functions, and App Engine deployments.
-- `WithTime` defaults mirror Cloud Logging expectations: timestamps are omitted on the same managed GCP runtimes (Cloud Run, Cloud Functions, App Engine) when writing to stdout/stderr, but file targets keep timestamps even there so rotated/shipped logs stay annotated. When slogcp emits a timestamp it preserves the nanosecond precision provided by `slog`.
-- slogcp always validates trace correlation fields before emitting them. Explicit `TraceProjectID` values (from env or `WithTraceProjectID`) are normalized and validated; invalid values are ignored in `warn`/`off` modes (with a single warning in `warn`) and cause handler construction to fail in `strict`. When no Cloud project ID can be resolved, slogcp avoids emitting malformed `projects/<project>/traces/<trace>` values. On managed runtimes (Cloud Run services/jobs, Cloud Functions, App Engine) it emits a **bare** trace ID in `logging.googleapis.com/trace` for compatibility, but this is best-effort and not guaranteed to be rewritten by ingestion. Some ingestion paths (notably the legacy logging agent/fluentd plugin with `autoformat_stackdriver_trace` enabled) can auto-format bare trace IDs into `projects/<project>/traces/<trace>`, while other environments fall back to `otel.*` fields. To guarantee correlation, emit the full resource name by setting `TraceProjectID`. Use `WithTraceDiagnostics`/`SLOGCP_TRACE_DIAGNOSTICS` to upgrade these checks from "warn once" to `strict` or disable them with `off`.
-- `slogcp.ContextWithLogger` and `slogcp.Logger` stash and recover request-scoped loggers. The HTTP and gRPC integrations call these helpers automatically.
+- File targets: use `SLOGCP_TARGET=file:<path>` (for example,
+  `file:/var/log/app.json` on Linux/macOS or `file:C:\\logs\\app.json` on
+  Windows). slogcp trims surrounding whitespace and passes the remaining path
+  directly to `os.OpenFile` in append mode; it does not create parent
+  directories or rewrite the string. Invalid values still trigger
+  `ErrInvalidRedirectTarget` during handler construction so misconfigurations
+  surface early.
+- When you choose `WithRedirectWriter`, slogcp does not look at file paths at
+  all; configure any file destination on the writer itself (for example,
+  `*os.File` or a rotation helper like timberjack).
+- `WithAdditionalHandlers` does not transfer ownership of the extra handlers. If
+  those handlers need shutdown (for example async wrappers), close them
+  explicitly.
+- Level filtering (`WithLevel`/`WithLevelVar`) and middleware run before fan-out
+  dispatch, so every configured sink receives the same filtered and transformed
+  records.
+- When logging to a file, `Handler.ReopenLogFile` rotates the owned descriptor
+  after external tools move the file. Always call `Close` during shutdown to
+  flush buffers and release writers.
+- `SLOGCP_LEVEL` is the preferred knob for minimum severity. When it is empty,
+  slogcp also honors `LOG_LEVEL` so shared conventions still work. When you
+  supply `WithLevelVar`, slogcp seeds the shared var using the same resolution
+  rules.
+- `Handler.LevelVar()` exposes the internal `slog.LevelVar`. You can adjust
+  levels at runtime via `SetLevel` or share the var with other handlers.
+- `WithSeverityAliases` controls whether JSON carries the terse severity names;
+  Cloud Logging still renders the full names in the console. slogcp enables the
+  aliases by default only on Cloud Run (services/jobs), Cloud Functions, and App
+  Engine deployments.
+- `WithTime` defaults mirror Cloud Logging expectations: timestamps are omitted
+  on the same managed GCP runtimes (Cloud Run, Cloud Functions, App Engine) when
+  writing to stdout/stderr, but file targets keep timestamps even there so
+  rotated/shipped logs stay annotated. When slogcp emits a timestamp it
+  preserves the nanosecond precision provided by `slog`.
+- slogcp always validates trace correlation fields before emitting them.
+  Explicit `TraceProjectID` values (from env or `WithTraceProjectID`) are
+  normalized and validated; invalid values are ignored in `warn`/`off` modes
+  (with a single warning in `warn`) and cause handler construction to fail in
+  `strict`. When no Cloud project ID can be resolved, slogcp avoids emitting
+  malformed `projects/<project>/traces/<trace>` values. On managed runtimes
+  (Cloud Run services/jobs, Cloud Functions, App Engine) it emits a **bare**
+  trace ID in `logging.googleapis.com/trace` for compatibility, but this is
+  best-effort and not guaranteed to be rewritten by ingestion. Some ingestion
+  paths (notably the legacy logging agent/fluentd plugin with
+  `autoformat_stackdriver_trace` enabled) can auto-format bare trace IDs into
+  `projects/<project>/traces/<trace>`, while other environments fall back to
+  `otel.*` fields. To guarantee correlation, emit the full resource name by
+  setting `TraceProjectID`. Use
+  `WithTraceDiagnostics`/`SLOGCP_TRACE_DIAGNOSTICS` to upgrade these checks from
+  "warn once" to `strict` or disable them with `off`.
+- `slogcp.ContextWithLogger` and `slogcp.Logger` stash and recover
+  request-scoped loggers. The HTTP and gRPC integrations call these helpers
+  automatically.
 
 ## Async logging (`slogcpasync`)
 
@@ -72,11 +121,17 @@ Additional notes:
 
 ### Defaults
 
-When slogcp writes to a file target (`SLOGCP_TARGET=file:...` or `slogcp.WithRedirectToFile`), it buffers writes with `slogcpasync` automatically so disk I/O doesn't sit on hot paths. Set `SLOGCP_ASYNC_ON_FILE=false` to disable the default buffering, or call `WithAsyncOnFile(...)` to tune it. Whenever the async wrapper is in play (file targets by default, or `WithAsync`/`Wrap`), call `Close()` on shutdown so queued records flush.
+When slogcp writes to a file target (`SLOGCP_TARGET=file:...` or
+`slogcp.WithRedirectToFile`), it buffers writes with `slogcpasync` automatically
+so disk I/O doesn't sit on hot paths. Set `SLOGCP_ASYNC_ON_FILE=false` to
+disable the default buffering, or call `WithAsyncOnFile(...)` to tune it.
+Whenever the async wrapper is in play (file targets by default, or
+`WithAsync`/`Wrap`), call `Close()` on shutdown so queued records flush.
 
 ### Tuning (or disabling) file buffering
 
-Use `slogcp.WithAsyncOnFile(...)` to change the wrapper options applied to file targets, including disabling the wrapper entirely:
+Use `slogcp.WithAsyncOnFile(...)` to change the wrapper options applied to file
+targets, including disabling the wrapper entirely:
 
 ```go
 handler, _ := slogcp.NewHandler(nil,
@@ -90,7 +145,8 @@ defer handler.Close()
 
 ### Enabling async for non-file targets
 
-To buffer `stdout`/`stderr` (or any other non-file target), you can have slogcp wrap the handler with `slogcp.WithAsync(...)`:
+To buffer `stdout`/`stderr` (or any other non-file target), you can have slogcp
+wrap the handler with `slogcp.WithAsync(...)`:
 
 ```go
 handler, _ := slogcp.NewHandler(os.Stdout,
@@ -116,9 +172,13 @@ logger := slog.New(async)
 
 ### Options and environment variables
 
-When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `WithEnv()` (for example via `slogcp.WithMiddleware(slogcpasync.Middleware(...))`).
+When you prefer environment-driven opt-in, combine `WithEnabled(false)` with
+`WithEnv()` (for example via
+`slogcp.WithMiddleware(slogcpasync.Middleware(...))`).
 
-`slogcp.WithAsync(...)` and `slogcp.WithAsyncOnFile(...)` already integrate the wrapper; avoid also adding `slogcpasync.Middleware` unless you deliberately want multiple queues.
+`slogcp.WithAsync(...)` and `slogcp.WithAsyncOnFile(...)` already integrate the
+wrapper; avoid also adding `slogcpasync.Middleware` unless you deliberately want
+multiple queues.
 
 | Option | Environment variable | Default | Description |
 | --- | --- | --- | --- |
@@ -135,16 +195,32 @@ When you prefer environment-driven opt-in, combine `WithEnabled(false)` with `Wi
 
 ### Severity Levels
 
-`slogcp` extends `log/slog` levels so they line up with [Google Cloud Logging's severities](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#LogSeverity) (`DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, `CRITICAL`, `ALERT`, `EMERGENCY`, and `DEFAULT`). The exported constants in [`levels.go`](../levels.go) (for example `slogcp.LevelNotice`, `slogcp.LevelAlert`) and helper functions such as `slogcp.DefaultContext`, `slogcp.NoticeContext`, and `slogcp.AlertContext` make it easy to emit those severities directly.
+`slogcp` extends `log/slog` levels so they line up with [Google Cloud Logging's
+severities](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#LogSeverity)
+(`DEBUG`, `INFO`, `NOTICE`, `WARNING`, `ERROR`, `CRITICAL`, `ALERT`,
+`EMERGENCY`, and `DEFAULT`). The exported constants in
+[`levels.go`](../levels.go) (for example `slogcp.LevelNotice`,
+`slogcp.LevelAlert`) and helper functions such as `slogcp.DefaultContext`,
+`slogcp.NoticeContext`, and `slogcp.AlertContext` make it easy to emit those
+severities directly.
 
-`DEFAULT` is treated specially. Records written with `slogcp.LevelDefault` (including the `slogcp.Default`/`DefaultContext` helpers) will **ALWAYS** be logged. Even if you configure `WithLevel(slog.LevelWarn)` or set `SLOGCP_LEVEL=error`, default-severity records will still be delivered to Cloud Logging. This is done to respect GCP's intent that `DEFAULT` represents "no assigned severity level" and to provide a convenient way to debug issues relating to severity filtering.
+`DEFAULT` is treated specially. Records written with `slogcp.LevelDefault`
+(including the `slogcp.Default`/`DefaultContext` helpers) will **ALWAYS** be
+logged. Even if you configure `WithLevel(slog.LevelWarn)` or set
+`SLOGCP_LEVEL=error`, default-severity records will still be delivered to Cloud
+Logging. This is done to respect GCP's intent that `DEFAULT` represents "no
+assigned severity level" and to provide a convenient way to debug issues
+relating to severity filtering.
 
-All other severities retain their natural order relative to the standard slog levels: `DEBUG` < `INFO` < `NOTICE` < `WARNING` < `ERROR` < `CRITICAL` < `ALERT` < `EMERGENCY` < `DEFAULT`.
+All other severities retain their natural order relative to the standard slog
+levels: `DEBUG` < `INFO` < `NOTICE` < `WARNING` < `ERROR` < `CRITICAL` < `ALERT`
+< `EMERGENCY` < `DEFAULT`.
 
 
 ## HTTP Integration (`github.com/pjscruggs/slogcp/slogcphttp`)
 
-Use `http.Middleware` to wrap servers and `http.Transport` to instrument clients:
+Use `http.Middleware` to wrap servers and `http.Transport` to instrument
+clients:
 
 ```go
 mw := slogcphttp.Middleware(
@@ -159,7 +235,12 @@ transport := slogcphttp.Transport(
 
 ### Server Middleware
 
-`Middleware` derives a logger per request, attaches it to the context (retrievable with `slogcp.Logger`), and records a `RequestScope` with method, route, latency, status, and peer metadata. When `WithOTel(true)` (the default) is in effect it composes `otelhttp.NewHandler` so OpenTelemetry spans are created automatically. No request logs are emitted; the middleware simply enriches application logs produced by your handlers.
+`Middleware` derives a logger per request, attaches it to the context
+(retrievable with `slogcp.Logger`), and records a `RequestScope` with method,
+route, latency, status, and peer metadata. When `WithOTel(true)` (the default)
+is in effect it composes `otelhttp.NewHandler` so OpenTelemetry spans are
+created automatically. No request logs are emitted; the middleware simply
+enriches application logs produced by your handlers.
 
 Important options:
 
@@ -185,7 +266,12 @@ Important options:
 | `WithUserAgent(bool)` | Opts into logging the `User-Agent` string (disabled by default). |
 | `WithHTTPRequestAttr(bool)` | Enables automatic addition of the Cloud Logging `httpRequest` payload to the derived logger. Disabled by default so applications must opt in. |
 
-`RequestScope` captures derived metadata and can be retrieved with `slogcphttp.ScopeFromContext(ctx)`. The same helper works for outbound requests instrumented by `Transport`. To emit [the Cloud Logging `httpRequest` payload](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#HttpRequest) you can either opt in globally via `slogcphttp.WithHTTPRequestAttr(true)` or attach the attribute ad hoc:
+`RequestScope` captures derived metadata and can be retrieved with
+`slogcphttp.ScopeFromContext(ctx)`. The same helper works for outbound requests
+instrumented by `Transport`. To emit [the Cloud Logging `httpRequest`
+payload](https://docs.cloud.google.com/logging/docs/reference/v2/rest/v2/LogEntry#HttpRequest)
+you can either opt in globally via `slogcphttp.WithHTTPRequestAttr(true)` or
+attach the attribute ad hoc:
 
 ```go
 logger := slogcp.Logger(ctx)
@@ -196,13 +282,30 @@ logger.InfoContext(ctx, "served",
 
 #### Do you really need to log httpRequest?
 
-- Managed runtimes already emit an automatic request log (with final status/size/latency) and also stamp `trace`/`spanId` onto every app log. The normal way to correlate is to pivot on `trace` so the app logs and the automatic request log show up together in the Cloud Logging UI/Trace viewer. Attaching `httpRequest` to application logs is therefore an opt-in, niche move for self-contained error/alert payloads or for services that *lack* an automatic request log.
-- Opt-in middleware attachment uses a **lazy LogValuer**: the `httpRequest` is built at log time from the live `RequestScope`. While the request is in flight we intentionally suppress `httpRequest.status`, `httpRequest.responseSize`, and `httpRequest.latency` (Cloud Logging will still promote the `httpRequest`).
-- For one-shot “access log” style entries, call `slogcphttp.HTTPRequestFromScope(scope)` to snapshot the current state into a Cloud Logging payload. Outside of the middleware, `slogcp.HTTPRequestFromRequest(req)` creates a Cloud Logging payload from any standard library `*http.Request`.
+- Managed runtimes already emit an automatic request log (with final
+  status/size/latency) and also stamp `trace`/`spanId` onto every app log. The
+  normal way to correlate is to pivot on `trace` so the app logs and the
+  automatic request log show up together in the Cloud Logging UI/Trace viewer.
+  Attaching `httpRequest` to application logs is therefore an opt-in, niche move
+  for self-contained error/alert payloads or for services that *lack* an
+  automatic request log.
+- Opt-in middleware attachment uses a **lazy LogValuer**: the `httpRequest` is
+  built at log time from the live `RequestScope`. While the request is in flight
+  we intentionally suppress `httpRequest.status`, `httpRequest.responseSize`,
+  and `httpRequest.latency` (Cloud Logging will still promote the
+  `httpRequest`).
+- For one-shot “access log” style entries, call
+  `slogcphttp.HTTPRequestFromScope(scope)` to snapshot the current state into a
+  Cloud Logging payload. Outside of the middleware,
+  `slogcp.HTTPRequestFromRequest(req)` creates a Cloud Logging payload from any
+  standard library `*http.Request`.
 
 ### HTTP Client Transport
 
-`Transport(base, opts...)` injects W3C trace headers (and, optionally, `X-Cloud-Trace-Context`) and derives a child logger for outbound requests. It reuses the same `Option` type as the middleware so you can share configuration slices across server and client instrumentation. Highlights include:
+`Transport(base, opts...)` injects W3C trace headers (and, optionally,
+`X-Cloud-Trace-Context`) and derives a child logger for outbound requests. It
+reuses the same `Option` type as the middleware so you can share configuration
+slices across server and client instrumentation. Highlights include:
 
 | Option | Description |
 | --- | --- |
@@ -215,11 +318,19 @@ logger.InfoContext(ctx, "served",
 | `WithIncludeQuery(bool)` / `WithUserAgent(bool)` | Control whether the query string and user agent are recorded on derived loggers. |
 | `WithLegacyXCloudInjection(bool)` | Synthesizes the legacy `X-Cloud-Trace-Context` header in addition to W3C trace headers. |
 
-Client requests also populate a `RequestScope`, making latency, status, and payload sizes available via `ScopeFromContext`. `InjectTraceContextMiddleware` remains available for the rare case where you disable `otelhttp` and still need to recognize `X-Cloud-Trace-Context` manually.
+Client requests also populate a `RequestScope`, making latency, status, and
+payload sizes available via `ScopeFromContext`. `InjectTraceContextMiddleware`
+remains available for the rare case where you disable `otelhttp` and still need
+to recognize `X-Cloud-Trace-Context` manually.
 
 ## gRPC Integration (`github.com/pjscruggs/slogcp/slogcpgrpc`)
 
-`grpc.UnaryServerInterceptor`, `grpc.StreamServerInterceptor`, `grpc.UnaryClientInterceptor`, and `grpc.StreamClientInterceptor` derive per-RPC loggers, propagate trace context, and capture method/service/latency/status metadata. Each interceptor stores the logger in the context (so `slogcp.Logger(ctx)` works inside handlers) and records a `RequestInfo` structure that you can retrieve later with `slogcpgrpc.InfoFromContext`.
+`grpc.UnaryServerInterceptor`, `grpc.StreamServerInterceptor`,
+`grpc.UnaryClientInterceptor`, and `grpc.StreamClientInterceptor` derive per-RPC
+loggers, propagate trace context, and capture method/service/latency/status
+metadata. Each interceptor stores the logger in the context (so
+`slogcp.Logger(ctx)` works inside handlers) and records a `RequestInfo`
+structure that you can retrieve later with `slogcpgrpc.InfoFromContext`.
 
 Important options:
 
@@ -238,17 +349,27 @@ Important options:
 | `WithPayloadSizes(bool)` | Controls request/response byte counting (enabled by default). |
 | `WithLegacyXCloudInjection(bool)` | Synthesizes `x-cloud-trace-context` on outgoing RPCs in addition to standard OpenTelemetry headers. |
 
-`RequestInfo` tracks service/method names, stream kinds, latencies, status codes, peer addresses, and (when enabled) message sizes. Use it to enrich application logs or emit custom metrics without recomputing the values.
+`RequestInfo` tracks service/method names, stream kinds, latencies, status
+codes, peer addresses, and (when enabled) message sizes. Use it to enrich
+application logs or emit custom metrics without recomputing the values.
 
 Helpers:
 
-- `ServerOptions(opts ...Option)` returns a `[]grpc.ServerOption` containing an otelgrpc StatsHandler (when `WithOTel(true)`) plus both server interceptors.
-- `DialOptions(opts ...Option)` returns matching client interceptors and StatsHandler.
-- `InfoFromContext(ctx)` retrieves the `RequestInfo` captured by the interceptors so handlers can inspect RPC metadata at any point.
+- `ServerOptions(opts ...Option)` returns a `[]grpc.ServerOption` containing an
+  otelgrpc StatsHandler (when `WithOTel(true)`) plus both server interceptors.
+- `DialOptions(opts ...Option)` returns matching client interceptors and
+  StatsHandler.
+- `InfoFromContext(ctx)` retrieves the `RequestInfo` captured by the
+  interceptors so handlers can inspect RPC metadata at any point.
 
 ## Pub/Sub Integration (`github.com/pjscruggs/slogcp/slogcppubsub`)
 
-`slogcppubsub` provides helpers for carrying trace context across Pub/Sub boundaries via `pubsub.Message.Attributes`, and for deriving message-scoped loggers in pull subscribers (so `slogcp.Logger(ctx)` works inside receive handlers). Use `Inject` before publishing and `WrapReceiveHandler` when receiving; `Extract` / `ExtractAttributes` and `InfoFromContext` are available when you want manual control or need to inspect message metadata.
+`slogcppubsub` provides helpers for carrying trace context across Pub/Sub
+boundaries via `pubsub.Message.Attributes`, and for deriving message-scoped
+loggers in pull subscribers (so `slogcp.Logger(ctx)` works inside receive
+handlers). Use `Inject` before publishing and `WrapReceiveHandler` when
+receiving; `Extract` / `ExtractAttributes` and `InfoFromContext` are available
+when you want manual control or need to inspect message metadata.
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -284,7 +405,9 @@ Helpers:
 
 Configure OpenTelemetry propagators during application bootstrap.
 
-When you want slogcp's recommended composite propagator (Google's legacy `X-Cloud-Trace-Context` extraction + W3C Trace Context + Baggage), install it explicitly during application startup:
+When you want slogcp's recommended composite propagator (Google's legacy
+`X-Cloud-Trace-Context` extraction + W3C Trace Context + Baggage), install it
+explicitly during application startup:
 
 ```go
 slogcp.EnsurePropagation()
@@ -296,4 +419,6 @@ Or construct it directly and wire it yourself:
 otel.SetTextMapPropagator(slogcp.NewCompositePropagator())
 ```
 
-Call one of these before constructing `otelhttp` transports or gRPC clients/servers that rely on the global propagator, since some instrumentation snapshots the global value during initialization.
+Call one of these before constructing `otelhttp` transports or gRPC
+clients/servers that rely on the global propagator, since some instrumentation
+snapshots the global value during initialization.

@@ -2,8 +2,11 @@
 
 `github.com/pjscruggs/slogcp/slogcppubsub` provides Pub/Sub helpers for slogcp:
 
-- `Inject` / `Extract` for trace context propagation via `pubsub.Message.Attributes`.
-- `WrapReceiveHandler` to derive a per-message `*slog.Logger`, attach it to the handler context (so `slogcp.Logger(ctx)` works), and optionally start an application-level consumer span.
+- `Inject` / `Extract` for trace context propagation via
+  `pubsub.Message.Attributes`.
+- `WrapReceiveHandler` to derive a per-message `*slog.Logger`, attach it to the
+  handler context (so `slogcp.Logger(ctx)` works), and optionally start an
+  application-level consumer span.
 
 It enriches application logs; it does not emit message receive logs by itself.
 
@@ -117,5 +120,6 @@ extract them.
 
 ## More
 
-- Configuration reference: `../docs/CONFIGURATION.md` (see "Pub/Sub Integration")
+- Configuration reference: `../docs/CONFIGURATION.md` (see "Pub/Sub
+  Integration")
 - Runnable example: `../.examples/pubsub`
