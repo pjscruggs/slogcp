@@ -12,6 +12,7 @@ WORKDIR /build
 # Pre-fetch generated module and workspace metadata to leverage Docker layer caching
 COPY go.mod go.sum go.work* ./
 COPY slogcp/go.mod slogcp/go.sum ./slogcp/
+COPY slogcp-grpc/go.mod slogcp-grpc/go.sum ./slogcp-grpc/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 # Copy the remaining build context (service sources, optional slogcp replace)

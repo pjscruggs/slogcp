@@ -61,7 +61,7 @@ func TestScenarioDeploymentSelection(t *testing.T) {
 
 // TestScenarioPlanPreservesAssertions makes the selected matrix explicit.
 func TestScenarioPlanPreservesAssertions(t *testing.T) {
-	want := []int{33, 4, 1, 1, 1, 1}
+	want := []int{34, 4, 1, 1, 1, 1}
 	scenarios := buildScenarios("test-project")
 	if len(scenarios) != len(want) {
 		t.Fatal("scenario matrix changed; review coverage")

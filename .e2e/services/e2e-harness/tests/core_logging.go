@@ -16,6 +16,7 @@ package tests
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -162,6 +163,11 @@ func (s *CoreLoggingTestSuite) GetTests() []TestCase {
 			Execute:     s.testStructuredPayload,
 		},
 		{
+			Name:        "TestGRPCAPITransport",
+			Description: "Verify buffered gRPC API delivery and enriched metadata after flush and close",
+			Execute:     s.testGRPCAPITransport,
+		},
+		{
 			Name:        "TestOperationGrouping",
 			Description: "Verify Cloud Logging operation metadata is captured",
 			Execute:     s.testOperationGrouping,
@@ -224,6 +230,69 @@ func (s *CoreLoggingTestSuite) GetTests() []TestCase {
 	}
 
 	return tests
+}
+
+// testGRPCAPITransport verifies the optional exporter against Cloud Logging.
+func (s *CoreLoggingTestSuite) testGRPCAPITransport(ctx context.Context) error {
+	testID := s.testRunID + "-grpc-api-" + uuid.NewString()
+	request := client.LogRequest{TestID: testID, Message: "gRPC transport proof"}
+	start := time.Now().Add(-time.Minute)
+	response, err := s.targetClient.LogWithSeverity(ctx, "grpc-api", request)
+	if err != nil {
+		return fmt.Errorf("sending gRPC API log %w", err)
+	}
+	if !response.Success {
+		return fmt.Errorf("gRPC API target did not confirm delivery")
+	}
+	filter := fmt.Sprintf(`logName="projects/%s/logs/slogcp-grpc-e2e" AND jsonPayload.test_id="%s"`, s.projectID, testID)
+	entry, err := s.waitForRawLogEntry(ctx, filter, start)
+	if err != nil {
+		return err
+	}
+	payload := rawEntryJSONPayload(entry)
+	digest := sha256.Sum256([]byte(testID))
+	expectedTrace := fmt.Sprintf("projects/%s/traces/%x", s.projectID, digest[:16])
+	expectedSpan := fmt.Sprintf("%x", digest[16:24])
+	if payload["message"] != request.Message || entry["severity"] != "NOTICE" || entry["insertId"] != testID {
+		return fmt.Errorf("gRPC API payload or severity mismatch %s", formatRawEntryForLog(entry))
+	}
+	if entry["trace"] != expectedTrace || entry["spanId"] != expectedSpan || entry["traceSampled"] != true {
+		return fmt.Errorf("gRPC API correlation mismatch %s", formatRawEntryForLog(entry))
+	}
+	labels := nestedMap(entry, "labels")
+	if labels["proof"] != "grpc-api" || labels["transport"] != "grpc" {
+		return fmt.Errorf("gRPC API labels mismatch %s", formatRawEntryForLog(entry))
+	}
+	operation := nestedMap(entry, "operation")
+	if operation["id"] != testID || operation["producer"] != "grpc-e2e" || operation["first"] != true || operation["last"] != true {
+		return fmt.Errorf("gRPC API operation mismatch %s", formatRawEntryForLog(entry))
+	}
+	location := nestedMap(entry, "sourceLocation")
+	line, ok := valueToInt(location["line"])
+	if !ok || line <= 0 || !strings.HasSuffix(fmt.Sprint(location["file"]), "grpc_transport.go") {
+		return fmt.Errorf("gRPC API source location mismatch %s", formatRawEntryForLog(entry))
+	}
+	details := nestedMap(payload, "details")
+	count, ok := valueToInt(details["count"])
+	if !ok || count != 7 || details["complete"] != true {
+		return fmt.Errorf("gRPC API nested payload mismatch %s", formatRawEntryForLog(entry))
+	}
+	httpRequest := rawEntryHTTPRequest(entry)
+	status, ok := valueToInt(httpRequest["status"])
+	if !ok || status != http.StatusOK || httpRequest["requestMethod"] != http.MethodPost || httpRequest["latency"] != "0.005s" {
+		return fmt.Errorf("gRPC API HTTP metadata mismatch %s", formatRawEntryForLog(entry))
+	}
+	resource := nestedMap(entry, "resource")
+	if resource["type"] != "cloud_run_revision" || nestedMap(resource, "labels")["project_id"] != s.projectID {
+		return fmt.Errorf("gRPC API resource mismatch %s", formatRawEntryForLog(entry))
+	}
+	if timestamp, err := time.Parse(time.RFC3339Nano, fmt.Sprint(entry["timestamp"])); err != nil || timestamp.Before(start) || timestamp.After(time.Now().Add(time.Minute)) {
+		return fmt.Errorf("gRPC API timestamp mismatch %s", formatRawEntryForLog(entry))
+	}
+	if len(presentKeys(payload, "logging.googleapis.com/insertId", "logging.googleapis.com/operation", "httpRequest")) > 0 {
+		return fmt.Errorf("gRPC API retained promoted metadata in payload %s", formatRawEntryForLog(entry))
+	}
+	return nil
 }
 
 // testDefaultSeverity verifies DEFAULT severity level

@@ -98,7 +98,7 @@ if [[ -z "$SLOGCP_REF_OVERRIDE" ]]; then
         fi
         COMMIT_TIME=$(date -u -d "$COMMIT_DATE" +%Y%m%d%H%M%S)
         SHORT_COMMIT=${SLOGCP_COMMIT:0:12}
-        SLOGCP_REF="v0.0.0-${COMMIT_TIME}-${SHORT_COMMIT}"
+        SLOGCP_REF="v2.0.0-${COMMIT_TIME}-${SHORT_COMMIT}"
     fi
 fi
 

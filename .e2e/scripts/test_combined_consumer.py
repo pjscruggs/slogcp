@@ -69,7 +69,7 @@ class CombinedConsumerTests(unittest.TestCase):
                         },
                         {
                             "module_path": generator.ADAPTER_MODULE_PATH,
-                            "version": "v1.0.0",
+                            "version": "v2.0.0",
                             "replace_path": "./slogcp-grpc-adapter",
                         },
                     ],
@@ -108,7 +108,7 @@ class CombinedConsumerTests(unittest.TestCase):
             "slogcp_dir": sources[0],
             "adapter_dir": sources[1],
             "go_version": version,
-            "slogcp_reference": "v1.0.0",
+            "slogcp_reference": "v2.0.0",
             "env": env,
         }
 
@@ -154,6 +154,25 @@ class CombinedConsumerTests(unittest.TestCase):
                 ValueError, "did not select the supplied candidate"
             ):
                 generator.generate_combined_consumer(**args)
+
+    def test_optional_transport_candidates_preserve_sources_and_native_mvs(self):
+        for name in (generator.PUBSUB_MODULE_PATH, generator.GRPC_MODULE_PATH):
+            with self.subTest(module=name), tempfile.TemporaryDirectory() as temporary:
+                args = self.fixture(Path(temporary))
+                source = args["adapter_dir"]
+                for path in (source / "go.mod", args["module_dir"] / "consumer_test.go", args["module_dir"] / "go.module.json"):
+                    text = path.read_text().replace(generator.ADAPTER_MODULE_PATH, name)
+                    text = text.replace('"version": "v2.0.0"', '"version": "v1.0.0"')
+                    text = text.replace('./slogcp-grpc-adapter', './' + name.rsplit('/', 1)[1])
+                    path.write_text(text)
+                args["adapter_dir"] = None
+                args["optional_dirs"] = {name: source}
+                before = generator.source_fingerprint(source)
+                result = generator.generate_combined_consumer(**args)
+                self.assertEqual(result["source_fingerprints"][name], before)
+                self.assertEqual(generator.source_fingerprint(source), before)
+                selected = {item["Path"]: item.get("Version") for item in result["module_graph"]}
+                self.assertEqual(selected["example.org/shared"], "v1.1.0")
 
     def test_staged_source_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -215,7 +234,7 @@ class CombinedConsumerTests(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(completed.returncode, 0)
-            self.assertIn("requires --adapter-dir", completed.stderr)
+            self.assertIn("requires candidate source", completed.stderr)
             self.assertEqual(json.loads(report_path.read_text())["status"], "failure")
 
     def test_wrong_compiler_is_rejected(self):

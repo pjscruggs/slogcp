@@ -77,6 +77,8 @@ class CloudRoutingTests(unittest.TestCase):
                     "_PR_SHA": sha,
                     "_SHORT_SHA": sha[:7],
                     "_ADAPTER_SHA": adapter_sha,
+                    "_PUBSUB_SHA": "",
+                    "_GRPC_SHA": "",
                     "_E2E_SOURCE_MODE": "local",
                     "_E2E_DEPENDENCY_MODE": "floor",
                     "_GCS_BUCKET_NAME": "fixture",
@@ -94,16 +96,14 @@ class CloudRoutingTests(unittest.TestCase):
         self.assertEqual(calls[0].count("--module-dir"), 5)
         self.assertNotIn("combined-candidate", calls[0])
 
-    def test_adapter_separates_three_root_and_two_combined_consumers(self):
+    def test_adapter_uses_all_five_immutable_combined_consumers(self):
         result, calls = self.route(True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0].count("--module-dir"), 3)
-        self.assertNotIn("/build-context/trace-grpc", calls[0])
-        self.assertEqual(calls[1].count("--module-dir"), 2)
-        self.assertIn("--graph-profile combined-candidate", calls[1])
-        self.assertIn("--adapter-dir", calls[1])
-        self.assertIn("combined-dependency-report.json", calls[1])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].count("--module-dir"), 5)
+        self.assertIn("--graph-profile combined-candidate", calls[0])
+        self.assertIn("--adapter-dir", calls[0])
+        self.assertIn("combined-dependency-report.json", calls[0])
 
     def test_generator_failure_stops_the_cloud_step(self):
         result, calls = self.route(True, fail_generator=True)
