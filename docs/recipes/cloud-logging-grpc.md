@@ -75,8 +75,12 @@ func emit(ctx context.Context, client *logging.Client, projectID string) error {
 
 The client owns its delivery buffers. After logging producers have stopped, close the handler, flush the exporter, and close the client. Check all returned errors. The example preserves errors from each shutdown step.
 
+If you add `slogcp.WithAsync`, finish draining or aborting the handler before closing the client. With `slogcp.WithCloseTimeoutPolicy(slogcp.CloseTimeoutReturn)`, a `Close` timeout leaves workers running. Keep the client open until a later `Shutdown` succeeds or `Abort(context.Background())` finishes. A timed-out `Abort` can also leave workers running.
+
 The sample bounds background RPCs through `logging.ContextFunc`. Buffered writes use this context even when the context supplied to a log call has ended. Trace correlation still comes from the record context.
 
-`slogcpgrpc.WithSynchronous()` makes each export wait for the API using the record context. Direct calls to `Handler.Handle` receive its errors. Ordinary `slog.Logger` methods discard handler errors. `slogcpgrpc.WithEntryMutator` lets applications set per-entry monitored resources, insert IDs, operations, or other writable Cloud Logging entry fields.
+`slogcpgrpc.WithSynchronous()` makes each export wait for `logging.Logger.LogSync` using the record context. Direct calls to `Handler.Handle` receive delivery errors when the handler has no async queue. With `slogcp.WithAsync`, `Handle` returns after enqueue and exporter errors go to the writer configured by `slogcpasync.WithErrorWriter`. Ordinary `slog.Logger` methods discard handler errors.
+
+`slogcpgrpc.WithEntryMutator` lets applications set per-entry monitored resources, insert IDs, operations, or other writable Cloud Logging entry fields.
 
 The [client options](https://pkg.go.dev/cloud.google.com/go/logging#LoggerOption) describe batching thresholds, memory limits, resource detection, and partial batch success. Measure the intended runtime before selecting limits. The [module benchmarks](https://github.com/pjscruggs/slogcp-grpc/blob/main/exporter_bench_test.go) compare buffered delivery through the official client and the exporter.
