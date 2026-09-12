@@ -163,6 +163,10 @@ share the project's read quota, so avoid parallel polling. See
 [Logging quotas](https://cloud.google.com/logging/quotas) and Google's
 [efficient listing guidance](https://cloud.google.com/logging/docs/reference/api-overview).
 
+Queries are restricted to the suite or trial time interval with a five-minute
+margin. A plain manifest without timestamps requires `--start-time` in RFC3339
+format; `--end-time` can also be supplied.
+
 Before proceeding, confirm all of the following:
 
 - The suite is complete and every application trial has zero errors and a zero exit status.
@@ -195,6 +199,17 @@ Run the completed comparison image by digest with both `--variant baseline` and
 adjacently in a seeded randomized order on the same allocated job host. This
 reduces the hardware/time confounding of comparing only an earlier baseline job
 with a later candidate job. Collect and verify the comparison exactly as above.
+
+Generate local summaries and paired bootstrap intervals with:
+
+```bash
+python .benchmarks/summarize.py "$ARCHIVE/baseline-run/RUN_ID/suite.json" \
+  --paired "$ARCHIVE/comparison-run/COMPARISON_RUN_ID/suite.json" \
+  --output-dir "$ARCHIVE/summary"
+```
+
+Omit `--paired` when generating the initial baseline summary. The comparison
+supports multiple named candidates and preserves each result separately.
 
 Report library-versus-Google results separately from baseline-versus-jsonv2
 results. Compare the same scenarios and include uncertainty, not only favorable

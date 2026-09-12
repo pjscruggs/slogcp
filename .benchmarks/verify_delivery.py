@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 import gzip
 import json
 from pathlib import Path
@@ -40,6 +41,49 @@ API_URL = "https://logging.googleapis.com/v2/entries:list"
 RESPONSE_FIELDS = "entries(jsonPayload,timestamp,receiveTimestamp,insertId,severity),nextPageToken"
 MIN_REQUEST_INTERVAL = 1.4
 MAX_EXPECTED_COUNT = 10_000_000
+
+
+def parse_timestamp(value: Any) -> datetime:
+    """Normalize suite Unix timestamps and application RFC 3339 timestamps."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.fromtimestamp(value, timezone.utc)
+    if not isinstance(value, str):
+        raise ValueError("timestamp must be RFC 3339 text or Unix seconds")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def read_time_range(path: Path, start_override: str | None = None, end_override: str | None = None) -> tuple[str, str]:
+    """Bound indexed log scans to this experiment, allowing five-minute skew."""
+    if path.is_dir():
+        suite = path / "suite.json"
+        paths = [suite] if suite.exists() else sorted(path.glob("*.json"))
+    else:
+        paths = [path]
+    starts = []
+    finishes = []
+    for source in paths:
+        data = json.loads(source.read_text(encoding="utf-8-sig"))
+        documents = data if isinstance(data, list) else [data]
+        if isinstance(data, dict):
+            documents += data.get("trials", data.get("results", []))
+        for item in documents:
+            if not isinstance(item, dict):
+                continue
+            if "started_at" in item:
+                starts.append(parse_timestamp(item["started_at"]))
+            if "finished_at" in item:
+                finishes.append(parse_timestamp(item["finished_at"]))
+    if not starts and not start_override:
+        raise ValueError("results lack start timestamps; supply --start-time")
+    start = parse_timestamp(start_override) if start_override else min(starts)
+    finish = parse_timestamp(end_override) if end_override else max(finishes, default=datetime.now(timezone.utc))
+    if finish < start:
+        raise ValueError("end timestamp precedes start timestamp")
+    padding = timedelta(minutes=5)
+    return tuple(value.isoformat(timespec="microseconds").replace("+00:00", "Z") for value in (start - padding, finish + padding))
 
 
 def read_manifest(path: Path) -> dict[str, dict[str, Any]]:
@@ -95,12 +139,15 @@ def logged_trials(manifest: dict[str, dict[str, Any]]) -> dict[str, dict[str, An
     }
 
 
-def logging_filter(run_id: str) -> str:
+def logging_filter(run_id: str, time_range: tuple[str, str] | None = None) -> str:
     encoded = json.dumps(run_id)
-    return (
+    query = (
         'resource.type="cloud_run_job" AND '
         f"(jsonPayload.run_id={encoded} OR jsonPayload.message.run_id={encoded})"
     )
+    if time_range:
+        query += f" AND timestamp>={json.dumps(time_range[0])} AND timestamp<={json.dumps(time_range[1])}"
+    return query
 
 
 def marker(entry: dict[str, Any], run_id: str) -> dict[str, Any] | None:
@@ -201,6 +248,7 @@ class LoggingReader:
         deadline: float,
         request_interval: float = MIN_REQUEST_INTERVAL,
         page_size: int = 10000,
+        time_range: tuple[str, str] | None = None,
         opener: Callable[..., Any] = urllib.request.urlopen,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -210,6 +258,7 @@ class LoggingReader:
         self.deadline = deadline
         self.request_interval = max(MIN_REQUEST_INTERVAL, request_interval)
         self.page_size = page_size
+        self.time_range = time_range
         self.opener = opener
         self.clock = clock
         self.sleep = sleep
@@ -227,8 +276,8 @@ class LoggingReader:
                 self.sleep(wait)
             body: dict[str, Any] = {
                 "resourceNames": [f"projects/{self.project}"],
-                "filter": logging_filter(run_id),
-                "orderBy": "timestamp asc",
+                "filter": logging_filter(run_id, self.time_range),
+                "orderBy": "timestamp desc",
                 "pageSize": self.page_size,
             }
             if page_token:
@@ -296,6 +345,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-wait", type=float, default=600.0)
     parser.add_argument("--poll-seconds", type=float, default=15.0)
     parser.add_argument("--page-size", type=int, default=10000)
+    parser.add_argument("--start-time", help="Override the run start (RFC 3339, timezone required)")
+    parser.add_argument("--end-time", help="Override the run finish (RFC 3339, timezone required)")
     args = parser.parse_args(argv)
     if args.max_wait <= 0 or args.poll_seconds < MIN_REQUEST_INTERVAL:
         parser.error("max-wait must be positive; poll-seconds must be at least 1.4")
@@ -306,11 +357,14 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     summary: dict[str, Any] = {"run_id": args.run_id, "passed": False}
     reader = None
+    time_range = None
     try:
         manifest = read_manifest(args.manifest or args.results)
         if not logged_trials(manifest):
             raise ValueError("manifest contains no real cloud-logged trials to verify")
-        reader = LoggingReader(args.project, access_token(args.project), started + args.max_wait, page_size=args.page_size)
+        time_range = read_time_range(args.manifest or args.results, args.start_time, args.end_time)
+        reader = LoggingReader(args.project, access_token(args.project), started + args.max_wait,
+                               page_size=args.page_size, time_range=time_range)
         attempt = 0
         while time.monotonic() < reader.deadline:
             attempt += 1
@@ -334,6 +388,7 @@ def main(argv: list[str] | None = None) -> int:
         summary["error"] = str(error)
     summary["elapsed_seconds"] = time.monotonic() - started
     summary["api_requests"] = reader.requests if reader else 0
+    summary["query_time_range"] = time_range
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({
         "passed": summary["passed"],

@@ -150,6 +150,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(reader.requests, 4)
         self.assertEqual(self.requests[1][1]["pageToken"], "second")
         self.assertEqual(self.requests[2][1]["pageToken"], "third")
+        self.assertTrue(all(item[1]["orderBy"] == "timestamp desc" for item in self.requests))
         for earlier, later in zip(self.requests, self.requests[1:]):
             self.assertGreaterEqual(later[0] - earlier[0], 1.4 - 1e-9)
 
@@ -172,6 +173,44 @@ class ReaderTests(unittest.TestCase):
         self.responses = [{"entries": [record("one", 0)], "nextPageToken": "more"}]
         with self.assertRaises(TimeoutError):
             list(self.reader(deadline=1).snapshot("run-1"))
+
+
+class TimeRangeTests(unittest.TestCase):
+    def test_suite_unix_and_trial_rfc3339_bounds_include_padding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "suite.json"
+            path.write_text(json.dumps({
+                "started_at": 1789171200,
+                "finished_at": 1789171800,
+                "trials": [{"started_at": "2026-09-12T00:01:00Z", "finished_at": "2026-09-12T00:09:00Z"}],
+            }), encoding="utf-8")
+            interval = delivery.read_time_range(Path(directory))
+            self.assertEqual(interval, ("2026-09-11T23:55:00.000000Z", "2026-09-12T00:15:00.000000Z"))
+            query = delivery.logging_filter("run-1", interval)
+            self.assertIn('timestamp>="2026-09-11T23:55:00.000000Z"', query)
+            self.assertIn('timestamp<="2026-09-12T00:15:00.000000Z"', query)
+
+    def test_manifest_without_timestamps_requires_explicit_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            path.write_text('{"trial": 1}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "start timestamps"):
+                delivery.read_time_range(path)
+            interval = delivery.read_time_range(path, "2026-09-11T19:00:00-05:00", "2026-09-12T00:10:00Z")
+            self.assertEqual(interval, ("2026-09-11T23:55:00.000000Z", "2026-09-12T00:15:00.000000Z"))
+            with self.assertRaisesRegex(ValueError, "precedes"):
+                delivery.read_time_range(path, "2026-09-12T01:00:00Z", "2026-09-12T00:10:00Z")
+
+    def test_per_trial_directory_uses_earliest_start_latest_finish(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            for name, begin, end in (("one", "00:01:00", "00:02:00"), ("two", "00:03:00", "00:04:00")):
+                (path / (name + ".json")).write_text(json.dumps({
+                    "config": {"trial_id": name},
+                    "started_at": "2026-09-12T" + begin + "Z",
+                    "finished_at": "2026-09-12T" + end + "Z",
+                }), encoding="utf-8")
+            self.assertEqual(delivery.read_time_range(path), ("2026-09-11T23:56:00.000000Z", "2026-09-12T00:09:00.000000Z"))
 
 
 if __name__ == "__main__":
