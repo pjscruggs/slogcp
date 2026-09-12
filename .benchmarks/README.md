@@ -16,7 +16,7 @@ workload and dependency versions stay fixed when comparing slogcp implementation
 | --- | --- | --- |
 | `slogcp` | Structured stdout | Synchronous slogcp encoding and output |
 | `google-stdout` | `logging.RedirectAsJSON` to stdout | Google client using the same Cloud Run collection path |
-| `google-api` | Buffered Cloud Logging API | Separate comparison with Google's ordinary asynchronous API transport |
+| `google-api` | Buffered Cloud Logging API | Google's default asynchronous gRPC transport, with final flush |
 | `none` | No logging | Shared application work without logging |
 
 `slogcp` and `google-stdout` also run with `sink=discard` as an encoding/application
@@ -210,6 +210,9 @@ python .benchmarks/summarize.py "$ARCHIVE/baseline-run/RUN_ID/suite.json" \
 
 Omit `--paired` when generating the initial baseline summary. The comparison
 supports multiple named candidates and preserves each result separately.
+Reports include slogcp comparisons with both Google modes and separate producer
+throughput from throughput that includes the final flush. The bounded API trials
+do not measure steady-state API saturation.
 
 Report library-versus-Google results separately from baseline-versus-jsonv2
 results. Compare the same scenarios and include uncertainty, not only favorable

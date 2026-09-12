@@ -30,6 +30,7 @@ def trial(repeat, *, variant="baseline", mode="slogcp", factor=1):
     return dict(variant=variant, repeat=repeat, process_exit_code=0, errors=0,
                 config=dict(mode=mode, payload="small", concurrency=1, sink="stdout", count=100, warmup=10),
                 completed_elapsed_ns=scale * factor * 1000, drain_elapsed_ns=scale * factor,
+                producer_elapsed_ns=scale * factor * 999,
                 cpu_user_ns=scale * factor * 100, cpu_system_ns=0,
                 mallocs=scale * factor, allocated_bytes=scale * factor * 10,
                 request_latency_ns={"p95": scale * factor},
@@ -42,7 +43,7 @@ def suite(*, paired=False):
         variants["candidate"] = dict(sha256="b" * 64, path="/private/build/candidate")
     trials = [trial(repeat, variant=variant, mode=mode,
                     factor=0.5 if paired and variant == "candidate" and mode == "slogcp" else 1)
-              for variant in variants for mode in ("slogcp", "google-stdout") for repeat in range(3)]
+              for variant in variants for mode in ("slogcp", "google-stdout", "google-api") for repeat in range(3)]
     return dict(schema_version=1, complete=True, repeats=3, variants=variants, trials=trials,
                 host=dict(execution="private-generated-job", cpuinfo="model name\t: Test CPU\n",
                           cpu_max="200000 100000\n", memory_max="1073741824\n"),
@@ -104,7 +105,10 @@ class SummarizeTests(unittest.TestCase):
     def test_normalization_uses_completed_duration(self):
         value = trial(0)
         value["completed_requests_per_second"] = 999
+        value["producer_requests_per_second"] = 999
+        value["producer_elapsed_ns"] = value["completed_elapsed_ns"] / 2
         self.assertEqual(summary.trial_metrics(value)["completed_requests_per_second"], 1000000)
+        self.assertEqual(summary.trial_metrics(value)["producer_requests_per_second"], 2000000)
         value["allocated_bytes"] = float("nan")
         with self.assertRaises(ValueError):
             summary.trial_metrics(value)
@@ -114,10 +118,19 @@ class SummarizeTests(unittest.TestCase):
         comparisons = {row["mode"]: row for row in report["candidate_over_baseline"]}
         self.assertEqual(comparisons["slogcp"]["metrics"]["cpu_ns_per_request"]["ratio"], 0.5)
         self.assertEqual(comparisons["google-stdout"]["metrics"]["cpu_ns_per_request"]["ratio"], 1)
+        self.assertEqual(comparisons["google-api"]["metrics"]["cpu_ns_per_request"]["ratio"], 1)
+        api = report["suites"][1]["slogcp_over_google_api"]
+        self.assertEqual(len(api), 2)
+        candidate = next(row for row in api if row["variant"] == "candidate")
+        self.assertEqual(candidate["reference_mode"], "google-api")
+        self.assertEqual(candidate["metrics"]["cpu_ns_per_request"]["ratio"], 0.5)
+        self.assertEqual(candidate["metrics"]["producer_requests_per_second"]["ratio"], 2)
         text = summary.markdown_report(report)
         self.assertIn("not HTTP network latency", text)
         self.assertIn("encoding diagnostics", text)
         self.assertIn("not a pooled percentile", text)
+        self.assertIn("default asynchronous gRPC transport", text)
+        self.assertIn("do not measure steady-state API saturation", text)
         self.assertNotIn("private-", repr(report))
         self.assertNotIn("/private/", repr(report))
         self.assertIn("Test CPU", text)
@@ -130,7 +143,7 @@ class SummarizeTests(unittest.TestCase):
             if item["variant"] == "candidate":
                 item["variant"] = "nativev2"
         paired["trials"].extend([trial(repeat, variant="unsorted", mode=mode, factor=0.25)
-                                 for mode in ("slogcp", "google-stdout") for repeat in range(3)])
+                                 for mode in ("slogcp", "google-stdout", "google-api") for repeat in range(3)])
         report = summary.build_report(suite(), paired)
         comparisons = {(row["variant"], row["mode"]): row for row in report["candidate_over_baseline"]}
         self.assertEqual(comparisons[("nativev2", "slogcp")]["metrics"]["cpu_ns_per_request"]["ratio"], 0.5)

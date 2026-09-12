@@ -32,6 +32,7 @@ METRICS = {
     "mallocs_per_request": ("allocs/request", "lower"),
     "allocated_bytes_per_request": ("allocated B/request", "lower"),
     "completed_requests_per_second": ("completed requests/s", "higher"),
+    "producer_requests_per_second": ("producer requests/s", "higher"),
     "request_p95_ns": ("application p95 ns", "lower"),
     "drain_elapsed_ns": ("drain ns/trial", "lower"),
 }
@@ -49,12 +50,14 @@ def trial_metrics(trial):
     """Normalize totals using completed requests from a successful trial."""
     count = finite_number(trial["config"]["count"], "config.count", positive=True)
     elapsed = finite_number(trial["completed_elapsed_ns"], "completed_elapsed_ns", positive=True)
+    producer = finite_number(trial["producer_elapsed_ns"], "producer_elapsed_ns", positive=True)
     return {
         "cpu_ns_per_request": (finite_number(trial["cpu_user_ns"], "cpu_user_ns")
                                + finite_number(trial["cpu_system_ns"], "cpu_system_ns")) / count,
         "mallocs_per_request": finite_number(trial["mallocs"], "mallocs") / count,
         "allocated_bytes_per_request": finite_number(trial["allocated_bytes"], "allocated_bytes") / count,
         "completed_requests_per_second": count * 1e9 / elapsed,
+        "producer_requests_per_second": count * 1e9 / producer,
         "request_p95_ns": finite_number(trial["request_latency_ns"]["p95"], "request p95"),
         "drain_elapsed_ns": finite_number(trial["drain_elapsed_ns"], "drain_elapsed_ns"),
     }
@@ -191,20 +194,22 @@ def summarize_suite(suite, name):
     groups = defaultdict(list)
     for (variant, key, _), trial in indexed.items():
         groups[(variant, key)].append(trial)
-    rows, comparisons = [], []
+    rows, comparisons, api_comparisons = [], [], []
     for (variant, key), trials in sorted(groups.items()):
         values = [trial_metrics(trial) for trial in trials]
         rows.append(dict(variant=variant, **describe_case(key), n=len(trials),
                          medians={metric: statistics.median([value[metric] for value in values])
                                   for metric in METRICS}))
         if key[-1] == "slogcp":
-            control = groups.get((variant, key[:-1] + ("google-stdout",)))
-            if control:
-                comparisons.append(dict(variant=variant, **describe_case(key),
-                                        reference_mode="google-stdout", measured_mode="slogcp",
-                                        metrics=compare_trials(control, trials)))
+            for mode, output in (("google-stdout", comparisons), ("google-api", api_comparisons)):
+                control = groups.get((variant, key[:-1] + (mode,)))
+                if control:
+                    output.append(dict(variant=variant, **describe_case(key),
+                                       reference_mode=mode, measured_mode="slogcp",
+                                       metrics=compare_trials(control, trials)))
     return dict(name=name, repeats=suite["repeats"], environment=safe_environment(suite),
-                groups=rows, slogcp_over_google_stdout=comparisons)
+                groups=rows, slogcp_over_google_stdout=comparisons,
+                slogcp_over_google_api=api_comparisons)
 
 
 def build_report(baseline, paired=None):
@@ -254,10 +259,12 @@ def markdown_report(report):
              "Each row summarizes repeated executions of the same application function. "
              "Request latency is measured inside the process; it is not HTTP network latency. "
              "CPU and allocations are divided by the completed request count. Completed throughput "
-             "includes draining the logger. Application p95 is the median of trial p95 values, "
+             "includes draining the logger; producer throughput excludes the final drain. "
+             "Application p95 is the median of trial p95 values, "
              "not a pooled percentile.", "",
              "`slogcp` and `google-stdout` share the stdout transport and are the direct library "
-             "comparison. `google-api` uses asynchronous network delivery and is shown separately "
+             "comparison. `google-api` uses the Google client's default asynchronous gRPC transport "
+             "and is shown separately "
              "as a deployment-mode comparison. `none` is the application control. `discard` rows "
              "are encoding diagnostics; they do not measure Cloud Logging transport or ingestion.", ""]
     for suite in report["suites"]:
@@ -270,12 +277,12 @@ def markdown_report(report):
                   f"CPU quota: {(environment['cpu_max'] or 'unrecorded').strip()}; "
                   f"memory limit: {(environment['memory_max'] or 'unrecorded').strip()}.", "",
                   "| Variant | Payload | Workers | Sink | Logger | n | CPU ns/request | "
-                  "allocs/request | allocated B/request | completed requests/s | app p95 us | drain ms/trial |",
-                  "|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+                  "allocs/request | allocated B/request | completed requests/s | producer requests/s | app p95 us | drain ms/trial |",
+                  "|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
         for row in suite["groups"]:
             value = row["medians"]
             cells = [row['variant'], row['payload'], str(row['concurrency']), row['sink'], row['mode'], str(row['n'])]
-            cells += [number(value[name]) for name in list(METRICS)[:4]]
+            cells += [number(value[name]) for name in list(METRICS)[:5]]
             cells += [number(value['request_p95_ns'] / 1000), number(value['drain_elapsed_ns'] / 1e6)]
             lines.append("| " + " | ".join(cells) + " |")
         lines += ["", "### slogcp / google-stdout ratios", "",
@@ -284,6 +291,15 @@ def markdown_report(report):
                   "means less CPU, allocation, latency, or drain time; throughput improves above 1. "
                   "Brackets contain 95% bootstrap intervals.", ""]
         lines.extend(comparison_table(suite["slogcp_over_google_stdout"], variant=True))
+        lines.append("")
+        lines += ["### slogcp / Google default gRPC ratios", "",
+                  "These include representation, buffering, and transport differences. Producer "
+                  "throughput includes application work and enqueueing while API delivery can "
+                  "continue in the background. Completed throughput includes the final API flush. "
+                  "Stdout return and API acknowledgement are different completion boundaries; "
+                  "the bounded trials do not measure steady-state API saturation. Ratios use the "
+                  "same per-repetition pairing and 95% bootstrap method as the stdout comparison.", ""]
+        lines.extend(comparison_table(suite["slogcp_over_google_api"], variant=True))
         lines.append("")
     if report["candidate_over_baseline"]:
         lines += ["## Candidate / baseline ratios from interleaved pairs", "",
