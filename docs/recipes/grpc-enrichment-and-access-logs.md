@@ -21,6 +21,10 @@ and upstream RPC event logs. The responsibilities are separate.
 The adapter also works on its own with upstream interceptors. You do not need
 native enrichment just to route their events through slogcp.
 
+The [runnable adapter example](../../.examples/grpc-adapter) sends a local health
+RPC and checks its middleware completion record. The combined setup below adds
+native enrichment and uses the application's existing telemetry.
+
 ## Prepare the application's logger and telemetry
 
 This recipe assumes a non-nil, ungrouped `*slog.Logger` already configured with
