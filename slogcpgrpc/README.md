@@ -2,9 +2,13 @@
 
 `github.com/pjscruggs/slogcp/slogcpgrpc` provides gRPC interceptors for slogcp:
 
-- Server + client unary/stream interceptors that derive a per-RPC `*slog.Logger` and attach it to the RPC `context.Context` (so `slogcp.Logger(ctx)` works in handlers).
-- A `RequestInfo` snapshot (method/service/kind/status/latency, plus optional peer + payload sizes) available via `InfoFromContext`.
-- Optional OpenTelemetry instrumentation via `otelgrpc` StatsHandlers (spans + metrics).
+- Server + client unary/stream interceptors that derive a per-RPC `*slog.Logger`
+  and attach it to the RPC `context.Context` (so `slogcp.Logger(ctx)` works in
+  handlers).
+- A `RequestInfo` snapshot (method/service/kind/status/latency, plus optional
+  peer + payload sizes) available via `InfoFromContext`.
+- Optional OpenTelemetry instrumentation via `otelgrpc` StatsHandlers (spans +
+  metrics).
 
 It enriches application logs; it does not emit access logs by itself.
 
@@ -48,7 +52,8 @@ func (s *greeter) SayHello(ctx context.Context, req *pb.HelloRequest) (*pb.Hello
 }
 ```
 
-For streaming RPCs, the server stream is wrapped so `stream.Context()` returns the derived context.
+For streaming RPCs, the server stream is wrapped so `stream.Context()` returns
+the derived context.
 
 ## Client
 
@@ -77,33 +82,49 @@ _ = err
 
 By default, `slogcpgrpc`:
 
-- installs `otelgrpc` StatsHandlers (spans + metrics) via `ServerOptions`/`DialOptions`, and
-- reads/writes trace context via the configured (or global) OpenTelemetry propagator.
+- installs `otelgrpc` StatsHandlers (spans + metrics) via
+  `ServerOptions`/`DialOptions`, and
+- reads/writes trace context via the configured (or global) OpenTelemetry
+  propagator.
 
 Options:
 
-- `WithOTel(false)` disables `otelgrpc` StatsHandlers (no spans/metrics are created by this package).
-- `WithTracePropagation(false)` disables reading/writing trace context metadata. When `WithOTel(true)`, spans are still created, but they start new root traces instead of continuing incoming traces.
-- `WithPropagators(...)` supplies a specific propagator for metadata extraction/injection.
-- `WithPublicEndpoint(true)` configures `otelgrpc` to *link* to incoming trace context instead of using it as the parent.
-- `WithLegacyXCloudInjection(true)` synthesizes legacy `x-cloud-trace-context` on outbound RPCs in addition to standard propagation.
+- `WithOTel(false)` disables `otelgrpc` StatsHandlers (no spans/metrics are
+  created by this package).
+- `WithTracePropagation(false)` disables reading/writing trace context metadata.
+  When `WithOTel(true)`, spans are still created, but they start new root traces
+  instead of continuing incoming traces.
+- `WithPropagators(...)` supplies a specific propagator for metadata
+  extraction/injection.
+- `WithPublicEndpoint(true)` configures `otelgrpc` to *link* to incoming trace
+  context instead of using it as the parent.
+- `WithLegacyXCloudInjection(true)` synthesizes legacy `x-cloud-trace-context`
+  on outbound RPCs in addition to standard propagation.
 
-For log↔trace correlation in Cloud Logging, slogcp emits `logging.googleapis.com/trace`, `logging.googleapis.com/spanId`, and `logging.googleapis.com/trace_sampled` when a span is present in the context.
+For log↔trace correlation in Cloud Logging, slogcp emits
+`logging.googleapis.com/trace`, `logging.googleapis.com/spanId`, and
+`logging.googleapis.com/trace_sampled` when a span is present in the context.
 
 ## Request metadata fields
 
-The derived logger includes trace correlation fields (when available) plus RPC metadata:
+The derived logger includes trace correlation fields (when available) plus RPC
+metadata:
 
 - `rpc.system`, `rpc.service`, `rpc.method`, `grpc.type`
 - `grpc.status_code`, `rpc.duration`
 - `net.peer.ip` (enabled by default; `WithPeerInfo(false)` disables)
-- `rpc.request_size`, `rpc.response_size`, `rpc.request_count`, `rpc.response_count` (enabled by default; `WithPayloadSizes(false)` disables)
+- `rpc.request_size`, `rpc.response_size`, `rpc.request_count`,
+  `rpc.response_count` (enabled by default; `WithPayloadSizes(false)` disables)
 
 ## Custom attributes
 
-- `WithAttrEnricher(func(context.Context, *RequestInfo) []slog.Attr)` appends custom fields to the derived logger.
-- `WithAttrTransformer(func(context.Context, []slog.Attr, *RequestInfo) []slog.Attr)` can redact or reshape derived attributes before they are applied.
-- `WithSpanAttributes(...)` and `WithFilter(...)` mirror `otelgrpc` configuration knobs and only apply when OpenTelemetry instrumentation is enabled.
+- `WithAttrEnricher(func(context.Context, *RequestInfo) []slog.Attr)` appends
+  custom fields to the derived logger.
+- `WithAttrTransformer(func(context.Context, []slog.Attr, *RequestInfo) []slog.Attr)`
+  can redact or reshape derived attributes before they are applied.
+- `WithSpanAttributes(...)` and `WithFilter(...)` mirror `otelgrpc`
+  configuration knobs and only apply when OpenTelemetry instrumentation is
+  enabled.
 
 ## More
 

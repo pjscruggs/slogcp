@@ -1,12 +1,15 @@
 # Google Cloud Setup For Local `.e2e`
 
-This guide explains how to set up your own Google Cloud project so you can run `slogcp/.e2e` from a developer machine using the same Cloud Build + Cloud Run based e2e path that GitHub CI uses.
+This guide explains how to set up your own Google Cloud project so you can run
+`slogcp/.e2e` from a developer machine using the same Cloud Build + Cloud Run
+based e2e path that GitHub CI uses.
 
 ## What Your Project Needs
 
 Your project needs these building blocks:
 
-- enabled Google Cloud APIs for Cloud Build, Cloud Run, Artifact Registry, Storage, IAM, Pub/Sub, Logging, and Trace
+- enabled Google Cloud APIs for Cloud Build, Cloud Run, Artifact Registry,
+  Storage, IAM, Pub/Sub, Logging, and Trace
 - one runtime service account for the deployed Cloud Run services
 - one caller/build service account for Cloud Build and the e2e harness job
 - one Artifact Registry Docker repository for test images
@@ -36,7 +39,9 @@ TRACE_SUBSCRIPTION="your-trace-pubsub-subscription-base"
 YOUR_MEMBER="user:you@example.com"
 ```
 
-`TRACE_TOPIC` and `TRACE_SUBSCRIPTION` are base names. The e2e flow creates run-scoped Pub/Sub resources from them and cleans those up at the end of the run.
+`TRACE_TOPIC` and `TRACE_SUBSCRIPTION` are base names. The e2e flow creates
+run-scoped Pub/Sub resources from them and cleans those up at the end of the
+run.
 
 ## 1. Enable APIs
 
@@ -98,11 +103,13 @@ for role in \
 done
 ```
 
-For Storage, the simplest path is to grant object admin at the bucket level after the bucket is created.
+For Storage, the simplest path is to grant object admin at the bucket level
+after the bucket is created.
 
 ## 4. Allow The Caller Identity To Use Service Accounts
 
-Allow the caller/build identity to deploy services that run as the runtime service account:
+Allow the caller/build identity to deploy services that run as the runtime
+service account:
 
 ```bash
 gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SA}" \
@@ -120,7 +127,8 @@ gcloud iam service-accounts add-iam-policy-binding "${CALLER_SA}" \
   --project "${PROJECT_ID}"
 ```
 
-Allow your user account to submit Cloud Builds as the caller/build service account:
+Allow your user account to submit Cloud Builds as the caller/build service
+account:
 
 ```bash
 gcloud iam service-accounts add-iam-policy-binding "${CALLER_SA}" \
