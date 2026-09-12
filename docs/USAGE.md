@@ -767,7 +767,7 @@ When a result is missing, check the layer responsible:
 
 For complete runnable applications, see the existing
 [basic](../.examples/basic/main.go), [HTTP](../.examples/http-server/main.go),
-[gRPC](../.examples/grpc/main.go), and [Pub/Sub](https://github.com/pjscruggs/slogcp-pubsub/blob/main/.examples/pubsub/main.go)
+[gRPC](../.examples/grpc/main.go), and [Pub/Sub](../.examples/pubsub/main.go)
 examples. Use the package guides for their detailed option and lifecycle
 behavior.
 

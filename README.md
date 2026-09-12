@@ -11,11 +11,11 @@ GKE, App Engine, or Compute Engine**. Application code keeps the standard
 library's `log/slog` API while slogcp adds severity, trace and span identifiers,
 service metadata, and Error Reporting fields.
 
-Version 2 moves Pub/Sub helpers into the optional
+Pub/Sub helpers live in the optional
 [`slogcp-pubsub`](https://github.com/pjscruggs/slogcp-pubsub) module. The optional
 [`slogcp-grpc`](https://github.com/pjscruggs/slogcp-grpc) module sends enriched
 entries through the Cloud Logging gRPC API. See the
-[v2 migration guide](docs/MIGRATION_V2.md) for the new import paths.
+[module migration guide](docs/MIGRATION_V2.md) for the new import paths.
 
 ## What you get
 
@@ -250,7 +250,9 @@ path to tune throughput when you can allocate more CPU and memory. Measure
 delivery and resource use with your own workload before choosing settings.
 
 Stop producers and drain the slogcp handler before flushing the exporter and
-closing the Cloud Logging client. The module's guide covers setup and shutdown.
+closing the Cloud Logging client. The [Cloud Logging API
+recipe](docs/recipes/cloud-logging-grpc.md) covers setup, client settings, and
+shutdown from a separate application module.
 
 ### Async Logging
 
@@ -393,16 +395,19 @@ logger.LogAttrs(ctx, slog.LevelError, "failed operation",
 ## Examples
 
 Start with a runnable application in [`.examples`][examples]. Each example is
-its own Go module:
+its own Go module. The optional module examples import their integrations as
+external dependencies.
 
-| To get started with… | Example |
+| Start with | Example |
 | --- | --- |
 | Basic structured logging | [Basic example][example-basic] |
 | Log levels, source locations, and default attributes | [Configuration example][example-configuration] |
 | An HTTP server | [HTTP server example][example-http-server] |
 | An HTTP client with trace propagation | [HTTP client example][example-http-client] |
 | gRPC services | [gRPC example][example-grpc] |
-| Pub/Sub messaging | [Pub/Sub example][example-pubsub] |
+| Pub/Sub propagation | [Pub/Sub example][example-pubsub] |
+| Cloud Logging API delivery | [Cloud Logging API example](.examples/cloud-logging-grpc/main.go) |
+| gRPC middleware event logging | [gRPC adapter example](.examples/grpc-adapter/main.go) |
 
 The [usage guide][usage-guide] walks through bringing these pieces into your own
 application, from creating a logger to configuration and shutdown. Use the
@@ -533,7 +538,7 @@ branch, and submit a pull request with your changes.
 [example-masq]:
   .examples/masq/main.go
 [example-pubsub]:
-  https://github.com/pjscruggs/slogcp-pubsub/blob/main/.examples/pubsub/main.go
+  .examples/pubsub/main.go
 [example-timberjack]:
   .examples/timberjack/main.go
 [examples]:

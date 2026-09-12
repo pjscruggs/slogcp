@@ -1,12 +1,12 @@
-# Migrating to slogcp v2
+# Migrating to the current modules
 
-slogcp v2 uses the Go module path `github.com/pjscruggs/slogcp/v2`.
+The core library uses the Go module path `github.com/pjscruggs/slogcp/v2`.
 Pub/Sub support moves into the optional `github.com/pjscruggs/slogcp-pubsub`
 module. The core module no longer depends on the Pub/Sub client.
 
 ## Update imports
 
-| Existing import | Version 2 import |
+| Previous import | Current import |
 | --- | --- |
 | `github.com/pjscruggs/slogcp` | `github.com/pjscruggs/slogcp/v2` |
 | `github.com/pjscruggs/slogcp/slogcphttp` | `github.com/pjscruggs/slogcp/v2/slogcphttp` |
@@ -28,14 +28,15 @@ go get github.com/pjscruggs/slogcp-pubsub
 The Pub/Sub package name stays `slogcppubsub`. Its options, propagation helpers,
 and receive callbacks retain their API. Move all slogcp imports in an
 application together so its handlers, options, and context helpers use the same
-major version. Go treats the v1 and v2 types and context keys as separate values.
+major version. Go treats types and context keys from different major versions
+as separate values.
 
 Applications using the gRPC middleware adapter also move to
 `github.com/pjscruggs/slogcp-grpc-adapter/v2` so the adapter uses the same slogcp
 context helpers and options as the application.
 
-The [Pub/Sub example](https://github.com/pjscruggs/slogcp-pubsub/blob/main/.examples/pubsub/main.go)
-now lives with the optional module.
+The [Pub/Sub example](../.examples/pubsub/main.go) demonstrates importing the
+optional module from an application.
 
 ## Choose Cloud Logging API delivery
 

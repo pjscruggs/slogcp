@@ -61,6 +61,7 @@ func logGRPCAPI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// emitGRPCAPI exports an enriched entry and reports flush and client shutdown errors.
 func emitGRPCAPI(r *http.Request, request handlers.LogRequest) (result error) {
 	projectID := os.Getenv("GOOGLE_CLOUD_PROJECT")
 	if projectID == "" {
