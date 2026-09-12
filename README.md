@@ -8,7 +8,12 @@ and automatically integrates logs with Cloud Trace and Error Reporting.
 
 Use it for Go services running on **Cloud Run, Cloud Run Jobs, Cloud Functions,
 GKE, App Engine, or Compute Engine** when you want to keep using the standard
-library's `log/slog` API instead of adopting a separate logging API.
+library's `log/slog` API instead of adopting a separate logging API. Keep
+idiomatic Go `log/slog`, but make it behave like a first-class Google Cloud
+observability client—without making every service build and maintain the
+integration glue. When something goes wrong, the log entry has the right
+severity, links to the active trace, carries the appropriate span, identifies
+the service, and produces a useful Error Reporting event.
 
 ## What you get
 
@@ -30,6 +35,9 @@ go get github.com/pjscruggs/slogcp
 ```
 
 ## Quick Start
+
+For application wiring, see the [usage guide][usage-guide] and [integration
+recipes][recipes].
 
 ```go
 package main
@@ -66,11 +74,12 @@ func main() {
 slogcp will be useful to you if you're using:
 
 1. **these Google Cloud services:**
-  - Cloud Run Services
-  - Cloud Run Jobs
-  - Cloud Functions
-  - App Engine
-  - Google Kubernetes Engine
+
+   - Cloud Run Services
+   - Cloud Run Jobs
+   - Cloud Functions
+   - App Engine
+   - Google Kubernetes Engine
 
 2. **Google Cloud's native observability stack**  
    You rely on Cloud Logging, Cloud Trace, and Error Reporting to understand
@@ -94,7 +103,6 @@ each service just wires `slogcp.NewHandler`, `slogcphttp.Middleware`, and/or
 `slogcpgrpc.ServerOptions` and the client interceptors instead of
 re-implementing the same JSON shapes and trace/error wiring over and over again.
 
-
 ### Why not just use the official logging library?
 
 #### Using `cloud.google.com/go/logging` is more expensive than logging to `stdout`
@@ -110,9 +118,8 @@ logs to the Cloud Logging API, **your** billable service is responsible for
 marshaling every record into protobuf, maintaining gRPC streams, retrying
 transient failures, and batching writes across worker goroutines. If you don't
 configure the client correctly, [this can kill your
-performance](https://dev.to/siddhantkcode/2x-faster-40-less-ram-the-cloud-run-stdout-logging-hack-1iig).
-When you log to stdout, GCP's backend logging ingester handles all of that for
-you, free of charge.
+performance][stdout-logging-performance]. When you log to stdout, GCP's backend
+logging ingester handles all of that for you, free of charge.
 
 If it determines that it is running in a GCP environment, slogcp further reduces
 the billable CPU cycles spent on JSON marshaling by:
@@ -154,6 +161,7 @@ having to add the boilerplate to do so to each of your services.
 ## Features
 
 ### Severity fields
+
 `log/slog` emits a vendor-neutral `level` field and leaves severity naming up to
 you, but Cloud Logging expects a `severity` field using its own enum. slogcp
 maps slog levels (including GCP-specific levels like `NOTICE`, `CRITICAL`, and
@@ -162,6 +170,7 @@ single-letter aliases on managed GCP runtimes, so you don't need a custom JSON
 handler or `ReplaceAttr` function in every service.
 
 ### Trace correlation
+
 Cloud Logging and Cloud Trace correlate logs via `logging.googleapis.com/trace`,
 `logging.googleapis.com/spanId`, and `logging.googleapis.com/trace_sampled`.
 slogcp reads the current OpenTelemetry span from context (covering W3C
@@ -171,6 +180,7 @@ extraction and injection for you, so logs come with clickable trace links in
 Logs Explorer without hand-rolled middleware.
 
 ### Error Reporting
+
 Error Reporting groups errors by service and stack trace, but getting the JSON
 shape right (`serviceContext`, `stack_trace`, and `context.reportLocation`) is
 tedious. slogcp can capture Go stack traces, infer service metadata from Cloud
@@ -180,6 +190,7 @@ automatically (based on level and configuration) or via helpers like
 Reporting events without a separate client library.
 
 ### HTTP and gRPC Interceptors
+
 HTTP and gRPC usually require bespoke middleware/interceptors just to get
 request-scoped loggers, consistent request/RPC attributes
 (method/route/status/duration/sizes), and trace context propagation. slogcp
@@ -188,6 +199,7 @@ service adds one middleware or `ServerOptions` call instead of re-implementing
 instrumentation.
 
 ### Pub/Sub Integration
+
 Pub/Sub workflows usually require extra glue code: copy trace context into
 message attributes, recover it on the subscriber, derive a per-message logger,
 and remember to attach consistent subscription/topic/message fields so Logs
@@ -201,6 +213,7 @@ trust-boundary mode (new root + link) so you can keep end-to-end observability
 without blindly trusting producer trace IDs.
 
 ### Async Logging
+
 `slogcp` writes synchronously to `stdout`/`stderr` by default. When slogcp
 writes to a file target (`SLOGCP_TARGET=file:...` or
 `slogcp.WithRedirectToFile`), it buffers writes by default so disk I/O doesn't
@@ -212,13 +225,13 @@ or disable buffering (or to opt into async for other targets).
 > throughput.
 
 ### Tested Out The Wazoo
-slogcp has 100% local test coverage. Each of our [examples](.examples) is its
-own Go module with its own tests. Some of those tests verify compatibility with
-popular third-party libraries like [masq](https://github.com/m-mizutani/masq)
-for redaction and [timberjack](https://github.com/DeRuina/timberjack/) for log
-rotation. Every library release, including automated security patches, must pass
-E2E tests **in Google Cloud** under our [release
-policy](docs/RELEASE_POLICY.md). These tests spin up real Cloud Run services
+
+slogcp has 100% local test coverage. Each of our [examples][examples] is its own
+Go module with its own tests. Some of those tests verify compatibility with
+popular third-party libraries like [masq][masq] for redaction and
+[timberjack][timberjack] for log rotation. Every library release, including
+automated security patches, must pass E2E tests **in Google Cloud** under our
+[release policy][release-policy]. These tests spin up real Cloud Run services
 wired together with slogcp’s HTTP and gRPC interceptors. They drive HTTP
 requests and both unary and streaming gRPC calls through chains of downstream
 services, then query Cloud Logging and Cloud Trace to verify severities,
@@ -227,24 +240,23 @@ that trace IDs/span IDs propagate correctly so logs and spans from every service
 correlate into a single end-to-end trace in Google Cloud's UIs.
 
 ### Easy compatibility with other slog libraries
+
 Because slogcp is "just" a `slog.Handler` that writes JSON to an `io.Writer`, it
 slots into existing slog setups instead of replacing them. You still use
 `slog.New`, `slog.SetDefault`, `logger.With`, and request-scoped loggers, and
-you can compose slogcp with other slog-based tools like
-[masq](https://github.com/m-mizutani/masq) for redaction or
-[timberjack](https://github.com/DeRuina/timberjack/) (the maintained
-[lumberjack](https://github.com/natefinch/lumberjack) fork) for file rotation
-without special adapters. When you do write logs to files, the built-in
-`SwitchableWriter` and `Handler.ReopenLogFile` helpers let you cooperate with
-external rotation tools without rebuilding handlers or changing how the rest of
-your code logs.
+you can compose slogcp with other slog-based tools like [masq][masq] for
+redaction or [timberjack][timberjack] (the maintained [lumberjack][lumberjack]
+fork) for file rotation without special adapters. When you do write logs to
+files, the built-in `SwitchableWriter` and `Handler.ReopenLogFile` helpers let
+you cooperate with external rotation tools without rebuilding handlers or
+changing how the rest of your code logs.
 
 ## Core Configuration Options
 
 If you don't want to read any more documentation right now, these are the
 configurations you're the most likely to care about. See
-[`.examples/configuration/main.go`](.examples/configuration/main.go) for a
-runnable demonstration that applies custom levels, source location, and default
+[`.examples/configuration/main.go`][example-configuration] for a runnable
+demonstration that applies custom levels, source location, and default
 attributes.
 
 `slogcp.Handler` also supports attribute rewriting via
@@ -294,8 +306,8 @@ Reporting can group errors correctly without additional configuration.
 
 `slogcp.Handler` exposes runtime level tuning so you can raise or lower
 verbosity without redeploying. See
-[`.examples/dynamic-level/main.go`](.examples/dynamic-level/main.go) for a
-runnable example.
+[`.examples/dynamic-level/main.go`][example-dynamic-level] for a runnable
+example.
 
 By default, each call to `slogcp.NewHandler` initializes its minimum level from
 `SLOGCP_LEVEL` (falling back to `LOG_LEVEL`). Override that programmatically
@@ -343,8 +355,8 @@ logger.LogAttrs(ctx, slog.LevelError, "failed operation",
 
 ### In Google Cloud
 
-See [`.examples/basic/main.go`](.examples/basic/main.go) for a minimal bootstrap
-that writes to stdout with slogcp.
+See [`.examples/basic/main.go`][example-basic] for a minimal bootstrap that
+writes to stdout with slogcp.
 
 ## HTTP and gRPC Middleware
 
@@ -365,14 +377,13 @@ automatically follows whatever span is active on the context.
 
 ### HTTP Example (Server)
 
-See [`.examples/http-server/main.go`](.examples/http-server/main.go) for a
-runnable HTTP server that composes slogcp middleware with trace context
-injection.
+See [`.examples/http-server/main.go`][example-http-server] for a runnable HTTP
+server that composes slogcp middleware with trace context injection.
 
 ### HTTP Example (Client propagation)
 
-See [`.examples/http-client/main.go`](.examples/http-client/main.go) to watch
-the HTTP transport forward W3C trace context to downstream services.
+See [`.examples/http-client/main.go`][example-http-client] to watch the HTTP
+transport forward W3C trace context to downstream services.
 
 ### gRPC
 
@@ -382,19 +393,17 @@ the HTTP transport forward W3C trace context to downstream services.
 - `ServerOptions` bundles slogcp interceptors with OpenTelemetry instrumentation
   for streamlined server registration; client code can use the provided
   interceptors directly.
-- See [`.examples/grpc/main.go`](.examples/grpc/main.go) for a Greeter service
-  that uses the interceptors end-to-end.
-- If you're already invested in the [gRPC
-  Ecosystem](https://github.com/grpc-ecosystem) ecosystem framework, slogcp
-  still fits: use the ready-made
-  [`slogcp-grpc-adapter`](https://github.com/pjscruggs/slogcp-grpc-adapter)
-  module to have its logging interceptors emit slogcp/Cloud Logging–friendly
-  JSON.
+- See [`.examples/grpc/main.go`][example-grpc] for a Greeter service that uses
+  the interceptors end-to-end.
+- If you're already invested in the [gRPC Ecosystem][grpc-ecosystem] ecosystem
+  framework, slogcp still fits: use the ready-made
+  [`slogcp-grpc-adapter`][slogcp-grpc-adapter] module to have its logging
+  interceptors emit slogcp/Cloud Logging–friendly JSON.
 
 ### Pub/Sub
 
-See [`.examples/pubsub/main.go`](.examples/pubsub/main.go) for a runnable
-Pub/Sub example that injects trace context and derives message-scoped loggers.
+See [`.examples/pubsub/main.go`][example-pubsub] for a runnable Pub/Sub example
+that injects trace context and derives message-scoped loggers.
 
 ## Integration with other libraries
 
@@ -403,38 +412,81 @@ popular slog libraries.
 
 ### go-grpc-middleware
 
-Using
-[`github.com/grpc-ecosystem/go-grpc-middleware`](https://github.com/grpc-ecosystem/go-grpc-middleware)
-for gRPC logging doesn’t block you from adopting slogcp. There’s a ready-made
-adapter,
-[`slogcp-grpc-adapter`](https://github.com/pjscruggs/slogcp-grpc-adapter), that
-plugs slogcp into its logging interceptors so you keep your existing interceptor
-chains while getting Cloud Logging–native JSON, trace correlation, and Error
-Reporting behavior.
+Using [`github.com/grpc-ecosystem/go-grpc-middleware`][go-grpc-middleware] for
+gRPC logging doesn’t block you from adopting slogcp. There’s a ready-made
+adapter, [`slogcp-grpc-adapter`][slogcp-grpc-adapter], that plugs slogcp into
+its logging interceptors so you keep your existing interceptor chains while
+getting Cloud Logging–native JSON, trace correlation, and Error Reporting
+behavior.
 
 ### masq
 
 Run an HTTP server that redacts sensitive request fields with
 `github.com/m-mizutani/masq` before logging via slogcp. See
-[.examples/masq/main.go](.examples/masq/main.go).
+[.examples/masq/main.go][example-masq].
 
 ### timberjack
 
 Redirect slogcp output to a timberjack rotating writer with `WithRedirectWriter`
 and optional reopen support. See
-[.examples/timberjack/main.go](.examples/timberjack/main.go).
+[.examples/timberjack/main.go][example-timberjack].
 
 ## Advanced configuration
 
 For more advanced middleware options, see the [Configuration
-Documentation](docs/CONFIGURATION.md).
+Documentation][configuration].
 
 ## License
 
-[Apache 2.0](LICENSE)
+[Apache 2.0][license]
 
 ## Contributing
 
 Contributions are welcome! Feel free to submit issues for bugs or feature
 requests. For code contributions, please fork the repository, create a feature
 branch, and submit a pull request with your changes.
+
+[configuration]:
+  docs/CONFIGURATION.md
+[example-basic]:
+  .examples/basic/main.go
+[example-configuration]:
+  .examples/configuration/main.go
+[example-dynamic-level]:
+  .examples/dynamic-level/main.go
+[example-grpc]:
+  .examples/grpc/main.go
+[example-http-client]:
+  .examples/http-client/main.go
+[example-http-server]:
+  .examples/http-server/main.go
+[example-masq]:
+  .examples/masq/main.go
+[example-pubsub]:
+  .examples/pubsub/main.go
+[example-timberjack]:
+  .examples/timberjack/main.go
+[examples]:
+  .examples
+[go-grpc-middleware]:
+  https://github.com/grpc-ecosystem/go-grpc-middleware
+[grpc-ecosystem]:
+  https://github.com/grpc-ecosystem
+[license]:
+  LICENSE
+[lumberjack]:
+  https://github.com/natefinch/lumberjack
+[masq]:
+  https://github.com/m-mizutani/masq
+[recipes]:
+  docs/recipes/README.md
+[release-policy]:
+  docs/RELEASE_POLICY.md
+[slogcp-grpc-adapter]:
+  https://github.com/pjscruggs/slogcp-grpc-adapter
+[stdout-logging-performance]:
+  https://dev.to/siddhantkcode/2x-faster-40-less-ram-the-cloud-run-stdout-logging-hack-1iig
+[timberjack]:
+  https://github.com/DeRuina/timberjack/
+[usage-guide]:
+  docs/USAGE.md
