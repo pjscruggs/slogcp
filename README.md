@@ -109,7 +109,7 @@ re-implementing the same JSON shapes and trace/error wiring over and over again.
 
 ### Why not just use the official logging library?
 
-#### Using `cloud.google.com/go/logging` is more expensive than logging to `stdout`
+#### Logging through stdout or the Cloud Logging API
 
 > [!NOTE]
 > The official GCP documentation for the various services that support automatic
@@ -117,13 +117,14 @@ re-implementing the same JSON shapes and trace/error wiring over and over again.
 > this feature. Lacking an official term, we'll be referring to this service as
 > the "**logging ingester**."
 
-CPU time is money. When you use a Cloud Logging client library and let it send
-logs to the Cloud Logging API, **your** billable service is responsible for
-marshaling every record into protobuf, maintaining gRPC streams, retrying
-transient failures, and batching writes across worker goroutines. If you don't
-configure the client correctly, [this can kill your
-performance][stdout-logging-performance]. When you log to stdout, GCP's backend
-logging ingester handles all of that for you, free of charge.
+When a Cloud Logging client sends logs through the API, the application handles
+serialization, transport, retries, and batching. [Cloud Run collects
+stdout/stderr automatically][cloud-run-logging], so writing structured JSON to
+those streams keeps API transport out of the application's logging client.
+Actual CPU, latency, and memory costs depend on the workload and destination.
+Integrated logging and API delivery have different buffering and reliability
+behavior. Measure record delivery as well as producer time when comparing
+throughput or cloud costs.
 
 If it determines that it is running in a GCP environment, slogcp further reduces
 the billable CPU cycles spent on JSON marshaling by:
@@ -135,8 +136,8 @@ the billable CPU cycles spent on JSON marshaling by:
 
 #### Why not just use `cloud.google.com/go/logging` with `logging.RedirectAsJSON(os.Stdout)`?
 
-`cloud.google.com/go/logging` has a built-in ability to JSONs to `stdout` rather
-than sending logs over the API, so why don't we just use that?
+`cloud.google.com/go/logging` can write JSON to `stdout` instead of sending logs
+over the API, so why don't we just use that?
 
 Because, **`cloud.google.com/go/logging` is not logging-pattern agnostic**. It
 ships its own `Logger` type and never implements the `slog.Handler` interface.
@@ -161,6 +162,26 @@ having to add the boilerplate to do so to each of your services.
 | HTTP integration                |                manual |                        manual |       ✅ |
 | gRPC integration                |                manual |                        manual |       ✅ |
 | Pub/Sub propagation             |                manual |                        manual |       ✅ |
+
+## Performance
+
+The Go benchmarks below measure synchronous JSON handler work for typical and
+nested records, trace correlation, and optional error stack capture. They write
+to `io.Discard`, isolating handler work from output transport. These timings do
+not estimate Cloud Run request latency, log delivery, or cloud cost savings.
+
+<!-- BENCHMARKS:START -->
+
+Results will appear here after the first automated benchmark run. The [benchmark
+guide][benchmark-methodology] explains what the measurements include and how to
+assess performance in your application.
+
+<!-- BENCHMARKS:END -->
+
+The [Cloud Run comparison suite][cloud-benchmarks] runs an application workload
+with slogcp stdout, the Google client's JSON stdout, buffered API logging, and a
+no-logging control. Use it to compare delivery, CPU, allocations, completed
+throughput, and final drain time on Cloud Run.
 
 ## Features
 
@@ -476,6 +497,12 @@ branch, and submit a pull request with your changes.
   docs/CONFIGURATION.md
 [async-configuration]:
   docs/CONFIGURATION.md#async-logging-slogcpasync
+[benchmark-methodology]:
+  docs/BENCHMARKS.md
+[cloud-benchmarks]:
+  .benchmarks/README.md
+[cloud-run-logging]:
+  https://cloud.google.com/run/docs/logging#write-container-logs
 [example-basic]:
   .examples/basic/main.go
 [example-configuration]:
@@ -526,8 +553,6 @@ branch, and submit a pull request with your changes.
   docs/RELEASE_POLICY.md
 [slogcp-grpc-adapter]:
   https://github.com/pjscruggs/slogcp-grpc-adapter
-[stdout-logging-performance]:
-  https://dev.to/siddhantkcode/2x-faster-40-less-ram-the-cloud-run-stdout-logging-hack-1iig
 [timberjack]:
   https://github.com/DeRuina/timberjack/
 [usage-guide]:
