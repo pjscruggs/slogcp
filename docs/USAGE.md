@@ -8,7 +8,7 @@ you need their integration behavior.
 This guide covers application wiring and logging patterns. See the
 [README](../README.md) for dependency comparisons, the [configuration
 reference](CONFIGURATION.md) for options and environment variables, and the
-[package documentation](https://pkg.go.dev/github.com/pjscruggs/slogcp) for API
+[package documentation](https://pkg.go.dev/github.com/pjscruggs/slogcp/v2) for API
 contracts.
 
 **In this guide:** [Get started](#get-started) · [Choose a
@@ -24,18 +24,24 @@ declared in [`go.mod`](../go.mod) for the slogcp release you use. A dependency's
 [`toolchain` directive](https://go.dev/doc/toolchain) is not an additional
 minimum imposed on its importers.
 
-From your application's existing Go module, add slogcp:
+From your application's existing Go module, add slogcp.
 
 ```sh
 go get github.com/pjscruggs/slogcp/v2
 ```
 
-No checkout of the slogcp repository is required. The handler writes JSON to an
-`io.Writer`. It does not send entries to the Cloud Logging API. Cloud Run
+No checkout of the slogcp repository is required. `slogcp.NewHandler` writes
+JSON to an `io.Writer`. Cloud Run
 [collects stdout and stderr automatically][cloud-run-logging]. For other
 environments, make sure your deployment collects the chosen stream or file.
-Producing Cloud-compatible JSON and delivering it to Cloud Logging are separate
-responsibilities.
+
+For Cloud Logging API delivery, use the optional
+[`slogcp-grpc`](https://github.com/pjscruggs/slogcp-grpc) module with
+`slogcp.NewHandlerWithExporter`. Supply an official `logging.Logger` configured
+with the client, batching, buffering, and concurrency options your application
+needs. The [Cloud Logging API recipe](recipes/cloud-logging-grpc.md) includes a
+complete program and explains authentication, delivery errors, and shutdown.
+The startup example below uses JSON output.
 
 ### Create the handler at application startup
 
@@ -209,11 +215,12 @@ middleware when you expect its request fields at their documented locations. See
 ## Add integrations
 
 Start with the core handler. Choose additional packages according to the
-behavior the application needs, not simply the protocols it uses.
+behavior the application needs.
 
 | Application need | Integration |
 | --- | --- |
 | Cloud-compatible JSON from existing slog calls and instrumentation | `github.com/pjscruggs/slogcp/v2` alone |
+| Cloud Logging API delivery with the official client's transport settings | `github.com/pjscruggs/slogcp-grpc` |
 | HTTP-scoped application logging and propagation helpers | `github.com/pjscruggs/slogcp/v2/slogcphttp` |
 | gRPC-scoped application logging, RPC information, and optional OTel wiring | `github.com/pjscruggs/slogcp/v2/slogcpgrpc` |
 | go-grpc-middleware logging events routed through a slog logger | Separate module `github.com/pjscruggs/slogcp-grpc-adapter/v2` |
@@ -580,7 +587,7 @@ field locations.
 
 Choose either a helper or ordinary error logging for each event to avoid logging
 the same failure twice. See the [error helper
-API](https://pkg.go.dev/github.com/pjscruggs/slogcp#ReportError) and [Google's
+API](https://pkg.go.dev/github.com/pjscruggs/slogcp/v2#ReportError) and [Google's
 Error Reporting log requirements][error-reporting-format].
 
 ## Manage configuration and shutdown
@@ -767,9 +774,11 @@ When a result is missing, check the layer responsible:
 
 For complete runnable applications, see the existing
 [basic](../.examples/basic/main.go), [HTTP](../.examples/http-server/main.go),
-[gRPC](../.examples/grpc/main.go), and [Pub/Sub](../.examples/pubsub/main.go)
-examples. Use the package guides for their detailed option and lifecycle
-behavior.
+[native gRPC](../.examples/grpc/main.go),
+[gRPC middleware](../.examples/grpc-adapter/main.go),
+[Pub/Sub](../.examples/pubsub/main.go), and
+[Cloud Logging API](../.examples/cloud-logging-grpc/main.go) examples. Use the
+package guides for their detailed option and lifecycle behavior.
 
 [cloud-run-logging]:
   https://docs.cloud.google.com/run/docs/logging
