@@ -16,10 +16,14 @@
 
 import base64
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -163,7 +167,8 @@ class CandidatePinTests(unittest.TestCase):
     def test_privileged_consumers_use_the_smoke_tested_revision(self):
         workflows = Path(__file__).resolve().parents[1] / "workflows"
         smoke_workflow = (workflows / "ci-action-smoke.yml").read_text(encoding="utf-8")
-        for action in ["actions/create-github-app-token", "google-github-actions/auth", "google-github-actions/setup-gcloud"]:
+        for action in ["actions/create-github-app-token", "google-github-actions/auth", "google-github-actions/setup-gcloud",
+                       "actions/upload-artifact", "actions/download-artifact"]:
             pattern = re.compile(r"uses:\s*['\"]?" + re.escape(action) + r"@([0-9a-f]{40})(?:\s|['\"])" )
             smoke_pins = set(pattern.findall(smoke_workflow))
             self.assertEqual(len(smoke_pins), 1, f"Expected one immutable smoke pin for {action}")
@@ -172,14 +177,67 @@ class CandidatePinTests(unittest.TestCase):
                 self.assertTrue(pins <= smoke_pins, f"{workflow.name} uses an untested revision of {action}")
 
 
+class ArtifactRoundTripTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = (Path(__file__).resolve().parents[1] / "workflows/ci-action-smoke.yml").read_text(encoding="utf-8")
+
+    def step(self, name):
+        return self.workflow.split("      - name: " + name + "\n", 1)[1].split("\n      - name:", 1)[0]
+
+    def execute(self, name, directory):
+        body = textwrap.dedent(self.step(name).split("        run: |\n", 1)[1])
+        python = body.split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        return subprocess.run(
+            [sys.executable, "-c", python],
+            env={**os.environ, "RUNNER_TEMP": str(directory), "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"},
+            capture_output=True, text=True,
+        )
+
+    def test_download_verification_checks_real_contents_and_rejects_missing_or_extra_files(self):
+        for mutation in ("none", "missing", "changed", "extra"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                created = self.execute("Create Artifact Round Trip Fixture", directory)
+                self.assertEqual(created.returncode, 0, created.stderr)
+                root = directory / "action-artifact-smoke"
+                source = root / "source/result.txt"
+                self.assertLess(source.stat().st_size, 100)
+                destination = root / "download"
+                destination.mkdir()
+                if mutation != "missing":
+                    shutil.copyfile(source, destination / "result.txt")
+                if mutation == "changed":
+                    (destination / "result.txt").write_bytes(b"different run")
+                if mutation == "extra":
+                    (destination / "unexpected.txt").write_bytes(b"unexpected")
+                verified = self.execute("Verify Artifact Round Trip", directory)
+                self.assertEqual(verified.returncode == 0, mutation == "none", verified.stderr)
+
+    def test_artifact_storage_is_bounded_and_download_is_bound_to_upload(self):
+        upload = self.step("Exercise Artifact Upload")
+        download = self.step("Exercise Artifact Download")
+        self.assertIn("retention-days: 1\n", upload)
+        self.assertIn("if-no-files-found: error\n", upload)
+        self.assertIn("path: ${{ runner.temp }}/action-artifact-smoke/source/result.txt\n", upload)
+        self.assertIn("artifact-ids: ${{ steps.artifact_upload.outputs.artifact-id }}\n", download)
+        for body in (upload, download):
+            self.assertNotIn("github-token:", body)
+            self.assertNotIn("continue-on-error:", body)
+            self.assertNotIn("        if:", body)
+        cleanup = self.step("Stop Local Protocol Fixtures")
+        self.assertIn("if: always()", cleanup)
+        self.assertIn('"${RUNNER_TEMP:?}/action-artifact-smoke"', cleanup)
+
+
 class ActionResultGuardTests(unittest.TestCase):
     def test_actual_workflow_requires_all_expected_action_steps(self):
-        import os
-        import shutil
-        import textwrap
-
         workflow = (Path(__file__).resolve().parents[1] / "workflows/ci-action-smoke.yml").read_text(encoding="utf-8")
         step = workflow.split("      - name: Require Successful Action Execution\n", 1)[1]
+        self.assertCountEqual(re.findall(r"steps\.([a-z_]+)\.outcome", step), [
+            "gcloud_setup", "gcloud_smoke", "artifact_fixture", "artifact_upload",
+            "artifact_download", "artifact_verify", "fixture", "app_token", "auth", "verify", "cleanup",
+        ])
         body = textwrap.dedent(step.split("        run: |\n", 1)[1])
         git_bash = Path("C:/Program Files/Git/bin/bash.exe")
         bash = str(git_bash) if git_bash.exists() else shutil.which("bash")
@@ -194,11 +252,11 @@ class ActionResultGuardTests(unittest.TestCase):
                 capture_output=True, text=True, check=False,
             ).returncode
 
-        self.assertEqual(execute(["success"] * 7), 0)
-        for lane in range(7):
+        self.assertEqual(execute(["success"] * 11), 0)
+        for lane in range(11):
             for outcome in ("failure", "skipped", "cancelled", "neutral", ""):
                 with self.subTest(lane=lane, outcome=outcome):
-                    results = ["success"] * 7
+                    results = ["success"] * 11
                     results[lane] = outcome
                     self.assertNotEqual(execute(results), 0)
 

@@ -41,6 +41,51 @@ jobs:
           gcloud --project=ci-action-smoke version
           gcloud --project=ci-action-smoke builds submit --help >/dev/null
 
+      - name: Create Artifact Round Trip Fixture
+        id: artifact_fixture
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          source = Path(os.environ['RUNNER_TEMP']) / 'action-artifact-smoke' / 'source'
+          source.mkdir(parents=True, exist_ok=False)
+          payload = f"artifact round trip {os.environ['GITHUB_RUN_ID']}:{os.environ['GITHUB_RUN_ATTEMPT']}\n"
+          (source / 'result.txt').write_bytes(payload.encode('utf-8'))
+          PY
+
+      - name: Exercise Artifact Upload
+        id: artifact_upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-action-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/action-artifact-smoke/source/result.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Exercise Artifact Download
+        id: artifact_download
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          artifact-ids: ${{ steps.artifact_upload.outputs.artifact-id }}
+          path: ${{ runner.temp }}/action-artifact-smoke/download
+
+      - name: Verify Artifact Round Trip
+        id: artifact_verify
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          destination = Path(os.environ['RUNNER_TEMP']) / 'action-artifact-smoke' / 'download'
+          expected = f"artifact round trip {os.environ['GITHUB_RUN_ID']}:{os.environ['GITHUB_RUN_ATTEMPT']}\n".encode('utf-8')
+          result = destination / 'result.txt'
+          if not destination.is_dir() or list(destination.iterdir()) != [result]:
+              raise SystemExit('Artifact download did not contain exactly the expected fixture')
+          if result.is_symlink() or result.read_bytes() != expected:
+              raise SystemExit('Artifact download did not preserve the fixture contents')
+          PY
+
       - name: Start Local Protocol Fixtures
         id: fixture
         run: |
@@ -105,15 +150,16 @@ jobs:
           if [[ -f "$RUNNER_TEMP/action-smoke/fixture.json" ]]; then
             python .github/scripts/action_smoke_server.py stop --directory "$RUNNER_TEMP/action-smoke"
           fi
+          rm -rf -- "${RUNNER_TEMP:?}/action-artifact-smoke"
 
       - name: Require Successful Action Execution
         id: policy
         if: always()
         env:
-          RESULTS: ${{ steps.gcloud_setup.outcome }} ${{ steps.gcloud_smoke.outcome }} ${{ steps.fixture.outcome }} ${{ steps.app_token.outcome }} ${{ steps.auth.outcome }} ${{ steps.verify.outcome }} ${{ steps.cleanup.outcome }}
+          RESULTS: ${{ steps.gcloud_setup.outcome }} ${{ steps.gcloud_smoke.outcome }} ${{ steps.artifact_fixture.outcome }} ${{ steps.artifact_upload.outcome }} ${{ steps.artifact_download.outcome }} ${{ steps.artifact_verify.outcome }} ${{ steps.fixture.outcome }} ${{ steps.app_token.outcome }} ${{ steps.auth.outcome }} ${{ steps.verify.outcome }} ${{ steps.cleanup.outcome }}
         run: |
           set -euo pipefail
           read -r -a results <<< "$RESULTS"
-          test "${#results[@]}" = 7
+          test "${#results[@]}" = 11
           for result in "${results[@]}"; do test "$result" = success; done
           echo "validation_passed=true" >> "$GITHUB_OUTPUT"
