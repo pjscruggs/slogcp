@@ -36,6 +36,8 @@ class ModuleE2EPolicyTests(unittest.TestCase):
             "comparison_base": BASE, "behind": 0, "conclusion": "success",
             "check_app": "github-actions", "project": "fixture", "expected_project": "fixture",
             "infrastructure": INFRASTRUCTURE, "ref": "refs/heads/main",
+            "pr_number": "", "permission": "write", "workflow_sha": "d" * 40,
+            "candidate_infrastructure": INFRASTRUCTURE, "reviewed_infrastructure": True,
         }
         fixture.update(overrides)
         step = WORKFLOW.split("      - name: Authorize candidate and wait for current local validation\n", 1)[1].split("\n      - name:", 1)[0]
@@ -43,20 +45,23 @@ class ModuleE2EPolicyTests(unittest.TestCase):
         harness = r'''
 const f = JSON.parse(process.env.FIXTURE);
 const outputs = {};
-const context = {repo: {owner: 'pjscruggs', repo: f.repository}, eventName: f.event,
+const context = {repo: {owner: 'pjscruggs', repo: f.repository}, eventName: f.event, actor: 'maintainer',
  ref: f.ref, sha: 'a'.repeat(40), payload: {pull_request: f.event === 'pull_request_target' ? {number: 1, head: {sha: 'a'.repeat(40)}} : undefined}};
 const core = {setOutput: (key, value) => outputs[key] = value};
 const setTimeout = callback => callback();
 const github = {rest: {
  repos: {
   getContent: async ({ref}) => {
-   if (ref !== 'd'.repeat(40)) throw Error('wrong caller source revision');
-   return {data: {content: Buffer.from('uses: pjscruggs/slogcp/.github/workflows/module-candidate-e2e.yml@' + f.infrastructure).toString('base64')}};
+   if (ref !== f.workflow_sha && ref !== f.head) throw Error('wrong caller source revision');
+   const pin = ref === f.workflow_sha ? f.infrastructure : f.candidate_infrastructure;
+   return {data: {content: Buffer.from('uses: pjscruggs/slogcp/.github/workflows/module-candidate-e2e.yml@' + pin).toString('base64')}};
   },
-  compareCommitsWithBasehead: async () => ({data: {behind_by: f.behind, merge_base_commit: {sha: f.comparison_base}}})
+  compareCommitsWithBasehead: async ({repo}) => ({data: {behind_by: f.behind,
+   merge_base_commit: {sha: repo === 'slogcp' ? (f.reviewed_infrastructure ? f.candidate_infrastructure : 'unreviewed') : f.comparison_base}}}),
+  getCollaboratorPermissionLevel: async () => ({data: {permission: f.permission}})
  },
  git: {getRef: async () => ({data: {object: {sha: f.base}}})},
- pulls: {get: async () => ({data: {state: 'open', head: {sha: f.head, repo: {full_name: f.head_repository}},
+ pulls: {get: async () => ({data: {number: 1, state: 'open', head: {sha: f.head, ref: 'candidate', repo: {full_name: f.head_repository}},
   base: {ref: 'main', repo: {full_name: 'pjscruggs/' + f.repository}}}})},
  checks: {listForRef: async () => ({data: {check_runs: [{id: 1, name: 'Module Local Validation Policy',
   app: {slug: f.check_app}, status: 'completed', conclusion: f.conclusion}]}})}
@@ -68,13 +73,14 @@ const github = {rest: {
             ["node", "-e", harness], capture_output=True, text=True,
             env={**os.environ, "FIXTURE": json.dumps(fixture), "CANDIDATE_KIND": fixture["kind"],
                  "EXPECTED_PROJECT": fixture["expected_project"], "GCP_PROJECT_ID": fixture["project"],
-                 "LOCAL_CHECK_NAME": "Module Local Validation Policy", "CALLER_WORKFLOW_SHA": "d" * 40},
+                 "LOCAL_CHECK_NAME": "Module Local Validation Policy", "CALLER_WORKFLOW_SHA": fixture["workflow_sha"],
+                 "DISPATCH_PR_NUMBER": fixture["pr_number"]},
         )
 
     def test_current_validated_subject_uses_the_trusted_caller_pin(self):
         result = self.authorize()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), {"sha": HEAD, "base": BASE, "infrastructure_revision": INFRASTRUCTURE})
+        self.assertEqual(json.loads(result.stdout), {"sha": HEAD, "base": BASE, "pr_number": "1", "infrastructure_revision": INFRASTRUCTURE})
 
     def test_wrong_identity_and_failed_or_skipped_validation_are_rejected(self):
         for changes in (
@@ -91,6 +97,29 @@ const github = {rest: {
         self.assertEqual(self.authorize(event="push").returncode, 0)
         self.assertNotEqual(self.authorize(event="push", ref="refs/heads/topic").returncode, 0)
         self.assertNotEqual(self.authorize(event="pull_request").returncode, 0)
+
+    def test_manual_feature_proof_requires_exact_candidate_and_write_permission(self):
+        fixture = {"event": "workflow_dispatch", "pr_number": "1", "ref": "refs/heads/candidate", "workflow_sha": HEAD}
+        result = self.authorize(**fixture)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["sha"], HEAD)
+        for changes in (
+            {"workflow_sha": "d" * 40}, {"head": "e" * 40}, {"ref": "refs/heads/other"},
+            {"permission": "read"}, {"permission": "triage"}, {"pr_number": "0"},
+            {"event": "push"}, {"conclusion": "skipped"}, {"head_repository": "foreign/fork"},
+        ):
+            with self.subTest(changes=changes):
+                result = self.authorize(**{**fixture, **changes})
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    def test_infrastructure_updates_execute_reviewed_candidate_source(self):
+        candidate = "e" * 40
+        result = self.authorize(candidate_infrastructure=candidate)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["infrastructure_revision"], candidate)
+        result = self.authorize(candidate_infrastructure=candidate, reviewed_infrastructure=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("reviewed core main history", result.stderr)
 
 
 if __name__ == "__main__":
