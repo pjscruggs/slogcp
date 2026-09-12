@@ -83,7 +83,8 @@ var (
 	ErrInvalidRedirectTarget = errors.New("slogcp: invalid redirect target")
 )
 
-// Option mutates Handler construction behavior when supplied to [NewHandler].
+// Option mutates Handler construction behavior when supplied to [NewHandler]
+// or [NewHandlerWithExporter].
 //
 // Options follow the functional options pattern and are applied in the order
 // they are provided by the caller.
@@ -202,6 +203,7 @@ func (td *traceDiagnostics) warnNormalizedTraceProjectID(value, normalized, sour
 }
 
 type handlerConfig struct {
+	exporter                 EntryExporter
 	Level                    slog.Level
 	AddSource                bool
 	EmitTimeField            bool
@@ -273,6 +275,11 @@ type options struct {
 //	logger := slog.New(h)
 //	logger.Info("ready")
 func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
+	return newHandler(defaultWriter, nil, opts...)
+}
+
+// newHandler shares configuration and pipeline assembly between output modes.
+func newHandler(defaultWriter io.Writer, exporter EntryExporter, opts ...Option) (*Handler, error) {
 	builder := collectOptions(opts)
 	internalLogger := ensureInternalLogger(builder.internalLogger)
 
@@ -282,6 +289,16 @@ func NewHandler(defaultWriter io.Writer, opts ...Option) (*Handler, error) {
 	}
 
 	applyOptions(&cfg, builder)
+	if exporter != nil {
+		cfg.exporter = exporter
+		cfg.Writer = io.Discard
+		cfg.FilePath = ""
+		cfg.ClosableWriter = nil
+		cfg.writerExternallyOwned = true
+		if !cfg.emitTimeFieldConfigured {
+			cfg.EmitTimeField = true
+		}
+	}
 	ensureWriterDefaults(&cfg, defaultWriter)
 	applyFileTargetTimeDefault(&cfg)
 

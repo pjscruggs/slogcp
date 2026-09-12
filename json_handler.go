@@ -202,11 +202,7 @@ func getRuntimeFrameResolver() func(uintptr) runtime.Frame {
 	return fn
 }
 
-type sourceLocation struct {
-	File     string `json:"file"`
-	Line     int64  `json:"line"`
-	Function string `json:"function"`
-}
+type sourceLocation = SourceLocation
 
 type jsonHandler struct {
 	// mu serializes writes to the shared output sink across handler clones.
@@ -303,8 +299,8 @@ func (h *jsonHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= minLevel
 }
 
-// Handle serializes r into the Cloud Logging wire format, enriching it with
-// trace context and runtime metadata before writing to the configured writer.
+// Handle enriches r with trace context and runtime metadata before exporting
+// the entry or encoding it as Cloud Logging JSON for the configured writer.
 //
 // Example:
 //
@@ -333,7 +329,7 @@ func (h *jsonHandler) Handle(ctx context.Context, r slog.Record) error {
 		payload[labelsGroupKey] = dynamicLabels
 	}
 
-	return h.emitJSON(r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, ownsSpan, sampled, errType, errMsg, stackStr)
+	return h.emitEntry(ctx, r, payload, httpReq, sourceLoc, fmtTrace, rawTraceID, rawSpanID, ownsSpan, sampled, errType, errMsg, stackStr)
 }
 
 // WithAttrs returns a new handler that includes the provided attributes on
@@ -690,9 +686,9 @@ func stackTraceComparisonLevel(level slog.Level) slog.Level {
 	return level
 }
 
-// emitJSON writes the fully constructed Cloud Logging payload to the handler
-// writer.
-func (h *jsonHandler) emitJSON(
+// emitEntry finishes enrichment and dispatches to the exporter or JSON writer.
+func (h *jsonHandler) emitEntry(
+	ctx context.Context,
 	r slog.Record,
 	jsonPayload map[string]any,
 	httpReq *HTTPRequest,
@@ -714,6 +710,12 @@ func (h *jsonHandler) emitJSON(
 	h.applyServiceContext(jsonPayload)
 	h.applyHTTPRequest(jsonPayload, httpReq)
 
+	if h.cfg.exporter != nil {
+		if err := h.cfg.exporter.Export(ctx, h.exportEntry(r, jsonPayload)); err != nil {
+			return fmt.Errorf("slogcp: export entry: %w", err)
+		}
+		return nil
+	}
 	return h.writeJSONPayload(jsonPayload)
 }
 

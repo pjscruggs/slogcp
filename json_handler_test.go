@@ -852,7 +852,7 @@ func TestJSONHandlerBranchSweep(t *testing.T) {
 
 	sourceLoc := handler.resolveSourceLocation(record)
 	buf.Reset()
-	if err := handler.emitJSON(record, payload, httpReq, sourceLoc, "projects/demo/traces/t123", "raw", "span1", true, false, errType, errMsg, stackStr); err != nil {
+	if err := handler.emitEntry(context.Background(), record, payload, httpReq, sourceLoc, "projects/demo/traces/t123", "raw", "span1", true, false, errType, errMsg, stackStr); err != nil {
 		t.Fatalf("emitJSON returned %v", err)
 	}
 	entry := decodeJSONLine(t, buf.String())
@@ -955,7 +955,7 @@ func TestEmitJSONHandlesWriterAndTrace(t *testing.T) {
 		bufferPool:     &jsonBufferPool,
 	}
 
-	err := handler.emitJSON(
+	err := handler.emitEntry(context.Background(),
 		slog.NewRecord(time.Now(), slog.LevelError, "no-writer", 0),
 		map[string]any{},
 		nil,
@@ -979,7 +979,7 @@ func TestEmitJSONHandlesWriterAndTrace(t *testing.T) {
 	sourceLoc := &sourceLocation{File: "f.go", Line: 12, Function: "fn"}
 	httpReq := &HTTPRequest{RequestMethod: http.MethodGet}
 
-	if err := handler.emitJSON(
+	if err := handler.emitEntry(context.Background(),
 		record,
 		map[string]any{"custom": 1},
 		httpReq,
@@ -1151,7 +1151,7 @@ func TestJSONHandlerEmitAndWriteJSONBranches(t *testing.T) {
 		}
 
 		src := &sourceLocation{File: "f.go", Line: 1, Function: "fn"}
-		if err := h.emitJSON(
+		if err := h.emitEntry(context.Background(),
 			slog.NewRecord(time.Now(), slog.LevelInfo, "emit", 0),
 			map[string]any{},
 			&HTTPRequest{RequestMethod: http.MethodGet},
@@ -1170,7 +1170,7 @@ func TestJSONHandlerEmitAndWriteJSONBranches(t *testing.T) {
 
 		cfg.traceAllowAutoformat = false
 		payload := map[string]any{"serviceContext": map[string]any{"service": "keep"}}
-		if err := h.emitJSON(
+		if err := h.emitEntry(context.Background(),
 			slog.NewRecord(time.Now(), slog.LevelError, "emit2", 0),
 			payload,
 			nil,
@@ -2149,7 +2149,7 @@ func TestJSONHandlerEmitJSONReturnsWriterError(t *testing.T) {
 	handler.writer = nil
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "missing writer", 0)
-	if err := handler.emitJSON(record, map[string]any{}, nil, nil, "", "", "", false, false, "", "", ""); err == nil {
+	if err := handler.emitEntry(context.Background(), record, map[string]any{}, nil, nil, "", "", "", false, false, "", "", ""); err == nil {
 		t.Fatal("emitJSON returned nil error without configured writer")
 	}
 }
@@ -2174,7 +2174,7 @@ func TestJSONHandlerEmitJSONUsesServiceContextAny(t *testing.T) {
 
 	record := slog.NewRecord(time.Now(), slog.LevelInfo, "service context", 0)
 	payload := map[string]any{}
-	if err := handler.emitJSON(record, payload, nil, nil, "", "", "", false, false, "", "", ""); err != nil {
+	if err := handler.emitEntry(context.Background(), record, payload, nil, nil, "", "", "", false, false, "", "", ""); err != nil {
 		t.Fatalf("emitJSON returned %v", err)
 	}
 
