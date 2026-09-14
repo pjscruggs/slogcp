@@ -9,7 +9,7 @@ require (
 	github.com/pjscruggs/slogcp-grpc v0.0.0-20260912111453-931bb73e7329
 	github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
 	google.golang.org/api v0.287.1
-	google.golang.org/genproto/googleapis/api v0.0.0-20260630182238-925bb5da69e7
+	google.golang.org/genproto/googleapis/api v0.0.0-20260911204522-f61a6ca850bd
 )
 
 require (
@@ -40,9 +40,9 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260630182238-925bb5da69e7 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260904194346-d0f1323225a4 // indirect
 	google.golang.org/grpc v1.83.2 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 )
 
 replace github.com/pjscruggs/slogcp/v2 => ..
