@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
 	google.golang.org/grpc v1.83.2
-	google.golang.org/grpc/examples v0.0.0-20260911073300-e4711283ae08
+	google.golang.org/grpc/examples v0.0.0-20260915183914-4e49413dcab7
 )
 
 require (
