@@ -204,6 +204,37 @@
       "additionalBranchPrefix": "examples-"
     },
     {
+      "description": "Review routine example updates that require real major migrations",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchFileNames": [".examples/**/go.mod"],
+      "matchUpdateTypes": ["major"],
+      "matchJsonata": ["$not(isVulnerabilityAlert = true or $exists(vulnerabilityFixVersion))"],
+      "dependencyDashboardApproval": true,
+      "automerge": false
+    },
+    {
+      "description": "Tidy optional modules when adopting their first stable release",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchFileNames": [".examples/**/go.mod"],
+      "matchPackageNames": [
+        "github.com/pjscruggs/slogcp-grpc",
+        "github.com/pjscruggs/slogcp-pubsub"
+      ],
+      "matchCurrentValue": "/^v?0\\./",
+      "matchNewValue": "/^v?1\\./",
+      "matchUpdateTypes": ["major"],
+      "groupName": "optional module first stable releases",
+      "additionalBranchPrefix": "examples-",
+      "dependencyDashboardApproval": false,
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash",
+      "addLabels": ["renovate:examples", "dependency-scope:examples"],
+      "postUpdateOptions": ["gomodTidyAll", "gomodUpdateImportPaths"]
+    },
+    {
       "description": "Automerge Docker dependencies used by e2e tests after validation",
       "matchManagers": ["dockerfile"],
       "matchFileNames": [".e2e/**"],
