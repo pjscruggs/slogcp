@@ -170,9 +170,10 @@ class CloudEvidenceTests(unittest.TestCase):
 class ReceiptProducerTests(unittest.TestCase):
     def test_actual_finalizers_emit_exact_subject_and_attempt(self):
         root = Path(__file__).resolve().parents[2]
-        for filename, name in (
-            ("validation_pipeline.yml", "Finalize stable E2E check after Cloud Build"),
-            ("manual-e2e-trigger.yml", "Finalize E2E Check"),
+        for filename, name, infrastructure_sha in (
+            ("validation_pipeline.yml", "Finalize stable E2E check after Cloud Build", "d" * 40),
+            ("manual-e2e-trigger.yml", "Finalize E2E Check", "d" * 40),
+            ("manual-e2e-trigger.yml", "Finalize E2E Check", "b" * 40),
         ):
             source = (root / ".github/workflows" / filename).read_text(encoding="utf-8")
             step = source.split("      - name: " + name + "\n", 1)[1]
@@ -195,15 +196,16 @@ const github={rest:{checks:{update:async value=>console.log(JSON.stringify(value
                 env={**os.environ, "BUILD_STATUS": "SUCCESS", "CHECK_RUN_ID": "123",
                      "E2E_RUN_ID": "fixture", "POST_BUILD_VALIDATION_OK": "true",
                      "CHECK_RUN_NAME": "E2E Tests (GCP)", "GITHUB_RUN_ATTEMPT": "2",
-                     "PR_NUMBER": "7", "TARGET_ROOT_SHA": "b" * 40},
+                     "PR_NUMBER": "7", "TARGET_ROOT_SHA": "b" * 40,
+                     "INFRASTRUCTURE_SHA": infrastructure_sha},
                 check=True, capture_output=True, text=True,
             )
             update = json.loads(result.stdout)
             receipt = json.loads(update["output"]["text"])
-            with self.subTest(filename=filename):
+            with self.subTest(filename=filename, infrastructure_sha=infrastructure_sha):
                 self.assertEqual(update["conclusion"], "success")
                 self.assertEqual(receipt["root_sha"], "b" * 40)
-                self.assertEqual(receipt["infrastructure_sha"], "d" * 40)
+                self.assertEqual(receipt["infrastructure_sha"], infrastructure_sha)
                 self.assertEqual(receipt["run_attempt"], 2)
                 self.assertEqual(receipt["run_id"], 10)
                 self.assertEqual(receipt["profile"], "root-parity")

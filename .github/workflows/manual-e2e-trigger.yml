@@ -15,6 +15,10 @@ name: Manual E2E Test Trigger
         description: PR number to run E2E tests on (required for mode=pr)
         required: false
         type: string
+      reviewed_infrastructure_sha:
+        description: Optional reviewed runner revision; must equal the locally validated same-repository PR head.
+        required: false
+        type: string
 
 permissions:
   actions: read
@@ -34,6 +38,7 @@ jobs:
       CHECK_RUN_NAME: E2E Tests (GCP)
       DISPATCH_MODE: ${{ inputs.mode }}
       DISPATCH_PR_NUMBER: ${{ inputs.pr_number }}
+      DISPATCH_REVIEWED_INFRASTRUCTURE_SHA: ${{ inputs.reviewed_infrastructure_sha }}
       LOCAL_VALIDATION_CHECK_NAME: Local Validation Ready for E2E
       GCS_BUCKET_NAME: ${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}
       GCS_SOURCE_STAGING_DIR: gs://${{ secrets.GCP_E2E_ARTIFACTS_BUCKET }}/cloudbuild/source
@@ -81,6 +86,16 @@ jobs:
       - name: Validate Inputs
         shell: bash
         run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "Manual E2E must execute the workflow from main" >&2
+            exit 1
+          fi
+          if [[ -n "$DISPATCH_REVIEWED_INFRASTRUCTURE_SHA" ]] &&
+             [[ "$DISPATCH_MODE" != pr || ! "$DISPATCH_REVIEWED_INFRASTRUCTURE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "reviewed_infrastructure_sha must be a full commit SHA in mode=pr" >&2
+            exit 1
+          fi
           case "$DISPATCH_MODE" in
             pr)
               if [[ ! "$DISPATCH_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
@@ -257,10 +272,11 @@ jobs:
             const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
             if (
               pr.base.ref !== 'main' ||
-              String(pr.base.repo?.full_name || '').toLowerCase() !== expectedBaseRepo
+              String(pr.base.repo?.full_name || '').toLowerCase() !== expectedBaseRepo ||
+              String(pr.head.repo?.full_name || '').toLowerCase() !== expectedBaseRepo
             ) {
               core.setFailed(
-                `PR #${pullNumber} targets ${pr.base.repo?.full_name || 'unknown'}/${pr.base.ref}; expected ${owner}/${repo}/main.`
+                `PR #${pullNumber} must use a same-repository head and target ${owner}/${repo}/main.`
               );
               return;
             }
@@ -301,6 +317,31 @@ jobs:
           LOCAL_VALIDATION_CHECK_NAME: ${{ env.LOCAL_VALIDATION_CHECK_NAME }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
 
+      - name: Select Reviewed Infrastructure SHA
+        id: infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          infrastructure_sha="$GITHUB_SHA"
+          if [[ -n "$DISPATCH_REVIEWED_INFRASTRUCTURE_SHA" ]]; then
+            if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REF" != refs/heads/main ||
+                  "$DISPATCH_MODE" != pr || "$LOCAL_VALIDATION_OK" != true ||
+                  ! "$DISPATCH_REVIEWED_INFRASTRUCTURE_SHA" =~ ^[0-9a-f]{40}$ ||
+                  "$DISPATCH_REVIEWED_INFRASTRUCTURE_SHA" != "$PR_HEAD_SHA" ]]; then
+              echo "Reviewed infrastructure must match the locally validated PR head on a main workflow dispatch" >&2
+              exit 1
+            fi
+            infrastructure_sha="$DISPATCH_REVIEWED_INFRASTRUCTURE_SHA"
+          fi
+          if [[ ! "$infrastructure_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Infrastructure revision must be an immutable full commit SHA" >&2
+            exit 1
+          fi
+          printf 'sha=%s\n' "$infrastructure_sha" >>"$GITHUB_OUTPUT"
+        env:
+          PR_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          LOCAL_VALIDATION_OK: ${{ steps.local_validation_gate.outputs.ok }}
+
       - name: Generate E2E Run ID
         id: run_id
         shell: bash
@@ -321,6 +362,7 @@ jobs:
       - name: Checkout Workflow Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ steps.infrastructure.outputs.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -511,10 +553,11 @@ jobs:
             const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
             if (
               pr.base.ref !== 'main' ||
-              String(pr.base.repo?.full_name || '').toLowerCase() !== expectedBaseRepo
+              String(pr.base.repo?.full_name || '').toLowerCase() !== expectedBaseRepo ||
+              String(pr.head.repo?.full_name || '').toLowerCase() !== expectedBaseRepo
             ) {
               reject(
-                `PR #${pullNumber} targets ${pr.base.repo?.full_name || 'unknown'}/${pr.base.ref}; expected ${owner}/${repo}/main.`
+                `PR #${pullNumber} must use a same-repository head and target ${owner}/${repo}/main.`
               );
               return;
             }
@@ -560,7 +603,7 @@ jobs:
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
 
       - name: Generate App Token for E2E Finalization
-        if: ${{ always() && (steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true') }}
+        if: ${{ always() && steps.create_check.outputs.check_run_id != '' && (steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true') }}
         id: final_app_token
         # actions/create-github-app-token v2 (pinned)
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
@@ -571,7 +614,7 @@ jobs:
           repositories: ${{ github.event.repository.name }}
 
       - name: Finalize E2E Check
-        if: ${{ always() && (steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true') }}
+        if: ${{ always() && steps.create_check.outputs.check_run_id != '' && (steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true') }}
         id: finalize_check
         # actions/github-script v8 (pinned)
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
@@ -620,7 +663,7 @@ jobs:
                 title: process.env.CHECK_RUN_NAME,
                 summary: summaryLines.join('\n'),
                 text: JSON.stringify({schema: 1, root_sha: process.env.TARGET_ROOT_SHA,
-                  infrastructure_sha: context.sha, profile: 'root-parity',
+                  infrastructure_sha: process.env.INFRASTRUCTURE_SHA, profile: 'root-parity',
                   dependency_mode: 'floor', toolchain_mode: 'repo', result: buildStatus,
                   run_id: context.runId, run_attempt: Number(process.env.GITHUB_RUN_ATTEMPT)})
               }
@@ -631,6 +674,7 @@ jobs:
           BUILD_STATUS: ${{ steps.cloud_build.outputs.build_status }}
           CHECK_RUN_ID: ${{ steps.create_check.outputs.check_run_id }}
           TARGET_ROOT_SHA: ${{ steps.target.outputs.head_sha }}
+          INFRASTRUCTURE_SHA: ${{ steps.infrastructure.outputs.sha }}
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
           E2E_RUN_ID: ${{ steps.run_id.outputs.e2e_run_id }}
           POST_BUILD_VALIDATION_OK: ${{ steps.post_build_validation.outputs.ok }}
