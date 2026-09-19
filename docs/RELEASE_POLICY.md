@@ -49,10 +49,16 @@ modules through ordinary Go requirements.
 ## Automated maintenance and release intent
 
 [`renovate.json`](../renovate.json) separates library dependencies, the
-preferred Go toolchain, examples, CI tools, GitHub Actions, and E2E Docker
-dependencies. Eligible updates merge through Renovate after validation, without
-a routine PR-approval step. Renovate rebases branches that fall behind `main`
-and uses squash merging.
+preferred Go toolchain, examples, the independent benchmark module and runtime,
+CI tools, GitHub Actions, and E2E Docker dependencies. Eligible updates merge
+through Renovate after validation, without a routine PR-approval step. Renovate
+rebases branches that fall behind `main` and uses squash merging.
+
+Routine major example migrations require review. The narrower transition of the
+two optional modules from a v0 pseudo-version to the same-path v1 release is
+treated as first-stable adoption: Renovate runs native Go tidying for the changed
+modules but does not rewrite source imports. A later `/v2` migration remains a
+reviewed coordinated source change.
 
 For reported library vulnerabilities, Renovate is configured to select the
 lowest fixed version, update direct and indirect requirements, and use native Go
@@ -72,6 +78,8 @@ receive a library version bump.
 | Other library fix or API change | Maintainers select the change and its validation | Explicit version increment appropriate to the complete release |
 | Preferred Go toolchain | Update and test the compiler; retain the library's `go` directive | None |
 | Example Go versions and dependencies | Track the latest stable Go release and compatible dependencies; validate the example modules | None |
+| Benchmark Go dependencies | Maintain the independent benchmark graph; validate its selected compiler, tidy result, tests, race detector, and vulnerability scan | None |
+| Benchmark Python runtime | Build the actual Dockerfile and run the Python suite plus a no-cloud runner smoke in that image | None |
 | CI tools and GitHub Actions | Update separately from the library graph; execute the changed tools or actions | None |
 | README benchmark results | Documentation refresh | None (`version.go` stays unchanged) |
 | E2E Docker dependencies | Validate the changed build and integration path before automerge | None |
@@ -97,7 +105,15 @@ out immutable commit SHAs. Its normal local validation includes the
 compatibility-floor and preferred-compiler tests, race detection, module
 tidiness, formatting, modernization, linting, license headers, and
 `govulncheck`. It also tests the release and CI helpers, generated E2E harness,
-and checked-in example modules.
+checked-in example modules, and the independent benchmark module when its real
+inputs are affected.
+
+Benchmark validation selects the compiler declared by `.benchmarks/go.mod`,
+tidies and tests that graph independently, runs its Python tests, builds the
+actual `.benchmarks/Dockerfile`, and repeats the Python tests and runner-loading
+smoke inside that image. It does not execute Cloud Run benchmark jobs, collect
+load data, or use cloud credentials. The locally replaced slogcp requirement is
+excluded from Renovate proposals; other benchmark dependencies remain visible.
 
 CI tool versions come from [the separate tools module](../.github/tools/go.mod).
 Validation invokes those tools against the candidate source. Formatters and
@@ -120,19 +136,29 @@ base branch and commit, and the workflow run and attempt. A changed base,
 changed head, or superseded run requires updated validation.
 
 The [main branch rules](https://github.com/pjscruggs/slogcp/rules/15539731)
-require `Local Validation Policy` and `E2E Tests (GCP)`. They use non-strict
-status checks. The workflow's final freshness check is not an atomic merge
-guarantee: `main` can advance between that check and the merge. The release
-workflow separately validates the resulting release commit.
+require `Local Validation Policy` and `E2E Tests (GCP)` with strict current-base
+status checks. The workflow also revalidates the exact head and base before it
+accepts a result. That application-level check is defense in depth, not an
+atomic merge guarantee; the release workflow separately validates the resulting
+release commit.
 
 ### Cloud E2E coverage
 
 Cloud E2E tests deployed logging and tracing behavior on Google Cloud. It is
 used for library and integration changes that those tests exercise. Recognized
-example-dependency, preferred-toolchain-only, and CI-tool updates use local
-validation without launching cloud E2E. README-only changes, including
-[benchmark results](BENCHMARKS.md), also follow this path. They still require
-local validation and checks of the current PR head and base.
+example-dependency, preferred-toolchain-only, CI-tool, and recognized
+benchmark-maintenance updates use scoped local validation without launching
+root cloud E2E. README-only changes, including [benchmark results](BENCHMARKS.md),
+also follow this path. They still require local validation and checks of the
+current PR head and base.
+
+The benchmark exemption is path- and shape-based. It accepts only same-repository
+Renovate updates to benchmark module metadata or a single modified benchmark
+Dockerfile after the required benchmark job succeeds. Benchmark source changes,
+renames, mixed root and benchmark changes, unknown benchmark files, and cloud
+runner/authentication changes fail closed into their stronger validation path.
+Root API and module changes used through the benchmark's local replacement run
+both root and benchmark validation.
 
 The PR workflow classifies changes by paths and update scope. Its CI-only
 exemption also covers `.github/` changes without module metadata. That exemption
@@ -147,8 +173,10 @@ controls access to the cloud runner, rather than adding routine release approval
 to automated dependency updates.
 
 The required E2E check can report success because cloud tests completed or
-because the PR's scope does not require them. Only an actual qualifying
-execution receipt can satisfy the release-time cloud evidence requirement.
+because the PR's scope does not require them. A benchmark no-cloud result proves
+maintenance validation only; it is neither a cloud benchmark execution nor a
+root-parity E2E receipt. Only an actual qualifying execution receipt can satisfy
+the release-time cloud evidence requirement.
 
 ## Validation of the complete release
 
