@@ -21,10 +21,14 @@ That generator does two things:
 
 - It resolves the latest stable Go release and uses that toolchain for every
   `.e2e` module.
-- It builds each service context as a local Go workspace that includes the
-  generated service module plus any staged local modules it depends on, such as
-  the local library checkout and `traceproto`. That workspace is the mechanism
-  that keeps shared dependency resolution aligned during the build.
+- It builds each service as a consumer of the staged local library checkout and
+  generated modules such as `traceproto`, using local `replace` directives.
+  The generated workspace contains only the service module (`use .`), so graph
+  reconciliation, parity verification, and the Docker build use the same
+  consumer dependency graph. Making every staged library a workspace main
+  module can load otherwise-pruned transitive requirements and select different
+  shared versions. Staged module manifests remain available to reconciliation;
+  the core library's manifest and the exact shared-version checks are preserved.
 
 The `.e2e` Dockerfiles consume `GO_VERSION`, `DEBIAN_CODENAME`, and
 `DISTROLESS_TAG`. Cloud Build resolves those values during the bootstrap step.

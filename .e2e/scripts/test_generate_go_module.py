@@ -28,7 +28,11 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from generate_go_module import (
+    ADAPTER_MODULE_PATH,
+    LOCAL_E2E_PREFIX,
+    SLOGCP_MODULE_PATH,
     Attempt,
+    DependencyResolutionError,
     WorkspaceState,
     apply_graph_requirements,
     available_stable_versions,
@@ -37,6 +41,7 @@ from generate_go_module import (
     discover_workspace_members,
     enforce_declared_direct_versions,
     env_with_gowork,
+    generate_module,
     has_generated_module_metadata,
     render_go_work,
     restore_workspace_files,
@@ -44,6 +49,7 @@ from generate_go_module import (
     snapshot_workspace,
     tidy_module,
     try_versions,
+    verify_workspace_parity,
     write_dependency_report,
 )
 
@@ -259,6 +265,194 @@ class GenerateGoModuleTests(unittest.TestCase):
             self.assertNotEqual(attempt.reason, "accepted")
             if attempt.reason == "requested_version_not_selected":
                 self.assertNotEqual(attempt.selected.get("example.com/parent"), "v1.1.0")
+
+    def create_consumer_graph_fixture(
+        self, root: pathlib.Path, *, incompatible_direct: bool = False,
+    ) -> tuple[pathlib.Path, dict[str, str]]:
+        proxy = root / "proxy"
+        for version in ("v1.0.0", "v1.1.0"):
+            self.write_proxy_module(
+                proxy, "example.com/shared", version,
+                go_mod="module example.com/shared\ngo 1.26.0\n",
+                files={"shared.go": f'package shared\nconst Version = "{version}"\n'},
+            )
+            self.write_proxy_module(
+                proxy, "example.com/hidden", version,
+                go_mod=("module example.com/hidden\ngo 1.26.0\n"
+                        f"require example.com/shared {version}\n"),
+                files={"hidden.go": 'package hidden\nimport _ "example.com/shared"\n'},
+            )
+            # Like a large generated API module, meta records requirements for
+            # packages outside the service's import graph. Upgrading meta above
+            # a second workspace main module's requirement causes Go to expand
+            # those otherwise-pruned requirements in workspace mode.
+            self.write_proxy_module(
+                proxy, "example.com/meta", version,
+                go_mod=("module example.com/meta\ngo 1.26.0\n"
+                        f"require example.com/hidden {version}\n"),
+                files={"meta.go": f'package meta\nconst Version = "{version}"\n'},
+            )
+            extra = incompatible_direct and version == "v1.1.0"
+            self.write_proxy_module(
+                proxy, "example.com/direct", version,
+                go_mod=("module example.com/direct\ngo 1.26.0\n"
+                        + (f"require example.com/shared {version}\n" if extra else "")),
+                files={"direct.go": ("package direct\n"
+                       + ('import _ "example.com/shared"\n' if extra else "")
+                       + f'const Version = "{version}"\n')},
+            )
+
+        module_dir = root / "consumer"
+        module_dir.mkdir()
+        for folder, path, requirement, source in (
+            ("slogcp", SLOGCP_MODULE_PATH,
+             "example.com/shared v1.0.0\nrequire example.com/meta v1.1.0",
+             'package slogcp\nimport ("example.com/shared"; _ "example.com/meta")\n'
+             'const Version = shared.Version\n'),
+            ("adapter", ADAPTER_MODULE_PATH, "example.com/meta v1.0.0",
+             'package adapter\nimport _ "example.com/meta"\n'),
+        ):
+            directory = module_dir / folder
+            directory.mkdir()
+            (directory / "go.mod").write_text(
+                f"module {path}\ngo 1.26.0\nrequire {requirement}\n", encoding="utf-8",
+            )
+            (directory / "library.go").write_text(source, encoding="utf-8")
+        (module_dir / "go.module.json").write_text(json.dumps({
+            "module_path": LOCAL_E2E_PREFIX + "consumer",
+            "seed_requirements": {"example.com/direct": "v1.1.0"},
+            "pinned_modules": [
+                {"module_path": SLOGCP_MODULE_PATH, "version_source": "slogcp_reference",
+                 "replace_path": "./slogcp"},
+                {"module_path": ADAPTER_MODULE_PATH, "version": "v2.0.0",
+                 "replace_path": "./adapter"},
+            ],
+        }), encoding="utf-8")
+        (module_dir / "consumer_test.go").write_text(
+            'package consumer\nimport ("testing"; "example.com/direct"; '
+            f'core "{SLOGCP_MODULE_PATH}"; _ "{ADAPTER_MODULE_PATH}")\n'
+            'func TestSelection(t *testing.T) { if core.Version != "v1.0.0" || '
+            'direct.Version != "v1.1.0" { t.Fatal("wrong selected versions") } }\n',
+            encoding="utf-8",
+        )
+        env = {**os.environ, "GOTOOLCHAIN": "local", "GOWORK": "off",
+               "GOENV": "off", "GOFLAGS": "", "GOPROXY": proxy.as_uri(),
+               "GOSUMDB": "off", "GOMODCACHE": str(root / "module-cache"),
+               "CGO_ENABLED": "0"}
+        for directory in (module_dir / "slogcp", module_dir / "adapter"):
+            completed = tidy_module(directory, env)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+        return module_dir, env
+
+    @staticmethod
+    def generate_consumer_fixture(module_dir: pathlib.Path, env: dict[str, str]) -> dict:
+        report: dict = {}
+        generate_module(
+            module_dir=module_dir, go_version="1.26.0", slogcp_reference="v2.0.0",
+            slogcp_dir=module_dir / "slogcp", env=env, dependency_mode="floor",
+            generated_dirs=set(), reference_graph={
+                "example.com/shared": "v1.0.0", "example.com/meta": "v1.1.0",
+            },
+            parity_scope="package", report=report,
+        )
+        return report
+
+    def test_generated_workspace_builds_the_exact_consumer_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module_dir, env = self.create_consumer_graph_fixture(pathlib.Path(tmp))
+            preserved = {
+                path: path.read_text(encoding="utf-8")
+                for name in ("slogcp", "adapter")
+                for path in (module_dir / name).glob("go.*")
+            }
+            report = self.generate_consumer_fixture(module_dir, env)
+            self.assertEqual(report["modules"][0]["workspace_members"], ["."])
+            self.assertEqual(
+                report["modules"][0]["workspace_module_paths"],
+                {str(module_dir): LOCAL_E2E_PREFIX + "consumer"},
+            )
+            self.assertEqual(
+                report["modules"][0]["constrained_dependencies"]["selected"],
+                {"example.com/direct": "v1.1.0"},
+            )
+            for path, content in preserved.items():
+                self.assertEqual(path.read_text(encoding="utf-8"), content)
+            workspace_env = env_with_gowork(env, module_dir / "go.work")
+            graph = build_module_graph(module_dir, workspace_env)
+            self.assertEqual(graph["example.com/shared"], "v1.0.0")
+            self.assertEqual(graph, build_module_graph(module_dir, env))
+            completed = run_command(
+                ["go", "test", "-mod=readonly", "./..."], cwd=module_dir, env=workspace_env,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+            # The previous generated workspace selects a different build graph,
+            # even though the service's exact local source replacements match.
+            (module_dir / "go.work").write_text(render_go_work(
+                go_version="1.26.0", workspace_members=[".", "./slogcp", "./adapter"],
+            ), encoding="utf-8")
+            self.assertEqual(
+                build_module_graph(module_dir, workspace_env)["example.com/shared"], "v1.1.0",
+            )
+            with self.assertRaisesRegex(RuntimeError, "workspace parity check failed"):
+                verify_workspace_parity(
+                    module_dir=module_dir, env=env,
+                    reference_graph={"example.com/shared": "v1.0.0"}, parity_scope="package",
+                )
+
+    def test_consumer_graph_still_reconciles_staged_generated_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module_dir, env = self.create_consumer_graph_fixture(pathlib.Path(tmp))
+            generated = module_dir / "generated"
+            generated.mkdir()
+            path = LOCAL_E2E_PREFIX + "generated"
+            (generated / "go.module.json").write_text(json.dumps({
+                "module_path": path,
+                "seed_requirements": {"example.com/shared": "v1.1.0"},
+            }), encoding="utf-8")
+            (generated / "generated.go").write_text(
+                'package generated\nimport _ "example.com/shared"\n', encoding="utf-8",
+            )
+            metadata_path = module_dir / "go.module.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["pinned_modules"].append({
+                "module_path": path, "version": "v0.0.0", "replace_path": "./generated",
+            })
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+            (module_dir / "generated_test.go").write_text(
+                f'package consumer\nimport _ "{path}"\n', encoding="utf-8",
+            )
+            self.generate_consumer_fixture(module_dir, env)
+            self.assertEqual(
+                build_module_graph(generated, env)["example.com/shared"], "v1.0.0",
+            )
+            self.assertEqual(
+                build_module_graph(module_dir, env_with_gowork(env, module_dir / "go.work"))[
+                    "example.com/shared"
+                ], "v1.0.0",
+            )
+
+    def test_consumer_graph_rejects_incompatible_exact_direct_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module_dir, env = self.create_consumer_graph_fixture(
+                pathlib.Path(tmp), incompatible_direct=True,
+            )
+            with self.assertRaisesRegex(
+                DependencyResolutionError, "declared direct versions violate",
+            ) as failure:
+                self.generate_consumer_fixture(module_dir, env)
+            self.assertEqual(
+                failure.exception.details["requested"], {"example.com/direct": "v1.1.0"},
+            )
+
+    def test_single_member_workspace_parity_verification_is_not_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            module_dir, env = self.create_hidden_parent_fixture(pathlib.Path(tmp))
+            with self.assertRaisesRegex(RuntimeError, "workspace parity check failed"):
+                verify_workspace_parity(
+                    module_dir=module_dir, env=env,
+                    reference_graph={"example.com/shared": "v1.0.0"}, parity_scope="package",
+                )
 
     def test_graph_requests_are_sorted_in_one_transaction(self) -> None:
         completed = subprocess.CompletedProcess([], 0, "", "")

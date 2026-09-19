@@ -519,8 +519,16 @@ def workspace_member_dirs(module_dir: Path, env: dict[str, str]) -> list[Path]:
     return members
 
 
-def snapshot_workspace(module_dir: Path, env: dict[str, str]) -> WorkspaceState:
-    members = tuple(workspace_member_dirs(module_dir, env))
+def snapshot_workspace(
+    module_dir: Path,
+    env: dict[str, str],
+    *,
+    local_members: list[str] | None = None,
+) -> WorkspaceState:
+    if local_members is None:
+        members = tuple(workspace_member_dirs(module_dir, env))
+    else:
+        members = tuple((module_dir / member).resolve() for member in local_members)
     module_paths = {member: module_path(member, env) for member in members}
     editable_members = tuple(
         member for member in members if module_paths.get(member) != SLOGCP_MODULE_PATH
@@ -1240,10 +1248,6 @@ def verify_workspace_parity(
     reference_graph: dict[str, str],
     parity_scope: str,
 ) -> None:
-    members = workspace_member_dirs(module_dir, env)
-    if not any(module_path(member, env) == SLOGCP_MODULE_PATH for member in members):
-        return
-
     workspace_file = module_dir / WORKSPACE_FILE_NAME
     graph_env = env_with_gowork(env, workspace_file)
     module_graph = selected_dependency_graph(
@@ -1435,18 +1439,27 @@ def generate_module(
         module_dir=module_dir,
         pinned_modules=pinned_modules,
     )
-    module_report["workspace_members"] = workspace_members
+    local_module_paths = {
+        str((module_dir / member).resolve()): module_path(module_dir / member, env)
+        for member in workspace_members
+    }
+    module_report["local_module_paths"] = local_module_paths
 
     if len(workspace_members) > 1:
         workspace_file = module_dir / WORKSPACE_FILE_NAME
+        # Build the service as an ordinary consumer of the staged libraries.
+        # Their root replacements select exact local sources without making
+        # every library an independent workspace main module, which can expand
+        # otherwise-pruned transitive requirements and change the build graph.
         workspace_file.write_text(
             render_go_work(
                 go_version=go_version,
-                workspace_members=workspace_members,
+                workspace_members=["."],
             ),
             encoding="utf-8",
         )
-        workspace = snapshot_workspace(module_dir, env)
+        module_report["workspace_members"] = ["."]
+        workspace = snapshot_workspace(module_dir, env, local_members=workspace_members)
         declared_candidates = declared_direct_candidates(
             seed_requirements,
             reference_graph,
@@ -1455,10 +1468,11 @@ def generate_module(
             {"path": candidate.path, "version": candidate.current}
             for candidate in declared_candidates
         ]
-        module_paths = {str(path): value for path, value in workspace.module_paths.items()}
-        module_report["workspace_module_paths"] = module_paths
+        module_report["workspace_module_paths"] = {
+            str(module_dir): workspace.module_paths[module_dir],
+        }
 
-        has_slogcp = any(value == SLOGCP_MODULE_PATH for value in workspace.module_paths.values())
+        has_slogcp = SLOGCP_MODULE_PATH in local_module_paths.values()
         if has_slogcp:
             report["failed_stage"] = "workspace_floor_normalization"
             normalization = try_versions(
@@ -1476,7 +1490,7 @@ def generate_module(
                     normalization,
                 )
 
-            workspace = snapshot_workspace(module_dir, env)
+            workspace = snapshot_workspace(module_dir, env, local_members=workspace_members)
             if dependency_mode == "floor":
                 report["failed_stage"] = "declared_direct_version_enforcement"
                 module_report["constrained_dependencies"] = (
@@ -1500,13 +1514,14 @@ def generate_module(
                     )
                 )
 
-        report["failed_stage"] = "workspace_parity_verification"
-        verify_workspace_parity(
-            module_dir=module_dir,
-            env=env,
-            reference_graph=reference_graph,
-            parity_scope=parity_scope,
-        )
+        if has_slogcp:
+            report["failed_stage"] = "workspace_parity_verification"
+            verify_workspace_parity(
+                module_dir=module_dir,
+                env=env,
+                reference_graph=reference_graph,
+                parity_scope=parity_scope,
+            )
         build_module_graph(module_dir, env_with_gowork(env, workspace_file))
     else:
         workspace_file = module_dir / WORKSPACE_FILE_NAME
