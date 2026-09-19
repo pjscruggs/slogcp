@@ -61,6 +61,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                 files = {
                     "go.mod": "module example.org/root\ngo 1.26.0\ntoolchain go1.27.1\n",
                     ".examples/demo/go.mod": "module example.org/demo\ngo 1.28.0\n",
+                    ".benchmarks/go.mod": "module example.org/benchmarks\ngo 1.27.0\ntoolchain go1.27.2\n",
                     ".github/tools/go.mod": "module example.org/tools\ngo 1.28.1\n",
                 }
                 for name, content in files.items():
@@ -92,6 +93,11 @@ class WorkflowPolicyTests(unittest.TestCase):
                 self.assertEqual(
                     planned["tools_version"], "stable" if latest else "1.28.1"
                 )
+                self.assertEqual(planned["has_benchmark"], "true")
+                self.assertEqual(
+                    planned["benchmark_version"],
+                    "stable" if latest else "1.27.2",
+                )
                 self.assertEqual(
                     json.loads(planned["example_matrix"])["include"][0]["go_version"],
                     "stable" if latest else "1.28.0",
@@ -108,6 +114,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         title="Update dependency",
         head_ref="renovate/update",
         changed_files="inferred",
+        return_outputs=False,
     ):
         pr = {
             "number": 1,
@@ -143,11 +150,13 @@ await (async()=>{
                 text=True,
                 check=True,
             )
-            results.append(json.loads(result.stdout)["mode"])
+            results.append(json.loads(result.stdout))
         self.assertEqual(
-            results[0], results[1], "Local and trusted-base classification disagree"
+            results[0]["mode"],
+            results[1]["mode"],
+            "Local and trusted-base classification disagree",
         )
-        return results[0]
+        return results[0] if return_outputs else results[0]["mode"]
 
     def test_target_gate_runs_only_for_candidate_events(self):
         target = re.search(
@@ -186,6 +195,17 @@ await (async()=>{
     def test_actual_classifiers_keep_module_scopes_separate(self):
         cases = [
             ([{"filename": ".examples/grpc/go.mod"}], "examples_dependency"),
+            (
+                [
+                    {"filename": ".benchmarks/go.mod", "status": "modified"},
+                    {"filename": ".benchmarks/go.sum", "status": "modified"},
+                ],
+                "benchmark_maintenance",
+            ),
+            (
+                [{"filename": ".benchmarks/Dockerfile", "status": "modified"}],
+                "benchmark_maintenance",
+            ),
             ([{"filename": ".github/tools/go.mod"}], "ci_tools"),
             (
                 [
@@ -212,6 +232,57 @@ await (async()=>{
         for files, expected in cases:
             with self.subTest(expected=expected):
                 self.assertEqual(self.classify(files, labels=["security"]), expected)
+
+    def test_benchmark_exemption_fails_closed_for_mixed_or_unknown_changes(self):
+        module = {"filename": ".benchmarks/go.mod", "status": "modified"}
+        fixtures = (
+            [module, {"filename": "handler.go", "status": "modified"}],
+            [module, {"filename": ".benchmarks/main.go", "status": "modified"}],
+            [{"filename": ".benchmarks/Dockerfile", "status": "renamed"}],
+            [
+                {"filename": ".benchmarks/Dockerfile", "status": "modified"},
+                {"filename": ".benchmarks/go.mod", "status": "modified"},
+            ],
+            [{"filename": ".benchmarks/unknown.lock", "status": "modified"}],
+        )
+        for files in fixtures:
+            with self.subTest(files=files):
+                self.assertNotEqual(
+                    self.classify(files, labels=["renovate:benchmarks"]),
+                    "benchmark_maintenance",
+                )
+        self.assertNotEqual(
+            self.classify([module], actor="human"), "benchmark_maintenance"
+        )
+        self.assertNotEqual(
+            self.classify([module], same_repo=False), "benchmark_maintenance"
+        )
+
+    def test_benchmark_applicability_tracks_real_inputs_not_labels(self):
+        cases = (
+            ([{"filename": ".benchmarks/go.mod", "status": "modified"}], True),
+            ([{"filename": ".benchmarks/main.go", "status": "modified"}], True),
+            ([{"filename": "handler.go", "status": "modified"}], True),
+            ([{"filename": "go.mod", "status": "modified"}], True),
+            (
+                [
+                    {
+                        "filename": ".github/workflows/validation_pipeline.yml",
+                        "status": "modified",
+                    }
+                ],
+                True,
+            ),
+            ([{"filename": "docs/USAGE.md", "status": "modified"}], False),
+        )
+        for files, expected in cases:
+            with self.subTest(files=files):
+                outputs = self.classify(
+                    files,
+                    labels=["renovate:examples"],
+                    return_outputs=True,
+                )
+                self.assertEqual(outputs["benchmark_required"], str(expected).lower())
 
     def test_security_scope_does_not_hide_library_source_changes(self):
         metadata = [{"filename": "go.mod"}, {"filename": "version.go"}]
@@ -275,9 +346,11 @@ await (async()=>{
                     self.classify([readme], changed_files=count), "readme_only"
                 )
 
-    def readme_step_enabled(self, name, *, validation_ok="true"):
+    def readme_step_enabled(
+        self, name, *, validation_ok="true", mode="readme_only"
+    ):
         fixture = {
-            "pr_scope": {"mode": "readme_only"},
+            "pr_scope": {"mode": mode},
             "trigger_type": {"should_auto_trigger": "true"},
             "wait_validation": {"ok": validation_ok},
             "app_token_secrets": {"available": "true"},
@@ -369,6 +442,29 @@ const core = {setOutput:(key,value)=>result.outputs[key]=value,
                 self.assertEqual(result["outputs"]["ok"], "true" if ok == "true" else "false")
                 self.assertEqual(result["failed"], ok != "true")
 
+    def test_benchmark_no_cloud_path_requires_successful_current_validation(self):
+        for name in (
+            "Revalidate PR authority before E2E acceptance",
+            "Generate App Token for No-Cloud Finalization",
+            "Finalize stable E2E check for updates that do not require cloud E2E",
+        ):
+            for ok in ("true", "false", ""):
+                with self.subTest(step=name, validation_ok=ok):
+                    self.assertEqual(
+                        self.readme_step_enabled(
+                            name,
+                            validation_ok=ok,
+                            mode="benchmark_maintenance",
+                        ),
+                        ok == "true",
+                    )
+        self.assertFalse(
+            self.readme_step_enabled(
+                "Checkout Target Source For Cloud E2E",
+                mode="benchmark_maintenance",
+            )
+        )
+
     def aggregate(self, **overrides):
         env = {
             **os.environ,
@@ -382,6 +478,8 @@ const core = {setOutput:(key,value)=>result.outputs[key]=value,
             "E2E_HARNESS_VALIDATION_RESULT": "success",
             "HAS_EXAMPLES": "true",
             "EXAMPLE_VALIDATION_RESULT": "success",
+            "BENCHMARK_REQUIRED": "true",
+            "BENCHMARK_VALIDATION_RESULT": "success",
             **overrides,
         }
         bash = "bash"
@@ -415,6 +513,7 @@ const core = {setOutput:(key,value)=>result.outputs[key]=value,
             "ROOT_VALIDATION_RESULT",
             "E2E_HARNESS_VALIDATION_RESULT",
             "EXAMPLE_VALIDATION_RESULT",
+            "BENCHMARK_VALIDATION_RESULT",
         ):
             for result in ("failure", "skipped", "cancelled", ""):
                 with self.subTest(lane=lane, result=result):
@@ -422,6 +521,45 @@ const core = {setOutput:(key,value)=>result.outputs[key]=value,
                         code, output = self.aggregate(SCOPE_MODE=scope, **{lane: result})
                         self.assertNotEqual(code, 0)
                         self.assertNotIn("validation_passed=true", output)
+
+    def test_benchmark_aggregate_requires_success_when_applicable(self):
+        for result in ("failure", "skipped", "cancelled", ""):
+            with self.subTest(result=result):
+                self.assertNotEqual(
+                    self.aggregate(BENCHMARK_VALIDATION_RESULT=result)[0], 0
+                )
+        self.assertEqual(
+            self.aggregate(
+                BENCHMARK_REQUIRED="false", BENCHMARK_VALIDATION_RESULT="skipped"
+            ),
+            (0, "validation_passed=true\n"),
+        )
+        self.assertNotEqual(
+            self.aggregate(
+                BENCHMARK_REQUIRED="false", BENCHMARK_VALIDATION_RESULT="success"
+            )[0],
+            0,
+        )
+
+    def test_benchmark_job_exercises_module_python_and_actual_container(self):
+        script = step_body("Validate benchmark module and container runtime", "run")
+        for required in (
+            "go mod tidy",
+            "go test -race -count=1 ./...",
+            "govulncheck",
+            "python3 -m unittest discover -s .benchmarks",
+            "docker build --file .benchmarks/Dockerfile",
+            '"$image" -m unittest discover -s /tests',
+            "runpy.run_path('/opt/bench/run_matrix.py'",
+            "git status --porcelain=v1 --untracked-files=all -- .benchmarks",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, script)
+        job = WORKFLOW.split("  benchmark_validation:\n", 1)[1].split(
+            "\n  local_validation_policy:", 1
+        )[0]
+        self.assertNotIn("id-token: write", job)
+        self.assertNotIn("gcloud ", job)
 
     def test_deliberately_absent_examples_are_not_a_failure(self):
         self.assertEqual(

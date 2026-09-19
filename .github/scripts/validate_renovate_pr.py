@@ -84,6 +84,7 @@ def inspect_candidate(
     changed_paths: list[str],
     security_hint: bool,
     examples_dir: str = ".examples",
+    benchmarks_dir: str = ".benchmarks",
 ) -> str:
     if one_directive(base_module, "module") != one_directive(head_module, "module"):
         raise ValueError("Renovate must not change the root module identity")
@@ -117,6 +118,11 @@ def inspect_candidate(
             path.startswith(examples_dir.rstrip("/") + "/")
             and len(parsed.parts) >= 3
             and parsed.name in {"go.mod", "go.sum"}
+        ) or (
+            path in {
+                benchmarks_dir.rstrip("/") + "/go.mod",
+                benchmarks_dir.rstrip("/") + "/go.sum",
+            }
         )
 
     unexpected = [path for path in changed_paths if not allowed_path(path)]

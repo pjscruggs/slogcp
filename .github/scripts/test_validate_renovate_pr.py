@@ -82,6 +82,7 @@ class CandidateScopeTests(unittest.TestCase):
                     "go.sum",
                     "version.go",
                     ".examples/client/go.sum",
+                    ".benchmarks/go.sum",
                 ]
             ),
             "security_patch",
@@ -172,7 +173,13 @@ class CandidateScopeTests(unittest.TestCase):
                 self.inspect(head_module=FIXED.replace(before, after))
 
     def test_root_security_repair_cannot_include_source_or_tool_changes(self) -> None:
-        for path in ("adapter.go", ".github/tools/go.mod", ".examples/client/main.go"):
+        for path in (
+            "adapter.go",
+            ".github/tools/go.mod",
+            ".examples/client/main.go",
+            ".benchmarks/main.go",
+            ".benchmarks/replace.mod",
+        ):
             with (
                 self.subTest(path=path),
                 self.assertRaisesRegex(ValueError, "unrelated files"),

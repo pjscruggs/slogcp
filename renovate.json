@@ -246,6 +246,48 @@
       "prPriority": 5
     },
     {
+      "description": "Validate external benchmark module dependencies separately",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchFileNames": [".benchmarks/go.mod"],
+      "groupName": "benchmark module dependencies",
+      "additionalBranchPrefix": "benchmarks-",
+      "addLabels": ["renovate:benchmarks", "dependency-scope:benchmarks"],
+      "automerge": false
+    },
+    {
+      "description": "Validate the benchmark Python container separately",
+      "matchManagers": ["dockerfile"],
+      "matchFileNames": [".benchmarks/Dockerfile"],
+      "groupName": "benchmark container runtime",
+      "additionalBranchPrefix": "benchmarks-",
+      "addLabels": ["renovate:benchmarks", "dependency-scope:benchmarks"],
+      "automerge": false
+    },
+    {
+      "description": "Tidy the benchmark gRPC module first stable update",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchFileNames": [".benchmarks/go.mod"],
+      "matchPackageNames": ["github.com/pjscruggs/slogcp-grpc"],
+      "matchCurrentValue": "/^v?0\\./",
+      "matchNewValue": "/^v?1\\./",
+      "matchUpdateTypes": ["major"],
+      "groupName": "benchmark module dependencies",
+      "additionalBranchPrefix": "benchmarks-",
+      "addLabels": ["renovate:benchmarks", "dependency-scope:benchmarks"],
+      "dependencyDashboardApproval": false,
+      "automerge": false,
+      "postUpdateOptions": ["gomodTidyAll", "gomodUpdateImportPaths"]
+    },
+    {
+      "description": "Preserve the locally replaced benchmark self-requirement",
+      "matchManagers": ["gomod"],
+      "matchFileNames": [".benchmarks/go.mod"],
+      "matchPackageNames": ["github.com/pjscruggs/slogcp/v2"],
+      "enabled": false
+    },
+    {
       "description": "Do not update the local unpublished slogcp requirement used by examples",
       "matchManagers": ["gomod"],
       "matchFileNames": [".examples/**"],
