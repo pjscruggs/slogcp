@@ -172,6 +172,13 @@ workflow](../.github/workflows/manual-e2e-trigger.yml). This authorization
 controls access to the cloud runner, rather than adding routine release approval
 to automated dependency updates.
 
+Maintainers dispatch that workflow from `main`. To validate a runner repair,
+`reviewed_infrastructure_sha` may select the exact reviewed PR head. The PR must
+belong to this repository and pass local validation against the current base
+before runner credentials are acquired. The execution receipt records the
+selected infrastructure revision. Leaving the input empty uses the workflow's
+own revision on `main`.
+
 The required E2E check can report success because cloud tests completed or
 because the PR's scope does not require them. A benchmark no-cloud result proves
 maintenance validation only; it is neither a cloud benchmark execution nor a
