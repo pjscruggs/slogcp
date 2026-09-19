@@ -158,6 +158,52 @@ class RenovatePolicyTests(unittest.TestCase):
         self.assertLess(stable, local_example)
         self.assertFalse(RULES[local_example]["enabled"])
 
+    def test_benchmark_scopes_are_separate_and_not_yet_automergeable(self) -> None:
+        module = rule("Validate external benchmark module dependencies separately")
+        runtime = rule("Validate the benchmark Python container separately")
+        self.assertEqual(module["matchFileNames"], [".benchmarks/go.mod"])
+        self.assertEqual(runtime["matchFileNames"], [".benchmarks/Dockerfile"])
+        self.assertNotEqual(module["groupName"], runtime["groupName"])
+        for candidate in (module, runtime):
+            self.assertEqual(candidate["additionalBranchPrefix"], "benchmarks-")
+            self.assertIn("dependency-scope:benchmarks", candidate["addLabels"])
+            self.assertFalse(candidate["automerge"])
+
+    def test_only_locally_replaced_benchmark_self_requirement_is_ignored(self) -> None:
+        candidate = rule("Preserve the locally replaced benchmark self-requirement")
+        self.assertEqual(candidate["matchManagers"], ["gomod"])
+        self.assertEqual(candidate["matchFileNames"], [".benchmarks/go.mod"])
+        self.assertEqual(
+            candidate["matchPackageNames"], ["github.com/pjscruggs/slogcp/v2"]
+        )
+        self.assertFalse(candidate["enabled"])
+        descriptions = [item.get("description") for item in RULES]
+        self.assertLess(
+            descriptions.index("Validate external benchmark module dependencies separately"),
+            descriptions.index("Preserve the locally replaced benchmark self-requirement"),
+        )
+
+    def test_benchmark_first_stable_exception_stays_in_benchmark_scope(self) -> None:
+        candidate = rule("Tidy the benchmark gRPC module first stable update")
+        self.assertEqual(candidate["matchFileNames"], [".benchmarks/go.mod"])
+        self.assertEqual(
+            candidate["matchPackageNames"],
+            ["github.com/pjscruggs/slogcp-grpc"],
+        )
+        self.assertEqual(candidate["matchCurrentValue"], "/^v?0\\./")
+        self.assertEqual(candidate["matchNewValue"], "/^v?1\\./")
+        self.assertCountEqual(
+            candidate["postUpdateOptions"],
+            ["gomodTidyAll", "gomodUpdateImportPaths"],
+        )
+        self.assertEqual(candidate["additionalBranchPrefix"], "benchmarks-")
+        self.assertFalse(candidate["automerge"])
+        descriptions = [item.get("description") for item in RULES]
+        self.assertLess(
+            descriptions.index("Tidy the benchmark gRPC module first stable update"),
+            descriptions.index("Preserve the locally replaced benchmark self-requirement"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

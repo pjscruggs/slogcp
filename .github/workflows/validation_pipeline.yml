@@ -41,6 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       mode: ${{ steps.classify.outputs.mode }}
+      benchmark_required: ${{ steps.classify.outputs.benchmark_required }}
     steps:
       - name: Classify changed files
         id: classify
@@ -57,6 +58,7 @@ jobs:
                 per_page: 100
               });
 
+              const pr = context.payload.pull_request;
               const paths = files.map(f => f.filename);
               const touchesGoModuleMetadata = paths.some(p => /(^|\/)go\.(mod|sum)$/.test(p));
               const onlyCiFiles = paths.length > 0 && paths.every(p => p.startsWith('.github/') || p === '.licenserc.yaml');
@@ -64,6 +66,14 @@ jobs:
                 paths.every(p => p === 'renovate.json' || p === '.github/scripts/test_renovate_policy.py');
               const onlyExampleModuleMetadata = paths.length > 0 &&
                 paths.every(p => /^\.examples\/.+\/go\.(mod|sum)$/.test(p));
+              const benchmarkFilesAreModified = files.every(file =>
+                file.status === 'modified' && !file.previous_filename);
+              const onlyBenchmarkModuleMetadata = paths.length > 0 &&
+                paths.every(p => /^\.benchmarks\/go\.(mod|sum)$/.test(p)) &&
+                benchmarkFilesAreModified;
+              const onlyBenchmarkRuntime = pr.changed_files === 1 && files.length === 1 &&
+                files[0].filename === '.benchmarks/Dockerfile' &&
+                benchmarkFilesAreModified;
               const onlyCiToolModuleMetadata = paths.length > 0 &&
                 paths.every(p => /^\.github\/tools\/go\.(mod|sum)$/.test(p));
               const touchesRootGoModuleMetadata = paths.some(p => /^go\.(mod|sum)$/.test(p));
@@ -71,10 +81,10 @@ jobs:
                 p === 'go.mod' ||
                 p === 'go.sum' ||
                 p === 'version.go' ||
-                /^\.examples\/.+\/go\.(mod|sum)$/.test(p);
+                /^\.examples\/.+\/go\.(mod|sum)$/.test(p) ||
+                /^\.benchmarks\/go\.(mod|sum)$/.test(p);
               const securityFloorFileScope = paths.length > 0 &&
                 paths.every(allowedSecurityFloorMetadata);
-              const pr = context.payload.pull_request;
               // Require complete file metadata; README renames, additions and deletions
               // must not hide a change to executable source or another tracked path.
               const onlyReadmeModification = pr.changed_files === 1 && files.length === 1 &&
@@ -117,6 +127,11 @@ jobs:
                 mode = 'automation_config_only';
               } else if (sameRepo && trustedRenovate && onlyExampleModuleMetadata) {
                 mode = 'examples_dependency';
+              } else if (
+                sameRepo && trustedRenovate &&
+                (onlyBenchmarkModuleMetadata || onlyBenchmarkRuntime)
+              ) {
+                mode = 'benchmark_maintenance';
               } else if (sameRepo && trustedRenovate && isRootToolchainOnly) {
                 mode = 'toolchain_update';
               } else if (
@@ -130,8 +145,21 @@ jobs:
               } else if (sameRepo && trustedRenovate) {
                 mode = 'renovate_cloud_e2e';
               }
+              const benchmarkRequired = paths.some(p =>
+                p.startsWith('.benchmarks/') ||
+                p === 'go.mod' || p === 'go.sum' || /^[^/]+\.go$/.test(p) ||
+                p === 'renovate.json' ||
+                p === '.github/workflows/validation_pipeline.yml' ||
+                p === '.github/scripts/test_workflow_policy.py' ||
+                p === '.github/scripts/test_renovate_policy.py' ||
+                p === '.github/scripts/validate_renovate_pr.py' ||
+                p === '.github/scripts/test_validate_renovate_pr.py'
+              );
+              core.info(`Benchmark validation required=${benchmarkRequired}`);
+              core.setOutput('benchmark_required', String(benchmarkRequired));
+            } else {
+              core.setOutput('benchmark_required', 'true');
             }
-
             core.info(`Validation scope mode=${mode}`);
             core.setOutput('mode', mode);
 
@@ -153,6 +181,8 @@ jobs:
       tools_version: ${{ steps.plan.outputs.tools_version }}
       has_examples: ${{ steps.plan.outputs.has_examples }}
       example_matrix: ${{ steps.plan.outputs.example_matrix }}
+      has_benchmark: ${{ steps.plan.outputs.has_benchmark }}
+      benchmark_version: ${{ steps.plan.outputs.benchmark_version }}
       validated_base: ${{ steps.current_base.outputs.sha }}
     steps:
       - name: Checkout validation source
@@ -247,13 +277,19 @@ jobs:
               )
 
           tracked = subprocess.run(
-              ["git", "ls-files", "-z", "--", "go.mod", ":(glob).examples/**/go.mod"],
+              [
+                  "git", "ls-files", "-z", "--", "go.mod",
+                  ":(glob).examples/**/go.mod", ".benchmarks/go.mod",
+              ],
               check=True,
               capture_output=True,
           ).stdout.split(b"\0")
           paths = sorted(part.decode("utf-8") for part in tracked if part)
           if "go.mod" not in paths:
               raise SystemExit("tracked root go.mod was not found")
+          benchmark_paths = [path for path in paths if path == ".benchmarks/go.mod"]
+          if len(benchmark_paths) != 1:
+              raise SystemExit("expected exactly one tracked benchmark go.mod")
 
           latest = os.environ["LATEST_GO"].lower() == "true"
           root_go, root_toolchain = directives("go.mod")
@@ -261,10 +297,13 @@ jobs:
           root_version = "stable" if latest else setup_spec(root_toolchain or root_go)
           tools_go, tools_toolchain = directives(".github/tools/go.mod")
           compiler_requirements = [root_toolchain or root_go, tools_go, tools_toolchain or tools_go]
+          benchmark_go, benchmark_toolchain = directives(".benchmarks/go.mod")
+          compiler_requirements.append(benchmark_toolchain or benchmark_go)
+          benchmark_version = "stable" if latest else setup_spec(benchmark_toolchain or benchmark_go)
 
           grouped_examples: dict[str, list[str]] = defaultdict(list)
           for path in paths:
-              if path == "go.mod":
+              if path in {"go.mod", ".benchmarks/go.mod"}:
                   continue
               go_version, _ = directives(path)
               compiler_requirements.append(go_version)
@@ -297,6 +336,8 @@ jobs:
               output.write(f"tools_version={tools_version}\n")
               output.write(f"has_examples={str(bool(grouped_examples)).lower()}\n")
               output.write(f"example_matrix={json.dumps(matrix, separators=(',', ':'))}\n")
+              output.write("has_benchmark=true\n")
+              output.write(f"benchmark_version={benchmark_version}\n")
           PY
 
   # ----------------------------------------------------
@@ -719,6 +760,107 @@ jobs:
             fi
           done
 
+  # ---------------------------------------------------------
+  # INDEPENDENT BENCHMARK MODULE AND CONTAINER MAINTENANCE
+  # ---------------------------------------------------------
+  benchmark_validation:
+    name: Validate Benchmark Module and Runtime
+    needs:
+      - classify_validation_scope
+      - go_validation_plan
+    if: >-
+      github.event_name != 'pull_request_target' &&
+      needs.classify_validation_scope.outputs.benchmark_required == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+      PYTHONDONTWRITEBYTECODE: "1"
+      TOOLS_MODULE: ${{ github.workspace }}/.github/tools
+    steps:
+      - name: Checkout validation source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+      - name: Set up CI tools compiler
+        id: setup-benchmark-tools-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ needs.go_validation_plan.outputs.tools_version }}
+          check-latest: true
+          cache: false
+
+      - name: Record CI tools compiler
+        env:
+          TOOLS_GO_VERSION: ${{ steps.setup-benchmark-tools-go.outputs.go-version }}
+        run: |
+          set -euo pipefail
+          test "$(go env GOTOOLCHAIN)" = local
+          test "$(go env GOVERSION)" = "go$TOOLS_GO_VERSION"
+          echo "TOOLS_GOTOOLCHAIN=go$TOOLS_GO_VERSION" >> "$GITHUB_ENV"
+
+      - name: Set up benchmark Go runtime
+        id: setup-benchmark-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ needs.go_validation_plan.outputs.benchmark_version }}
+          check-latest: true
+          cache: false
+
+      - name: Validate benchmark module and container runtime
+        shell: bash
+        env:
+          SETUP_GO_VERSION: ${{ steps.setup-benchmark-go.outputs.go-version }}
+        run: |
+          set -euo pipefail
+          test "${{ needs.go_validation_plan.outputs.has_benchmark }}" = true
+          test "$(go env GOTOOLCHAIN)" = local
+          test "$(go env GOVERSION)" = "go${SETUP_GO_VERSION}"
+
+          mapfile -d '' -t go_files < <(git -C .benchmarks ls-files -z -- '*.go')
+          if (( ${#go_files[@]} == 0 )); then
+            echo "No tracked benchmark Go files found." >&2
+            exit 1
+          fi
+          (
+            cd .benchmarks
+            gofmt -w "${go_files[@]}"
+            "$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n goimports)" -w "${go_files[@]}"
+            go mod tidy
+            go test -race -count=1 ./...
+            "$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n govulncheck)" ./...
+          )
+          python3 -m unittest discover -s .benchmarks -p 'test_*.py' -v
+
+          context="$(mktemp -d "${RUNNER_TEMP}/benchmark-runtime.XXXXXX")"
+          image="slogcp-benchmark-validation:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker image rm "$image" >/dev/null 2>&1 || true
+            rm -rf "$context"
+          }
+          trap cleanup EXIT
+          mkdir -p "$context/bin"
+          cp .benchmarks/run_matrix.py "$context/run_matrix.py"
+          printf '{}\n' > "$context/provenance.json"
+          printf '#!/bin/sh\nexit 0\n' > "$context/bin/smoke"
+          chmod 0555 "$context/bin/smoke"
+          docker build --file .benchmarks/Dockerfile --tag "$image" "$context"
+          docker run --rm --entrypoint python3 \
+            --volume "$GITHUB_WORKSPACE/.benchmarks:/tests:ro" --workdir /tests \
+            "$image" -m unittest discover -s /tests -p 'test_*.py' -v
+          docker run --rm --entrypoint python3 "$image" -c \
+            "import runpy; loaded=runpy.run_path('/opt/bench/run_matrix.py', run_name='benchmark_smoke'); assert callable(loaded['plan'])"
+
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all -- .benchmarks)" ]]; then
+            echo "Benchmark validation produced uncommitted changes." >&2
+            git status --short -- .benchmarks
+            git diff -- .benchmarks
+            exit 1
+          fi
+
   # ---------------------------------------
   # STABLE LOCAL VALIDATION CHECK FOR MERGE POLICY
   # ---------------------------------------
@@ -734,6 +876,7 @@ jobs:
       - validation
       - e2e_harness_validation
       - example_validation
+      - benchmark_validation
     if: always() && github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     permissions:
@@ -799,6 +942,8 @@ jobs:
           E2E_HARNESS_VALIDATION_RESULT: ${{ needs.e2e_harness_validation.result }}
           HAS_EXAMPLES: ${{ needs.go_validation_plan.outputs.has_examples }}
           EXAMPLE_VALIDATION_RESULT: ${{ needs.example_validation.result }}
+          BENCHMARK_REQUIRED: ${{ needs.classify_validation_scope.outputs.benchmark_required }}
+          BENCHMARK_VALIDATION_RESULT: ${{ needs.benchmark_validation.result }}
         run: |
           set -euo pipefail
 
@@ -846,6 +991,21 @@ jobs:
             fi
           else
             echo "Go validation plan returned invalid has_examples value: $HAS_EXAMPLES"
+            exit 1
+          fi
+
+          if [[ "$BENCHMARK_REQUIRED" == "true" ]]; then
+            if [[ "$BENCHMARK_VALIDATION_RESULT" != "success" ]]; then
+              echo "Benchmark validation expected success, got: $BENCHMARK_VALIDATION_RESULT"
+              exit 1
+            fi
+          elif [[ "$BENCHMARK_REQUIRED" == "false" ]]; then
+            if [[ "$BENCHMARK_VALIDATION_RESULT" != "skipped" ]]; then
+              echo "Benchmark validation expected skipped, got: $BENCHMARK_VALIDATION_RESULT"
+              exit 1
+            fi
+          else
+            echo "Validation scope returned invalid benchmark_required value: $BENCHMARK_REQUIRED"
             exit 1
           fi
 
@@ -921,6 +1081,7 @@ jobs:
               per_page: 100
             });
 
+            const pr = context.payload.pull_request;
             const paths = files.map(f => f.filename);
             const touchesGoModuleMetadata = paths.some(p => /(^|\/)go\.(mod|sum)$/.test(p));
             const onlyCiFiles = paths.length > 0 && paths.every(p => p.startsWith('.github/') || p === '.licenserc.yaml');
@@ -928,6 +1089,14 @@ jobs:
               paths.every(p => p === 'renovate.json' || p === '.github/scripts/test_renovate_policy.py');
             const onlyExampleModuleMetadata = paths.length > 0 &&
               paths.every(p => /^\.examples\/.+\/go\.(mod|sum)$/.test(p));
+            const benchmarkFilesAreModified = files.every(file =>
+              file.status === 'modified' && !file.previous_filename);
+            const onlyBenchmarkModuleMetadata = paths.length > 0 &&
+              paths.every(p => /^\.benchmarks\/go\.(mod|sum)$/.test(p)) &&
+              benchmarkFilesAreModified;
+            const onlyBenchmarkRuntime = pr.changed_files === 1 && files.length === 1 &&
+              files[0].filename === '.benchmarks/Dockerfile' &&
+              benchmarkFilesAreModified;
             const onlyCiToolModuleMetadata = paths.length > 0 &&
               paths.every(p => /^\.github\/tools\/go\.(mod|sum)$/.test(p));
             const touchesRootGoModuleMetadata = paths.some(p => /^go\.(mod|sum)$/.test(p));
@@ -935,10 +1104,10 @@ jobs:
               p === 'go.mod' ||
               p === 'go.sum' ||
               p === 'version.go' ||
-              /^\.examples\/.+\/go\.(mod|sum)$/.test(p);
+              /^\.examples\/.+\/go\.(mod|sum)$/.test(p) ||
+              /^\.benchmarks\/go\.(mod|sum)$/.test(p);
             const securityFloorFileScope = paths.length > 0 &&
               paths.every(allowedSecurityFloorMetadata);
-            const pr = context.payload.pull_request;
             // Require complete file metadata; README renames, additions and deletions
             // must not hide a change to executable source or another tracked path.
             const onlyReadmeModification = pr.changed_files === 1 && files.length === 1 &&
@@ -982,6 +1151,11 @@ jobs:
               mode = 'automation_config_only';
             } else if (sameRepo && trustedRenovate && onlyExampleModuleMetadata) {
               mode = 'examples_dependency';
+            } else if (
+              sameRepo && trustedRenovate &&
+              (onlyBenchmarkModuleMetadata || onlyBenchmarkRuntime)
+            ) {
+              mode = 'benchmark_maintenance';
             } else if (sameRepo && trustedRenovate && isRootToolchainOnly) {
               mode = 'toolchain_update';
             } else if (
@@ -1002,7 +1176,7 @@ jobs:
       - name: Determine Automatic Policy Path
         id: trigger_type
         run: |
-          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" && ("${{ steps.pr_scope.outputs.mode }}" == "readme_only" || "${{ steps.pr_scope.outputs.mode }}" == "ci_tools" || "${{ steps.pr_scope.outputs.mode }}" == "ci_only" || "${{ steps.pr_scope.outputs.mode }}" == "automation_config_only" || "${{ steps.pr_scope.outputs.mode }}" == "examples_dependency" || "${{ steps.pr_scope.outputs.mode }}" == "toolchain_update" || "${{ steps.pr_scope.outputs.mode }}" == "security_floor" || "${{ steps.pr_scope.outputs.mode }}" == "renovate_cloud_e2e") ]]; then
+          if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" && ("${{ steps.pr_scope.outputs.mode }}" == "readme_only" || "${{ steps.pr_scope.outputs.mode }}" == "ci_tools" || "${{ steps.pr_scope.outputs.mode }}" == "ci_only" || "${{ steps.pr_scope.outputs.mode }}" == "automation_config_only" || "${{ steps.pr_scope.outputs.mode }}" == "examples_dependency" || "${{ steps.pr_scope.outputs.mode }}" == "benchmark_maintenance" || "${{ steps.pr_scope.outputs.mode }}" == "toolchain_update" || "${{ steps.pr_scope.outputs.mode }}" == "security_floor" || "${{ steps.pr_scope.outputs.mode }}" == "renovate_cloud_e2e") ]]; then
             echo "should_auto_trigger=true" >> $GITHUB_OUTPUT
           else
             echo "should_auto_trigger=false" >> $GITHUB_OUTPUT
@@ -1042,7 +1216,7 @@ jobs:
       - name: Finalize E2E check for no-cloud manual PRs
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'false' &&
-          (steps.pr_scope.outputs.mode == 'readme_only' || steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only')
+          (steps.pr_scope.outputs.mode == 'readme_only' || steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'benchmark_maintenance')
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ steps.check_start_token.outputs.token }}
@@ -1056,11 +1230,15 @@ jobs:
               ? 'Skipping cloud E2E for a README-only PR; Local Validation Policy remains required.'
               : mode === 'automation_config_only'
               ? 'Skipping E2E for an automation config-only PR.'
+              : mode === 'benchmark_maintenance'
+              ? 'Skipping cloud E2E for validated benchmark-only maintenance.'
               : 'Skipping E2E for a CI-only PR.';
             const finalSummary = mode === 'readme_only'
               ? 'PR only modifies README.md. Cloud E2E is skipped by policy; Local Validation Policy remains required.'
               : mode === 'automation_config_only'
               ? 'PR touches only Renovate configuration. Cloud E2E is skipped by policy.'
+              : mode === 'benchmark_maintenance'
+              ? 'PR contains known benchmark-only maintenance. Required benchmark validation replaces root cloud E2E, without running cloud benchmark load.'
               : 'PR touches only CI files and no go.mod/go.sum files. Cloud E2E is skipped by policy.';
             const { data: checkRun } = await github.rest.checks.create({
               owner: context.repo.owner,
@@ -1183,6 +1361,8 @@ jobs:
               summary = 'Automation config-only change detected. Substantive local validation is required, and cloud E2E will be skipped after local validation passes.';
             } else if (mode === 'examples_dependency') {
               summary = 'Example module dependency update detected. Local validation includes example module smoke tests; cloud E2E will be skipped after that policy check passes.';
+            } else if (mode === 'benchmark_maintenance') {
+              summary = 'Benchmark-only dependency or runtime maintenance detected. Local validation tests the benchmark module and actual container runtime; root cloud E2E and cloud benchmark load are skipped.';
             } else if (mode === 'toolchain_update') {
               summary = 'Root go.mod toolchain-only update detected. Local validation runs with the new toolchain; cloud E2E will be skipped after local validation passes because imported slogcp consumers are unaffected.';
             } else if (mode === 'renovate_cloud_e2e') {
@@ -1466,7 +1646,7 @@ jobs:
           ((steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
            steps.have_secrets.outputs.ok == 'true' && steps.cloud_build.outputs.build_status == 'SUCCESS' ||
            steps.pr_scope.outputs.mode == 'readme_only' || steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' ||
-           steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' ||
+           steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'benchmark_maintenance' ||
            steps.pr_scope.outputs.mode == 'toolchain_update')
         id: post_build_validation
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
@@ -1692,7 +1872,7 @@ jobs:
         if: |
           steps.app_token_secrets.outputs.available == 'true' &&
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
-          (steps.pr_scope.outputs.mode == 'readme_only' || steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
+          (steps.pr_scope.outputs.mode == 'readme_only' || steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'benchmark_maintenance' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
           steps.wait_validation.outputs.ok == 'true'
         id: no_cloud_finalize_token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
@@ -1706,7 +1886,7 @@ jobs:
       - name: Finalize stable E2E check for updates that do not require cloud E2E
         if: |
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
-          (steps.pr_scope.outputs.mode == 'readme_only' || steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
+          (steps.pr_scope.outputs.mode == 'readme_only' || steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'benchmark_maintenance' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
           steps.wait_validation.outputs.ok == 'true'
         id: finalize_no_cloud
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
@@ -1730,6 +1910,8 @@ jobs:
               summary = 'PR touched only Renovate configuration. Local validation policy succeeded, so cloud E2E was skipped by policy.';
             } else if (mode === 'examples_dependency') {
               summary = 'Renovate updated only checked-in example module metadata. Local validation includes example smoke tests, so cloud E2E was skipped by policy.';
+            } else if (mode === 'benchmark_maintenance') {
+              summary = 'Renovate updated only known benchmark dependency metadata or its Python runtime. Required benchmark module, Python, and container validation succeeded; root cloud E2E and cloud benchmark load were skipped.';
             } else if (mode === 'toolchain_update') {
               summary = 'Renovate updated only the root go.mod toolchain directive. Local validation ran with that toolchain, and cloud E2E was skipped because this does not affect programs importing slogcp.';
             }
