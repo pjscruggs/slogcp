@@ -129,8 +129,9 @@ class GitHub:
 
 
 def release_range(client: GitHub, sha: str, version: str) -> dict[str, str]:
-    """Resolve the published ancestor, never a moving target_commitish or PR base."""
-    lineage = set(git("rev-list", "--first-parent", sha).splitlines())
+    """Resolve published source present on mainline, including an identical squash."""
+    lineage = dict(line.split() for line in
+                   git("log", "--first-parent", "--format=%H %T", sha).splitlines())
     number = lambda value: tuple(map(int, value[1:].split(".")))
     releases = [release for release in client.pages("/releases")
                 if release.get("draft") is False and release.get("prerelease") is False
@@ -143,8 +144,18 @@ def release_range(client: GitHub, sha: str, version: str) -> dict[str, str]:
             raise ValueError("Published release has no annotated tag")
         tag = client.get(f"/git/tags/{ref['object']['sha']}")
         target = tag.get("object", {})
-        if target.get("type") != "commit" or target.get("sha") not in lineage:
+        if (target.get("type") != "commit" or
+                not re.fullmatch(r"[0-9a-f]{40}", target.get("sha", ""))):
             continue
+        mainline_sha = target["sha"] if target["sha"] in lineage else None
+        if mainline_sha is None:
+            # A signed release may precede its squash merge. Only an identical
+            # complete tree on first-parent history establishes source adoption.
+            published_tree = git("rev-parse", f"{target['sha']}^{{tree}}")
+            mainline_sha = next((commit for commit, tree in lineage.items()
+                                 if tree == published_tree), None)
+            if mainline_sha is None:
+                continue
         verify_tag(client, tag_name, target["sha"])
         paths = git("diff", "--name-only", "--no-renames", target["sha"], sha, "--").splitlines()
         # Cloud consumers execute root library sources, module graph and E2E inputs.
@@ -153,6 +164,7 @@ def release_range(client: GitHub, sha: str, version: str) -> dict[str, str]:
                      not path.startswith((".examples/", ".github/", "scripts/")))
                     for path in paths)
         return {"release_base_tag": tag_name, "release_base_sha": target["sha"],
+                "release_base_mainline_sha": mainline_sha,
                 "candidate_sha": sha, "candidate_tree": git("rev-parse", f"{sha}^{{tree}}"),
                 "release_paths": json.dumps(paths), "requires_cloud": str(cloud).lower()}
     raise ValueError("No verified published mainline ancestor exists for this release")

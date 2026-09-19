@@ -181,10 +181,14 @@ the release-time cloud evidence requirement.
 ## Validation of the complete release
 
 [`release_policy.py`](../.github/scripts/release_policy.py) resolves the
-previous lower-version, published stable release on the candidate's first-parent
-history. It verifies that release's annotated tag and signature and uses the
-tag's commit as the comparison boundary. A moving `main` reference, a draft
-release, or the release PR's immediate base is not that boundary.
+previous lower-version, published stable release whose commit or identical
+complete Git tree appears on the candidate's first-parent history. Exact tree
+equality permits a published release to serve as the baseline after its source
+was squash merged. It verifies the release's annotated tag and signature and
+uses the original tag commit as the comparison boundary, recording the matching
+mainline commit separately. A moving `main` reference, a draft release, or the
+release PR's immediate base is not that boundary. New release tags must still
+target the exact release commit.
 
 The resulting delta covers every changed path between the published release and
 the candidate. Earlier unreleased library changes remain in scope even when the

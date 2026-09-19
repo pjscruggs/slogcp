@@ -44,12 +44,13 @@ class ReleaseRangeTests(unittest.TestCase):
         self.tag = self.git("rev-parse", "v1.0.0")
         self.releases = [{"tag_name": "v1.0.0", "draft": False, "prerelease": False,
                           "target_commitish": "not-the-release-commit"}]
+        self.tag_data = {"object": {"type": "commit", "sha": self.base},
+                         "verification": {"verified": True, "reason": "valid"}}
         self.api = Mock(spec=policy.GitHub)
         self.api.pages.side_effect = lambda path: iter(self.releases)
         self.api.get.side_effect = lambda path, **kwargs: {
             "/git/ref/tags/v1.0.0": {"object": {"type": "tag", "sha": self.tag}},
-            f"/git/tags/{self.tag}": {"object": {"type": "commit", "sha": self.base},
-                                     "verification": {"verified": True, "reason": "valid"}},
+            f"/git/tags/{self.tag}": self.tag_data,
         }[path]
 
     def git(self, *args):
@@ -69,6 +70,15 @@ class ReleaseRangeTests(unittest.TestCase):
         with patch.object(policy, "git", side_effect=self.git):
             return policy.release_range(self.api, self.git("rev-parse", "HEAD"), "v1.0.1")
 
+    def adopt_tree(self, *, source=None):
+        if source is not None:
+            self.write("handler.go", source)
+            self.git("add", "handler.go")
+        tree = self.git("write-tree")
+        adopted = self.git("commit-tree", tree, "-m", "squash adoption")
+        self.git("checkout", "--quiet", "--detach", adopted)
+        return adopted
+
     def test_version_only_successor_covers_earlier_library_change(self):
         self.write("handler.go", "package fixture\nconst Added = true\n")
         self.commit()
@@ -76,8 +86,61 @@ class ReleaseRangeTests(unittest.TestCase):
         self.commit()
         result = self.scope()
         self.assertEqual(result["release_base_sha"], self.base)
+        self.assertEqual(result["release_base_mainline_sha"], self.base)
         self.assertEqual(json.loads(result["release_paths"]), ["handler.go", "version.go"])
         self.assertEqual(result["requires_cloud"], "true")
+
+    def test_identical_squash_baseline_preserves_complete_published_delta(self):
+        adopted = self.adopt_tree()
+        self.assertNotEqual(adopted, self.base)
+        self.assertNotIn(self.base, self.git("rev-list", "--first-parent", adopted))
+        self.write("handler.go", "package fixture\nconst Added = true\n")
+        self.commit()
+        self.write("version.go", 'var Version = "v1.0.1"\n')
+        self.commit()
+        result = self.scope()
+        self.assertEqual(result["release_base_tag"], "v1.0.0")
+        self.assertEqual(result["release_base_sha"], self.base)
+        self.assertEqual(result["release_base_mainline_sha"], adopted)
+        self.assertEqual(json.loads(result["release_paths"]), ["handler.go", "version.go"])
+        self.assertEqual(result["requires_cloud"], "true")
+        self.api.request.assert_not_called()
+
+    def test_squash_baseline_requires_verified_annotated_tag(self):
+        self.adopt_tree()
+        for verification in ({"verified": False, "reason": "unsigned"},
+                             {"verified": True, "reason": "unknown_key"}):
+            self.tag_data["verification"] = verification
+            with self.subTest(verification=verification), self.assertRaisesRegex(
+                ValueError, "verified the release tag signature"
+            ):
+                self.scope()
+        self.api.get.side_effect = None
+        self.api.get.return_value = {"object": {"type": "commit", "sha": self.base}}
+        with self.assertRaisesRegex(ValueError, "annotated tag"):
+            self.scope()
+
+    def test_similar_squash_tree_is_not_a_published_baseline(self):
+        self.adopt_tree(source="package fixture\n// unpublished policy difference\n")
+        with self.assertRaisesRegex(ValueError, "No verified published"):
+            self.scope()
+
+    def test_matching_tree_on_second_parent_does_not_establish_adoption(self):
+        mainline = self.adopt_tree(source="package fixture\nconst Different = true\n")
+        tree = self.git("rev-parse", f"{mainline}^{{tree}}")
+        merged = self.git("commit-tree", tree, "-p", mainline, "-p", self.base,
+                          "-m", "merge without adopting the published tree")
+        self.git("checkout", "--quiet", "--detach", merged)
+        self.assertIn(self.base, self.git("rev-list", merged))
+        self.assertNotIn(self.base, self.git("rev-list", "--first-parent", merged))
+        with self.assertRaisesRegex(ValueError, "No verified published"):
+            self.scope()
+
+    def test_identical_tree_does_not_relax_publication_tag_target(self):
+        adopted = self.adopt_tree()
+        with self.assertRaisesRegex(ValueError, "immutable release commit"):
+            policy.publish(self.api, "v1.0.0", adopted)
+        self.api.request.assert_not_called()
 
     def test_unpublished_and_draft_tags_are_not_the_boundary(self):
         self.write("handler.go", "package fixture\nconst Added = true\n")
