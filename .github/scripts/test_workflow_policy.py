@@ -298,6 +298,25 @@ await (async()=>{
             self.classify(metadata, labels=["security"], same_repo=False), "normal"
         )
 
+    def test_security_artifact_closure_retains_cloud_and_benchmark_validation(self):
+        files = [
+            {"filename": path, "status": "modified"}
+            for path in (
+                "go.mod", "go.sum", "version.go",
+                ".benchmarks/go.mod", ".benchmarks/go.sum",
+            )
+        ]
+        # classify executes both the candidate and trusted-base workflow scripts.
+        outputs = self.classify(files, labels=["security"], return_outputs=True)
+        self.assertEqual(outputs["mode"], "security_floor")
+        self.assertEqual(outputs["benchmark_required"], "true")
+        for path in (".benchmarks/main.go", "unrelated.txt"):
+            with self.subTest(path=path):
+                self.assertNotEqual(
+                    self.classify(files + [{"filename": path}], labels=["security"]),
+                    "security_floor",
+                )
+
     def test_license_policy_is_local_but_does_not_hide_runtime_changes(self):
         policy = [{"filename": ".licenserc.yaml"}]
         for actor in ("human", "renovate[bot]"):

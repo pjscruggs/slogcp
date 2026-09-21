@@ -82,6 +82,7 @@ class CandidateScopeTests(unittest.TestCase):
                     "go.sum",
                     "version.go",
                     ".examples/client/go.sum",
+                    ".benchmarks/go.mod",
                     ".benchmarks/go.sum",
                 ]
             ),

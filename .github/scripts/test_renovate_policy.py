@@ -56,6 +56,19 @@ def structural_first_stable_match(
 
 
 class RenovatePolicyTests(unittest.TestCase):
+    def test_benchmark_parent_replacement_is_discoverable_by_renovate(self) -> None:
+        manifest = ROOT / ".benchmarks/go.mod"
+        replacement = re.search(
+            r"^replace github\.com/pjscruggs/slogcp/v2 => (\S+)$",
+            manifest.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(replacement)
+        # Renovate's local-replacement discovery requires a slash after the dots.
+        # Bare '..' is valid Go but omits this module from gomodTidyAll's graph.
+        self.assertEqual(replacement[1], "../")
+        self.assertEqual((manifest.parent / replacement[1]).resolve(), ROOT.resolve())
+
     def test_first_stable_exception_is_narrow_and_tidy_capable(self) -> None:
         candidate = rule(
             "Tidy optional modules when adopting their first stable release"
