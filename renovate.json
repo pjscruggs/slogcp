@@ -288,6 +288,14 @@
       "enabled": false
     },
     {
+      "description": "Exclude gRPC v1.84.0 affected by GO-2026-6443",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchFileNames": [".examples/**/go.mod"],
+      "matchPackageNames": ["google.golang.org/grpc"],
+      "allowedVersions": "!/^v?1\\.84\\.0$/"
+    },
+    {
       "description": "Do not update the local unpublished slogcp requirement used by examples",
       "matchManagers": ["gomod"],
       "matchFileNames": [".examples/**"],
