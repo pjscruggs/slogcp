@@ -36,6 +36,7 @@ import (
 	"github.com/pjscruggs/slogcp/v2/slogcpgrpc"
 )
 
+// greeterServer implements the Greeter service with a slogcp-backed logger.
 type greeterServer struct {
 	pb.UnimplementedGreeterServer
 	logger *slog.Logger

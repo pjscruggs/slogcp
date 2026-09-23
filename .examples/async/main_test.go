@@ -111,6 +111,7 @@ func waitForDrops(t *testing.T, tracker *dropTracker, want int) {
 	}
 }
 
+// blockingWriter holds log writes until a test releases its gate.
 type blockingWriter struct {
 	buf  bytes.Buffer
 	gate chan struct{}

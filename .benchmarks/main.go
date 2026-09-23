@@ -44,11 +44,15 @@ import (
 )
 
 const (
-	eventMessage   = "request completed"
-	modeGoogleAPI  = "google-api"
+	// eventMessage is the message attached to each measured application event.
+	eventMessage = "request completed"
+	// modeGoogleAPI selects direct writes through the Google Cloud client.
+	modeGoogleAPI = "google-api"
+	// modeSlogcpGRPC selects the slogcp gRPC Cloud Logging exporter.
 	modeSlogcpGRPC = "slogcp-grpc"
 )
 
+// config holds command-line settings for a single benchmark trial.
 type config struct {
 	Mode        string `json:"mode"`
 	Payload     string `json:"payload"`
@@ -63,6 +67,7 @@ type config struct {
 	ResultFile  string `json:"-"`
 }
 
+// resourceUsage contains process CPU and resident-memory measurements.
 type resourceUsage struct {
 	Supported   bool
 	UserNS      int64
@@ -70,6 +75,7 @@ type resourceUsage struct {
 	MaxRSSBytes int64
 }
 
+// quantiles contains nearest-rank latency percentiles in nanoseconds.
 type quantiles struct {
 	P50 int64 `json:"p50"`
 	P95 int64 `json:"p95"`
@@ -77,6 +83,7 @@ type quantiles struct {
 	Max int64 `json:"max"`
 }
 
+// runtimeInfo records the Go runtime and build dependencies for a result.
 type runtimeInfo struct {
 	GoVersion     string            `json:"go_version"`
 	GOOS          string            `json:"goos"`
@@ -87,6 +94,7 @@ type runtimeInfo struct {
 	Dependencies  map[string]string `json:"dependencies"`
 }
 
+// result contains benchmark measurements and metadata serialized to JSON.
 type result struct {
 	SchemaVersion              int         `json:"schema_version"`
 	Config                     config      `json:"config"`
@@ -114,6 +122,7 @@ type result struct {
 	Checksum                   uint64      `json:"checksum"`
 }
 
+// event carries the application payload and identifiers used by one log call.
 type event struct {
 	runID, trialID, insertID string
 	sequence                 int
@@ -127,6 +136,7 @@ type errorList struct {
 	values []string
 }
 
+// add records a non-nil error from a synchronous or asynchronous operation.
 func (e *errorList) add(err error) {
 	if err == nil {
 		return
@@ -136,6 +146,7 @@ func (e *errorList) add(err error) {
 	e.values = append(e.values, err.Error())
 }
 
+// snapshot returns a copy of all recorded error messages.
 func (e *errorList) snapshot() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -152,6 +163,7 @@ type countingWriter struct {
 	errors *errorList
 }
 
+// Write forwards bytes while tracking output and recording write failures.
 func (w *countingWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -165,12 +177,14 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// stats returns the total bytes and number of writes observed so far.
 func (w *countingWriter) stats() (int64, int64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.bytes, w.writes
 }
 
+// logSink bundles event delivery with the flush and close operations it needs.
 type logSink struct {
 	emit  func(context.Context, event)
 	flush func() error
@@ -292,6 +306,7 @@ func slogSink(handler *slogcp.Handler, labels map[string]string, flush, closeSin
 	}
 }
 
+// monitoredResource selects Cloud Run job metadata or a global resource.
 func monitoredResource(cfg config) *mrpb.MonitoredResource {
 	if job := os.Getenv("CLOUD_RUN_JOB"); job != "" {
 		return &mrpb.MonitoredResource{Type: "cloud_run_job", Labels: map[string]string{
@@ -301,6 +316,7 @@ func monitoredResource(cfg config) *mrpb.MonitoredResource {
 	return &mrpb.MonitoredResource{Type: "global", Labels: map[string]string{"project_id": cfg.Project}}
 }
 
+// executionLabels returns Cloud Run execution labels present in the environment.
 func executionLabels() map[string]string {
 	labels := make(map[string]string)
 	for name, key := range map[string]string{
@@ -458,6 +474,7 @@ func runTrial(ctx context.Context, cfg config, output io.Writer) (result, error)
 	return res, nil
 }
 
+// combineChecksums XORs worker checksums into one order-independent value.
 func combineChecksums(checksums []uint64) uint64 {
 	var combined uint64
 	for _, checksum := range checksums {
@@ -466,6 +483,7 @@ func combineChecksums(checksums []uint64) uint64 {
 	return combined
 }
 
+// summarize sorts latency samples and computes their nearest-rank quantiles.
 func summarize(samples []int64) quantiles {
 	if len(samples) == 0 {
 		return quantiles{}
@@ -477,6 +495,7 @@ func summarize(samples []int64) quantiles {
 	return quantiles{P50: value(.50), P95: value(.95), P99: value(.99), Max: samples[len(samples)-1]}
 }
 
+// buildRuntimeInfo captures runtime details and the executable's dependencies.
 func buildRuntimeInfo() runtimeInfo {
 	info := runtimeInfo{
 		GoVersion: runtime.Version(), GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
@@ -498,6 +517,7 @@ func buildRuntimeInfo() runtimeInfo {
 	return info
 }
 
+// parseConfig parses trial flags and validates the resulting settings.
 func parseConfig(args []string) (config, error) {
 	var cfg config
 	flags := flag.NewFlagSet("logging-benchmark", flag.ContinueOnError)
@@ -522,6 +542,7 @@ func parseConfig(args []string) (config, error) {
 	return cfg, err
 }
 
+// validateWorkload checks that the selected mode and workload sizes are valid.
 func (cfg config) validateWorkload() error {
 	if !slices.Contains([]string{"none", "slogcp", modeSlogcpGRPC, "google-stdout", modeGoogleAPI}, cfg.Mode) {
 		return errors.New("unsupported mode")
@@ -535,6 +556,7 @@ func (cfg config) validateWorkload() error {
 	return nil
 }
 
+// validateOutput checks result identifiers and compatible sink settings.
 func (cfg config) validateOutput() error {
 	if cfg.RunID == "" || cfg.TrialID == "" || cfg.ResultFile == "" {
 		return errors.New("run-id, trial-id, and result-file are required")
@@ -548,6 +570,7 @@ func (cfg config) validateOutput() error {
 	return nil
 }
 
+// configureProject applies the local default or requires an explicit API project.
 func (cfg *config) configureProject() error {
 	if cfg.Project == "" {
 		if cfg.usesAPI() {
@@ -566,6 +589,7 @@ func (cfg config) usesAPI() bool {
 	return cfg.Mode == modeGoogleAPI || cfg.Mode == modeSlogcpGRPC
 }
 
+// run executes one configured trial and writes its result file.
 func run(args []string) error {
 	cfg, err := parseConfig(args)
 	if err != nil {
@@ -602,6 +626,7 @@ func writeResult(path string, data []byte) error {
 	return nil
 }
 
+// main runs the logging benchmark command and reports failures to stderr.
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "logging benchmark:", err)
