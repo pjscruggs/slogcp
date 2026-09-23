@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package loggingmock provides test helpers for checking Cloud Logging entries.
 package loggingmock
 
 import (
@@ -152,6 +153,7 @@ func mapFrom(v any) map[string]any {
 	return m
 }
 
+// maxValidNanosecondsExclusive provides a test fixture for the behavior under test.
 const maxValidNanosecondsExclusive int64 = 1000000000
 
 // extractPayloadTimestamp promotes timestamp-related fields from the payload when valid.
@@ -413,10 +415,12 @@ func formatRFC3339ZNormalized(t time.Time) string {
 }
 
 var (
+	// validSeverities provides a test fixture for the behavior under test.
 	validSeverities = map[string]struct{}{
 		"DEFAULT": {}, "DEBUG": {}, "INFO": {}, "NOTICE": {}, "WARNING": {},
 		"ERROR": {}, "CRITICAL": {}, "ALERT": {}, "EMERGENCY": {},
 	}
+	// severityTranslations provides a test fixture for the behavior under test.
 	severityTranslations = map[string]string{
 		"WARN":        "WARNING",
 		"FATAL":       "CRITICAL",
@@ -1050,7 +1054,7 @@ func elevateLabels(payload, root map[string]any) {
 	delete(payload, keyUsed)
 }
 
-// Ruby-like boolean: true if true, "true", or 1; otherwise false.
+// parseBoolRubyish converts Ruby-like boolean values to a Go bool.
 func parseBoolRubyish(v any) bool {
 	switch x := v.(type) {
 	case bool:
@@ -1067,7 +1071,7 @@ func parseBoolRubyish(v any) bool {
 	}
 }
 
-// Ruby-like int: strings -> leading integer or 0 if non-numeric; floats truncated; ints as-is.
+// parseIntRubyish converts Ruby-like numeric values to an integer.
 func parseIntRubyish(v any) int64 {
 	switch x := v.(type) {
 	case json.Number:

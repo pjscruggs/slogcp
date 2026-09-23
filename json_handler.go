@@ -30,6 +30,7 @@ import (
 	"time"
 )
 
+// groupedAttr represents an attribute group while the JSON payload is assembled.
 type groupedAttr struct {
 	groups []string
 	attr   slog.Attr
@@ -55,6 +56,7 @@ func extractErrorFromResolved(v slog.Value) error {
 	return nil
 }
 
+// payloadState tracks reusable JSON payload buffers and nested group state.
 type payloadState struct {
 	root       map[string]any
 	labels     map[string]string
@@ -123,12 +125,14 @@ func (ps *payloadState) recycle() {
 	ps.groupStack = ps.groupStack[:0]
 }
 
+// payloadStatePool reuses payloadState values between JSON handler calls.
 var payloadStatePool = sync.Pool{
 	New: func() any {
 		return &payloadState{}
 	},
 }
 
+// jsonBufferPool reuses byte buffers while encoding JSON log records.
 var jsonBufferPool = sync.Pool{
 	New: func() any {
 		return new(bytes.Buffer)
@@ -202,8 +206,10 @@ func getRuntimeFrameResolver() func(uintptr) runtime.Frame {
 	return fn
 }
 
+// sourceLocation is the internal alias for the exported SourceLocation value.
 type sourceLocation = SourceLocation
 
+// jsonHandler encodes slog records as Cloud Logging compatible JSON.
 type jsonHandler struct {
 	// mu serializes writes to the shared output sink across handler clones.
 	mu *sync.Mutex
@@ -437,6 +443,7 @@ func (h *jsonHandler) snapshotBaseState() ([]groupedAttr, []string) {
 	return baseAttrs, baseGroups
 }
 
+// payloadBuilder accumulates structured fields for a JSON log entry.
 type payloadBuilder struct {
 	handler       *jsonHandler
 	state         *payloadState

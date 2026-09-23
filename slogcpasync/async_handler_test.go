@@ -62,6 +62,7 @@ func newRecordingHandler(block <-chan struct{}) *recordingHandler {
 	}
 }
 
+// erroringHandler provides a test fixture for the behavior under test.
 type erroringHandler struct {
 	*recordingHandler
 	err error
@@ -73,6 +74,7 @@ func (h *erroringHandler) Handle(ctx context.Context, rec slog.Record) error {
 	return h.err
 }
 
+// panicOnceHandler provides a test fixture for the behavior under test.
 type panicOnceHandler struct {
 	*recordingHandler
 	panicked atomic.Bool
@@ -932,6 +934,7 @@ func TestEnqueueClosedChannelRecovery(t *testing.T) {
 	}
 }
 
+// closeErrorHandler provides a test fixture for the behavior under test.
 type closeErrorHandler struct {
 	*recordingHandler
 	err error
@@ -943,6 +946,7 @@ func (c *closeErrorHandler) Close() error {
 	return c.err
 }
 
+// noErrorCloser provides a test fixture for the behavior under test.
 type noErrorCloser struct {
 	*recordingHandler
 }
@@ -952,6 +956,7 @@ func (c *noErrorCloser) Close() {
 	_ = c.recordingHandler.Close()
 }
 
+// errorAborter provides a test fixture for the behavior under test.
 type errorAborter struct {
 	*recordingHandler
 	release    chan struct{}
@@ -1014,6 +1019,7 @@ func (h *errorAborter) WithGroup(name string) slog.Handler {
 	}
 }
 
+// noErrorAborter provides a test fixture for the behavior under test.
 type noErrorAborter struct {
 	*recordingHandler
 	abortCount *atomic.Int64
@@ -1032,6 +1038,7 @@ func (h *noErrorAborter) Abort() {
 	h.abortCount.Add(1)
 }
 
+// blockingAborter provides a test fixture for the behavior under test.
 type blockingAborter struct {
 	*recordingHandler
 	entered    chan struct{}

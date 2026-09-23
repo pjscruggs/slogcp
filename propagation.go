@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 )
 
+// installPropagatorOnce ensures the package installs its default trace propagator at most once.
 var installPropagatorOnce sync.Once
 
 // CompositePropagator wraps slogcp's recommended OpenTelemetry text map

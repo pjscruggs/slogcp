@@ -33,6 +33,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// testEntryExporter provides a test fixture for the behavior under test.
 type testEntryExporter func(context.Context, Entry) error
 
 // Export invokes the test's entry consumer synchronously.

@@ -34,6 +34,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// failingWriter provides a test fixture for the behavior under test.
 type failingWriter struct {
 	err error
 }

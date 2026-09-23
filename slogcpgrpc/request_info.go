@@ -41,6 +41,7 @@ type RequestInfo struct {
 	peer       atomic.Value
 }
 
+// unsetLatencySentinel marks request latency as not yet recorded.
 const unsetLatencySentinel = int64(-1)
 
 // newRequestInfo constructs a RequestInfo with derived service and method details.
@@ -174,17 +175,25 @@ func (ri *RequestInfo) appendBaseRPCAttrs(attrs []slog.Attr) []slog.Attr {
 	return attrs
 }
 
+// requestInfoValueKind identifies the kind of request statistic stored in requestInfoValue.
 type requestInfoValueKind uint8
 
 const (
+	// requestInfoStatus identifies the RPC status statistic.
 	requestInfoStatus requestInfoValueKind = iota
+	// requestInfoDuration identifies the RPC duration statistic.
 	requestInfoDuration
+	// requestInfoRequestBytes identifies the serialized request size statistic.
 	requestInfoRequestBytes
+	// requestInfoResponseBytes identifies the serialized response size statistic.
 	requestInfoResponseBytes
+	// requestInfoRequestCount identifies the request message count statistic.
 	requestInfoRequestCount
+	// requestInfoResponseCount identifies the response message count statistic.
 	requestInfoResponseCount
 )
 
+// requestInfoValue stores one typed gRPC request statistic for structured logging.
 type requestInfoValue struct {
 	info *RequestInfo
 	kind requestInfoValueKind
@@ -291,6 +300,7 @@ func messageSize(msg any) int64 {
 	}
 }
 
+// logValueFunc defers computation of a slog.Value until the value is needed.
 type logValueFunc func() slog.Value
 
 // LogValue satisfies the slog.LogValuer interface for deferred evaluation.

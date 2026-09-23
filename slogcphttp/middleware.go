@@ -35,13 +35,17 @@ import (
 	"github.com/pjscruggs/slogcp/v2"
 )
 
+// instrumentationName is the OpenTelemetry instrumentation scope name for slogcphttp.
 const instrumentationName = "github.com/pjscruggs/slogcp/v2/slogcphttp"
 
 const (
-	schemeHTTP  = "http"
+	// schemeHTTP is the URL scheme recorded for an HTTP request.
+	schemeHTTP = "http"
+	// schemeHTTPS is the URL scheme recorded for an HTTPS request.
 	schemeHTTPS = "https"
 )
 
+// xCloudTraceContextExtractor extracts trace context from the X-Cloud-Trace-Context request header.
 var xCloudTraceContextExtractor = contextWithXCloudTrace
 
 // Middleware returns an http.Handler middleware that derives a request-scoped
@@ -214,6 +218,7 @@ func otelOptions(cfg *config) []otelhttp.Option {
 	return otelOpts
 }
 
+// noopPropagator implements a propagator that extracts and injects no trace context.
 type noopPropagator struct{}
 
 // Inject satisfies propagation.TextMapPropagator while remaining a no-op.
@@ -250,6 +255,7 @@ type RequestScope struct {
 	latencyNS atomic.Int64
 }
 
+// unsetLatencySentinel marks request latency as not yet recorded.
 const unsetLatencySentinel = int64(-1)
 
 // newRequestScope builds a RequestScope capturing request metadata and defaults.
@@ -486,6 +492,7 @@ func (rs *RequestScope) finalize(status int, bytes int64, d time.Duration) {
 	rs.latencyNS.Store(d.Nanoseconds())
 }
 
+// requestScopeKey stores per-request middleware state in the request context.
 type requestScopeKey struct{}
 
 // ScopeFromContext retrieves the RequestScope placed in the request context by
@@ -498,6 +505,7 @@ func ScopeFromContext(ctx context.Context) (*RequestScope, bool) {
 	return scope, ok && scope != nil
 }
 
+// responseRecorder captures response status and size while forwarding writes to the wrapped writer.
 type responseRecorder struct {
 	http.ResponseWriter
 	scope        *RequestScope

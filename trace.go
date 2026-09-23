@@ -38,6 +38,7 @@ const (
 	SampledKey = "logging.googleapis.com/trace_sampled"
 )
 
+// traceProjectIDContextKey identifies a value stored in a context.
 type traceProjectIDContextKey struct{}
 
 // ExtractTraceSpan extracts OpenTelemetry trace details from ctx and, if a

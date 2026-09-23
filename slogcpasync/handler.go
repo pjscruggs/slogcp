@@ -30,34 +30,50 @@ import (
 )
 
 const (
-	defaultQueueSizeBlock      = 2048
+	// defaultQueueSizeBlock sets the queue capacity used when asynchronous logging blocks on a full queue.
+	defaultQueueSizeBlock = 2048
+	// defaultQueueSizeDropNewest sets the queue capacity used when asynchronous logging drops new records.
 	defaultQueueSizeDropNewest = 512
+	// defaultQueueSizeDropOldest sets the queue capacity used when asynchronous logging evicts old records.
 	defaultQueueSizeDropOldest = 1024
 
-	defaultWorkerCountBlock      = 1
+	// defaultWorkerCountBlock sets the worker count for blocking asynchronous logging.
+	defaultWorkerCountBlock = 1
+	// defaultWorkerCountDropNewest sets the worker count for drop-newest asynchronous logging.
 	defaultWorkerCountDropNewest = 1
+	// defaultWorkerCountDropOldest sets the worker count for drop-oldest asynchronous logging.
 	defaultWorkerCountDropOldest = 1
 
-	defaultBatchSizeBlock      = 1
+	// defaultBatchSizeBlock sets the batch size for blocking asynchronous logging.
+	defaultBatchSizeBlock = 1
+	// defaultBatchSizeDropNewest sets the batch size for drop-newest asynchronous logging.
 	defaultBatchSizeDropNewest = 1
+	// defaultBatchSizeDropOldest sets the batch size for drop-oldest asynchronous logging.
 	defaultBatchSizeDropOldest = 1
 
-	// Retain the block-mode queue size for backwards-compatible tests.
+	// defaultQueueSize preserves the block-mode queue size for backwards-compatible tests.
 	defaultQueueSize = defaultQueueSizeBlock
 
-	envAsyncEnabled      = "SLOGCP_ASYNC"
-	envAsyncQueueSize    = "SLOGCP_ASYNC_QUEUE_SIZE"
-	envAsyncDropMode     = "SLOGCP_ASYNC_DROP_MODE"
-	envAsyncWorkers      = "SLOGCP_ASYNC_WORKERS"
+	// envAsyncEnabled names the SLOGCP_ASYNC environment variable.
+	envAsyncEnabled = "SLOGCP_ASYNC"
+	// envAsyncQueueSize names the SLOGCP_ASYNC_QUEUE_SIZE environment variable.
+	envAsyncQueueSize = "SLOGCP_ASYNC_QUEUE_SIZE"
+	// envAsyncDropMode names the SLOGCP_ASYNC_DROP_MODE environment variable.
+	envAsyncDropMode = "SLOGCP_ASYNC_DROP_MODE"
+	// envAsyncWorkers names the SLOGCP_ASYNC_WORKERS environment variable.
+	envAsyncWorkers = "SLOGCP_ASYNC_WORKERS"
+	// envAsyncFlushTimeout names the SLOGCP_ASYNC_FLUSH_TIMEOUT environment variable.
 	envAsyncFlushTimeout = "SLOGCP_ASYNC_FLUSH_TIMEOUT"
 )
 
+// modeDefault groups queue, worker, and batch defaults for one asynchronous drop mode.
 type modeDefault struct {
 	queue   int
 	workers int
 	batch   int
 }
 
+// modeDefaults maps each asynchronous drop mode to its default queue, worker, and batch settings.
 var modeDefaults = map[DropMode]modeDefault{
 	DropModeBlock: {
 		queue:   defaultQueueSizeBlock,
@@ -220,6 +236,7 @@ type Handler struct {
 	state         *asyncState
 }
 
+// asyncState coordinates the asynchronous handler queue, workers, and shutdown state.
 type asyncState struct {
 	queue        chan queuedRecord
 	wg           sync.WaitGroup
@@ -252,6 +269,7 @@ type asyncState struct {
 	onDrop      DropHandler
 }
 
+// queuedRecord pairs a log record with the handler state needed by a worker.
 type queuedRecord struct {
 	// ctx is carried so downstream handlers can read context values. Per the
 	// slog.Handler contract, cancellation/deadlines do not suppress processing.

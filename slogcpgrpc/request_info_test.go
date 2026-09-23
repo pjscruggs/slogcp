@@ -76,6 +76,7 @@ func TestMessageSizeCoversInterfaces(t *testing.T) {
 	}
 }
 
+// fakeSizer provides a test fixture for the behavior under test.
 type fakeSizer int
 
 // Size reports the fake encoded size for messageSize tests.

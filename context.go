@@ -19,9 +19,11 @@ import (
 	"log/slog"
 )
 
+// contextKey is the private key type used to store slogcp values in a context.
 type contextKey int
 
 const (
+	// loggerContextKey selects the logger value stored in a context.
 	loggerContextKey contextKey = iota
 )
 

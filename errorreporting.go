@@ -24,6 +24,7 @@ import (
 // ErrorReportingOption configures ErrorReportingAttrs and ReportError.
 type ErrorReportingOption func(*errorReportingConfig)
 
+// errorReportingConfig contains the project and service settings needed to report errors to Cloud Error Reporting.
 type errorReportingConfig struct {
 	message string
 	service string
