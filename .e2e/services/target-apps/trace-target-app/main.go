@@ -42,16 +42,23 @@ import (
 )
 
 var (
+	// appVersion is set at build time to identify the deployed service version.
 	appVersion = "dev"
-	buildTime  = "unknown"
+	// buildTime is set at build time to identify when the service was built.
+	buildTime = "unknown"
 )
 
 const (
-	envDisableHTTPTracePropagation   = "TRACE_DISABLE_HTTP_TRACE_PROPAGATION"
-	envDisableGRPCTracePropagation   = "TRACE_DISABLE_GRPC_TRACE_PROPAGATION"
+	// envDisableHTTPTracePropagation disables trace headers on outbound HTTP calls.
+	envDisableHTTPTracePropagation = "TRACE_DISABLE_HTTP_TRACE_PROPAGATION"
+	// envDisableGRPCTracePropagation disables trace metadata on outbound gRPC calls.
+	envDisableGRPCTracePropagation = "TRACE_DISABLE_GRPC_TRACE_PROPAGATION"
+	// envLegacyDisableGRPCInterceptors preserves the legacy interceptor toggle.
 	envLegacyDisableGRPCInterceptors = "TRACE_DISABLE_GRPC_CLIENT_INTERCEPTORS"
-	envDefaultTraceSampled           = "TRACE_DEFAULT_SAMPLED"
-	envPubSubTopic                   = "TRACE_PUBSUB_TOPIC"
+	// envDefaultTraceSampled sets the default sampled flag for generated traces.
+	envDefaultTraceSampled = "TRACE_DEFAULT_SAMPLED"
+	// envPubSubTopic selects the topic used for trace propagation messages.
+	envPubSubTopic = "TRACE_PUBSUB_TOPIC"
 )
 
 // main boots the trace target service used by e2e propagation tests.
@@ -66,6 +73,7 @@ func main() {
 	}
 }
 
+// config contains runtime settings for the trace target service.
 type config struct {
 	Port                        string
 	ProjectID                   string

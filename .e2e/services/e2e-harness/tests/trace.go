@@ -28,7 +28,9 @@ import (
 )
 
 const (
-	traceWaitTimeout        = 180 * time.Second
+	// traceWaitTimeout bounds waits for trace data to become queryable.
+	traceWaitTimeout = 180 * time.Second
+	// traceStartupLogLookback bounds the startup log search window.
 	traceStartupLogLookback = 15 * time.Minute
 )
 

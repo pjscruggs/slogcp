@@ -38,6 +38,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// imageConfig holds container image references used by the test scenarios.
 type imageConfig struct {
 	coreLogging    string
 	traceTarget    string
@@ -46,13 +47,19 @@ type imageConfig struct {
 }
 
 const (
-	separatorLine                  = "------------------------------------------------------------------------"
-	defaultTracePubSubTopic        = "trace-pubsub"
+	// separatorLine formats section headings in harness output.
+	separatorLine = "------------------------------------------------------------------------"
+	// defaultTracePubSubTopic is the default topic for trace propagation tests.
+	defaultTracePubSubTopic = "trace-pubsub"
+	// defaultTracePubSubSubscription is the default trace test subscription.
 	defaultTracePubSubSubscription = "trace-pubsub-sub"
-	defaultHarnessTimeout          = 25 * time.Minute
-	maxPubSubResourceIDLength      = 255
+	// defaultHarnessTimeout bounds the complete E2E harness run.
+	defaultHarnessTimeout = 25 * time.Minute
+	// maxPubSubResourceIDLength is the maximum Pub/Sub topic or subscription ID length.
+	maxPubSubResourceIDLength = 255
 )
 
+// scenarioDefinition describes service configuration and tests for one run.
 type scenarioDefinition struct {
 	Name                string
 	CoreEnv             map[string]string
@@ -72,6 +79,7 @@ type scenarioDefinition struct {
 	TraceDefaultSampled         *bool
 }
 
+// scenarioDeployment holds deployed services and their downstream endpoints.
 type scenarioDeployment struct {
 	definition scenarioDefinition
 	core       *controller.ServiceInstance
@@ -83,6 +91,7 @@ type scenarioDeployment struct {
 	traceDownstreamGRPC string
 }
 
+// harnessConfig contains run-wide settings resolved from flags and the environment.
 type harnessConfig struct {
 	projectID            string
 	region               string
@@ -247,6 +256,7 @@ func normalizeHarnessConfig(cfg *harnessConfig, defaultRegion string) error {
 	return nil
 }
 
+// invalidPubSubIDChars matches characters that Pub/Sub resource IDs reject.
 var invalidPubSubIDChars = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // resolvePubSubResourceID returns a sanitized per-run Pub/Sub resource ID.
@@ -534,6 +544,7 @@ func buildScenarios(projectID string) []scenarioDefinition {
 	}
 }
 
+// scenarioStats accumulates pass and failure results for a scenario.
 type scenarioStats struct {
 	total    int
 	passed   int

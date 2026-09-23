@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
+// bufConnSize is the in-memory listener buffer used by gRPC transport tests.
 const bufConnSize = 1024 * 1024
 
 // TestParseGRPCInterceptorConfigFromEnv verifies env-driven interceptor toggles.
