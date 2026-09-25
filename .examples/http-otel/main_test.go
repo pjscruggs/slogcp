@@ -138,6 +138,7 @@ func TestMiddlewareUsesCustomOTelOptions(t *testing.T) {
 	}
 }
 
+// recordingExporter stores spans emitted by the configured tracer provider.
 type recordingExporter struct {
 	mu    sync.Mutex
 	spans []sdktrace.ReadOnlySpan
@@ -163,6 +164,7 @@ func (r *recordingExporter) Spans() []sdktrace.ReadOnlySpan {
 	return cp
 }
 
+// countingPropagator records extraction calls while delegating propagation.
 type countingPropagator struct {
 	base    propagation.TextMapPropagator
 	mu      sync.Mutex

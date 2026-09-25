@@ -35,12 +35,17 @@ import (
 	"github.com/pjscruggs/slogcp/v2"
 )
 
+// requestInfoKey identifies or stores request metadata used for gRPC logging.
 type requestInfoKey struct{}
 
 const (
-	kindUnary        = "unary"
-	kindBidiStream   = "bidi_stream"
+	// kindUnary names an RPC shape used to select interceptor behavior.
+	kindUnary = "unary"
+	// kindBidiStream names an RPC shape used to select interceptor behavior.
+	kindBidiStream = "bidi_stream"
+	// kindClientStream names an RPC shape used to select interceptor behavior.
 	kindClientStream = "client_stream"
+	// kindServerStream names an RPC shape used to select interceptor behavior.
 	kindServerStream = "server_stream"
 )
 
@@ -251,7 +256,7 @@ func statsHandlerOptions(cfg *config) []otelgrpc.Option {
 	return opts
 }
 
-// noopPropagator is a TextMapPropagator that performs no extraction or injection.
+// noopPropagator implements a propagator that extracts and injects no trace context.
 type noopPropagator struct{}
 
 // Inject satisfies the propagation.TextMapPropagator interface while remaining a no-op.
@@ -348,6 +353,7 @@ func clientStreamKind(desc *grpc.StreamDesc) string {
 	}
 }
 
+// serverStream wraps a server stream to collect message counts and sizes.
 type serverStream struct {
 	grpc.ServerStream
 	ctx  context.Context
@@ -379,6 +385,7 @@ func (s *serverStream) SendMsg(m any) error {
 	return wrapStatusError(err, "server stream send")
 }
 
+// clientStreamWrapper wraps a client stream to collect message counts and sizes.
 type clientStreamWrapper struct {
 	grpc.ClientStream
 	cfg   *config

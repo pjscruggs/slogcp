@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
+// loggingServer captures the example's application log entry for assertions.
 type loggingServer struct {
 	logpb.UnimplementedLoggingServiceV2Server
 	entries chan *logpb.LogEntry

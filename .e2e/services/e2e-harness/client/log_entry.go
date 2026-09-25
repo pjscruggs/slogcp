@@ -33,16 +33,27 @@ import (
 )
 
 const (
-	severityKey          = "severity"
-	labelsKey            = "logging.googleapis.com/labels"
-	operationKey         = "logging.googleapis.com/operation"
-	sourceLocationKey    = "logging.googleapis.com/sourceLocation"
-	traceKey             = "logging.googleapis.com/trace"
-	spanKey              = "logging.googleapis.com/spanId"
-	traceSampledKey      = "logging.googleapis.com/trace_sampled"
-	otelTraceKey         = "otel.trace_id"
-	otelSpanKey          = "otel.span_id"
-	otelSampledKey       = "otel.trace_sampled"
+	// severityKey names Cloud Logging's severity field.
+	severityKey = "severity"
+	// labelsKey names Cloud Logging's labels field.
+	labelsKey = "logging.googleapis.com/labels"
+	// operationKey names Cloud Logging's operation field.
+	operationKey = "logging.googleapis.com/operation"
+	// sourceLocationKey names Cloud Logging's source location field.
+	sourceLocationKey = "logging.googleapis.com/sourceLocation"
+	// traceKey names Cloud Logging's trace field.
+	traceKey = "logging.googleapis.com/trace"
+	// spanKey names Cloud Logging's span ID field.
+	spanKey = "logging.googleapis.com/spanId"
+	// traceSampledKey names Cloud Logging's trace-sampled field.
+	traceSampledKey = "logging.googleapis.com/trace_sampled"
+	// otelTraceKey names the OpenTelemetry trace ID field.
+	otelTraceKey = "otel.trace_id"
+	// otelSpanKey names the OpenTelemetry span ID field.
+	otelSpanKey = "otel.span_id"
+	// otelSampledKey names the OpenTelemetry sampled field.
+	otelSampledKey = "otel.trace_sampled"
+	// httpRequestFieldName names the structured HTTP request field.
 	httpRequestFieldName = "httpRequest"
 )
 
@@ -284,6 +295,7 @@ func normalizeSeverity(value string) Severity {
 	return Severity(trimmed)
 }
 
+// severityByName maps Cloud Logging severity names to harness values.
 var severityByName = map[string]Severity{
 	"DEFAULT":   SeverityDefault,
 	"DEBUG":     SeverityDebug,
@@ -592,6 +604,7 @@ func httpRequestStructToMap(req *logging.HTTPRequest) map[string]any {
 	return result
 }
 
+// httpRequestFieldValues holds normalized request details for a log entry.
 type httpRequestFieldValues struct {
 	method    string
 	request   string

@@ -29,6 +29,7 @@ import (
 	"github.com/pjscruggs/slogcp/v2"
 )
 
+// serverSpanContextKey identifies a value stored in a context.
 type serverSpanContextKey struct{}
 
 // TestParseGRPCTraceBin verifies grpc-trace-bin parsing succeeds and fails appropriately.
@@ -531,6 +532,7 @@ func TestInjectWithPropagatorCoversNilAndInject(t *testing.T) {
 	}
 }
 
+// recordingPropagator provides a test fixture for the behavior under test.
 type recordingPropagator struct {
 	injected bool
 }

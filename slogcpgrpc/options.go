@@ -35,6 +35,7 @@ type AttrTransformer func(ctx context.Context, attrs []slog.Attr, info *RequestI
 // Option configures gRPC interceptors and helper functions.
 type Option func(*config)
 
+// config contains the options used to configure this package.
 type config struct {
 	logger           *slog.Logger
 	projectID        string

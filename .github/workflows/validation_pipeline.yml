@@ -532,6 +532,11 @@ jobs:
 
       - name: 🧐 Verify Linting
         run: '"$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n golangci-lint)" run ./...'
+
+      - name: Verify Go documentation and tracked file coverage
+        run: |
+          python3 .github/scripts/check_godoc.py \
+            "$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n godoclint)"
       
       - name: 📄✅ Verify License Headers
         run: '"$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n license-eye)" header check -c .licenserc.yaml'

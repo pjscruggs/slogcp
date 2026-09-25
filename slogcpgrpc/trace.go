@@ -33,8 +33,10 @@ import (
 // XCloudTraceContextHeader is the canonical header name for Cloud Trace context propagation.
 const XCloudTraceContextHeader = "X-Cloud-Trace-Context"
 
+// randReader provides cryptographically secure random bytes for trace IDs.
 var randReader = rand.Read
 
+// metadataCarrier adapts gRPC metadata to OpenTelemetry text-map propagation.
 type metadataCarrier struct {
 	metadata.MD
 }
@@ -258,6 +260,7 @@ func parseXCloudTrace(header string) (trace.SpanContext, bool) {
 	return validateSpanContext(traceID, spanID, flags)
 }
 
+// grpcTraceBinParser decodes the binary gRPC trace context representation.
 type grpcTraceBinParser struct {
 	data   []byte
 	offset int
@@ -317,6 +320,7 @@ func (p *grpcTraceBinParser) flags() (trace.TraceFlags, bool) {
 	return trace.TraceFlags(p.data[p.offset]), true
 }
 
+// xCloudTraceParts holds the trace ID, span ID, and sampling flag from an X-Cloud-Trace-Context header.
 type xCloudTraceParts struct {
 	traceID     string
 	spanDecimal string

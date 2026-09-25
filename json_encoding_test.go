@@ -28,6 +28,7 @@ import (
 	"time"
 )
 
+// legacyJSONAttribute provides a test fixture for the behavior under test.
 type legacyJSONAttribute struct{}
 
 // MarshalJSON exposes the legacy custom marshaler path.
@@ -35,6 +36,7 @@ func (legacyJSONAttribute) MarshalJSON() ([]byte, error) {
 	return []byte(`{"kind":"legacy","html":"<tag>","line":"\u2028"}`), nil
 }
 
+// nativeJSONAttribute provides a test fixture for the behavior under test.
 type nativeJSONAttribute struct{}
 
 // MarshalJSONTo exposes the native custom marshaler path, including pointer receivers.
@@ -136,6 +138,7 @@ func TestJSONEncodingCollidingUTF8KeysPreservesValues(t *testing.T) {
 	}
 }
 
+// partialJSONAttribute provides a test fixture for the behavior under test.
 type partialJSONAttribute struct {
 	calls  int
 	failAt map[int]bool
@@ -157,6 +160,7 @@ func (value *partialJSONAttribute) MarshalJSONTo(encoder *jsontext.Encoder) erro
 	return encoder.WriteToken(jsontext.EndObject)
 }
 
+// jsonRecordWriter provides a test fixture for the behavior under test.
 type jsonRecordWriter struct {
 	buffer bytes.Buffer
 	writes int

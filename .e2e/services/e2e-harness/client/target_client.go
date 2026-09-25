@@ -333,6 +333,7 @@ func (c *TargetClient) TraceDownstreamGRPCBidiStream(ctx context.Context, traceR
 // TraceRequestOption customizes outgoing trace requests.
 type TraceRequestOption func(*traceHTTPRequestConfig)
 
+// traceHTTPRequestConfig stores trace identifiers and headers for a request.
 type traceHTTPRequestConfig struct {
 	traceID string
 	spanID  string

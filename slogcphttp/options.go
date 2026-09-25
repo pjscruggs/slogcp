@@ -53,8 +53,10 @@ const (
 	ProxyModeGCLB
 )
 
+// envTrustRemoteTrace names the setting that controls whether remote trace context is trusted.
 const envTrustRemoteTrace = "SLOGCP_TRUST_REMOTE_TRACE"
 
+// config contains the options used to configure this package.
 type config struct {
 	logger                     *slog.Logger
 	projectID                  string

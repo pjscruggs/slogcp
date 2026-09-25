@@ -51,6 +51,7 @@ func Transport(base http.RoundTripper, opts ...Option) http.RoundTripper {
 	}
 }
 
+// roundTripper wraps an HTTP RoundTripper to attach trace context and request metadata.
 type roundTripper struct {
 	base      http.RoundTripper
 	cfg       *config

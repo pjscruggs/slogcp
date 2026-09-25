@@ -24,6 +24,7 @@ import (
 	"github.com/pjscruggs/slogcp-e2e-internal/services/e2e-harness/controller"
 )
 
+// recordingDeployer captures deployment calls for harness tests.
 type recordingDeployer struct {
 	names    []string
 	failGRPC bool

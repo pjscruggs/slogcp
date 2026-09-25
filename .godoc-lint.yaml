@@ -1,0 +1,13 @@
+version: "1.0"
+default: none
+enable:
+  - require-doc
+  - require-pkg-doc
+  - start-with-name
+options:
+  require-doc/ignore-exported: false
+  require-doc/ignore-unexported: false
+  require-doc/include-tests: true
+  require-pkg-doc/include-tests: true
+  start-with-name/include-unexported: true
+  start-with-name/include-tests: true

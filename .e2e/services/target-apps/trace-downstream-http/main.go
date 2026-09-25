@@ -42,10 +42,13 @@ import (
 )
 
 var (
+	// appVersion is set at build time to identify the deployed service version.
 	appVersion = "dev"
-	buildTime  = "unknown"
+	// buildTime is set at build time to identify when the service was built.
+	buildTime = "unknown"
 )
 
+// config contains the listening address and Pub/Sub settings for this service.
 type config struct {
 	Port               string
 	ProjectID          string
@@ -53,16 +56,19 @@ type config struct {
 	PubSubSubscription string
 }
 
+// workRequest is the JSON payload for a unary trace work request.
 type workRequest struct {
 	TestID  string `json:"test_id"`
 	Message string `json:"message"`
 }
 
+// pubSubWorkRequest is the JSON payload published for a trace propagation test.
 type pubSubWorkRequest struct {
 	TestID  string `json:"test_id"`
 	Message string `json:"message"`
 }
 
+// workResponse is the JSON result returned by trace work endpoints.
 type workResponse struct {
 	Acknowledgement string            `json:"acknowledgement"`
 	Metadata        map[string]string `json:"metadata,omitempty"`

@@ -86,7 +86,8 @@
       "matchManagers": ["gomod"],
       "matchDatasources": ["go"],
       "matchPackageNames": [
-        "github.com/apache/skywalking-eyes"
+        "github.com/apache/skywalking-eyes",
+        "github.com/godoc-lint/godoc-lint"
       ],
       "matchFileNames": [".github/tools/go.mod"],
       "enabled": true,

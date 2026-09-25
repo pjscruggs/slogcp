@@ -283,6 +283,7 @@ func TestLabelValueToStringHandlesKinds(t *testing.T) {
 	}
 }
 
+// testStringer provides a test fixture for the behavior under test.
 type testStringer string
 
 // String returns the string value for formatting tests.
@@ -453,7 +454,10 @@ func (e *stubTracingError) Error() string { return "trace me" }
 // StackTrace exposes stored program counters to satisfy the stackTracer contract.
 func (e *stubTracingError) StackTrace() []uintptr { return e.pcs }
 
+// aliasFrame provides a test fixture for the behavior under test.
 type aliasFrame uintptr
+
+// aliasStack provides a test fixture for the behavior under test.
 type aliasStack []aliasFrame
 
 // stubAliasTracingError mimics pkg/errors-style StackTrace return types.

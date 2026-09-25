@@ -123,6 +123,7 @@ func (f fakeStackError) StackTrace() []uintptr {
 	return f.pcs
 }
 
+// emptyStackError provides a test fixture for the behavior under test.
 type emptyStackError struct{}
 
 // Error returns a fixed error string for empty stack errors.
@@ -131,6 +132,7 @@ func (emptyStackError) Error() string { return "empty-stack" }
 // StackTrace returns an empty stack trace for coverage.
 func (emptyStackError) StackTrace() []uintptr { return nil }
 
+// badStackTraceSignatureError provides a test fixture for the behavior under test.
 type badStackTraceSignatureError struct{}
 
 // Error returns a fixed error string for signature mismatch tests.
@@ -139,6 +141,7 @@ func (badStackTraceSignatureError) Error() string { return "bad-stack-signature"
 // StackTrace accepts an argument to trigger the signature guard.
 func (badStackTraceSignatureError) StackTrace(_ int) []uintptr { return nil }
 
+// badStackTraceReturnError provides a test fixture for the behavior under test.
 type badStackTraceReturnError struct{}
 
 // Error returns a fixed error string for return-type mismatch tests.
