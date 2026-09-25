@@ -1,5 +1,5 @@
-cloud.google.com/go/compute/metadata v0.9.0 h1:pDUj4QMoPejqq20dK0Pg2N4yG9zIkYGdBtwLoEkH9Zs=
-cloud.google.com/go/compute/metadata v0.9.0/go.mod h1:E0bWwX5wTnLPedCKqk3pJmVgCBSM6qQI1yTBdEb3C10=
+cloud.google.com/go/compute/metadata v0.10.0 h1:pyKMUQSwchgkIBBJGdILqQbs/BNJXqwSA7Ej6LAvvtY=
+cloud.google.com/go/compute/metadata v0.10.0/go.mod h1:rGFHRrIif570kSibjFTMbt6/4/tzgJWFGI/HVol4GIk=
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.62.0 h1:TCUUWzznY+7/4H4vGZv78RVJp+A2VACkBBg9tlbMeSw=
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.62.0/go.mod h1:AdkhdCuEn0PHN0/RiyworzQZlk33fJJDalyZSdOXcm4=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
