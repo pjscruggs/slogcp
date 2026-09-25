@@ -296,6 +296,14 @@
       "allowedVersions": "!/^v?1\\.84\\.0$/"
     },
     {
+      "description": "Hold example API before its dependency on affected gRPC v1.84.0",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchFileNames": [".examples/**/go.mod"],
+      "matchPackageNames": ["google.golang.org/api"],
+      "allowedVersions": "<0.299.0"
+    },
+    {
       "description": "Do not update the local unpublished slogcp requirement used by examples",
       "matchManagers": ["gomod"],
       "matchFileNames": [".examples/**"],
