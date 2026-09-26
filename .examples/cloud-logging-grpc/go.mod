@@ -6,8 +6,8 @@ require (
 	cloud.google.com/go/logging v1.20.0
 	github.com/pjscruggs/slogcp-grpc v1.0.1
 	github.com/pjscruggs/slogcp/v2 v2.0.0
-	google.golang.org/api v0.299.0
-	google.golang.org/grpc v1.84.0
+	google.golang.org/api v0.298.0
+	google.golang.org/grpc v1.83.2
 )
 
 require (
