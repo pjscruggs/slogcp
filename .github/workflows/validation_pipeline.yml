@@ -744,6 +744,12 @@ jobs:
             )
             echo "::endgroup::"
 
+            module_graph="$(cd "$dir" && go list -m all)"
+            if grep -Eq '^google\.golang\.org/grpc v1\.84\.0$' <<< "$module_graph"; then
+              echo "Example $dir selects gRPC v1.84.0 affected by GO-2026-6443." >&2
+              exit 1
+            fi
+
             echo "::group::Test $dir"
             (cd "$dir" && go test -race -count=1 ./...)
             echo "::endgroup::"
