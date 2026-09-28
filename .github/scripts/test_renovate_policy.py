@@ -217,6 +217,28 @@ class RenovatePolicyTests(unittest.TestCase):
             descriptions.index("Preserve the locally replaced benchmark self-requirement"),
         )
 
+    def test_affected_grpc_and_its_api_parent_are_held_in_examples(self) -> None:
+        for description, package, allowed in (
+            (
+                "Exclude gRPC v1.84.0 affected by GO-2026-6443",
+                "google.golang.org/grpc",
+                "!/^v?1\\.84\\.0$/",
+            ),
+            (
+                "Hold example API before its dependency on affected gRPC v1.84.0",
+                "google.golang.org/api",
+                "<0.299.0",
+            ),
+        ):
+            with self.subTest(package=package):
+                candidate = rule(description)
+                self.assertEqual(candidate["matchManagers"], ["gomod"])
+                self.assertEqual(candidate["matchDatasources"], ["go"])
+                self.assertEqual(candidate["matchFileNames"], [".examples/**/go.mod"])
+                self.assertEqual(candidate["matchPackageNames"], [package])
+                self.assertEqual(candidate["allowedVersions"], allowed)
+                self.assertNotIn("matchUpdateTypes", candidate)
+
 
 if __name__ == "__main__":
     unittest.main()
