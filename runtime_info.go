@@ -57,25 +57,32 @@ const (
 )
 
 const (
+	// serviceContextServiceKey names the service field in the Cloud Error Reporting service context.
 	serviceContextServiceKey = "service"
+	// serviceContextVersionKey names the version field in the Cloud Error Reporting service context.
 	serviceContextVersionKey = "version"
 )
 
 var (
-	runtimeInfoGet           atomic.Value // func() RuntimeInfo
+	runtimeInfoGet atomic.Value // func() RuntimeInfo
+	// runtimeInfoCacheDisabled disables runtime metadata caching when set by tests.
 	runtimeInfoCacheDisabled atomic.Bool
-	runtimeInfoOverride      atomic.Pointer[RuntimeInfo]
+	// runtimeInfoOverride provides runtime metadata that takes precedence over environment discovery.
+	runtimeInfoOverride atomic.Pointer[RuntimeInfo]
 )
 
 var (
-	metadataOnGCEWrapper          = metadata.OnGCE
+	// metadataOnGCEWrapper allows tests to replace the metadata server availability check.
+	metadataOnGCEWrapper = metadata.OnGCE
+	// metadataGetWithContextWrapper allows tests to replace metadata requests with a context-aware function.
 	metadataGetWithContextWrapper = metadata.GetWithContext
 )
 
 var (
-	metadataOnGCEFunc      atomic.Value // func() bool
-	metadataGetFunc        atomic.Value // func(context.Context, string) (string, error)
-	metadataClientFactory  atomic.Value // func() metadataClient
+	metadataOnGCEFunc     atomic.Value // func() bool
+	metadataGetFunc       atomic.Value // func(context.Context, string) (string, error)
+	metadataClientFactory atomic.Value // func() metadataClient
+	// metadataFactoryDefault constructs the metadata client used when no override is configured.
 	metadataFactoryDefault = func() metadataClient { return defaultMetadataClient{} }
 )
 
@@ -161,6 +168,7 @@ func getMetadataClientFactory() func() metadataClient {
 	return metadataFactoryDefault
 }
 
+// runtimeProjectIDEnvKeys lists environment variables checked for the runtime project ID.
 var runtimeProjectIDEnvKeys = []string{
 	"SLOGCP_TRACE_PROJECT_ID",
 	"SLOGCP_PROJECT_ID",
@@ -171,6 +179,7 @@ var runtimeProjectIDEnvKeys = []string{
 	"PROJECT_ID",
 }
 
+// serviceProjectIDEnvKeys lists environment variables checked for the service project ID.
 var serviceProjectIDEnvKeys = []string{
 	"SLOGCP_GCP_PROJECT",
 	"GOOGLE_CLOUD_PROJECT",
@@ -619,12 +628,14 @@ func readNamespace() string {
 	return strings.TrimSpace(string(data))
 }
 
+// metadataCacheEntry stores a cached metadata value and its expiration time.
 type metadataCacheEntry struct {
 	value     string
 	ok        bool
 	populated bool
 }
 
+// metadataLookup coordinates metadata retrieval, caching, and error handling.
 type metadataLookup struct {
 	client    metadataClient
 	cache     map[string]metadataCacheEntry
@@ -638,6 +649,7 @@ type metadataClient interface {
 	Get(path string) (string, error)
 }
 
+// defaultMetadataClient implements metadata server lookups using the Google Cloud metadata package.
 type defaultMetadataClient struct{}
 
 // OnGCE reports whether the GCE metadata server is reachable.

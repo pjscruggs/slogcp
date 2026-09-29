@@ -29,6 +29,7 @@ const (
 	runtimeGoexit  = "runtime.goexit"
 )
 
+// stackPCPool reuses program counter slices while collecting stack traces.
 var stackPCPool = sync.Pool{
 	New: func() any {
 		buf := make([]uintptr, maxStackFrames)
@@ -36,16 +37,21 @@ var stackPCPool = sync.Pool{
 	},
 }
 
+// frameIterator provides sequential access to runtime stack frames.
 type frameIterator interface {
 	Next() (runtime.Frame, bool)
 }
 
 var (
+	// runtimeCallersFunc is the replaceable runtime.Callers function used by stack tests.
 	runtimeCallersFunc = runtime.Callers
-	runtimeStackFunc   = runtime.Stack
-	callersFramesFunc  = func(pcs []uintptr) frameIterator {
+	// runtimeStackFunc is the replaceable runtime.Stack function used by stack tests.
+	runtimeStackFunc = runtime.Stack
+	// callersFramesFunc converts program counters to the package frame iterator.
+	callersFramesFunc = func(pcs []uintptr) frameIterator {
 		return runtime.CallersFrames(pcs)
 	}
+	// goroutineHeaderFunc extracts the goroutine header from a runtime stack dump.
 	goroutineHeaderFunc = defaultGoroutineHeader
 )
 
@@ -70,6 +76,7 @@ func extractAndFormatOriginStack(err error) string {
 	return formatPCsToStackString(pcs)
 }
 
+// uintptrType is the reflected type used to recognize program counter values.
 var uintptrType = reflect.TypeFor[uintptr]()
 
 // stackPCsFromError extracts program counters from supported stack-trace methods.
@@ -284,10 +291,12 @@ func trimStackPCs(pcs []uintptr, skipFn func(string) bool) []uintptr {
 }
 
 var (
+	// internalStackFrameNames lists exact slogcp frames omitted from user stack traces.
 	internalStackFrameNames = map[string]struct{}{
 		"runtime.Callers": {},
 		runtimeGoexit:     {},
 	}
+	// internalStackFramePrefixes lists slogcp frame prefixes omitted from user stack traces.
 	internalStackFramePrefixes = []string{
 		"runtime.",
 		"github.com/pjscruggs/slogcp/v2/",

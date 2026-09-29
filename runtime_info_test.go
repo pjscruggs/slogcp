@@ -79,6 +79,7 @@ func TestGetRuntimeInfoGetterRepairsNilStoredGetter(t *testing.T) {
 	}
 }
 
+// stubMetadataClient provides a test fixture for the behavior under test.
 type stubMetadataClient struct {
 	onGCE  bool
 	values map[string]string
@@ -104,6 +105,7 @@ func withMetadataClient(t *testing.T, client metadataClient) {
 	t.Cleanup(func() { setMetadataClientFactory(original) })
 }
 
+// countingMetadataClient provides a test fixture for the behavior under test.
 type countingMetadataClient struct {
 	onGCE bool
 	calls int
@@ -120,6 +122,7 @@ func (c *countingMetadataClient) Get(string) (string, error) {
 	return "", errors.New("metadata not available")
 }
 
+// countingGetMetadataClient provides a test fixture for the behavior under test.
 type countingGetMetadataClient struct {
 	*stubMetadataClient
 	getCalls int
@@ -131,6 +134,7 @@ func (c *countingGetMetadataClient) Get(path string) (string, error) {
 	return c.stubMetadataClient.Get(path)
 }
 
+// timeoutMetadataError provides a test fixture for the behavior under test.
 type timeoutMetadataError struct{}
 
 // Error implements [error] and reports the stub metadata failure.
@@ -142,6 +146,7 @@ func (timeoutMetadataError) Timeout() bool { return true }
 // Temporary implements [net.Error] and reports the error as temporary.
 func (timeoutMetadataError) Temporary() bool { return true }
 
+// failingMetadataClient provides a test fixture for the behavior under test.
 type failingMetadataClient struct {
 	onGCE    bool
 	getCalls int

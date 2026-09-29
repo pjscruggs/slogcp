@@ -22,6 +22,7 @@ import (
 	"github.com/pjscruggs/slogcp/v2"
 )
 
+// consoleExporter provides a test fixture for the behavior under test.
 type consoleExporter struct{}
 
 // Export consumes the borrowed entry before returning.

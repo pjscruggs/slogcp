@@ -24,6 +24,7 @@ import (
 	"github.com/pjscruggs/slogcp/v2"
 )
 
+// httpRequestKey is the request context key used to attach the Cloud Logging httpRequest field.
 const httpRequestKey = "httpRequest"
 
 // HTTPRequestAttr builds a slog attribute compatible with Cloud Logging's

@@ -81,8 +81,10 @@ const (
 	LevelDefault Level = 30
 )
 
+// severityNoticeName is the Cloud Logging severity label used for NOTICE records.
 const severityNoticeName = "NOTICE"
 
+// severityDescriptor maps one slog level to its Cloud Logging severity and aliases.
 type severityDescriptor struct {
 	threshold Level
 	levelName string
@@ -90,6 +92,7 @@ type severityDescriptor struct {
 	alias     string
 }
 
+// severityDescriptors defines the supported mapping from slog levels to Cloud Logging severities.
 var severityDescriptors = []severityDescriptor{
 	{threshold: LevelDebug, levelName: "DEBUG", fullName: "DEBUG", alias: "D"},
 	{threshold: LevelInfo, levelName: "INFO", fullName: "INFO", alias: "I"},

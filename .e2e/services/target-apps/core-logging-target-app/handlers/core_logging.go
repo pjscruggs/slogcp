@@ -59,7 +59,7 @@ func NewCoreLoggingHandler(logger *slog.Logger, defaultSeverityLogger *slog.Logg
 	return &CoreLoggingHandler{logger: logger, defaultSeverityLogger: defaultSeverityLogger}
 }
 
-// Common response structure
+// logResponse is the common JSON response returned by core logging endpoints.
 type logResponse struct {
 	Success   bool              `json:"success"`
 	Message   string            `json:"message"`

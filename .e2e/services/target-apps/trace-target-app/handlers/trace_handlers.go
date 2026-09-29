@@ -64,11 +64,13 @@ type TraceResponse struct {
 	Details map[string]string `json:"details,omitempty"`
 }
 
+// pubSubWorkRequest is the JSON payload published for a trace propagation test.
 type pubSubWorkRequest struct {
 	TestID  string `json:"test_id"`
 	Message string `json:"message"`
 }
 
+// serverStreamTraceRequest describes a server-streaming trace test request.
 type serverStreamTraceRequest struct {
 	TraceRequest    *TraceRequest `json:"trace_request"`
 	ResponseCount   int           `json:"response_count"`
@@ -77,11 +79,13 @@ type serverStreamTraceRequest struct {
 	FinalMessage    string        `json:"final_message"`
 }
 
+// clientStreamTraceRequest describes a client-streaming trace test request.
 type clientStreamTraceRequest struct {
 	TraceRequest *TraceRequest       `json:"trace_request"`
 	Chunks       []clientStreamChunk `json:"chunks"`
 }
 
+// clientStreamChunk carries one payload in a client-streaming trace test.
 type clientStreamChunk struct {
 	TestID       string `json:"test_id,omitempty"`
 	ChunkID      string `json:"chunk_id,omitempty"`
@@ -90,11 +94,13 @@ type clientStreamChunk struct {
 	FinalMessage string `json:"final_message,omitempty"`
 }
 
+// bidiStreamTraceRequest describes a bidirectional-streaming trace request.
 type bidiStreamTraceRequest struct {
 	TraceRequest *TraceRequest     `json:"trace_request"`
 	Messages     []bidiStreamChunk `json:"messages"`
 }
 
+// bidiStreamChunk carries one payload in a bidirectional-streaming trace test.
 type bidiStreamChunk struct {
 	TestID       string `json:"test_id,omitempty"`
 	ChunkID      string `json:"chunk_id,omitempty"`
@@ -656,6 +662,7 @@ func writeTraceResponse(w http.ResponseWriter, resp *TraceResponse) {
 	}
 }
 
+// spanBuilder stores identifiers and timing data while constructing a span.
 type spanBuilder struct {
 	traceID      string
 	parentSpanID string

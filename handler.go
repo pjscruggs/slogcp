@@ -33,21 +33,36 @@ const (
 	// LabelsGroup is the Cloud Logging attribute group used for structured labels.
 	LabelsGroup = "logging.googleapis.com/labels"
 
-	envLogLevel         = "SLOGCP_LEVEL"
-	envGenericLogLevel  = "LOG_LEVEL"
-	envLogSource        = "SLOGCP_SOURCE_LOCATION"
-	envLogTime          = "SLOGCP_TIME"
-	envLogStackEnabled  = "SLOGCP_STACK_TRACES"
-	envLogStackLevel    = "SLOGCP_STACK_TRACE_LEVEL"
-	envSeverityAliases  = "SLOGCP_SEVERITY_ALIASES"
-	envTraceProjectID   = "SLOGCP_TRACE_PROJECT_ID"
-	envProjectID        = "SLOGCP_PROJECT_ID"
-	envGoogleProject    = "GOOGLE_CLOUD_PROJECT"
-	envTarget           = "SLOGCP_TARGET"
-	envSlogcpGCP        = "SLOGCP_GCP_PROJECT"
+	// envLogLevel names the SLOGCP_LEVEL environment variable.
+	envLogLevel = "SLOGCP_LEVEL"
+	// envGenericLogLevel names the LOG_LEVEL environment variable.
+	envGenericLogLevel = "LOG_LEVEL"
+	// envLogSource names the SLOGCP_SOURCE_LOCATION environment variable.
+	envLogSource = "SLOGCP_SOURCE_LOCATION"
+	// envLogTime names the SLOGCP_TIME environment variable.
+	envLogTime = "SLOGCP_TIME"
+	// envLogStackEnabled names the SLOGCP_STACK_TRACES environment variable.
+	envLogStackEnabled = "SLOGCP_STACK_TRACES"
+	// envLogStackLevel names the SLOGCP_STACK_TRACE_LEVEL environment variable.
+	envLogStackLevel = "SLOGCP_STACK_TRACE_LEVEL"
+	// envSeverityAliases names the SLOGCP_SEVERITY_ALIASES environment variable.
+	envSeverityAliases = "SLOGCP_SEVERITY_ALIASES"
+	// envTraceProjectID names the SLOGCP_TRACE_PROJECT_ID environment variable.
+	envTraceProjectID = "SLOGCP_TRACE_PROJECT_ID"
+	// envProjectID names the SLOGCP_PROJECT_ID environment variable.
+	envProjectID = "SLOGCP_PROJECT_ID"
+	// envGoogleProject names the GOOGLE_CLOUD_PROJECT environment variable.
+	envGoogleProject = "GOOGLE_CLOUD_PROJECT"
+	// envTarget names the SLOGCP_TARGET environment variable.
+	envTarget = "SLOGCP_TARGET"
+	// envSlogcpGCP names the SLOGCP_GCP_PROJECT environment variable.
+	envSlogcpGCP = "SLOGCP_GCP_PROJECT"
+	// envTraceDiagnostics names the SLOGCP_TRACE_DIAGNOSTICS environment variable.
 	envTraceDiagnostics = "SLOGCP_TRACE_DIAGNOSTICS"
-	envAsyncOnFile      = "SLOGCP_ASYNC_ON_FILE"
+	// envAsyncOnFile names the SLOGCP_ASYNC_ON_FILE environment variable.
+	envAsyncOnFile = "SLOGCP_ASYNC_ON_FILE"
 
+	// traceProjectSourceOption supports the package implementation.
 	traceProjectSourceOption = "WithTraceProjectID"
 )
 
@@ -121,10 +136,12 @@ type Handler struct {
 	closeErr  error
 }
 
+// diagLogger is the small logging interface used by trace diagnostics.
 type diagLogger interface {
 	Printf(format string, args ...any)
 }
 
+// traceDiagnosticsLogger adapts trace correlation failures to diagnostic log records.
 type traceDiagnosticsLogger struct {
 	logger *slog.Logger
 }
@@ -137,6 +154,7 @@ func (l traceDiagnosticsLogger) Printf(format string, args ...any) {
 	logDiagnostic(l.logger, slog.LevelWarn, fmt.Sprintf(format, args...))
 }
 
+// traceDiagnostics holds the logger and policy used to report trace correlation problems.
 type traceDiagnostics struct {
 	mode         TraceDiagnosticsMode
 	logger       diagLogger
@@ -202,6 +220,7 @@ func (td *traceDiagnostics) warnNormalizedTraceProjectID(value, normalized, sour
 	})
 }
 
+// handlerConfig contains the resolved settings used to construct a slogcp handler.
 type handlerConfig struct {
 	exporter                 EntryExporter
 	Level                    slog.Level
@@ -231,6 +250,7 @@ type handlerConfig struct {
 	CloseTimeoutPolicy       CloseTimeoutPolicy
 }
 
+// options holds the handler options applied during construction.
 type options struct {
 	level                 *slog.Level
 	levelVar              *slog.LevelVar
@@ -632,7 +652,6 @@ func writerIsFileTarget(w io.Writer, depth int) bool {
 }
 
 // ensureWriterFallback guarantees cfg.Writer is non-nil even when no writer
-// options were configured.
 func ensureWriterFallback(cfg *handlerConfig) {
 	if cfg.Writer != nil {
 		return
@@ -1472,12 +1491,17 @@ func resolveLevelFromEnv(current slog.Level, logger *slog.Logger) slog.Level {
 }
 
 const (
-	envLevelAliasDefault   = "default"
-	envLevelAliasCritical  = "critical"
-	envLevelAliasAlert     = "alert"
+	// envLevelAliasDefault names the default environment variable.
+	envLevelAliasDefault = "default"
+	// envLevelAliasCritical names the critical environment variable.
+	envLevelAliasCritical = "critical"
+	// envLevelAliasAlert names the alert environment variable.
+	envLevelAliasAlert = "alert"
+	// envLevelAliasEmergency names the emergency environment variable.
 	envLevelAliasEmergency = "emergency"
 )
 
+// envLevelAliases names the configuration environment variable.
 var envLevelAliases = map[string]slog.Level{
 	"debug":                slog.LevelDebug,
 	"info":                 slog.LevelInfo,
@@ -1548,6 +1572,7 @@ func logDiagnostic(logger *slog.Logger, level slog.Level, msg string, attrs ...s
 	logger.LogAttrs(context.Background(), level, msg, attrs...)
 }
 
+// sourceAwareHandler holds state used by the package implementation.
 type sourceAwareHandler struct{ slog.Handler }
 
 // HasSource implements [slog.Handler] and signals that source metadata is

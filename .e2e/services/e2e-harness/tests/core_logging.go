@@ -68,6 +68,7 @@ type CoreScenarioConfig struct {
 	ExpectedLogID      string
 }
 
+// severityLogMetadata records the expected severity and test ID for one log.
 type severityLogMetadata struct {
 	expected client.Severity
 	testID   string

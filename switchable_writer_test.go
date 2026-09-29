@@ -134,6 +134,7 @@ func TestSwitchableWriterWriteWrapsError(t *testing.T) {
 	}
 }
 
+// closableBuffer provides a test fixture for the behavior under test.
 type closableBuffer struct {
 	bytes.Buffer
 	closed bool
@@ -145,6 +146,7 @@ func (c *closableBuffer) Close() error {
 	return nil
 }
 
+// errorWriter provides a test fixture for the behavior under test.
 type errorWriter struct {
 	err error
 }

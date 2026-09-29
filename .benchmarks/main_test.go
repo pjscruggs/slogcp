@@ -116,6 +116,7 @@ func TestGRPCExporterWarmupFlush(t *testing.T) {
 	measuredEntries(t, cfg, output.Bytes())
 }
 
+// testConfig returns a small deterministic trial configuration for tests.
 func testConfig(mode, payload string) config {
 	return config{
 		Mode: mode, Payload: payload, Count: 4096, Concurrency: 4, Warmup: 2,
@@ -123,6 +124,7 @@ func testConfig(mode, payload string) config {
 	}
 }
 
+// measuredEntries decodes measured log entries and verifies their identifiers.
 func measuredEntries(t *testing.T, cfg config, data []byte) map[int]map[string]any {
 	t.Helper()
 	entries := make(map[int]map[string]any)
@@ -177,8 +179,10 @@ func measuredEntries(t *testing.T, cfg config, data []byte) map[int]map[string]a
 	return entries
 }
 
+// failingWriter simulates a sink that rejects every log write.
 type failingWriter struct{}
 
+// Write always fails so tests can verify delivery errors are surfaced.
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("sink unavailable") }
 
 // TestOutputErrors rejects lost logs even though slog.Logger itself returns no error.
@@ -216,6 +220,7 @@ func TestResultFile(t *testing.T) {
 	}
 }
 
+// TestRejectInvalidConfig rejects unsupported modes and invalid trial settings.
 func TestRejectInvalidConfig(t *testing.T) {
 	base := []string{"-run-id", "test", "-trial-id", "test", "-result-file", "unused.json"}
 	for _, args := range [][]string{
@@ -245,6 +250,7 @@ func TestAPIModesRequireProject(t *testing.T) {
 	}
 }
 
+// TestDiscardAccounting verifies discarded output is still encoded and counted.
 func TestDiscardAccounting(t *testing.T) {
 	res, err := runTrial(context.Background(), testConfig("slogcp", "small"), io.Discard)
 	if err != nil || res.OutputWrites != 4096 || res.OutputBytes < 4096 {
@@ -252,6 +258,7 @@ func TestDiscardAccounting(t *testing.T) {
 	}
 }
 
+// TestCloudRunResource checks Cloud Run resource metadata and execution labels.
 func TestCloudRunResource(t *testing.T) {
 	t.Setenv("CLOUD_RUN_JOB", "example-job")
 	t.Setenv("CLOUD_RUN_EXECUTION", "example-execution")
@@ -266,6 +273,7 @@ func TestCloudRunResource(t *testing.T) {
 	}
 }
 
+// TestQuantiles verifies the nearest-rank latency percentiles.
 func TestQuantiles(t *testing.T) {
 	samples := make([]int64, 100)
 	for index := range samples {
@@ -276,6 +284,7 @@ func TestQuantiles(t *testing.T) {
 	}
 }
 
+// TestShortWrite ensures incomplete writes are converted into recorded errors.
 func TestShortWrite(t *testing.T) {
 	errs := new(errorList)
 	writer := countingWriter{writer: shortWriter{}, errors: errs}
@@ -287,6 +296,8 @@ func TestShortWrite(t *testing.T) {
 	}
 }
 
+// shortWriter returns a short successful write to exercise io.ErrShortWrite.
 type shortWriter struct{}
 
+// Write reports a partial write without an underlying writer error.
 func (shortWriter) Write([]byte) (int, error) { return 1, nil }

@@ -1199,6 +1199,7 @@ func decodeStreamEntries(t *testing.T, raw string) []map[string]any {
 	return out
 }
 
+// testSizedMessage provides a test fixture for the behavior under test.
 type testSizedMessage struct {
 	n int
 }
@@ -1206,6 +1207,7 @@ type testSizedMessage struct {
 // Size reports the encoded size used for payload accounting in tests.
 func (m *testSizedMessage) Size() int { return m.n }
 
+// fakeServerStream provides a test fixture for the behavior under test.
 type fakeServerStream struct {
 	ctx       context.Context
 	recvQueue []any
@@ -1246,6 +1248,7 @@ func (f *fakeServerStream) RecvMsg(m any) error {
 	return copyMessage(m, next)
 }
 
+// fakeClientStream provides a test fixture for the behavior under test.
 type fakeClientStream struct {
 	ctx       context.Context
 	responses []any

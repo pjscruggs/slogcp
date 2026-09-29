@@ -50,20 +50,26 @@ import (
 )
 
 var (
+	// appVersion is set at build time to identify the deployed service version.
 	appVersion = "dev"
-	buildTime  = "unknown"
+	// buildTime is set at build time to identify when the service was built.
+	buildTime = "unknown"
 )
 
 const (
+	// envLogMetadata controls whether gRPC logs include peer and size metadata.
 	envLogMetadata = "TRACE_DOWNSTREAM_GRPC_LOG_METADATA"
-	envLogPayload  = "TRACE_DOWNSTREAM_GRPC_LOG_PAYLOAD"
+	// envLogPayload controls whether gRPC logs include request and response payloads.
+	envLogPayload = "TRACE_DOWNSTREAM_GRPC_LOG_PAYLOAD"
 )
 
+// config contains the listening address and Google Cloud project for the service.
 type config struct {
 	Port      string
 	ProjectID string
 }
 
+// grpcInterceptorConfig controls optional metadata recorded by the logging interceptor.
 type grpcInterceptorConfig struct {
 	includePeer  bool
 	includeSizes bool
@@ -235,6 +241,7 @@ func parseStatusCode(raw string) codes.Code {
 	return codes.Unknown
 }
 
+// grpcCodeByName maps gRPC status names to their canonical codes.
 var grpcCodeByName = map[string]codes.Code{
 	"OK":                  codes.OK,
 	"CANCELLED":           codes.Canceled,
@@ -256,6 +263,7 @@ var grpcCodeByName = map[string]codes.Code{
 	"UNAUTHENTICATED":     codes.Unauthenticated,
 }
 
+// grpcCodeByNumber maps gRPC status numbers to their canonical codes.
 var grpcCodeByNumber = map[int]codes.Code{
 	0:  codes.OK,
 	1:  codes.Canceled,
@@ -276,6 +284,7 @@ var grpcCodeByNumber = map[int]codes.Code{
 	16: codes.Unauthenticated,
 }
 
+// traceWorkerServer implements the trace worker RPCs and records their spans.
 type traceWorkerServer struct {
 	localtracepb.UnimplementedTraceWorkerServer
 	logger      *slog.Logger
@@ -454,6 +463,7 @@ func (s *traceWorkerServer) StreamClient(stream localtracepb.TraceWorker_StreamC
 	return nil
 }
 
+// clientStreamState accumulates requests and final status from a client stream.
 type clientStreamState struct {
 	testID       string
 	received     int32
@@ -527,6 +537,7 @@ func (s *traceWorkerServer) StreamBidi(stream localtracepb.TraceWorker_StreamBid
 	return nil
 }
 
+// bidiStreamState tracks request identity and final status for a bidi stream.
 type bidiStreamState struct {
 	testID       string
 	finalStatus  codes.Code

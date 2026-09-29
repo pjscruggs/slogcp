@@ -29,6 +29,7 @@ import (
 // XCloudTraceContextHeader is the Google Cloud legacy trace propagation header.
 const XCloudTraceContextHeader = "X-Cloud-Trace-Context"
 
+// randRead provides cryptographically secure random bytes for trace IDs.
 var randRead = rand.Read
 
 // InjectTraceContextMiddleware extracts legacy X-Cloud-Trace-Context headers
@@ -95,6 +96,7 @@ func parseSingleXCloudTraceValue(header string) (trace.SpanContext, bool) {
 	return buildSpanContext(traceID, spanID, flags)
 }
 
+// xCloudTraceParts holds the trace ID, span ID, and sampling flag from an X-Cloud-Trace-Context header.
 type xCloudTraceParts struct {
 	traceID     string
 	spanDecimal string

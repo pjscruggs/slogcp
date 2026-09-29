@@ -641,6 +641,7 @@ func TestHandlerHandleJSONEncodingFailure(t *testing.T) {
 	}
 }
 
+// failingJSONMarshaler provides a test fixture for the behavior under test.
 type failingJSONMarshaler struct{}
 
 // MarshalJSON always fails to trigger handler encoding error paths.
@@ -735,6 +736,7 @@ func TestHandlerHandleWriterFailure(t *testing.T) {
 	}
 }
 
+// handlerFailingWriter provides a test fixture for the behavior under test.
 type handlerFailingWriter struct {
 	err error
 }
@@ -2755,6 +2757,7 @@ func TestHandlerCompatibilityPatternsWithFanout(t *testing.T) {
 	})
 }
 
+// strictMetadataClient provides a test fixture for the behavior under test.
 type strictMetadataClient struct{}
 
 // OnGCE reports that the strictMetadataClient is never running on GCE.
@@ -3609,6 +3612,7 @@ func TestHandlerReopenLogFileSuccess(t *testing.T) {
 	}
 }
 
+// nilChildHandler provides a test fixture for the behavior under test.
 type nilChildHandler struct{}
 
 // Enabled implements slog.Handler.
@@ -3623,6 +3627,7 @@ func (nilChildHandler) WithAttrs([]slog.Attr) slog.Handler { return nil }
 // WithGroup implements slog.Handler and returns nil to simulate handler failure.
 func (nilChildHandler) WithGroup(string) slog.Handler { return nil }
 
+// errChildHandler provides a test fixture for the behavior under test.
 type errChildHandler struct {
 	err error
 }
@@ -3639,6 +3644,7 @@ func (h errChildHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 // WithGroup implements slog.Handler.
 func (h errChildHandler) WithGroup(string) slog.Handler { return h }
 
+// writeCloseSpy provides a test fixture for the behavior under test.
 type writeCloseSpy struct {
 	closed int
 	err    error
@@ -3653,6 +3659,7 @@ func (w *writeCloseSpy) Close() error {
 	return w.err
 }
 
+// closerSpy provides a test fixture for the behavior under test.
 type closerSpy struct {
 	closed int
 	err    error
@@ -3664,6 +3671,7 @@ func (c *closerSpy) Close() error {
 	return c.err
 }
 
+// closeErrorHandler provides a test fixture for the behavior under test.
 type closeErrorHandler struct {
 	slog.Handler
 	err error
@@ -3674,6 +3682,7 @@ func (h closeErrorHandler) Close() error {
 	return h.err
 }
 
+// blockingAbortHandler provides a test fixture for the behavior under test.
 type blockingAbortHandler struct {
 	release   chan struct{}
 	abortErr  error
@@ -3711,6 +3720,7 @@ func (h *blockingAbortHandler) Abort() error {
 	return h.abortErr
 }
 
+// slowAbortHandler provides a test fixture for the behavior under test.
 type slowAbortHandler struct {
 	release   chan struct{}
 	abortGate chan struct{}
@@ -3986,6 +3996,7 @@ func TestHandlerLifecycleAndLoggingWrappers(t *testing.T) {
 	}
 }
 
+// middlewareRecorder provides a test fixture for the behavior under test.
 type middlewareRecorder struct {
 	next   slog.Handler
 	called *atomic.Bool
@@ -4034,6 +4045,7 @@ func (c *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return c }
 // WithGroup returns itself for captureHandler to satisfy slog.Handler.
 func (c *captureHandler) WithGroup(string) slog.Handler { return c }
 
+// trackingCloser provides a test fixture for the behavior under test.
 type trackingCloser struct {
 	closed atomic.Bool
 }

@@ -41,10 +41,13 @@ import (
 )
 
 const (
-	defaultPort  = "8080"
+	// defaultPort is the HTTP port used when PORT is unset.
+	defaultPort = "8080"
+	// bearerPrefix identifies bearer credentials in Authorization headers.
 	bearerPrefix = "Bearer "
 )
 
+// accessToken marks values that the example's redaction rule must hide.
 type accessToken string
 
 // newExampleLogger builds a slogcp logger that redacts access tokens before

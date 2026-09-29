@@ -136,6 +136,7 @@ func resolveAnyValue(val any) any {
 	}
 }
 
+// httpRequestPayload contains the HTTP request fields written to a Cloud Logging payload.
 type httpRequestPayload struct {
 	RequestMethod                  string `json:"requestMethod"`
 	RequestURL                     string `json:"requestUrl"`

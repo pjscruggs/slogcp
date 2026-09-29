@@ -590,6 +590,7 @@ func TestOutboundHostPortHandlesNonNumericPort(t *testing.T) {
 	}
 }
 
+// recordingRoundTripper provides a test fixture for the behavior under test.
 type recordingRoundTripper struct {
 	req *http.Request
 }
@@ -600,6 +601,7 @@ func (r *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: req}, nil
 }
 
+// stubRoundTripper provides a test fixture for the behavior under test.
 type stubRoundTripper struct {
 	req  *http.Request
 	resp *http.Response
@@ -627,6 +629,7 @@ func slogcpLogger(ctx context.Context) *slog.Logger {
 	return slogcp.Logger(ctx)
 }
 
+// respErrRoundTripper provides a test fixture for the behavior under test.
 type respErrRoundTripper struct {
 	resp *http.Response
 	err  error
@@ -637,6 +640,7 @@ func (r respErrRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	return r.resp, r.err
 }
 
+// spyHandler provides a test fixture for the behavior under test.
 type spyHandler struct {
 	name string
 }

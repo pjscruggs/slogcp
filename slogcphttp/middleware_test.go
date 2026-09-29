@@ -1532,6 +1532,7 @@ func (o *optionalResponseWriter) CloseNotify() <-chan bool {
 	return o.closeCh
 }
 
+// failingResponseWriter provides a test fixture for the behavior under test.
 type failingResponseWriter struct {
 	header http.Header
 	status int
@@ -1546,6 +1547,7 @@ func (f *failingResponseWriter) Write([]byte) (int, error) { return 0, errors.Ne
 // WriteHeader stores the status code for later verification.
 func (f *failingResponseWriter) WriteHeader(status int) { f.status = status }
 
+// failingReaderFromWriter provides a test fixture for the behavior under test.
 type failingReaderFromWriter struct {
 	header http.Header
 	err    error
@@ -1566,6 +1568,7 @@ func (f *failingReaderFromWriter) ReadFrom(src io.Reader) (int64, error) {
 	return n, f.err
 }
 
+// errorHijackWriter provides a test fixture for the behavior under test.
 type errorHijackWriter struct {
 	header http.Header
 	err    error
@@ -1585,6 +1588,7 @@ func (e *errorHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, e.err
 }
 
+// errorPushWriter provides a test fixture for the behavior under test.
 type errorPushWriter struct {
 	header http.Header
 	err    error
@@ -1631,6 +1635,7 @@ func (nopConn) SetReadDeadline(time.Time) error { return nil }
 // SetWriteDeadline satisfies net.Conn without enforcing deadlines.
 func (nopConn) SetWriteDeadline(time.Time) error { return nil }
 
+// nopAddr provides a test fixture for the behavior under test.
 type nopAddr string
 
 // Network reports the placeholder transport name.
@@ -1639,6 +1644,7 @@ func (a nopAddr) Network() string { return "nop" }
 // String returns the printable address.
 func (a nopAddr) String() string { return string(a) }
 
+// readerFromResponseWriter provides a test fixture for the behavior under test.
 type readerFromResponseWriter struct {
 	header        http.Header
 	readFromBytes int64

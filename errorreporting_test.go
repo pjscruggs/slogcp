@@ -109,7 +109,7 @@ func TestReportErrorNilArguments(t *testing.T) {
 	}
 }
 
-// attrsToMap converts attributes into a simple map for assertions.
+// attrsToMapReporting converts slog attributes into a simple map for reporting tests.
 func attrsToMapReporting(attrs []slog.Attr) map[string]any {
 	out := make(map[string]any, len(attrs))
 	for _, attr := range attrs {
@@ -121,6 +121,7 @@ func attrsToMapReporting(attrs []slog.Attr) map[string]any {
 	return out
 }
 
+// recordingHandler provides a test fixture for the behavior under test.
 type recordingHandler struct {
 	lastRecord *slog.Record
 	attrs      []slog.Attr

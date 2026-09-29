@@ -37,6 +37,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// logTransport adapts a function into an HTTP RoundTripper for tests.
 type logTransport func(*http.Request) (*http.Response, error)
 
 // RoundTrip implements http.RoundTripper using the test transport function.
@@ -145,6 +146,7 @@ func TestLogQuotaCancellationAndMalformedResponse(t *testing.T) {
 	}
 }
 
+// quotaLogServer returns configurable quota errors from the logging API.
 type quotaLogServer struct {
 	logpb.UnimplementedLoggingServiceV2Server
 	tokens      []string
