@@ -19,9 +19,15 @@ from __future__ import annotations
 
 import unittest
 from unittest import mock
+import importlib.util
 from pathlib import Path
 
-import sweep_e2e_resources as sweep
+SOURCE = (Path(__file__).resolve().parents[2] / ".e2e/cloudbuild/build-tools" /
+          "sweep_e2e_resources.py")
+SPEC = importlib.util.spec_from_file_location("sweep_e2e_resources", SOURCE)
+assert SPEC and SPEC.loader
+sweep = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(sweep)
 
 
 BUILD = "a" * 8 + "-" + "b" * 4 + "-" + "c" * 4 + "-" + "d" * 4 + "-" + "e" * 12
@@ -34,9 +40,10 @@ class SweepTests(unittest.TestCase):
         runner = Path(__file__).with_name("run_e2e_cloud_build.sh").read_text(
             encoding="utf-8")
         self.assertLess(runner.index('if [[ "$E2E_NO_WAIT" == "true" ]]'),
-                        runner.index('"$SCRIPT_DIR/sweep_e2e_resources.py"'))
-        self.assertLess(runner.index('"$SCRIPT_DIR/sweep_e2e_resources.py"'),
+                        runner.index('cleanup_substitutions='))
+        self.assertLess(runner.index('cleanup_substitutions='),
                         runner.rindex("emit_outputs"))
+        self.assertIn('"$SOURCE_PATH/cloudbuild/cleanup.yaml"', runner)
         self.assertIn('BUILD_STATUS="FAILURE"', runner)
 
     def test_inventory_selects_only_exact_run_resources(self):

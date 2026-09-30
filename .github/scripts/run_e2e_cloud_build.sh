@@ -14,7 +14,6 @@
 # limitations under the License.
 
 set -euo pipefail
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<'EOF'
@@ -604,6 +603,7 @@ fi
 STREAM_TAG_DEFAULTED="${STREAM_TAG_DEFAULTED}-${E2E_DEPENDENCY_MODE}"
 
 BUILD_STATUS="FAILURE"
+CLEANUP_STATUS="SKIPPED"
 BUILD_ID=""
 BUILD_LOG_URL=""
 ARTIFACTS_URL=""
@@ -620,6 +620,7 @@ emit_outputs() {
     if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
         {
             printf 'build_status=%s\n' "$BUILD_STATUS"
+            printf 'cleanup_status=%s\n' "$CLEANUP_STATUS"
             printf 'build_id=%s\n' "$BUILD_ID"
             printf 'build_log_url=%s\n' "$BUILD_LOG_URL"
             printf 'artifacts_url=%s\n' "$ARTIFACTS_URL"
@@ -740,12 +741,28 @@ while true; do
     elapsed=$((elapsed + POLL_INTERVAL))
 done
 
-if ! python3 "$SCRIPT_DIR/sweep_e2e_resources.py" \
-    --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
-    --build-id "$BUILD_ID" --run-id "$E2E_RUN_ID" \
-    --topic-base "$TRACE_PUBSUB_TOPIC" \
-    --subscription-base "$TRACE_PUBSUB_SUBSCRIPTION"; then
-    echo "Cloud resource cleanup was not confirmed." >&2
+cleanup_substitutions="_CALLER_SERVICE_ACCOUNT=${E2E_CALLER_SERVICE_ACCOUNT},_GCP_REGION=${RUN_REGION},_ORIGINAL_BUILD_ID=${BUILD_ID},_E2E_RUN_ID=${E2E_RUN_ID},_TRACE_PUBSUB_TOPIC=${TRACE_PUBSUB_TOPIC},_TRACE_PUBSUB_SUBSCRIPTION=${TRACE_PUBSUB_SUBSCRIPTION}"
+cleanup_args=(
+    "$SOURCE_PATH"
+    --config="$SOURCE_PATH/cloudbuild/cleanup.yaml"
+    --project="$GCP_PROJECT_ID"
+    --region="$RUN_REGION"
+    --quiet
+    --suppress-logs
+    --substitutions="$cleanup_substitutions"
+)
+if [[ -n "$BUILD_SUBMIT_SERVICE_ACCOUNT" ]]; then
+    cleanup_args+=(--service-account="$BUILD_SUBMIT_SERVICE_ACCOUNT")
+fi
+if [[ -n "$GCS_SOURCE_STAGING_DIR" ]]; then
+    cleanup_args+=(--gcs-source-staging-dir="$GCS_SOURCE_STAGING_DIR")
+fi
+if gcloud builds submit "${cleanup_args[@]}" >/dev/null; then
+    CLEANUP_STATUS="SUCCESS"
+    echo "Owned cloud resource cleanup confirmed."
+else
+    CLEANUP_STATUS="FAILURE"
+    echo "Trusted cleanup build did not confirm resource removal." >&2
     if [[ "$BUILD_STATUS" == "SUCCESS" ]]; then
         BUILD_STATUS="FAILURE"
     fi

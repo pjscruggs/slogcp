@@ -477,14 +477,9 @@ jobs:
         if: ${{ always() && steps.cloud_build.outputs.build_id != '' }}
         id: cleanup
         env:
-          BUILD_ID: ${{ steps.cloud_build.outputs.build_id }}
-          E2E_RUN_ID: ${{ steps.run_id.outputs.e2e_run_id }}
+          CLEANUP_STATUS: ${{ steps.cloud_build.outputs.cleanup_status }}
         run: |
-          python3 .github/scripts/sweep_e2e_resources.py \
-            --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
-            --build-id "$BUILD_ID" --run-id "$E2E_RUN_ID" \
-            --topic-base "$TRACE_PUBSUB_TOPIC" \
-            --subscription-base "$TRACE_PUBSUB_SUBSCRIPTION"
+          test "$CLEANUP_STATUS" = SUCCESS
 
       - name: Revalidate PR authority after E2E
         if: ${{ always() && steps.target.outputs.pr_number != '' && steps.local_validation_gate.outputs.ok == 'true' && steps.cloud_build.outputs.build_status == 'SUCCESS' && steps.cleanup.outcome == 'success' }}
