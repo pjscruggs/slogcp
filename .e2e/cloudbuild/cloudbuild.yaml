@@ -871,63 +871,102 @@ steps:
       - |
         set -euo pipefail
         echo "=== Starting cleanup phase ==="
+        cleanup_failed=0
+        delete_or_confirm_absent() {
+          local kind="$$1" name="$$2" listing
+          shift 2
+          if "$$@"; then
+            return 0
+          fi
+          case "$$kind" in
+            service)
+              listing="$$(gcloud run services list --platform managed \
+                --region "${_GCP_REGION}" --project "${PROJECT_ID}" \
+                --format='value(metadata.name)')" || return 1 ;;
+            job)
+              listing="$$(gcloud run jobs list --region "${_GCP_REGION}" \
+                --project "${PROJECT_ID}" --format='value(metadata.name)')" || return 1 ;;
+            subscription)
+              listing="$$(gcloud pubsub subscriptions list --project "${PROJECT_ID}" \
+                --format='value(name)')" || return 1 ;;
+            topic)
+              listing="$$(gcloud pubsub topics list --project "${PROJECT_ID}" \
+                --format='value(name)')" || return 1 ;;
+            *) return 1 ;;
+          esac
+          if [ "$$kind" = service ] || [ "$$kind" = job ]; then
+            listing="$$(printf '%s\n' "$$listing" | sed 's|.*/||')"
+          fi
+          if printf '%s\n' "$$listing" | grep -Fqx "$$name"; then
+            echo "Resource still exists after failed cleanup: $$kind $$name" >&2
+            return 1
+          fi
+          echo "Resource already absent: $$kind $$name"
+        }
         if [ -f /workspace/core_service_name.txt ]; then
           CORE_APP_SERVICE_NAME_CUT="$$(cat /workspace/core_service_name.txt)"
           echo "Deleting service: $$CORE_APP_SERVICE_NAME_CUT"
-          gcloud run services delete "$$CORE_APP_SERVICE_NAME_CUT" \
-            --platform managed \
-            --region "${_GCP_REGION}" \
-            --quiet 2>/dev/null || echo "  Service $$CORE_APP_SERVICE_NAME_CUT not found or already deleted"
+          delete_or_confirm_absent service "$$CORE_APP_SERVICE_NAME_CUT" \
+            gcloud run services delete "$$CORE_APP_SERVICE_NAME_CUT" \
+              --platform managed --region "${_GCP_REGION}" \
+              --project "${PROJECT_ID}" --quiet || cleanup_failed=1
         fi
         if [ -f /workspace/trace_target_service_name.txt ]; then
           TRACE_TARGET_SERVICE_NAME="$$(cat /workspace/trace_target_service_name.txt)"
           echo "Deleting service: $$TRACE_TARGET_SERVICE_NAME"
-          gcloud run services delete "$$TRACE_TARGET_SERVICE_NAME" \
-            --platform managed \
-            --region "${_GCP_REGION}" \
-            --quiet 2>/dev/null || echo "  Service $$TRACE_TARGET_SERVICE_NAME not found or already deleted"
+          delete_or_confirm_absent service "$$TRACE_TARGET_SERVICE_NAME" \
+            gcloud run services delete "$$TRACE_TARGET_SERVICE_NAME" \
+              --platform managed --region "${_GCP_REGION}" \
+              --project "${PROJECT_ID}" --quiet || cleanup_failed=1
         fi
         if [ -f /workspace/trace_http_service_name.txt ]; then
           TRACE_HTTP_SERVICE_NAME="$$(cat /workspace/trace_http_service_name.txt)"
           echo "Deleting service: $$TRACE_HTTP_SERVICE_NAME"
-          gcloud run services delete "$$TRACE_HTTP_SERVICE_NAME" \
-            --platform managed \
-            --region "${_GCP_REGION}" \
-            --quiet 2>/dev/null || echo "  Service $$TRACE_HTTP_SERVICE_NAME not found or already deleted"
+          delete_or_confirm_absent service "$$TRACE_HTTP_SERVICE_NAME" \
+            gcloud run services delete "$$TRACE_HTTP_SERVICE_NAME" \
+              --platform managed --region "${_GCP_REGION}" \
+              --project "${PROJECT_ID}" --quiet || cleanup_failed=1
         fi
         if [ -f /workspace/trace_grpc_service_name.txt ]; then
           TRACE_GRPC_SERVICE_NAME="$$(cat /workspace/trace_grpc_service_name.txt)"
           echo "Deleting service: $$TRACE_GRPC_SERVICE_NAME"
-          gcloud run services delete "$$TRACE_GRPC_SERVICE_NAME" \
-            --platform managed \
-            --region "${_GCP_REGION}" \
-            --quiet 2>/dev/null || echo "  Service $$TRACE_GRPC_SERVICE_NAME not found or already deleted"
+          delete_or_confirm_absent service "$$TRACE_GRPC_SERVICE_NAME" \
+            gcloud run services delete "$$TRACE_GRPC_SERVICE_NAME" \
+              --platform managed --region "${_GCP_REGION}" \
+              --project "${PROJECT_ID}" --quiet || cleanup_failed=1
         fi
         if [ -f /workspace/e2e_job_name.txt ]; then
           JOB_NAME="$$(cat /workspace/e2e_job_name.txt)"
           echo "Deleting Cloud Run Job: $$JOB_NAME"
-          gcloud run jobs delete "$$JOB_NAME" \
-            --region "${_GCP_REGION}" \
-            --quiet 2>/dev/null || echo "  Job $$JOB_NAME not found or already deleted"
+          delete_or_confirm_absent job "$$JOB_NAME" \
+            gcloud run jobs delete "$$JOB_NAME" \
+              --region "${_GCP_REGION}" --project "${PROJECT_ID}" \
+              --quiet || cleanup_failed=1
         fi
         if [ -f /workspace/trace_pubsub_subscription.txt ]; then
           TRACE_PUBSUB_SUBSCRIPTION_ID="$$(cat /workspace/trace_pubsub_subscription.txt)"
           echo "Deleting Pub/Sub subscription: $$TRACE_PUBSUB_SUBSCRIPTION_ID"
-          gcloud pubsub subscriptions delete "$$TRACE_PUBSUB_SUBSCRIPTION_ID" \
-            --project "${PROJECT_ID}" \
-            --quiet 2>/dev/null || echo "  Subscription $$TRACE_PUBSUB_SUBSCRIPTION_ID not found or already deleted"
+          delete_or_confirm_absent subscription \
+            "projects/${PROJECT_ID}/subscriptions/$$TRACE_PUBSUB_SUBSCRIPTION_ID" \
+            gcloud pubsub subscriptions delete "$$TRACE_PUBSUB_SUBSCRIPTION_ID" \
+              --project "${PROJECT_ID}" --quiet || cleanup_failed=1
         fi
         if [ -f /workspace/trace_pubsub_topic.txt ]; then
           TRACE_PUBSUB_TOPIC_ID="$$(cat /workspace/trace_pubsub_topic.txt)"
           echo "Deleting Pub/Sub topic: $$TRACE_PUBSUB_TOPIC_ID"
-          gcloud pubsub topics delete "$$TRACE_PUBSUB_TOPIC_ID" \
-            --project "${PROJECT_ID}" \
-            --quiet 2>/dev/null || echo "  Topic $$TRACE_PUBSUB_TOPIC_ID not found or already deleted"
+          delete_or_confirm_absent topic \
+            "projects/${PROJECT_ID}/topics/$$TRACE_PUBSUB_TOPIC_ID" \
+            gcloud pubsub topics delete "$$TRACE_PUBSUB_TOPIC_ID" \
+              --project "${PROJECT_ID}" --quiet || cleanup_failed=1
         fi
         echo "=== Cleanup phase completed ==="
         if [ -f /workspace/e2e_failed.txt ]; then
           E2E_EXIT_CODE="$$(cat /workspace/e2e_failed.txt)"
           echo "❌ Build will fail due to e2e test failure (exit code: $$E2E_EXIT_CODE) after cleanup."
+        fi
+        if [ "$$cleanup_failed" -ne 0 ]; then
+          echo "Cleanup could not confirm that every owned resource is absent." >&2
+          exit 1
         fi
     id: 'Cleanup all resources'
     waitFor: ['Run e2e-harness Job']
