@@ -767,6 +767,66 @@ class GenerateGoModuleTests(unittest.TestCase):
             upload_commands = gsutil_log.read_text(encoding="utf-8")
             self.assertIn("x-goog-if-generation-match:0", upload_commands)
 
+    def test_generator_retries_only_the_observed_checksum_transport_failure(self) -> None:
+        bash = shutil.which("bash")
+        git_bash = pathlib.Path(r"C:\Program Files\Git\bin\bash.exe")
+        if os.name == "nt" and git_bash.is_file():
+            bash = str(git_bash)
+        if not bash:
+            self.skipTest("bash is not available")
+        wrapper = (pathlib.Path(__file__).resolve().parents[1] / "cloudbuild" /
+                   "build-tools" / "generate-and-upload-modules.sh")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            generator = fake_bin / "generator"
+            generator.write_bytes((
+                "#!/usr/bin/env bash\n"
+                "count=0; [[ -f \"$GENERATOR_COUNT\" ]] && count=$(cat \"$GENERATOR_COUNT\")\n"
+                "count=$((count + 1)); echo \"$count\" > \"$GENERATOR_COUNT\"\n"
+                "if [[ \"$count\" == 1 ]]; then\n"
+                "  printf '{\"schema_version\":1,\"status\":\"failure\"}\\n' > \"$1\"\n"
+                "  echo \"$GENERATOR_ERROR\" >&2\n"
+                "  exit 7\n"
+                "fi\n"
+                "printf '{\"schema_version\":1,\"status\":\"success\"}\\n' > \"$1\"\n"
+            ).encode())
+            generator.chmod(0o755)
+            for name, body in (("gsutil", "echo upload >> \"$UPLOAD_LOG\"\n"),
+                               ("sleep", "exit 0\n")):
+                stub = fake_bin / name
+                stub.write_bytes(("#!/usr/bin/env bash\n" + body).encode())
+                stub.chmod(0o755)
+            report = root / "report.json"
+            count = root / "count"
+            uploads = root / "uploads"
+            env = os.environ.copy()
+            env.update({"GENERATOR_COUNT": count.as_posix(),
+                        "GENERATOR_ERROR": "go: reading https://sum.golang.org/tile/1: stream error: stream ID 1; INTERNAL_ERROR; received from peer",
+                        "UPLOAD_LOG": uploads.as_posix(),
+                        "PATH": f"{fake_bin.as_posix()}:/usr/bin:/bin",
+                        "PYTHON_BINARY": pathlib.Path(sys.executable).as_posix()})
+            completed = subprocess.run(
+                [bash, wrapper.as_posix(), report.as_posix(),
+                 "gs://fixture/dependency-report.json", "--",
+                 generator.as_posix(), report.as_posix()],
+                env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            self.assertEqual(count.read_text(encoding="utf-8").strip(), "2")
+            self.assertEqual(len(uploads.read_text(encoding="utf-8").splitlines()), 1)
+            self.assertEqual(json.loads(report.read_text(encoding="utf-8"))["status"],
+                             "success")
+            count.unlink()
+            env["GENERATOR_ERROR"] = "product assertion failed"
+            rejected = subprocess.run(
+                [bash, wrapper.as_posix(), report.as_posix(),
+                 "gs://fixture/second-report.json", "--",
+                 generator.as_posix(), report.as_posix()],
+                env=env, text=True, capture_output=True, check=False)
+            self.assertEqual(rejected.returncode, 7)
+            self.assertEqual(count.read_text(encoding="utf-8").strip(), "1")
+
 
 if __name__ == "__main__":
     unittest.main()
