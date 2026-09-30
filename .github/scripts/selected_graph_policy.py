@@ -22,7 +22,7 @@ evaluation. A checksum or an unselected go.mod graph edge is not a selection.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -204,6 +204,8 @@ def advisory_records(matches: dict[tuple[str, str], list[dict]]) -> dict[str, di
         if record.get("id") != advisory_id or not isinstance(record.get("modified"), str) or \
                 not same_instant(record["modified"], modified):
             raise PolicyError(f"Advisory changed during scan: {advisory_id}")
+        if not isinstance(record.get("affected"), list) or not record["affected"]:
+            raise PolicyError(f"Advisory has no affected package data: {advisory_id}")
         details[advisory_id] = record
     return details
 
@@ -224,8 +226,23 @@ def evaluate(root: Path, module_files: list[Path]) -> dict:
             findings.append({"scope": row["scope"], "module": row["path"],
                              "selected_path": key[0], "version": key[1],
                              "advisory": item["id"], "modified": item["modified"]})
+    findings = list({(item["scope"], item["module"], item["selected_path"],
+                      item["version"], item["advisory"]): item
+                     for item in findings}.values())
+    findings.sort(key=lambda item: (item["scope"], item["module"], item["advisory"]))
     canonical = json.dumps(selected, sort_keys=True, separators=(",", ":")).encode()
-    return {"schema": 1, "result": "affected" if findings else "clean",
+    advisory_provenance = {}
+    for advisory_id, record in sorted(details.items()):
+        content = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+        advisory_provenance[advisory_id] = {
+            "modified": record["modified"],
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "aliases": sorted(record.get("aliases", [])),
+            "withdrawn": record.get("withdrawn"),
+        }
+    return {"schema": 2, "result": "affected" if findings else "clean",
+            "advisory_fetched_at": datetime.now(timezone.utc).isoformat(),
+            "advisories": advisory_provenance,
             "inventory_sha256": hashlib.sha256(canonical).hexdigest(),
             "modules": [path.parent.resolve().relative_to(root.resolve()).as_posix() or "."
                         for path in module_files],

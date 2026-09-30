@@ -100,8 +100,40 @@ class SelectedGraphPolicyTests(unittest.TestCase):
         matches = {("example.test/a", "v1.0.0"): [{
             "id": "GO-1", "modified": "2026-07-10T05:44:31.101996Z"}]}
         with mock.patch.object(policy, "request_json", return_value={
-            "id": "GO-1", "modified": "2026-07-10T05:44:31.101996029Z"}):
+            "id": "GO-1", "modified": "2026-07-10T05:44:31.101996029Z",
+            "affected": [{"package": {"ecosystem": "Go", "name": "example.test/a"}}]}):
             self.assertEqual(policy.advisory_records(matches)["GO-1"]["id"], "GO-1")
+
+    def test_full_record_requires_affected_data(self) -> None:
+        matches = {("example.test/a", "v1.0.0"): [{
+            "id": "GO-1", "modified": "2026-09-30T00:00:00Z"}]}
+        with mock.patch.object(policy, "request_json", return_value={
+            "id": "GO-1", "modified": "2026-09-30T00:00:00Z"}):
+            with self.assertRaisesRegex(policy.PolicyError, "affected package data"):
+                policy.advisory_records(matches)
+
+    def test_report_deduplicates_page_references_and_records_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            module = root / "go.mod"
+            module.write_text("module example.test/root\ngo 1.27\n")
+            selected = [{"scope": ".", "path": "example.test/a", "version": "v1.0.0",
+                         "selected_path": "example.test/a", "selected_version": "v1.0.0"}]
+            record = {"id": "GO-1", "modified": "2026-09-30T00:00:00Z",
+                      "affected": [{"package": {"ecosystem": "Go", "name": "example.test/a"}}],
+                      "aliases": ["GHSA-1"]}
+            matches = {("example.test/a", "v1.0.0"): [
+                {"id": "GO-1", "modified": record["modified"]},
+                {"id": "GO-1", "modified": record["modified"]}]}
+            with mock.patch.object(policy, "inventory", return_value=(selected, [])), \
+                 mock.patch.object(policy, "query_osv", return_value=matches), \
+                 mock.patch.object(policy, "advisory_records", return_value={"GO-1": record}):
+                report = policy.evaluate(root, [module])
+            self.assertEqual(report["schema"], 2)
+            self.assertEqual(len(report["findings"]), 1)
+            self.assertEqual(report["advisories"]["GO-1"]["aliases"], ["GHSA-1"])
+            self.assertEqual(len(report["advisories"]["GO-1"]["sha256"]), 64)
+            self.assertIsNotNone(report["advisory_fetched_at"])
 
     def test_go_command_is_read_only_and_ignores_parent_workspace(self) -> None:
         with mock.patch.object(policy.subprocess, "run", return_value=subprocess.CompletedProcess(
