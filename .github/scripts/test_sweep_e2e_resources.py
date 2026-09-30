@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import unittest
 from unittest import mock
+from pathlib import Path
 
 import sweep_e2e_resources as sweep
 
@@ -29,6 +30,15 @@ SHORT = "r-20260930t153909-25844"
 
 
 class SweepTests(unittest.TestCase):
+    def test_waiting_runner_sweeps_before_reporting_success(self):
+        runner = Path(__file__).with_name("run_e2e_cloud_build.sh").read_text(
+            encoding="utf-8")
+        self.assertLess(runner.index('if [[ "$E2E_NO_WAIT" == "true" ]]'),
+                        runner.index('"$SCRIPT_DIR/sweep_e2e_resources.py"'))
+        self.assertLess(runner.index('"$SCRIPT_DIR/sweep_e2e_resources.py"'),
+                        runner.rindex("emit_outputs"))
+        self.assertIn('BUILD_STATUS="FAILURE"', runner)
+
     def test_inventory_selects_only_exact_run_resources(self):
         services = [
             {"metadata": {"name": f"core-log-app-{SHORT}"}},

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<'EOF'
@@ -721,12 +722,34 @@ while true; do
     if [[ $elapsed -ge $MAX_WAIT_SECONDS ]]; then
         echo "Build did not complete within ${MAX_WAIT_SECONDS} seconds."
         BUILD_STATUS="TIMEOUT"
+        gcloud builds cancel "$BUILD_ID" --project="$GCP_PROJECT_ID" \
+            --region="$RUN_REGION" --quiet >/dev/null 2>&1 || true
+        for _ in {1..10}; do
+            status="$(gcloud builds describe "$BUILD_ID" --project="$GCP_PROJECT_ID" \
+                --region="$RUN_REGION" --format='value(status)' 2>/dev/null || true)"
+            if [[ "$status" == SUCCESS || "$status" == FAILURE || "$status" == TIMEOUT ||
+                  "$status" == CANCELLED || "$status" == INTERNAL_ERROR ]]; then
+                break
+            fi
+            sleep 10
+        done
         break
     fi
 
     sleep $POLL_INTERVAL
     elapsed=$((elapsed + POLL_INTERVAL))
 done
+
+if ! python3 "$SCRIPT_DIR/sweep_e2e_resources.py" \
+    --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
+    --build-id "$BUILD_ID" --run-id "$E2E_RUN_ID" \
+    --topic-base "$TRACE_PUBSUB_TOPIC" \
+    --subscription-base "$TRACE_PUBSUB_SUBSCRIPTION"; then
+    echo "Cloud resource cleanup was not confirmed." >&2
+    if [[ "$BUILD_STATUS" == "SUCCESS" ]]; then
+        BUILD_STATUS="FAILURE"
+    fi
+fi
 
 emit_outputs
 
