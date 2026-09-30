@@ -87,6 +87,32 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Set up declared Go toolchain for release graph
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Refresh selected graph before publication
+        shell: bash
+        env:
+          GOTOOLCHAIN: local
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/validate_release_graph.py \
+            --base "$(git rev-parse HEAD^)" \
+            --report "$RUNNER_TEMP/release-selected-graph.json"
+
+      - name: Retain release graph evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-selected-graph
+          path: ${{ runner.temp }}/release-selected-graph.json
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Check Existing Tag
         id: tag_state
         env:
