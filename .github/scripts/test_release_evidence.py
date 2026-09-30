@@ -29,6 +29,9 @@ import release_policy as policy
 
 class ReleaseRangeTests(unittest.TestCase):
     def setUp(self):
+        signer = patch.object(policy, "verify_authorized_signer")
+        signer.start()
+        self.addCleanup(signer.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
