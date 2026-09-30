@@ -135,6 +135,43 @@ class SelectedGraphPolicyTests(unittest.TestCase):
             self.assertEqual(len(report["advisories"]["GO-1"]["sha256"]), 64)
             self.assertIsNotNone(report["advisory_fetched_at"])
 
+    def test_base_and_candidate_use_one_advisory_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            base, candidate = parent / "base", parent / "candidate"
+            base.mkdir()
+            candidate.mkdir()
+            for root in (base, candidate):
+                (root / "go.mod").write_text("module example.test/root\ngo 1.27\n")
+            base_selected = [{"scope": ".", "path": "example.test/a", "version": "v1.0.0",
+                              "selected_path": "example.test/a", "selected_version": "v1.0.0"}]
+            candidate_selected = [{"scope": ".", "path": "example.test/a", "version": "v1.1.0",
+                                   "selected_path": "example.test/a", "selected_version": "v1.1.0"}]
+            base_query = {"package": {"ecosystem": "Go", "name": "example.test/a"},
+                          "version": "v1.0.0"}
+            candidate_query = {**base_query, "version": "v1.1.0"}
+            matches = {("example.test/a", "v1.0.0"): [{
+                "id": "GO-1", "modified": "2026-09-30T00:00:00Z"}],
+                ("example.test/a", "v1.1.0"): [{
+                    "id": "GO-1", "modified": "2026-09-30T00:00:00Z"}]}
+            record = {"GO-1": {"id": "GO-1", "modified": "2026-09-30T00:00:00Z",
+                               "affected": [{"package": {"ecosystem": "Go",
+                                                         "name": "example.test/a"}}]}}
+            with mock.patch.object(policy, "tracked_modules",
+                                   side_effect=[[base / "go.mod"], [candidate / "go.mod"]]), \
+                 mock.patch.object(policy, "inventory", side_effect=[
+                     (base_selected, [base_query]), (candidate_selected, [candidate_query])]), \
+                 mock.patch.object(policy, "query_osv", return_value=matches) as query, \
+                 mock.patch.object(policy, "advisory_records", return_value=record):
+                report = policy.compare(base, candidate)
+            query.assert_called_once()
+            self.assertEqual(len(query.call_args.args[0]), 2)
+            self.assertEqual(report["introduced"], [])
+            self.assertEqual(report["resolved"], [])
+            self.assertEqual(len(report["persistent"]), 1)
+            self.assertEqual(report["base"]["advisory_fetched_at"],
+                             report["candidate"]["advisory_fetched_at"])
+
     def test_go_command_is_read_only_and_ignores_parent_workspace(self) -> None:
         with mock.patch.object(policy.subprocess, "run", return_value=subprocess.CompletedProcess(
             [], 0, '{"Path":"example.test/root","Main":true}', "")) as run:

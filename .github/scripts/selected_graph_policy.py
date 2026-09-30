@@ -27,8 +27,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -210,10 +212,9 @@ def advisory_records(matches: dict[tuple[str, str], list[dict]]) -> dict[str, di
     return details
 
 
-def evaluate(root: Path, module_files: list[Path]) -> dict:
-    selected, queries = inventory(root, module_files)
-    matches = query_osv(queries)
-    details = advisory_records(matches)
+def report_for(root: Path, module_files: list[Path], selected: list[dict],
+               matches: dict[tuple[str, str], list[dict]], details: dict[str, dict],
+               fetched_at: str) -> dict:
     findings = []
     for row in selected:
         if "selected_path" not in row:
@@ -241,7 +242,7 @@ def evaluate(root: Path, module_files: list[Path]) -> dict:
             "withdrawn": record.get("withdrawn"),
         }
     return {"schema": 2, "result": "affected" if findings else "clean",
-            "advisory_fetched_at": datetime.now(timezone.utc).isoformat(),
+            "advisory_fetched_at": fetched_at,
             "advisories": advisory_provenance,
             "inventory_sha256": hashlib.sha256(canonical).hexdigest(),
             "modules": [path.parent.resolve().relative_to(root.resolve()).as_posix() or "."
@@ -249,10 +250,65 @@ def evaluate(root: Path, module_files: list[Path]) -> dict:
             "selected": selected, "findings": findings}
 
 
+def evaluate(root: Path, module_files: list[Path]) -> dict:
+    selected, queries = inventory(root, module_files)
+    matches = query_osv(queries)
+    details = advisory_records(matches)
+    return report_for(root, module_files, selected, matches, details,
+                      datetime.now(timezone.utc).isoformat())
+
+
+def compare(base_root: Path, candidate_root: Path,
+            module_scopes: list[Path] | None = None) -> dict:
+    base_files = ([base_root / scope / "go.mod" for scope in module_scopes]
+                  if module_scopes else tracked_modules(base_root))
+    candidate_files = ([candidate_root / scope / "go.mod" for scope in module_scopes]
+                       if module_scopes else tracked_modules(candidate_root))
+    if not all(path.is_file() for path in [*base_files, *candidate_files]):
+        raise PolicyError("A requested module is missing from base or candidate")
+    base_selected, base_queries = inventory(base_root, base_files)
+    candidate_selected, candidate_queries = inventory(candidate_root, candidate_files)
+    union = {(query["package"]["name"], query["version"]): query
+             for query in [*base_queries, *candidate_queries]}
+    matches = query_osv([union[key] for key in sorted(union)])
+    details = advisory_records(matches)
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    base = report_for(base_root, base_files, base_selected, matches, details, fetched_at)
+    candidate = report_for(candidate_root, candidate_files, candidate_selected,
+                           matches, details, fetched_at)
+
+    def indexed(report: dict) -> dict[tuple[str, str, str], dict]:
+        return {(item["scope"], item["module"], item["advisory"]): item
+                for item in report["findings"]}
+
+    before, after = indexed(base), indexed(candidate)
+    return {"schema": 1, "advisory_fetched_at": fetched_at,
+            "base": base, "candidate": candidate,
+            "introduced": [after[key] for key in sorted(after.keys() - before.keys())],
+            "resolved": [before[key] for key in sorted(before.keys() - after.keys())],
+            "persistent": [after[key] for key in sorted(after.keys() & before.keys())]}
+
+
+def compare_git(root: Path, base: str, scopes: list[Path] | None = None) -> dict:
+    if not re.fullmatch(r"[a-f0-9]{40}", base):
+        raise PolicyError("Comparison requires an exact base commit SHA")
+    with tempfile.TemporaryDirectory(prefix="selected-graph-base-") as temporary:
+        base_root = Path(temporary) / "base"
+        subprocess.run(["git", "-C", str(root), "worktree", "add", "--detach",
+                        str(base_root), base], check=True, capture_output=True, text=True)
+        try:
+            return compare(base_root, root, scopes)
+        finally:
+            subprocess.run(["git", "-C", str(root), "worktree", "remove",
+                            "--force", str(base_root)], check=True,
+                           capture_output=True, text=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--module", action="append", type=Path)
+    parser.add_argument("--base", help="Compare with an exact base commit")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     try:
@@ -260,19 +316,33 @@ def main() -> int:
         modules = [root / item / "go.mod" for item in args.module] if args.module else tracked_modules(root)
         if not all(path.is_file() for path in modules):
             raise PolicyError("A requested Go module has no go.mod")
-        report = evaluate(root, modules)
+        if args.base:
+            if not all(path.is_file() for path in modules):
+                raise PolicyError("A requested Go module has no go.mod")
+            if not all(path.resolve().is_relative_to(root) for path in modules):
+                raise PolicyError("Requested module is outside the candidate checkout")
+            scopes = ([path.parent.resolve().relative_to(root) for path in modules]
+                      if args.module else None)
+            report = compare_git(root, args.base, scopes)
+        else:
+            report = evaluate(root, modules)
     except (PolicyError, OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
         print(f"Selected graph policy indeterminate: {error}", file=sys.stderr)
         return 2
     if args.report:
         args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(f"Selected graph policy: {report['result']}; "
-          f"{len(report['modules'])} modules; {len(report['findings'])} findings; "
-          f"inventory {report['inventory_sha256']}")
-    for item in report["findings"]:
+    candidate = report["candidate"] if args.base else report
+    print(f"Selected graph policy: {candidate['result']}; "
+          f"{len(candidate['modules'])} modules; {len(candidate['findings'])} findings; "
+          f"inventory {candidate['inventory_sha256']}")
+    if args.base:
+        print(f"  Introduced advisories: {len(report['introduced'])}; "
+              f"resolved advisories: {len(report['resolved'])}; "
+              f"persistent advisories: {len(report['persistent'])}")
+    for item in candidate["findings"]:
         print(f"  {item['scope']}: {item['selected_path']}@{item['version']} "
               f"{item['advisory']}")
-    return 1 if report["findings"] else 0
+    return 1 if candidate["findings"] else 0
 
 
 if __name__ == "__main__":
