@@ -31,6 +31,7 @@ import subprocess
 import sys
 
 import selected_graph_policy as graph
+import audit_generated_graphs as generated_graph
 import validate_renovate_pr as candidate_policy
 
 
@@ -86,6 +87,10 @@ def assess(event: dict, base: str, root: Path) -> tuple[str, dict | None]:
     validate_root_floors(candidate_policy.git("show", f"{base}:go.mod"),
                          candidate_policy.git("show", f"{head}:go.mod"))
     report = graph.compare_git(root, base)
+    generated = generated_graph.compare_generated_git(root, base)
+    report["generated"] = generated
+    report["introduced"].extend({**item, "scope": ".e2e/generated/" + item["scope"]}
+                                  for item in generated["introduced"])
     return "security_repair_candidate", report
 
 
