@@ -206,6 +206,29 @@ func TestLogadminRetriesThrottledPage(t *testing.T) {
 	}
 }
 
+// TestLogadminRetriesStalledPage keeps a stalled read inside the overall wait.
+func TestLogadminRetriesStalledPage(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+		defer cancel()
+		calls := 0
+		start := time.Now()
+		invoke := func(attemptCtx context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ ...grpc.CallOption) error {
+			calls++
+			if calls == 1 {
+				<-attemptCtx.Done()
+				return attemptCtx.Err()
+			}
+			return nil
+		}
+		err := retryLogQuotaRPC(ctx, "/google.logging.v2.LoggingServiceV2/ListLogEntries",
+			nil, nil, nil, invoke)
+		if err != nil || calls != 2 || time.Since(start) != 26*time.Second {
+			t.Fatalf("calls=%d elapsed=%v err=%v", calls, time.Since(start), err)
+		}
+	})
+}
+
 // TestMissingLogsStillFailWithinDeadline checks that missing logs cannot pass validation.
 func TestMissingLogsStillFailWithinDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

@@ -28,7 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// retryLogQuota retries a throttled read, never an assertion or permission error.
+// retryLogQuota retries a transient read, never an assertion or permission error.
 // The caller's deadline includes these waits. The attempt cap also bounds callers
 // without deadlines; jitter prevents concurrent harnesses retrying in lockstep.
 func retryLogQuota(ctx context.Context, read func() error) error {
@@ -40,15 +40,21 @@ func retryLogQuota(ctx context.Context, read func() error) error {
 		var apiErr *googleapi.Error
 		throttled := status.Code(err) == codes.ResourceExhausted ||
 			(errors.As(err, &apiErr) && apiErr.Code == http.StatusTooManyRequests)
-		if !throttled || attempt == 3 {
+		transport := ctx.Err() == nil && (errors.Is(err, context.DeadlineExceeded) ||
+			status.Code(err) == codes.DeadlineExceeded ||
+			status.Code(err) == codes.Unavailable)
+		if (!throttled && !transport) || attempt == 3 {
 			return err
 		}
-		delay := min(30*time.Second<<attempt, time.Minute) + time.Duration(rand.Int64N(int64(5*time.Second)))
+		delay := time.Second << attempt
+		if throttled {
+			delay = min(30*time.Second<<attempt, time.Minute) + time.Duration(rand.Int64N(int64(5*time.Second)))
+		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return fmt.Errorf("log quota retry stopped (%v): %w", err, ctx.Err())
+			return fmt.Errorf("log read retry stopped (%v): %w", err, ctx.Err())
 		case <-timer.C:
 		}
 	}
@@ -56,10 +62,15 @@ func retryLogQuota(ctx context.Context, read func() error) error {
 }
 
 // retryLogQuotaRPC retries the same entries.list page, not the whole iterator.
+// A per-call deadline keeps one stalled read from consuming the entire log wait.
 func retryLogQuotaRPC(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoke grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-	read := func() error { return invoke(ctx, method, req, reply, cc, opts...) }
 	if method != "/google.logging.v2.LoggingServiceV2/ListLogEntries" {
-		return read()
+		return invoke(ctx, method, req, reply, cc, opts...)
+	}
+	read := func() error {
+		attemptCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+		return invoke(attemptCtx, method, req, reply, cc, opts...)
 	}
 	return retryLogQuota(ctx, read)
 }
