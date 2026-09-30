@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import textwrap
 import unittest
 import urllib.error
@@ -32,6 +33,7 @@ import release_policy as policy
 
 SHA = "a" * 40
 PARENT = "b" * 40
+VERIFY_AUTHORIZED_SIGNER = policy.verify_authorized_signer
 
 
 class ReleaseIntentTests(unittest.TestCase):
@@ -151,6 +153,9 @@ class GitHubReadTests(unittest.TestCase):
 
 class PublicationTests(unittest.TestCase):
     def setUp(self):
+        signer = patch.object(policy, "verify_authorized_signer")
+        self.signer = signer.start()
+        self.addCleanup(signer.stop)
         self.ref = {"object": {"type": "tag", "sha": "c" * 40}}
         self.tag = {
             "object": {"type": "commit", "sha": SHA},
@@ -159,9 +164,42 @@ class PublicationTests(unittest.TestCase):
         self.release = {"tag_name": "v1.2.4", "draft": False}
         self.client = Mock(spec=policy.GitHub)
 
+    def test_authorized_signer_verifies_key_and_identity(self):
+        ssh_keygen = shutil.which("ssh-keygen")
+        if not ssh_keygen:
+            self.skipTest("ssh-keygen is required for SSH tag verification")
+        with tempfile.TemporaryDirectory() as temporary:
+            key = Path(temporary) / "release_key"
+            subprocess.run([ssh_keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+                           check=True, capture_output=True)
+            payload = "object " + SHA + "\ntype commit\ntag v1.2.4\n"
+            signature = subprocess.run(
+                [ssh_keygen, "-Y", "sign", "-f", str(key), "-n", "git"],
+                input=payload.encode(), capture_output=True, check=True,
+            ).stdout.decode()
+            tag = {"tagger": {"email": "release@example.com"},
+                   "verification": {"payload": payload, "signature": signature}}
+            public_key = key.with_suffix(".pub").read_text()
+            VERIFY_AUTHORIZED_SIGNER(tag, "release@example.com", public_key)
+            with self.assertRaisesRegex(ValueError, "not configured"):
+                VERIFY_AUTHORIZED_SIGNER(tag, "", public_key)
+            with self.assertRaisesRegex(ValueError, "identity"):
+                VERIFY_AUTHORIZED_SIGNER(tag, "other@example.com", public_key)
+            with self.assertRaisesRegex(ValueError, "authorized key"):
+                VERIFY_AUTHORIZED_SIGNER(tag, "release@example.com",
+                                         public_key.replace("ssh-ed25519", "ssh-rsa"))
+            with self.assertRaisesRegex(ValueError, "authorized key"):
+                VERIFY_AUTHORIZED_SIGNER({**tag, "verification": {
+                    **tag["verification"], "payload": payload + "tampered"}},
+                    "release@example.com", public_key)
+
     def test_existing_valid_tag_and_release_are_noop(self):
         self.client.get.side_effect = [self.ref, self.tag, self.release]
-        policy.publish(self.client, "v1.2.4", SHA)
+        with patch.dict(os.environ, {"RELEASE_SIGNER_EMAIL": "release@example.com",
+                                     "RELEASE_SSH_PUBLIC_KEY": "ssh-ed25519 fixture"}):
+            policy.publish(self.client, "v1.2.4", SHA)
+        self.signer.assert_called_once_with(self.tag, "release@example.com",
+                                            "ssh-ed25519 fixture")
         self.client.request.assert_not_called()
 
     def test_valid_tag_with_missing_release_is_completed(self):

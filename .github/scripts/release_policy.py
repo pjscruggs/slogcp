@@ -22,6 +22,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -188,7 +189,34 @@ def verify_tag(
         or verification.get("reason") != "valid"
     ):
         raise ValueError("GitHub has not verified the release tag signature")
+    verify_authorized_signer(tag, os.environ.get("RELEASE_SIGNER_EMAIL", ""),
+                             os.environ.get("RELEASE_SSH_PUBLIC_KEY", ""))
     return True
+
+
+def verify_authorized_signer(tag: dict, email: str, public_key: str) -> None:
+    if not email or not public_key:
+        raise ValueError("Authorized release signing identity is not configured")
+    tagger = tag.get("tagger")
+    if not isinstance(tagger, dict) or tagger.get("email") != email:
+        raise ValueError("Release tagger is not the authorized signing identity")
+    verification = tag.get("verification", {})
+    payload, signature = verification.get("payload"), verification.get("signature")
+    if not isinstance(payload, str) or not payload or not isinstance(signature, str) or \
+            not signature.startswith("-----BEGIN SSH SIGNATURE-----"):
+        raise ValueError("Release tag lacks a verifiable SSH signature payload")
+    with tempfile.TemporaryDirectory(prefix="release-signature-") as temporary:
+        allowed = Path(temporary) / "allowed_signers"
+        signed = Path(temporary) / "signature"
+        allowed.write_text(f"{email} {public_key.strip()}\n", encoding="utf-8")
+        signed.write_text(signature, encoding="utf-8")
+        result = subprocess.run(
+            ["ssh-keygen", "-Y", "verify", "-n", "git", "-f", str(allowed),
+             "-I", email, "-s", str(signed)],
+            input=payload.encode("utf-8"), capture_output=True, check=False,
+        )
+    if result.returncode != 0:
+        raise ValueError("Release tag was not signed by the authorized key")
 
 
 def require_cloud_evidence(client: GitHub, scope: dict[str, str], app_id: int) -> None:
