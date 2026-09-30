@@ -61,6 +61,22 @@ class SelectedGraphPolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(policy.PolicyError, "Uninventoried"):
                     policy.inventory(root, [root / "go.mod"])
 
+    def test_generated_local_replacement_uses_explicit_module_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            service = root / "service"
+            library = service / "library"
+            library.mkdir(parents=True)
+            (service / "go.mod").write_text("module example.test/service\ngo 1.27\n")
+            (library / "go.mod").write_text("module example.test/library\ngo 1.27\n")
+            entries = [{"Path": "example.test/service", "Main": True},
+                       {"Path": "example.test/library", "Version": "v1.0.0",
+                        "Replace": {"Path": "./library"}}]
+            with mock.patch.object(policy, "selected_modules", return_value=entries):
+                selected, _ = policy.inventory(root, [service / "go.mod"],
+                                               [service / "go.mod", library / "go.mod"])
+            self.assertEqual(selected[0]["local_replacement"], "service/library")
+
     def test_paginated_batch_is_complete_for_each_query(self) -> None:
         queries = [{"package": {"ecosystem": "Go", "name": "example.test/a"},
                     "version": "v1.0.0"},

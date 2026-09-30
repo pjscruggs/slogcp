@@ -93,8 +93,10 @@ def selected_modules(module_dir: Path) -> list[dict]:
     return values
 
 
-def inventory(root: Path, module_files: list[Path]) -> tuple[list[dict], list[dict]]:
-    known = {path.parent.resolve() for path in tracked_modules(root)}
+def inventory(root: Path, module_files: list[Path],
+              known_modules: list[Path] | None = None) -> tuple[list[dict], list[dict]]:
+    known = {path.parent.resolve() for path in (
+        known_modules if known_modules is not None else tracked_modules(root))}
     selected: list[dict] = []
     queries: set[tuple[str, str]] = set()
     for manifest in module_files:
@@ -250,24 +252,24 @@ def report_for(root: Path, module_files: list[Path], selected: list[dict],
             "selected": selected, "findings": findings}
 
 
-def evaluate(root: Path, module_files: list[Path]) -> dict:
-    selected, queries = inventory(root, module_files)
+def evaluate(root: Path, module_files: list[Path],
+             known_modules: list[Path] | None = None) -> dict:
+    selected, queries = inventory(root, module_files, known_modules)
     matches = query_osv(queries)
     details = advisory_records(matches)
     return report_for(root, module_files, selected, matches, details,
                       datetime.now(timezone.utc).isoformat())
 
 
-def compare(base_root: Path, candidate_root: Path,
-            module_scopes: list[Path] | None = None) -> dict:
-    base_files = ([base_root / scope / "go.mod" for scope in module_scopes]
-                  if module_scopes else tracked_modules(base_root))
-    candidate_files = ([candidate_root / scope / "go.mod" for scope in module_scopes]
-                       if module_scopes else tracked_modules(candidate_root))
+def compare_explicit(base_root: Path, base_files: list[Path], candidate_root: Path,
+                     candidate_files: list[Path],
+                     base_known: list[Path] | None = None,
+                     candidate_known: list[Path] | None = None) -> dict:
     if not all(path.is_file() for path in [*base_files, *candidate_files]):
         raise PolicyError("A requested module is missing from base or candidate")
-    base_selected, base_queries = inventory(base_root, base_files)
-    candidate_selected, candidate_queries = inventory(candidate_root, candidate_files)
+    base_selected, base_queries = inventory(base_root, base_files, base_known)
+    candidate_selected, candidate_queries = inventory(candidate_root, candidate_files,
+                                                     candidate_known)
     union = {(query["package"]["name"], query["version"]): query
              for query in [*base_queries, *candidate_queries]}
     matches = query_osv([union[key] for key in sorted(union)])
@@ -287,6 +289,15 @@ def compare(base_root: Path, candidate_root: Path,
             "introduced": [after[key] for key in sorted(after.keys() - before.keys())],
             "resolved": [before[key] for key in sorted(before.keys() - after.keys())],
             "persistent": [after[key] for key in sorted(after.keys() & before.keys())]}
+
+
+def compare(base_root: Path, candidate_root: Path,
+            module_scopes: list[Path] | None = None) -> dict:
+    base_files = ([base_root / scope / "go.mod" for scope in module_scopes]
+                  if module_scopes else tracked_modules(base_root))
+    candidate_files = ([candidate_root / scope / "go.mod" for scope in module_scopes]
+                       if module_scopes else tracked_modules(candidate_root))
+    return compare_explicit(base_root, base_files, candidate_root, candidate_files)
 
 
 def compare_git(root: Path, base: str, scopes: list[Path] | None = None) -> dict:
