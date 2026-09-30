@@ -383,6 +383,9 @@ jobs:
       - name: Test root module at its compatibility floor
         run: go test -mod=readonly -race -count=1 ./...
 
+      - name: Test the published dependency floor as a consumer
+        run: python3 .github/scripts/check_consumer_floor.py --root .
+
   # --------------------------------------
   # ROOT VALIDATION (runs root module code)
   # --------------------------------------
