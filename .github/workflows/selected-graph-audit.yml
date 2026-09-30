@@ -51,11 +51,31 @@ jobs:
               >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Generate and audit cloud consumer graphs
+        shell: bash
+        run: |
+          set +e
+          python3 .github/scripts/audit_generated_graphs.py \
+            --root . --report "$RUNNER_TEMP/generated-graph-report.json"
+          result=$?
+          set -e
+          if [[ "$result" -eq 2 ]]; then
+            echo 'Generated graph audit was indeterminate.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [[ "$result" -ne 0 && "$result" -ne 1 ]]; then
+            exit "$result"
+          fi
+          jq -r '"Generated graph: \(.result); modules: \(.generated_module_count); findings: \(.findings | length); inventory: \(.inventory_sha256)"' \
+            "$RUNNER_TEMP/generated-graph-report.json" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Retain the selected graph and advisory evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: selected-graph-report
-          path: ${{ runner.temp }}/selected-graph-report.json
+          path: |
+            ${{ runner.temp }}/selected-graph-report.json
+            ${{ runner.temp }}/generated-graph-report.json
           if-no-files-found: ignore
           retention-days: 30
