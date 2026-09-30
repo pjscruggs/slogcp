@@ -31,7 +31,6 @@ VERSION = re.compile(
     re.MULTILINE,
 )
 RENOVATE_AUTHORS = {"renovate[bot]", "app/renovate"}
-SECURITY = re.compile(r"security|vulnerab|cve|ghsa", re.IGNORECASE)
 
 
 def one_directive(source: str, directive: str) -> str:
@@ -82,7 +81,6 @@ def inspect_candidate(
     base_version: str,
     head_version: str,
     changed_paths: list[str],
-    security_hint: bool,
     examples_dir: str = ".examples",
     benchmarks_dir: str = ".benchmarks",
 ) -> str:
@@ -105,9 +103,9 @@ def inspect_candidate(
             )
         return "non_releasing"
 
-    if not security_hint or not changed_requirements:
+    if not changed_requirements:
         raise ValueError(
-            "Root dependency changes require a security repair, not routine minimum-version updates"
+            "Root dependency changes require an increased floor and graph-verified security repair"
         )
 
     def allowed_path(path: str) -> bool:
@@ -184,18 +182,12 @@ def validate_event(event: dict, base: str, examples_dir: str = ".examples") -> s
         .rstrip("\0")
         .split("\0")
     )
-    labels = [label.get("name", "") for label in pr.get("labels", [])]
-    hint = any(
-        SECURITY.search(value)
-        for value in [pr.get("title", ""), pr["head"].get("ref", ""), *labels]
-    )
     return inspect_candidate(
         git("show", f"{base}:go.mod"),
         git("show", f"{head}:go.mod"),
         git("show", f"{base}:version.go"),
         git("show", f"{head}:version.go"),
         changed_paths,
-        hint,
         examples_dir,
     )
 

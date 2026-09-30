@@ -220,6 +220,31 @@ jobs:
         if: github.event_name == 'pull_request'
         run: python3 .github/scripts/validate_renovate_pr.py --base "$CURRENT_BASE_SHA"
 
+      - name: Set up Go for selected graph validation
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Verify automated root security repair against selected graphs
+        if: github.event_name == 'pull_request'
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          python3 .github/scripts/validate_security_graph.py \
+            --base "$CURRENT_BASE_SHA" \
+            --report "$RUNNER_TEMP/renovate-selected-graph.json"
+
+      - name: Retain automated security graph evidence
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: renovate-selected-graph
+          path: ${{ runner.temp }}/renovate-selected-graph.json
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Test CI policy and release scripts
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
 
