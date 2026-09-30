@@ -91,15 +91,38 @@ finally:
 PY
 }
 
-if ! rm -f -- "$REPORT_PATH"; then
-    echo "Unable to remove stale dependency report at $REPORT_PATH" >&2
-    exit 73
-fi
+attempt_log="$(mktemp)" || exit 73
+trap 'rm -f -- "$attempt_log"' EXIT
+GENERATOR_RC=1
+for attempt in 1 2; do
+    if ! rm -f -- "$REPORT_PATH"; then
+        echo "Unable to remove stale dependency report at $REPORT_PATH" >&2
+        exit 73
+    fi
+    : > "$attempt_log"
+    set +e
+    "$@" 2>&1 | tee "$attempt_log"
+    command_status=("${PIPESTATUS[@]}")
+    set -e
+    GENERATOR_RC="${command_status[0]}"
+    if (( command_status[1] != 0 )); then
+        echo "Unable to retain generator diagnostics" >&2
+        GENERATOR_RC=74
+        break
+    fi
+    if (( GENERATOR_RC == 0 )); then
+        break
+    fi
+    if (( attempt == 2 )) || ! grep -Eq \
+      'https://sum\.golang\.org/[^[:space:]]*: stream error: .*INTERNAL_ERROR; received from peer' \
+      "$attempt_log"; then
+        break
+    fi
+    echo "Checksum service transport failure during module generation; retrying once."
+    sleep 10
+done
 
 set +e
-"$@"
-GENERATOR_RC=$?
-
 REPORT_RC=0
 if ! validate_report; then
     if (( GENERATOR_RC != 0 )); then

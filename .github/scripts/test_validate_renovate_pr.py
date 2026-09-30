@@ -67,7 +67,6 @@ class CandidateScopeTests(unittest.TestCase):
             "base_version": VERSION,
             "head_version": PATCH_VERSION,
             "changed_paths": ["go.mod", "go.sum", "version.go"],
-            "security_hint": True,
         }
         fixture.update(changes)
         return policy.inspect_candidate(**fixture)
@@ -136,12 +135,11 @@ class CandidateScopeTests(unittest.TestCase):
             "non_releasing",
         )
 
-    def test_unmarked_routine_root_minimum_update_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "require a security repair"):
-            self.inspect(security_hint=False)
+    def test_security_markers_are_not_a_substitute_for_graph_validation(self) -> None:
+        self.assertEqual(self.inspect(), "security_patch")
 
     def test_removing_a_requirement_alone_is_not_a_security_repair(self) -> None:
-        with self.assertRaisesRegex(ValueError, "require a security repair"):
+        with self.assertRaisesRegex(ValueError, "increased floor"):
             self.inspect(
                 head_module=MODULE.replace("require example.org/runtime v1.0.0\n", "")
             )
@@ -247,6 +245,14 @@ class EventBindingTests(unittest.TestCase):
         git.assert_any_call("merge-base", "--is-ancestor", BASE, HEAD)
         git.assert_any_call("show", f"{BASE}:version.go")
         git.assert_any_call("show", f"{HEAD}:version.go")
+
+    def test_missing_security_title_and_label_do_not_control_repair_policy(self) -> None:
+        candidate = event()
+        candidate["pull_request"]["title"] = "Update runtime"
+        candidate["pull_request"]["labels"] = []
+        candidate["pull_request"]["head"]["ref"] = "renovate/runtime"
+        with patch.object(policy, "git", side_effect=self.git_reply):
+            self.assertEqual(policy.validate_event(candidate, BASE), "security_patch")
 
     def test_human_prs_and_non_pr_events_keep_their_existing_review_path(self) -> None:
         human = event()

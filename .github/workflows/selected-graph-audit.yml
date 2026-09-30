@@ -1,0 +1,81 @@
+name: Selected Go Graph Audit
+
+on:
+  schedule:
+    - cron: '17 10 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selected_graph_audit:
+    name: Audit selected Go modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up the declared Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Resolve and audit all tracked modules
+        id: scan
+        shell: bash
+        run: |
+          set +e
+          python3 .github/scripts/selected_graph_policy.py \
+            --root . --report "$RUNNER_TEMP/selected-graph-report.json"
+          result=$?
+          set -e
+          if [[ "$result" -eq 2 ]]; then
+            echo 'Selected graph audit was indeterminate.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [[ "$result" -ne 0 && "$result" -ne 1 ]]; then
+            exit "$result"
+          fi
+          jq -r '"Selected graph: \(.result); tracked modules: \(.modules | length); findings: \(.findings | length); inventory: \(.inventory_sha256)"' \
+            "$RUNNER_TEMP/selected-graph-report.json" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$result" -eq 1 ]]; then
+            echo 'Findings are reported for review. This audit does not authorize an automated merge.' \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Generate and audit cloud consumer graphs
+        shell: bash
+        run: |
+          set +e
+          python3 .github/scripts/audit_generated_graphs.py \
+            --root . --report "$RUNNER_TEMP/generated-graph-report.json"
+          result=$?
+          set -e
+          if [[ "$result" -eq 2 ]]; then
+            echo 'Generated graph audit was indeterminate.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [[ "$result" -ne 0 && "$result" -ne 1 ]]; then
+            exit "$result"
+          fi
+          jq -r '"Generated graph: \(.result); modules: \(.generated_module_count); findings: \(.findings | length); inventory: \(.inventory_sha256)"' \
+            "$RUNNER_TEMP/generated-graph-report.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain the selected graph and advisory evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: selected-graph-report
+          path: |
+            ${{ runner.temp }}/selected-graph-report.json
+            ${{ runner.temp }}/generated-graph-report.json
+          if-no-files-found: ignore
+          retention-days: 30

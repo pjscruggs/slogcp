@@ -68,6 +68,8 @@ jobs:
     environment: release-tags
     env:
       VERSION: ${{ needs.release_intent.outputs.version }}
+      RELEASE_SIGNER_EMAIL: ${{ vars.RELEASE_SIGNER_EMAIL }}
+      RELEASE_SSH_PUBLIC_KEY: ${{ secrets.RELEASE_SSH_PUBLIC_KEY }}
     steps:
       - name: Require Successful Release Validation
         env:
@@ -84,6 +86,32 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Set up declared Go toolchain for release graph
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Refresh selected graph before publication
+        shell: bash
+        env:
+          GOTOOLCHAIN: local
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/validate_release_graph.py \
+            --base "$(git rev-parse HEAD^)" \
+            --report "$RUNNER_TEMP/release-selected-graph.json"
+
+      - name: Retain release graph evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-selected-graph
+          path: ${{ runner.temp }}/release-selected-graph.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Check Existing Tag
         id: tag_state
@@ -126,7 +154,12 @@ jobs:
           key_file="$RUNNER_TEMP/release_signing_key"
           printf '%s' "$RELEASE_SSH_PRIVATE_KEY_B64" | base64 -d > "$key_file"
           printf '%s\n' "$RELEASE_SSH_PUBLIC_KEY" > "${key_file}.pub"
-          ssh-keygen -y -f "$key_file" >/dev/null
+          derived_key="$(ssh-keygen -y -f "$key_file" | awk '{print $1 " " $2}')"
+          expected_key="$(printf '%s\n' "$RELEASE_SSH_PUBLIC_KEY" | awk '{print $1 " " $2}')"
+          if [[ "$derived_key" != "$expected_key" ]]; then
+            echo 'Configured release public key does not match signing key.' >&2
+            exit 1
+          fi
           printf '%s %s\n' "$RELEASE_SIGNER_EMAIL" "$RELEASE_SSH_PUBLIC_KEY" > "$RUNNER_TEMP/release_allowed_signers"
           git config user.name "$RELEASE_SIGNER_NAME"
           git config user.email "$RELEASE_SIGNER_EMAIL"

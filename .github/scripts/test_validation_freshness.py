@@ -42,6 +42,75 @@ def script(name):
     return "\n".join(body)
 
 
+class GatekeeperTransportRetryTests(unittest.TestCase):
+    def execute(self, status):
+        harness = r"""
+globalThis.setTimeout = callback => callback();
+Math.random = () => 0;
+const sha = 'a'.repeat(40), base = 'b'.repeat(40);
+const context = {repo:{owner:'owner',repo:'repo'},payload:{pull_request:{number:7,head:{sha}}}};
+const core = {info:()=>{},warning:()=>{},setOutput:(key,value)=>console.log(`OUTPUT ${key}=${value}`)};
+let calls = 0;
+const github = {
+  rest:{
+    actions:{listWorkflowRuns:async()=>({data:{workflow_runs:[{
+      id:10,run_attempt:1,head_sha:sha,event:'pull_request',
+      path:'.github/workflows/validation_pipeline.yml',pull_requests:[{number:7}],
+      status:'completed',conclusion:'success'}]}})},
+    pulls:{get:async()=>({data:{base:{ref:'main',repo:{full_name:'owner/repo'}},head:{sha}}})},
+    git:{getRef:async()=>({data:{object:{sha:base}}})},
+    repos:{compareCommits:async()=>({data:{status:'ahead',behind_by:0,
+      merge_base_commit:{sha:base}}})}
+  },
+  paginate:async()=>{
+    calls++;
+    if (calls === 1 || Number(process.env.RETRY_STATUS) === 403) {
+      const status = Number(process.env.RETRY_STATUS);
+      throw status === 0 ? {code:'ECONNRESET'} : {status};
+    }
+    return [{id:20,name:'Local Validation Ready for E2E',run_id:10,
+      run_attempt:1,head_sha:sha,status:'completed',conclusion:'success'}];
+  }
+};
+async function run(){
+"""
+        tail = "\n}\nawait run().catch(error => {console.log('ERROR '+error.status);process.exitCode=1});\nconsole.log('CALLS '+calls);"
+        return subprocess.run(
+            ["node", "--input-type=module", "-e",
+             harness + script("Wait for scoped local validation to succeed") + tail],
+            env={**os.environ, "RETRY_STATUS": str(status),
+                 "LOCAL_VALIDATION_CHECK_NAME": "Local Validation Ready for E2E"},
+            capture_output=True, text=True,
+        )
+
+    def test_transient_502_is_retried_and_authority_is_still_checked(self):
+        result = self.execute(502)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("OUTPUT ok=true", result.stdout)
+        self.assertIn("CALLS 2", result.stdout)
+
+    def test_persistent_authorization_error_is_not_retried(self):
+        result = self.execute(403)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ERROR 403", result.stdout)
+        self.assertIn("CALLS 1", result.stdout)
+
+    def test_transient_connection_reset_is_retried(self):
+        result = self.execute(0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("OUTPUT ok=true", result.stdout)
+        self.assertIn("CALLS 2", result.stdout)
+
+    def test_final_authority_read_uses_the_same_bounded_transport_policy(self):
+        final = script("Revalidate PR authority before E2E acceptance")
+        for operation in ("List validation runs", "List validation jobs",
+                          "Read pull request", "Read current base",
+                          "Compare candidate and base"):
+            self.assertIn(f"retryApi('{operation}'", final)
+        self.assertIn("[429, 500, 502, 503, 504]", final)
+        self.assertIn("attempt === 3", final)
+
+
 class FinalFreshnessTests(unittest.TestCase):
     def fixture(self):
         pr = {

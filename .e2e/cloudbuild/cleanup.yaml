@@ -1,0 +1,27 @@
+timeout: '1200s'
+serviceAccount: 'projects/$PROJECT_ID/serviceAccounts/${_CALLER_SERVICE_ACCOUNT}'
+options:
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true
+  automapSubstitutions: true
+substitutions:
+  _CALLER_SERVICE_ACCOUNT: ''
+  _GCP_REGION: ''
+  _ORIGINAL_BUILD_ID: ''
+  _E2E_RUN_ID: ''
+  _TRACE_PUBSUB_TOPIC: ''
+  _TRACE_PUBSUB_SUBSCRIPTION: ''
+steps:
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - -euo
+      - pipefail
+      - -c
+      - |
+        test -n "${_CALLER_SERVICE_ACCOUNT}"
+        python3 cloudbuild/build-tools/sweep_e2e_resources.py \
+          --project "${PROJECT_ID}" --region "${_GCP_REGION}" \
+          --build-id "${_ORIGINAL_BUILD_ID}" --run-id "${_E2E_RUN_ID}" \
+          --topic-base "${_TRACE_PUBSUB_TOPIC}" \
+          --subscription-base "${_TRACE_PUBSUB_SUBSCRIPTION}"

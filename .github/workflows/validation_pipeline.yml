@@ -220,6 +220,31 @@ jobs:
         if: github.event_name == 'pull_request'
         run: python3 .github/scripts/validate_renovate_pr.py --base "$CURRENT_BASE_SHA"
 
+      - name: Set up Go for selected graph validation
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Verify automated root security repair against selected graphs
+        if: github.event_name == 'pull_request'
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          python3 .github/scripts/validate_security_graph.py \
+            --base "$CURRENT_BASE_SHA" \
+            --report "$RUNNER_TEMP/renovate-selected-graph.json"
+
+      - name: Retain automated security graph evidence
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: renovate-selected-graph
+          path: ${{ runner.temp }}/renovate-selected-graph.json
+          if-no-files-found: ignore
+          retention-days: 30
+
       - name: Test CI policy and release scripts
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
 
@@ -382,6 +407,9 @@ jobs:
 
       - name: Test root module at its compatibility floor
         run: go test -mod=readonly -race -count=1 ./...
+
+      - name: Test the published dependency floor as a consumer
+        run: python3 .github/scripts/check_consumer_floor.py --root .
 
   # --------------------------------------
   # ROOT VALIDATION (runs root module code)
@@ -1414,17 +1442,32 @@ jobs:
             const targetJobName = process.env.LOCAL_VALIDATION_CHECK_NAME;
             const normalizePath = value => String(value || '').split('@', 1)[0];
             const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            const retryApi = async (label, operation) => {
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                try { return await operation(); }
+                catch (error) {
+                  const status = Number(error.status ?? error.response?.status);
+                  const code = String(error.code ?? error.cause?.code ?? '');
+                  const transient = [429, 500, 502, 503, 504].includes(status) ||
+                    ['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH'].includes(code);
+                  if (!transient || attempt === 3) throw error;
+                  const delay = 1000 * (2 ** attempt) + Math.floor(Math.random() * 500);
+                  core.warning(`${label} failed with ${Number.isNaN(status) ? code : `HTTP ${status}`}; retrying ${attempt}/2 after ${delay} ms.`);
+                  await sleep(delay);
+                }
+              }
+            };
             const maxMinutes = 120;
             const sleepMs = 60_000;
 
             for (let minute = 0; minute < maxMinutes; minute++) {
-              const { data } = await github.rest.actions.listWorkflowRuns({
+              const { data } = await retryApi('List validation runs', () => github.rest.actions.listWorkflowRuns({
                 owner,
                 repo,
                 workflow_id: workflowFile,
                 head_sha: expectedSha,
                 per_page: 100
-              });
+              }));
               const eligibleRuns = data.workflow_runs
                 .filter(run =>
                   run.head_sha === expectedSha &&
@@ -1454,7 +1497,7 @@ jobs:
                 return;
               }
 
-              const jobs = await github.paginate(
+              const jobs = await retryApi('List validation jobs', () => github.paginate(
                 github.rest.actions.listJobsForWorkflowRun,
                 {
                   owner,
@@ -1463,7 +1506,7 @@ jobs:
                   filter: 'latest',
                   per_page: 100
                 }
-              );
+              ));
               const matchingJobs = jobs.filter(job =>
                 job.name === targetJobName &&
                 Number(job.run_id) === Number(run.id) &&
@@ -1501,11 +1544,11 @@ jobs:
                 return;
               }
 
-              const { data: pr } = await github.rest.pulls.get({
+              const { data: pr } = await retryApi('Read pull request', () => github.rest.pulls.get({
                 owner,
                 repo,
                 pull_number: pullNumber
-              });
+              }));
               const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
               if (
                 pr.base.ref !== 'main' ||
@@ -1528,19 +1571,19 @@ jobs:
                 );
                 return;
               }
-              const { data: baseRef } = await github.rest.git.getRef({
+              const { data: baseRef } = await retryApi('Read current base', () => github.rest.git.getRef({
                 owner,
                 repo,
                 ref: `heads/${pr.base.ref}`
-              });
+              }));
               const currentBaseSha = baseRef.object.sha;
-              const { data: comparison } = await github.rest.repos.compareCommits({
+              const { data: comparison } = await retryApi('Compare candidate and base', () => github.rest.repos.compareCommits({
                 owner,
                 repo,
                 base: currentBaseSha,
                 head: expectedSha,
                 per_page: 1
-              });
+              }));
               const containsCurrentBase =
                 ['ahead', 'identical'].includes(comparison.status) &&
                 Number(comparison.behind_by) === 0 &&
@@ -1649,13 +1692,21 @@ jobs:
           GCS_BUCKET_NAME: ${{ env.GCS_BUCKET_NAME }}
           GCS_SOURCE_STAGING_DIR: ${{ env.GCS_SOURCE_STAGING_DIR }}
 
+      - name: Confirm cleanup of owned cloud resources
+        if: ${{ always() && steps.cloud_build.outputs.build_id != '' }}
+        id: cleanup
+        env:
+          CLEANUP_STATUS: ${{ steps.cloud_build.outputs.cleanup_status }}
+        run: |
+          test "$CLEANUP_STATUS" = SUCCESS
+
       - name: Revalidate PR authority before E2E acceptance
         if: |
           always() &&
           steps.trigger_type.outputs.should_auto_trigger == 'true' &&
           steps.wait_validation.outputs.ok == 'true' &&
           ((steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') &&
-           steps.have_secrets.outputs.ok == 'true' && steps.cloud_build.outputs.build_status == 'SUCCESS' ||
+           steps.have_secrets.outputs.ok == 'true' && steps.cloud_build.outputs.build_status == 'SUCCESS' && steps.cleanup.outcome == 'success' ||
            steps.pr_scope.outputs.mode == 'readme_only' || steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' ||
            steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'benchmark_maintenance' ||
            steps.pr_scope.outputs.mode == 'toolchain_update')
@@ -1672,18 +1723,34 @@ jobs:
             const workflowPath = '.github/workflows/validation_pipeline.yml';
             const targetJobName = process.env.LOCAL_VALIDATION_CHECK_NAME;
             const normalizePath = value => String(value || '').split('@', 1)[0];
+            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            const retryApi = async (label, operation) => {
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                try { return await operation(); }
+                catch (error) {
+                  const status = Number(error.status ?? error.response?.status);
+                  const code = String(error.code ?? error.cause?.code ?? '');
+                  const transient = [429, 500, 502, 503, 504].includes(status) ||
+                    ['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH'].includes(code);
+                  if (!transient || attempt === 3) throw error;
+                  const delay = 1000 * (2 ** attempt) + Math.floor(Math.random() * 500);
+                  core.warning(`${label} failed with ${Number.isNaN(status) ? code : `HTTP ${status}`}; retrying ${attempt}/2 after ${delay} ms.`);
+                  await sleep(delay);
+                }
+              }
+            };
             const reject = summary => {
               core.setOutput('ok', 'false');
               core.setOutput('summary', summary);
             };
 
-            const { data } = await github.rest.actions.listWorkflowRuns({
+            const { data } = await retryApi('List validation runs', () => github.rest.actions.listWorkflowRuns({
               owner,
               repo,
               workflow_id: workflowFile,
               head_sha: expectedSha,
               per_page: 100
-            });
+            }));
             const eligibleRuns = data.workflow_runs
               .filter(run =>
                 run.head_sha === expectedSha &&
@@ -1701,7 +1768,7 @@ jobs:
               return;
             }
 
-            const jobs = await github.paginate(
+            const jobs = await retryApi('List validation jobs', () => github.paginate(
               github.rest.actions.listJobsForWorkflowRun,
               {
                 owner,
@@ -1710,7 +1777,7 @@ jobs:
                 filter: 'latest',
                 per_page: 100
               }
-            );
+            ));
             const matchingJobs = jobs.filter(job =>
               job.name === targetJobName &&
               Number(job.run_id) === Number(run.id) &&
@@ -1729,11 +1796,11 @@ jobs:
               return;
             }
 
-            const { data: pr } = await github.rest.pulls.get({
+            const { data: pr } = await retryApi('Read pull request', () => github.rest.pulls.get({
               owner,
               repo,
               pull_number: pullNumber
-            });
+            }));
             const expectedBaseRepo = `${owner}/${repo}`.toLowerCase();
             if (
               pr.base.ref !== 'main' ||
@@ -1751,19 +1818,19 @@ jobs:
               return;
             }
 
-            const { data: baseRef } = await github.rest.git.getRef({
+            const { data: baseRef } = await retryApi('Read current base', () => github.rest.git.getRef({
               owner,
               repo,
               ref: `heads/${pr.base.ref}`
-            });
+            }));
             const currentBaseSha = baseRef.object.sha;
-            const { data: comparison } = await github.rest.repos.compareCommits({
+            const { data: comparison } = await retryApi('Compare candidate and base', () => github.rest.repos.compareCommits({
               owner,
               repo,
               base: currentBaseSha,
               head: expectedSha,
               per_page: 1
-            });
+            }));
             const containsCurrentBase =
               ['ahead', 'identical'].includes(comparison.status) &&
               Number(comparison.behind_by) === 0 &&
@@ -1820,10 +1887,11 @@ jobs:
             const runId = '${{ steps.run_id.outputs.e2e_run_id }}';
             const buildStatus = process.env.BUILD_STATUS.toUpperCase();
             const postBuildAuthorized = process.env.POST_BUILD_VALIDATION_OK === 'true';
+            const cleanupConfirmed = process.env.CLEANUP_CONFIRMED === 'true';
             const detailsUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             let conclusion = 'failure';
-            if (buildStatus === 'SUCCESS' && postBuildAuthorized) {
+            if (buildStatus === 'SUCCESS' && postBuildAuthorized && cleanupConfirmed) {
               conclusion = 'success';
             } else if (buildStatus === 'SUCCESS') {
               conclusion = 'action_required';
@@ -1833,8 +1901,9 @@ jobs:
 
             const summaryLines = [
               `Google Cloud Build E2E run \`${runId}\` finished: **${buildStatus || 'UNKNOWN'}**.`,
-              buildStatus === 'SUCCESS' && !postBuildAuthorized
-                ? process.env.POST_BUILD_VALIDATION_SUMMARY || 'Post-build PR validation did not authorize this result.'
+              buildStatus === 'SUCCESS' && (!postBuildAuthorized || !cleanupConfirmed)
+                ? (!cleanupConfirmed ? 'Owned cloud resource cleanup was not confirmed.' :
+                   process.env.POST_BUILD_VALIDATION_SUMMARY || 'Post-build PR validation did not authorize this result.')
                 : '',
               'Maintainers can inspect internal Cloud Build logs and artifacts from Google Cloud.'
             ].filter(Boolean);
@@ -1864,6 +1933,7 @@ jobs:
           CHECK_RUN_NAME: ${{ env.CHECK_RUN_NAME }}
           POST_BUILD_VALIDATION_OK: ${{ steps.post_build_validation.outputs.ok }}
           POST_BUILD_VALIDATION_SUMMARY: ${{ steps.post_build_validation.outputs.summary }}
+          CLEANUP_CONFIRMED: ${{ steps.cleanup.outcome == 'success' }}
 
       - name: Fail workflow when Cloud E2E failed
         if: |

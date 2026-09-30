@@ -603,6 +603,7 @@ fi
 STREAM_TAG_DEFAULTED="${STREAM_TAG_DEFAULTED}-${E2E_DEPENDENCY_MODE}"
 
 BUILD_STATUS="FAILURE"
+CLEANUP_STATUS="SKIPPED"
 BUILD_ID=""
 BUILD_LOG_URL=""
 ARTIFACTS_URL=""
@@ -619,6 +620,7 @@ emit_outputs() {
     if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
         {
             printf 'build_status=%s\n' "$BUILD_STATUS"
+            printf 'cleanup_status=%s\n' "$CLEANUP_STATUS"
             printf 'build_id=%s\n' "$BUILD_ID"
             printf 'build_log_url=%s\n' "$BUILD_LOG_URL"
             printf 'artifacts_url=%s\n' "$ARTIFACTS_URL"
@@ -721,12 +723,50 @@ while true; do
     if [[ $elapsed -ge $MAX_WAIT_SECONDS ]]; then
         echo "Build did not complete within ${MAX_WAIT_SECONDS} seconds."
         BUILD_STATUS="TIMEOUT"
+        gcloud builds cancel "$BUILD_ID" --project="$GCP_PROJECT_ID" \
+            --region="$RUN_REGION" --quiet >/dev/null 2>&1 || true
+        for _ in {1..10}; do
+            status="$(gcloud builds describe "$BUILD_ID" --project="$GCP_PROJECT_ID" \
+                --region="$RUN_REGION" --format='value(status)' 2>/dev/null || true)"
+            if [[ "$status" == SUCCESS || "$status" == FAILURE || "$status" == TIMEOUT ||
+                  "$status" == CANCELLED || "$status" == INTERNAL_ERROR ]]; then
+                break
+            fi
+            sleep 10
+        done
         break
     fi
 
     sleep $POLL_INTERVAL
     elapsed=$((elapsed + POLL_INTERVAL))
 done
+
+cleanup_substitutions="_CALLER_SERVICE_ACCOUNT=${E2E_CALLER_SERVICE_ACCOUNT},_GCP_REGION=${RUN_REGION},_ORIGINAL_BUILD_ID=${BUILD_ID},_E2E_RUN_ID=${E2E_RUN_ID},_TRACE_PUBSUB_TOPIC=${TRACE_PUBSUB_TOPIC},_TRACE_PUBSUB_SUBSCRIPTION=${TRACE_PUBSUB_SUBSCRIPTION}"
+cleanup_args=(
+    "$SOURCE_PATH"
+    --config="$SOURCE_PATH/cloudbuild/cleanup.yaml"
+    --project="$GCP_PROJECT_ID"
+    --region="$RUN_REGION"
+    --quiet
+    --suppress-logs
+    --substitutions="$cleanup_substitutions"
+)
+if [[ -n "$BUILD_SUBMIT_SERVICE_ACCOUNT" ]]; then
+    cleanup_args+=(--service-account="$BUILD_SUBMIT_SERVICE_ACCOUNT")
+fi
+if [[ -n "$GCS_SOURCE_STAGING_DIR" ]]; then
+    cleanup_args+=(--gcs-source-staging-dir="$GCS_SOURCE_STAGING_DIR")
+fi
+if gcloud builds submit "${cleanup_args[@]}" >/dev/null; then
+    CLEANUP_STATUS="SUCCESS"
+    echo "Owned cloud resource cleanup confirmed."
+else
+    CLEANUP_STATUS="FAILURE"
+    echo "Trusted cleanup build did not confirm resource removal." >&2
+    if [[ "$BUILD_STATUS" == "SUCCESS" ]]; then
+        BUILD_STATUS="FAILURE"
+    fi
+fi
 
 emit_outputs
 
