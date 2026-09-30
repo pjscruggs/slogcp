@@ -473,8 +473,21 @@ jobs:
           GCS_BUCKET_NAME: ${{ env.GCS_BUCKET_NAME }}
           GCS_SOURCE_STAGING_DIR: ${{ env.GCS_SOURCE_STAGING_DIR }}
 
+      - name: Confirm cleanup of owned cloud resources
+        if: ${{ always() && steps.cloud_build.outputs.build_id != '' }}
+        id: cleanup
+        env:
+          BUILD_ID: ${{ steps.cloud_build.outputs.build_id }}
+          E2E_RUN_ID: ${{ steps.run_id.outputs.e2e_run_id }}
+        run: |
+          python3 .github/scripts/sweep_e2e_resources.py \
+            --project "$GCP_PROJECT_ID" --region "$RUN_REGION" \
+            --build-id "$BUILD_ID" --run-id "$E2E_RUN_ID" \
+            --topic-base "$TRACE_PUBSUB_TOPIC" \
+            --subscription-base "$TRACE_PUBSUB_SUBSCRIPTION"
+
       - name: Revalidate PR authority after E2E
-        if: ${{ always() && steps.target.outputs.pr_number != '' && steps.local_validation_gate.outputs.ok == 'true' && steps.cloud_build.outputs.build_status == 'SUCCESS' }}
+        if: ${{ always() && steps.target.outputs.pr_number != '' && steps.local_validation_gate.outputs.ok == 'true' && steps.cloud_build.outputs.build_status == 'SUCCESS' && steps.cleanup.outcome == 'success' }}
         id: post_build_validation
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         with:
@@ -631,10 +644,11 @@ jobs:
             const isPullRequest = process.env.PR_NUMBER !== '';
             const postBuildAuthorized =
               !isPullRequest || process.env.POST_BUILD_VALIDATION_OK === 'true';
+            const cleanupConfirmed = process.env.CLEANUP_CONFIRMED === 'true';
             const detailsUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
 
             let conclusion = 'failure';
-            if (buildStatus === 'SUCCESS' && postBuildAuthorized) {
+            if (buildStatus === 'SUCCESS' && postBuildAuthorized && cleanupConfirmed) {
               conclusion = 'success';
             } else if (buildStatus === 'SUCCESS') {
               conclusion = 'action_required';
@@ -644,8 +658,9 @@ jobs:
 
             const summaryLines = [
               `Google Cloud Build E2E tests finished: **${buildStatus || 'UNKNOWN'}**.`,
-              buildStatus === 'SUCCESS' && isPullRequest && !postBuildAuthorized
-                ? process.env.POST_BUILD_VALIDATION_SUMMARY || 'Post-build PR validation did not authorize this result.'
+              buildStatus === 'SUCCESS' && (!postBuildAuthorized || !cleanupConfirmed)
+                ? (!cleanupConfirmed ? 'Owned cloud resource cleanup was not confirmed.' :
+                   process.env.POST_BUILD_VALIDATION_SUMMARY || 'Post-build PR validation did not authorize this result.')
                 : '',
               'Maintainers can inspect internal Cloud Build logs and artifacts from Google Cloud.'
             ].filter(Boolean);
@@ -680,6 +695,7 @@ jobs:
           POST_BUILD_VALIDATION_OK: ${{ steps.post_build_validation.outputs.ok }}
           POST_BUILD_VALIDATION_SUMMARY: ${{ steps.post_build_validation.outputs.summary }}
           PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          CLEANUP_CONFIRMED: ${{ steps.cleanup.outcome == 'success' }}
 
       - name: Fail workflow when E2E failed
         if: ${{ always() && (steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true') && steps.finalize_check.outputs.ok != 'true' }}

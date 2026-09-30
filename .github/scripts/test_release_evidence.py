@@ -257,24 +257,30 @@ const context={repo:{owner:'owner',repo:'repo'},sha:'ddddddddddddddddddddddddddd
 const core={setOutput(){},setFailed:message=>{throw Error(message)}};
 const github={rest:{checks:{update:async value=>console.log(JSON.stringify(value))}}};
 """
-            result = subprocess.run(
-                ["node", "--input-type=module", "-e", harness + "\nawait (async()=>{\n" + script + "\n})();"],
-                env={**os.environ, "BUILD_STATUS": "SUCCESS", "CHECK_RUN_ID": "123",
-                     "E2E_RUN_ID": "fixture", "POST_BUILD_VALIDATION_OK": "true",
-                     "CHECK_RUN_NAME": "E2E Tests (GCP)", "GITHUB_RUN_ATTEMPT": "2",
-                     "PR_NUMBER": "7", "TARGET_ROOT_SHA": "b" * 40,
-                     "INFRASTRUCTURE_SHA": infrastructure_sha},
-                check=True, capture_output=True, text=True,
-            )
-            update = json.loads(result.stdout)
-            receipt = json.loads(update["output"]["text"])
-            with self.subTest(filename=filename, infrastructure_sha=infrastructure_sha):
-                self.assertEqual(update["conclusion"], "success")
-                self.assertEqual(receipt["root_sha"], "b" * 40)
-                self.assertEqual(receipt["infrastructure_sha"], infrastructure_sha)
-                self.assertEqual(receipt["run_attempt"], 2)
-                self.assertEqual(receipt["run_id"], 10)
-                self.assertEqual(receipt["profile"], "root-parity")
+            for cleanup_ok in ("true", "false"):
+                result = subprocess.run(
+                    ["node", "--input-type=module", "-e",
+                     harness + "\nawait (async()=>{\n" + script + "\n})();"],
+                    env={**os.environ, "BUILD_STATUS": "SUCCESS", "CHECK_RUN_ID": "123",
+                         "E2E_RUN_ID": "fixture", "POST_BUILD_VALIDATION_OK": "true",
+                         "CLEANUP_CONFIRMED": cleanup_ok,
+                         "CHECK_RUN_NAME": "E2E Tests (GCP)", "GITHUB_RUN_ATTEMPT": "2",
+                         "PR_NUMBER": "7", "TARGET_ROOT_SHA": "b" * 40,
+                         "INFRASTRUCTURE_SHA": infrastructure_sha},
+                    check=True, capture_output=True, text=True,
+                )
+                update = json.loads(result.stdout)
+                receipt = json.loads(update["output"]["text"])
+                with self.subTest(filename=filename,
+                                  infrastructure_sha=infrastructure_sha,
+                                  cleanup_ok=cleanup_ok):
+                    self.assertEqual(update["conclusion"],
+                                     "success" if cleanup_ok == "true" else "action_required")
+                    self.assertEqual(receipt["root_sha"], "b" * 40)
+                    self.assertEqual(receipt["infrastructure_sha"], infrastructure_sha)
+                    self.assertEqual(receipt["run_attempt"], 2)
+                    self.assertEqual(receipt["run_id"], 10)
+                    self.assertEqual(receipt["profile"], "root-parity")
 
     def test_evidence_gate_precedes_signing_and_cannot_be_skipped(self):
         root = Path(__file__).resolve().parents[2]
