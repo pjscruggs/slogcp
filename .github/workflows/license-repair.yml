@@ -59,7 +59,16 @@ jobs:
           RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
         run: |
           python3 .github/scripts/publish_license_repairs.py \
-            --repository "$REPOSITORY" --run-id "$RUN_ID" --fixer "$LICENSE_FIXER"
+            --repository "$REPOSITORY" --run-id "$RUN_ID" --fixer "$LICENSE_FIXER" \
+            --report "$RUNNER_TEMP/license-repair-authorization.json"
+
+      - name: Retain controller authorization outcome
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: license-repair-authorization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/license-repair-authorization.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Create narrowly scoped maintenance App token
         if: github.event_name == 'workflow_run' && steps.prepare.outputs.needed == 'true' && vars.LICENSE_REPAIR_PUBLISH == 'true'
@@ -86,4 +95,14 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           python3 .github/scripts/publish_license_repairs.py \
-            --repository "$REPOSITORY" --run-id "$RUN_ID" --fixer "$LICENSE_FIXER" --publish
+            --repository "$REPOSITORY" --run-id "$RUN_ID" --fixer "$LICENSE_FIXER" --publish \
+            --report "$RUNNER_TEMP/license-repair-publication.json"
+
+      - name: Retain signed repair publication outcome
+        if: steps.writer.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: license-repair-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/license-repair-publication.json
+          if-no-files-found: error
+          retention-days: 7
