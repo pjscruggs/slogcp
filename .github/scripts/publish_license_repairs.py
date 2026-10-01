@@ -40,6 +40,7 @@ def authority(commands: signing_policy.Commands, run_id: str) -> tuple[dict, dic
         raise ValueError("Invalid workflow run ID")
     run = json.loads(commands.gh("api", f"repos/{commands.repository}/actions/runs/{run_id}"))
     if (run["event"] != "pull_request" or run["status"] != "completed"
+            or str(run["id"]) != run_id or not repairs.SHA.fullmatch(run["head_sha"])
             or run["path"] != ".github/workflows/validation_pipeline.yml"
             or run["repository"]["full_name"] != commands.repository):
         return None
