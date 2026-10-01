@@ -103,6 +103,7 @@ def prepare(commands: signing_policy.Commands, args: argparse.Namespace) -> dict
     run, pr = authorized
     raw = proposal(commands, run)
     if raw is None:
+        print("Authorized current PR has no matching license receipt.")
         return None
     head, base = pr["head"]["sha"], pr["base"]["sha"]
     commands.git("fetch", "--no-tags", commands.remote, head)
@@ -117,7 +118,7 @@ def prepare(commands: signing_policy.Commands, args: argparse.Namespace) -> dict
     return result
 
 
-def publish(commands: signing_policy.Commands, args: argparse.Namespace, plan: dict) -> None:
+def publish(commands: signing_policy.Commands, args: argparse.Namespace, plan: dict) -> str:
     if os.environ.get("LICENSE_REPAIR_PUBLISH") != "true":
         raise ValueError("License repair publishing is disabled")
     # Reuse the existing expected pjscruggs signer verification/cleanup, never
@@ -144,6 +145,13 @@ def publish(commands: signing_policy.Commands, args: argparse.Namespace, plan: d
                 commit = commands.git("commit-tree", "-S", tree, "-p", plan["candidate_sha"],
                                       "-m", "fix: normalize license headers").stdout.strip()
                 signing_policy.verify_commit(commands, commit)
+                if (commands.git("log", "-1", "--format=%P", commit).stdout.strip() != plan["candidate_sha"]
+                        or commands.git("log", "-1", "--format=%T", commit).stdout.strip() != tree):
+                    raise ValueError("Signed repair does not match planned parent and tree")
+                changed_paths = signing_policy.paths(commands.git(
+                    "diff", "--name-only", "-z", plan["candidate_sha"], commit).stdout)
+                if changed_paths != {change["path"] for change in plan["reproduced_changes"]}:
+                    raise ValueError("Signed repair changes paths outside the reproduced proposal")
                 # Do not accept partial or changed evidence between stages.
                 refreshed = authority(commands, args.run_id)
                 if (refreshed is None or refreshed[1]["head"]["sha"] != plan["candidate_sha"]
@@ -153,6 +161,7 @@ def publish(commands: signing_policy.Commands, args: argparse.Namespace, plan: d
                     raise ValueError("License repair authority was superseded")
                 commands.git("push", commands.remote, f"{commit}:refs/heads/{plan['branch']}")
                 print("Published one signed header repair; new-head validation is required.")
+                return commit
     finally:
         commands.env.pop("GIT_INDEX_FILE", None)
         for name, value in original.items():
@@ -167,6 +176,7 @@ def main() -> None:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--fixer", type=Path, required=True)
+    parser.add_argument("--report", type=Path)
     parser.add_argument("--publish", action="store_true")
     args = parser.parse_args()
     commands = signing_policy.Commands(Path.cwd(), args.repository)
@@ -178,20 +188,33 @@ def main() -> None:
         signing_values[name] = os.environ.pop(name, "")
     plan = prepare(commands, args)
     needed = bool(plan and plan["reproduced_changes"])
+    report = {"schema": 1, "run_id": args.run_id, "repository": args.repository,
+              "decision": "ineligible" if plan is None else "verified_repairs" if needed else "clean"}
+    if plan is not None:
+        report.update(candidate_sha=plan["candidate_sha"], base_sha=plan["base_sha"],
+                      run_attempt=plan["run_attempt"], pr_number=plan["pr_number"],
+                      paths=[change["path"] for change in plan["reproduced_changes"]])
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a", encoding="utf-8") as stream:
             stream.write(f"needed={str(needed).lower()}\n")
-    if not needed:
+    if plan is None:
         print("No eligible current header repair.")
+    elif not needed:
+        print("Authorized current candidate receipt verified: zero header repairs.")
     elif args.publish:
         try:
             os.environ.update(signing_values)
-            publish(commands, args, plan)
+            report["published_commit"] = publish(commands, args, plan)
+            report["decision"] = "published"
         finally:
             for name in signing_values:
                 os.environ.pop(name, None)
     else:
         print(f"Independently reproduced {len(plan['reproduced_changes'])} header repair(s).")
+    if args.report:
+        with args.report.open("x", encoding="utf-8") as stream:
+            json.dump(report, stream, indent=2)
+            stream.write("\n")
 
 
 if __name__ == "__main__":
