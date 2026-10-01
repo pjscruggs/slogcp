@@ -182,11 +182,23 @@ class SelectedGraphPolicyTests(unittest.TestCase):
                 report = policy.compare(base, candidate)
             query.assert_called_once()
             self.assertEqual(len(query.call_args.args[0]), 2)
-            self.assertEqual(report["introduced"], [])
+            self.assertEqual(len(report["introduced"]), 1)
+            self.assertEqual(report["introduced"][0]["version"], "v1.1.0")
             self.assertEqual(report["resolved"], [])
-            self.assertEqual(len(report["persistent"]), 1)
+            self.assertEqual(report["persistent"], [])
             self.assertEqual(report["base"]["advisory_fetched_at"],
                              report["candidate"]["advisory_fetched_at"])
+
+            with mock.patch.object(policy, "tracked_modules",
+                                   side_effect=[[base / "go.mod"], [candidate / "go.mod"]]), \
+                 mock.patch.object(policy, "inventory", side_effect=[
+                     (base_selected, [base_query]), (base_selected, [base_query])]), \
+                 mock.patch.object(policy, "query_osv", return_value=matches), \
+                 mock.patch.object(policy, "advisory_records", return_value=record):
+                unchanged = policy.compare(base, candidate)
+            self.assertEqual(unchanged["introduced"], [])
+            self.assertEqual(unchanged["resolved"], [])
+            self.assertEqual(len(unchanged["persistent"]), 1)
 
     def test_go_command_is_read_only_and_ignores_parent_workspace(self) -> None:
         with mock.patch.object(policy.subprocess, "run", return_value=subprocess.CompletedProcess(
