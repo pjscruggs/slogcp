@@ -1,0 +1,81 @@
+name: Persist License Repairs
+
+on:
+  workflow_run:
+    workflows: [Validation Pipeline]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: license-repair-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOTOOLCHAIN: local
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out trusted controller and formatter policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up trusted tools compiler
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: .github/tools/go.mod
+          check-latest: true
+          cache: false
+
+      - name: Build trusted license formatter
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "LICENSE_FIXER=$(go -C .github/tools tool -n license-eye)" >> "$GITHUB_ENV"
+
+      - name: Authorize and independently reproduce proposed repairs
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          python3 .github/scripts/publish_license_repairs.py \
+            --repository "$REPOSITORY" --run-id "$RUN_ID" --fixer "$LICENSE_FIXER"
+
+      - name: Create narrowly scoped maintenance App token
+        if: steps.prepare.outputs.needed == 'true' && vars.LICENSE_REPAIR_PUBLISH == 'true'
+        id: writer
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.LICENSE_REPAIR_APP_ID }}
+          private-key: ${{ secrets.LICENSE_REPAIR_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-actions: read
+          permission-pull-requests: read
+
+      - name: Recheck authority and publish one signed header commit
+        if: steps.prepare.outputs.needed == 'true' && vars.LICENSE_REPAIR_PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ steps.writer.outputs.token }}
+          LICENSE_REPAIR_PUBLISH: ${{ vars.LICENSE_REPAIR_PUBLISH }}
+          LICENSE_REPAIR_SSH_PRIVATE_KEY_B64: ${{ secrets.LICENSE_REPAIR_SSH_PRIVATE_KEY_B64 }}
+          LICENSE_REPAIR_SSH_PUBLIC_KEY: ${{ secrets.LICENSE_REPAIR_SSH_PUBLIC_KEY }}
+          LICENSE_REPAIR_SSH_FINGERPRINT: ${{ vars.LICENSE_REPAIR_SSH_FINGERPRINT }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          python3 .github/scripts/publish_license_repairs.py \
+            --repository "$REPOSITORY" --run-id "$RUN_ID" --fixer "$LICENSE_FIXER" --publish
