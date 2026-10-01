@@ -67,10 +67,14 @@ def validate(args: argparse.Namespace) -> dict:
     if args.receipt.stat().st_size > MAX_BYTES:
         raise ValueError("Oversized receipt")
     receipt = json.loads(args.receipt.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+    if (not isinstance(receipt, dict) or type(receipt.get("schema")) is not int
+            or type(receipt.get("formatter_exit_code")) is not int
+            or receipt.get("proposed_only") is not True):
+        raise ValueError("Invalid receipt schema or formatter result types")
     expected = {"schema": 1, "proposed_only": True, "candidate_sha": args.head,
                 "repository": args.repository, "run_id": args.run_id,
                 "run_attempt": args.run_attempt, "formatter_exit_code": 0}
-    if not isinstance(receipt, dict) or any(receipt.get(k) != v for k, v in expected.items()):
+    if any(receipt.get(k) != v for k, v in expected.items()):
         raise ValueError("Receipt identity or formatter success mismatch")
     # The caller supplies these identities from trusted API/workflow evidence.
     if git(args.trusted_root, "rev-parse", "HEAD").decode().strip() != args.base:
