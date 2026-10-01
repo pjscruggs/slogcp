@@ -284,11 +284,15 @@ def compare_explicit(base_root: Path, base_files: list[Path], candidate_root: Pa
                 for item in report["findings"]}
 
     before, after = indexed(base), indexed(candidate)
+    shared = after.keys() & before.keys()
+    changed = {key for key in shared if
+               (after[key]["selected_path"], after[key]["version"]) !=
+               (before[key]["selected_path"], before[key]["version"])}
     return {"schema": 1, "advisory_fetched_at": fetched_at,
             "base": base, "candidate": candidate,
-            "introduced": [after[key] for key in sorted(after.keys() - before.keys())],
+            "introduced": [after[key] for key in sorted((after.keys() - before.keys()) | changed)],
             "resolved": [before[key] for key in sorted(before.keys() - after.keys())],
-            "persistent": [after[key] for key in sorted(after.keys() & before.keys())]}
+            "persistent": [after[key] for key in sorted(shared - changed)]}
 
 
 def compare(base_root: Path, candidate_root: Path,
