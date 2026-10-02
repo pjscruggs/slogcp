@@ -26,6 +26,7 @@ jobs:
       github.event.workflow_run.event == 'pull_request' ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    environment: license-repair
     timeout-minutes: 15
     env:
       GOTOOLCHAIN: local

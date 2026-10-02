@@ -35,6 +35,9 @@ import publish_readme_benchmarks as signing_policy
 import validate_license_repairs as repairs
 
 
+LICENSE_SIGNER_FINGERPRINT = "SHA256:75moJQrKq7LetXP4ywb08Tw6YjSCYN/xiuIE6MaOopw"
+
+
 def authority(commands: signing_policy.Commands, run_id: str) -> tuple[dict, dict] | None:
     if not run_id.isdecimal():
         raise ValueError("Invalid workflow run ID")
@@ -133,7 +136,7 @@ def publish(commands: signing_policy.Commands, args: argparse.Namespace, plan: d
         with tempfile.TemporaryDirectory(prefix="license-index-") as temporary:
             commands.env["GIT_INDEX_FILE"] = str(Path(temporary) / "index")
             commands.git("read-tree", plan["candidate_sha"])
-            with signing_policy.signing(commands):
+            with signing_policy.signing(commands, expected_fingerprint=LICENSE_SIGNER_FINGERPRINT):
                 for change in plan["reproduced_changes"]:
                     name = change["path"]
                     blob = subprocess.run(["git", *commands.git_config, "hash-object", "-w", "--stdin"],
@@ -144,7 +147,7 @@ def publish(commands: signing_policy.Commands, args: argparse.Namespace, plan: d
                 tree = commands.git("write-tree").stdout.strip()
                 commit = commands.git("commit-tree", "-S", tree, "-p", plan["candidate_sha"],
                                       "-m", "fix: normalize license headers").stdout.strip()
-                signing_policy.verify_commit(commands, commit)
+                signing_policy.verify_commit(commands, commit, expected_fingerprint=LICENSE_SIGNER_FINGERPRINT)
                 if (commands.git("log", "-1", "--format=%P", commit).stdout.strip() != plan["candidate_sha"]
                         or commands.git("log", "-1", "--format=%T", commit).stdout.strip() != tree):
                     raise ValueError("Signed repair does not match planned parent and tree")
