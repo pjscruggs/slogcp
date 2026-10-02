@@ -122,22 +122,22 @@ def require_readme_only(commands: Commands, base: str, head: str) -> None:
         raise ValueError("Automation branch changes README text outside its benchmark block")
 
 
-def verify_commit(commands: Commands, revision: str) -> None:
+def verify_commit(commands: Commands, revision: str, *, expected_fingerprint: str = SIGNER_FINGERPRINT) -> None:
     expected = [SIGNER_NAME, SIGNER_EMAIL, SIGNER_NAME, SIGNER_EMAIL]
     identity = commands.git("log", "-1", "--format=%an%x00%ae%x00%cn%x00%ce", revision).stdout.strip()
     if identity.split("\0") != expected:
         raise ValueError("Benchmark commit author or committer differs from pjscruggs")
     result = commands.git("verify-commit", revision)
     verification = result.stdout + result.stderr
-    if SIGNER_FINGERPRINT not in verification or SIGNER_EMAIL not in verification:
+    if expected_fingerprint not in verification or SIGNER_EMAIL not in verification:
         raise ValueError("Benchmark commit does not have the expected SSH signer")
 
 
 @contextmanager
-def signing(commands: Commands) -> Iterator[None]:
+def signing(commands: Commands, *, expected_fingerprint: str = SIGNER_FINGERPRINT) -> Iterator[None]:
     """Install only the documented signer, then remove every secret file."""
     supplied_fingerprint = os.environ.get("BENCHMARK_SSH_FINGERPRINT", "")
-    if supplied_fingerprint != SIGNER_FINGERPRINT:
+    if supplied_fingerprint != expected_fingerprint:
         raise ValueError("BENCHMARK_SSH_FINGERPRINT must match the documented signing key")
     public = os.environ.get("BENCHMARK_SSH_PUBLIC_KEY", "").strip()
     if not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/]+={0,2}(?: [^\r\n]*)?", public):
@@ -163,7 +163,7 @@ def signing(commands: Commands) -> Iterator[None]:
         if derived.split()[:2] != public_key.split():
             raise ValueError("Private and public benchmark signing keys do not match")
         fingerprint = commands.run(["ssh-keygen", "-lf", str(directory / "key.pub")]).stdout.split()
-        if len(fingerprint) < 2 or fingerprint[1] != SIGNER_FINGERPRINT:
+        if len(fingerprint) < 2 or fingerprint[1] != expected_fingerprint:
             raise ValueError("Benchmark signing key fingerprint does not match")
         allowed = directory / "allowed_signers"
         allowed.write_text(f"{SIGNER_EMAIL} {public_key}\n", encoding="utf-8")
