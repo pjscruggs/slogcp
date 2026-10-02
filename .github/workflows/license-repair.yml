@@ -75,18 +75,18 @@ jobs:
         id: writer
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          app-id: ${{ secrets.LICENSE_REPAIR_APP_ID }}
-          private-key: ${{ secrets.LICENSE_REPAIR_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.LICENSE_REPAIR_APP_ID || secrets.E2E_APP_ID }}
+          private-key: ${{ secrets.LICENSE_REPAIR_APP_PRIVATE_KEY || secrets.E2E_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
-          permission-actions: read
           permission-pull-requests: read
 
       - name: Recheck authority and publish one signed header commit
         if: github.event_name == 'workflow_run' && steps.prepare.outputs.needed == 'true' && vars.LICENSE_REPAIR_PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ steps.writer.outputs.token }}
+          LICENSE_REPAIR_READ_TOKEN: ${{ github.token }}
           LICENSE_REPAIR_PUBLISH: ${{ vars.LICENSE_REPAIR_PUBLISH }}
           LICENSE_REPAIR_SSH_PRIVATE_KEY_B64: ${{ secrets.LICENSE_REPAIR_SSH_PRIVATE_KEY_B64 }}
           LICENSE_REPAIR_SSH_PUBLIC_KEY: ${{ secrets.LICENSE_REPAIR_SSH_PUBLIC_KEY }}

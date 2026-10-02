@@ -118,7 +118,7 @@ def prepare(commands: signing_policy.Commands, args: argparse.Namespace) -> dict
     return result
 
 
-def publish(commands: signing_policy.Commands, args: argparse.Namespace, plan: dict) -> str:
+def publish(commands: signing_policy.Commands, args: argparse.Namespace, plan: dict, push_token: str) -> str:
     if os.environ.get("LICENSE_REPAIR_PUBLISH") != "true":
         raise ValueError("License repair publishing is disabled")
     # Reuse the existing expected pjscruggs signer verification/cleanup, never
@@ -159,7 +159,12 @@ def publish(commands: signing_policy.Commands, args: argparse.Namespace, plan: d
                         or str(refreshed[0]["run_attempt"]) != plan["run_attempt"]
                         or refreshed[1]["head"]["ref"] != plan["branch"]):
                     raise ValueError("License repair authority was superseded")
-                commands.git("push", commands.remote, f"{commit}:refs/heads/{plan['branch']}")
+                read_token = commands.env.get("GH_TOKEN", "")
+                try:
+                    commands.env["GH_TOKEN"] = push_token
+                    commands.git("push", commands.remote, f"{commit}:refs/heads/{plan['branch']}")
+                finally:
+                    commands.env["GH_TOKEN"] = read_token
                 print("Published one signed header repair; new-head validation is required.")
                 return commit
     finally:
@@ -180,6 +185,11 @@ def main() -> None:
     parser.add_argument("--publish", action="store_true")
     args = parser.parse_args()
     commands = signing_policy.Commands(Path.cwd(), args.repository)
+    push_token = commands.env.get("GH_TOKEN", "")
+    read_token = os.environ.pop("LICENSE_REPAIR_READ_TOKEN", push_token)
+    commands.env.pop("LICENSE_REPAIR_READ_TOKEN", None)
+    commands.env["GH_TOKEN"] = read_token
+    os.environ["GH_TOKEN"] = read_token
     signing_values = {}
     for name in ("LICENSE_REPAIR_SSH_PRIVATE_KEY_B64", "LICENSE_REPAIR_SSH_PUBLIC_KEY",
                  "LICENSE_REPAIR_SSH_FINGERPRINT"):
@@ -204,7 +214,7 @@ def main() -> None:
     elif args.publish:
         try:
             os.environ.update(signing_values)
-            report["published_commit"] = publish(commands, args, plan)
+            report["published_commit"] = publish(commands, args, plan, push_token)
             report["decision"] = "published"
         finally:
             for name in signing_values:
