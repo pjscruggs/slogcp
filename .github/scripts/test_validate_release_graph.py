@@ -47,21 +47,21 @@ class ReleaseGraphTests(unittest.TestCase):
                 outcome = policy.main()
             return outcome, json.loads(report.read_text(encoding="utf-8"))
 
-    def test_allows_existing_findings_without_new_selections(self):
+    def test_rejects_existing_findings_without_new_selections(self):
         tracked = {"advisory_fetched_at": "2026-09-30T00:00:00Z",
-                   "introduced": [], "persistent": [{"advisory": "OLD"}]}
+                   "introduced": [], "persistent": [{"scope": ".", "module": "example.org/x", "advisory": "OLD"}]}
         generated = {"advisory_fetched_at": "2026-09-30T00:00:00Z",
-                     "introduced": [], "persistent": [{"advisory": "OLD"}]}
+                     "introduced": [], "persistent": [{"scope": ".", "module": "example.org/x", "advisory": "OLD"}]}
         outcome, report = self.invoke(tracked, generated)
-        self.assertEqual(outcome, 0)
+        self.assertEqual(outcome, 1)
         self.assertEqual(report["introduced"], [])
 
     def test_rejects_generated_introduction_and_retains_evidence(self):
         tracked = {"advisory_fetched_at": "2026-09-30T00:00:00Z",
-                   "introduced": []}
+                   "introduced": [], "persistent": []}
         generated = {"advisory_fetched_at": "2026-09-30T00:00:00Z",
                      "introduced": [{"scope": "services/x", "module": "example.org/x",
-                                     "advisory": "GO-EXAMPLE"}]}
+                                     "advisory": "GO-EXAMPLE"}], "persistent": []}
         outcome, report = self.invoke(tracked, generated)
         self.assertEqual(outcome, 1)
         self.assertEqual(report["introduced"][0]["scope"],
