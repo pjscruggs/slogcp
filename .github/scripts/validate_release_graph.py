@@ -34,12 +34,16 @@ def validate(root: Path, base: str) -> dict:
         {**item, "scope": ".e2e/generated/" + item["scope"]}
         for item in generated["introduced"]
     )]
-    report = {"schema": 1, "base": base,
+    persistent = [*tracked["persistent"], *(
+        {**item, "scope": ".e2e/generated/" + item["scope"]}
+        for item in generated["persistent"]
+    )]
+    report = {"schema": 2, "base": base,
               "candidate": subprocess.run(
                   ["git", "-C", str(root), "rev-parse", "HEAD"],
                   check=True, capture_output=True, text=True).stdout.strip(),
               "tracked": tracked, "generated": generated,
-              "introduced": introduced}
+              "introduced": introduced, "persistent": persistent}
     return report
 
 
@@ -58,12 +62,12 @@ def main() -> int:
             subprocess.CalledProcessError, json.JSONDecodeError) as error:
         print(f"Release graph policy indeterminate or unsafe: {error}", file=sys.stderr)
         return 1
-    if report["introduced"]:
-        details = ", ".join(f"{item['scope']} {item['module']} {item['advisory']}"
-                            for item in report["introduced"])
-        print(f"Release introduces affected selected modules: {details}", file=sys.stderr)
+    try:
+        selected_graph_policy.require_clean_comparison(report)
+    except (ValueError, selected_graph_policy.PolicyError) as error:
+        print(f"Release selected graph is unsafe: {error}", file=sys.stderr)
         return 1
-    print("Release selected graph: no introduced advisories; "
+    print("Release selected graph: clean; "
           f"tracked fetched {report['tracked']['advisory_fetched_at']}; "
           f"generated fetched {report['generated']['advisory_fetched_at']}")
     return 0

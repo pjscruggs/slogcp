@@ -261,6 +261,22 @@ def evaluate(root: Path, module_files: list[Path],
                       datetime.now(timezone.utc).isoformat())
 
 
+def require_clean_comparison(report: dict) -> None:
+    """Reject affected candidate selections, including unchanged findings."""
+    for field in ("introduced", "persistent"):
+        findings = report.get(field)
+        if not isinstance(findings, list):
+            raise PolicyError(f"Incomplete selected graph comparison: {field}")
+        if findings:
+            details = ", ".join(
+                f"{item['scope']} {item['module']} {item['advisory']}"
+                for item in findings
+            )
+            if field == "introduced":
+                raise PolicyError(f"Selected graph introduced affected modules: {details}")
+            raise PolicyError(f"Selected graph still contains affected modules: {details}")
+
+
 def compare_explicit(base_root: Path, base_files: list[Path], candidate_root: Path,
                      candidate_files: list[Path],
                      base_known: list[Path] | None = None,

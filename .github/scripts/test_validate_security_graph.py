@@ -57,12 +57,12 @@ class SecurityGraphPolicyTests(unittest.TestCase):
 
     def test_no_new_findings_and_real_root_resolution_are_required(self) -> None:
         repaired = {"scope": ".", "module": "example.com/dependency", "advisory": "GO-1"}
-        policy.validate_graph_delta({"introduced": [], "resolved": [repaired]})
+        policy.validate_graph_delta({"persistent": [], "introduced": [], "resolved": [repaired]})
         with self.assertRaisesRegex(ValueError, "did not resolve"):
-            policy.validate_graph_delta({"introduced": [], "resolved": [
+            policy.validate_graph_delta({"persistent": [], "introduced": [], "resolved": [
                 {**repaired, "scope": ".github/tools"}]})
         with self.assertRaisesRegex(ValueError, "introduced"):
-            policy.validate_graph_delta({"introduced": [repaired], "resolved": [repaired]})
+            policy.validate_graph_delta({"persistent": [], "introduced": [repaired], "resolved": [repaired]})
 
     def test_generated_consumer_introduction_blocks_root_repair(self) -> None:
         repaired = {"scope": ".", "module": "example.com/dependency", "advisory": "GO-1"}
@@ -73,9 +73,9 @@ class SecurityGraphPolicyTests(unittest.TestCase):
              mock.patch.object(policy.candidate_policy, "git", side_effect=[
                  "a" * 40, manifest("v1.0.0"), manifest("v1.1.0")]), \
              mock.patch.object(policy.graph, "compare_git", return_value={
-                 "introduced": [], "resolved": [repaired]}), \
+                 "persistent": [], "introduced": [], "resolved": [repaired]}), \
              mock.patch.object(policy.generated_graph, "compare_generated_git",
-                               return_value={"introduced": [new]}):
+                               return_value={"persistent": [], "introduced": [new]}):
             _, report = policy.assess({}, "b" * 40, Path("."))
         self.assertEqual(report["introduced"][0]["scope"],
                          ".e2e/generated/services/e2e-harness")

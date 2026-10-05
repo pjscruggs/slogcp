@@ -15,9 +15,8 @@
 
 """Require a Renovate root security patch to repair the selected Go graph.
 
-This is a repair and no-new-finding guard. Existing selected-graph findings
-still need resolution or narrow reviewed exceptions before a clean-graph
-merge policy can be required.
+The candidate's complete tracked and generated graphs must be clean;
+unchanged findings are not implicitly authorized by their presence on main.
 """
 
 from __future__ import annotations
@@ -70,10 +69,10 @@ def validate_root_floors(base: str, head: str) -> None:
 
 
 def validate_graph_delta(report: dict) -> None:
-    if report["introduced"]:
-        details = ", ".join(f"{item['scope']} {item['module']} {item['advisory']}"
-                            for item in report["introduced"])
-        raise ValueError(f"Selected graph introduced affected modules: {details}")
+    try:
+        graph.require_clean_comparison(report)
+    except graph.PolicyError as error:
+        raise ValueError(str(error)) from error
     repaired = [item for item in report["resolved"] if item["scope"] == "."]
     if not repaired:
         raise ValueError("Root selected graph did not resolve an applicable advisory")
@@ -89,8 +88,11 @@ def assess(event: dict, base: str, root: Path) -> tuple[str, dict | None]:
     report = graph.compare_git(root, base)
     generated = generated_graph.compare_generated_git(root, base)
     report["generated"] = generated
-    report["introduced"].extend({**item, "scope": ".e2e/generated/" + item["scope"]}
-                                  for item in generated["introduced"])
+    for field in ("introduced", "persistent"):
+        report[field].extend(
+            {**item, "scope": ".e2e/generated/" + item["scope"]}
+            for item in generated[field]
+        )
     return "security_repair_candidate", report
 
 
