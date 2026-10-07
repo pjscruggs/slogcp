@@ -296,12 +296,14 @@
       "allowedVersions": "!/^v?1\\.84\\.0$/"
     },
     {
-      "description": "Exclude gRPC examples revision selecting affected gRPC v1.84.0",
+      "description": "Filter the known affected gRPC examples digest",
       "matchManagers": ["gomod"],
       "matchDatasources": ["go"],
       "matchFileNames": [".examples/**/go.mod"],
       "matchPackageNames": ["google.golang.org/grpc/examples"],
-      "allowedVersions": "!/^v?0\\.0\\.0-20261006061042-6c0c296ea81d$/"
+      "matchUpdateTypes": ["digest"],
+      "matchJsonata": ["$exists(newDigest) and $substring(newDigest,0,12) = \"6c0c296ea81d\""],
+      "enabled": false
     },
     {
       "description": "Hold example API before its dependency on affected gRPC v1.84.0",
