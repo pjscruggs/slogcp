@@ -296,6 +296,14 @@
       "allowedVersions": "!/^v?1\\.84\\.0$/"
     },
     {
+      "description": "Exclude gRPC examples revision selecting affected gRPC v1.84.0",
+      "matchManagers": ["gomod"],
+      "matchDatasources": ["go"],
+      "matchFileNames": [".examples/**/go.mod"],
+      "matchPackageNames": ["google.golang.org/grpc/examples"],
+      "allowedVersions": "!/^v?0\\.0\\.0-20261006061042-6c0c296ea81d$/"
+    },
+    {
       "description": "Hold example API before its dependency on affected gRPC v1.84.0",
       "matchManagers": ["gomod"],
       "matchDatasources": ["go"],
