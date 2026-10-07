@@ -21,6 +21,7 @@ import (
 	"testing"
 )
 
+// TestRunRejectsNonHeaderCommandsAndFlags ensures the wrapper exposes no unrelated operations.
 func TestRunRejectsNonHeaderCommandsAndFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"version"},
@@ -37,6 +38,7 @@ func TestRunRejectsNonHeaderCommandsAndFlags(t *testing.T) {
 	}
 }
 
+// TestRunFixAndCheckUseConfiguredHeaderAndPreserveSource verifies repair and check preserve source bytes.
 func TestRunFixAndCheckUseConfiguredHeaderAndPreserveSource(t *testing.T) {
 	workingDir := t.TempDir()
 	config := `header:
@@ -93,6 +95,7 @@ func TestRunFixAndCheckUseConfiguredHeaderAndPreserveSource(t *testing.T) {
 	}
 }
 
+// TestRunRejectsStaleHeaderAndPrependsConfiguredYear checks stale headers against the configured year.
 func TestRunRejectsStaleHeaderAndPrependsConfiguredYear(t *testing.T) {
 	workingDir := t.TempDir()
 	config := `header:
@@ -149,6 +152,7 @@ func TestRunRejectsStaleHeaderAndPrependsConfiguredYear(t *testing.T) {
 	}
 }
 
+// TestRunRejectsInvalidConfigurationBeforeChangingFiles ensures invalid config cannot alter sources.
 func TestRunRejectsInvalidConfigurationBeforeChangingFiles(t *testing.T) {
 	validHeader := `header:
   license:

@@ -30,10 +30,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// fileConfig retains the validated top-level license configuration.
 type fileConfig struct {
 	Header *headerConfig `yaml:"header"`
 }
 
+// headerConfig accepts the pinned header tool's supported configuration keys.
 type headerConfig struct {
 	License                  *configuredLicense           `yaml:"license"`
 	Paths                    []string                     `yaml:"paths"`
@@ -43,12 +45,14 @@ type headerConfig struct {
 	Languages                map[string]comments.Language `yaml:"language"`
 }
 
+// configuredLicense adds the repository's publication-year metadata to the upstream license fields.
 type configuredLicense struct {
 	header.LicenseConfig `yaml:",inline"`
 	// Retained for YAML aliases in the repository's license configuration.
 	FirstPublicationYear string `yaml:"first-publication-year"`
 }
 
+// decodeConfig strictly parses the configuration and rejects an empty resolved license.
 func decodeConfig(data []byte) (header.ConfigHeader, error) {
 	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
 	decoder.KnownFields(true)
@@ -86,6 +90,7 @@ func decodeConfig(data []byte) (header.ConfigHeader, error) {
 	return config, nil
 }
 
+// main runs the header-only command and reports any validation or repair error.
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -93,6 +98,7 @@ func main() {
 	}
 }
 
+// run handles only the upstream header check and fix actions.
 func run(args []string) error {
 	logger.Log.SetLevel(logrus.InfoLevel)
 	if len(args) < 2 || args[0] != "header" {
