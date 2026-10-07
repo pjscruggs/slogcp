@@ -239,6 +239,21 @@ class RenovatePolicyTests(unittest.TestCase):
                 self.assertEqual(candidate["allowedVersions"], allowed)
                 self.assertNotIn("matchUpdateTypes", candidate)
 
+    def test_unsafe_examples_parent_is_excluded_without_freezing_future_revisions(self) -> None:
+        candidate = rule("Exclude gRPC examples revision selecting affected gRPC v1.84.0")
+        self.assertEqual(candidate["matchFileNames"], [".examples/**/go.mod"])
+        self.assertEqual(candidate["matchPackageNames"], ["google.golang.org/grpc/examples"])
+        self.assertNotIn("matchUpdateTypes", candidate)
+        allowed = candidate["allowedVersions"]
+        self.assertTrue(allowed.startswith("!/") and allowed.endswith("/"))
+        excluded = re.compile(allowed[2:-1])
+        bad = "v0.0.0-20261006061042-6c0c296ea81d"
+        self.assertIsNotNone(excluded.fullmatch(bad))
+        self.assertIsNotNone(excluded.fullmatch(bad.removeprefix("v")))
+        for version in ("v0.0.0-20260928104945-bf88ff499261",
+                        "v0.0.0-20261007000000-abcdef012345"):
+            self.assertIsNone(excluded.fullmatch(version))
+
 
 if __name__ == "__main__":
     unittest.main()
