@@ -15,8 +15,8 @@
 
 """Require a Renovate root security patch to repair the selected Go graph.
 
-The candidate's complete tracked and generated graphs must be clean;
-unchanged findings are not implicitly authorized by their presence on main.
+The candidate's complete tracked and generated graphs must pass the shared
+policy. Unchanged findings receive the same scrutiny as introduced findings.
 """
 
 from __future__ import annotations

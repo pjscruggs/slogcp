@@ -176,7 +176,11 @@ def main() -> int:
         print(f"  Introduced: {len(report['introduced'])}; "
               f"resolved: {len(report['resolved'])}; "
               f"persistent: {len(report['persistent'])}")
-    return 1 if candidate["findings"] else 0
+    try:
+        return 1 if graph.blocking_findings(report) else 0
+    except graph.PolicyError as error:
+        print(f"Generated package policy indeterminate: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

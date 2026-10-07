@@ -18,12 +18,27 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
 import tempfile
 import types
 import unittest
 from unittest import mock
 
 import validate_optional_security_graph as optional
+
+
+def with_candidate(report: dict) -> dict:
+    findings = [*report["introduced"], *report["persistent"]]
+    candidate = {"findings": findings, "modules": sorted({item["scope"] for item in findings}) or ["."],
+                 "selected": [{"scope": item["scope"], "path": item["module"],
+                               "selected_path": item.get("selected_path"),
+                               "selected_version": item.get("version")}
+                              for item in findings],
+                 "advisory_fetched_at": datetime.now(timezone.utc).isoformat(),
+                 "advisories": {item["advisory"]: {"modified": item.get("modified")}
+                                for item in findings}}
+    candidate["applicability"] = optional.graph._applicability(candidate)
+    return {**report, "candidate": candidate}
 
 
 class OptionalSecurityGraphTests(unittest.TestCase):
@@ -45,7 +60,7 @@ class OptionalSecurityGraphTests(unittest.TestCase):
                 validate_event=lambda *_: "security_patch",
                 git=lambda *args: "b" * 40 if args[0] == "rev-parse" else "module fixture\n",
             )
-            report = {"persistent": [], "introduced": [], "resolved": [{"scope": ".", "module": "example.org/m", "advisory": "GO-1"}]}
+            report = with_candidate({"persistent": [], "introduced": [], "resolved": [{"scope": ".", "module": "example.org/m", "advisory": "GO-1"}]})
             with mock.patch.object(optional, "load_candidate_policy", return_value=candidate), \
                  mock.patch.object(optional, "validate_root_floors") as floors, \
                  mock.patch.object(optional.graph, "compare_git", return_value=report) as compare, \
@@ -63,13 +78,13 @@ class OptionalSecurityGraphTests(unittest.TestCase):
                 validate_event=lambda *_: "security_patch",
                 git=lambda *_: "b" * 40,
             )
-            report = {"persistent": [], "introduced": [{"scope": ".", "module": "example.org/m", "advisory": "GO-2"}],
-                      "resolved": [{"scope": ".", "module": "example.org/m", "advisory": "GO-1"}]}
+            report = with_candidate({"persistent": [], "introduced": [{"scope": ".", "module": "example.org/m", "advisory": "GO-2"}],
+                                     "resolved": [{"scope": ".", "module": "example.org/m", "advisory": "GO-1"}]})
             with mock.patch.object(optional, "load_candidate_policy", return_value=candidate), \
                  mock.patch.object(optional, "validate_root_floors"), \
                  mock.patch.object(optional.graph, "compare_git", return_value=report), \
                  mock.patch.object(optional.Path, "cwd", return_value=root):
-                with self.assertRaisesRegex(ValueError, "introduced affected modules"):
+                with self.assertRaisesRegex(ValueError, "GO-2"):
                     optional.assess({}, "a" * 40, root)
 
 

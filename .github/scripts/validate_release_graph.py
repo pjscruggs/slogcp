@@ -67,7 +67,7 @@ def main() -> int:
     except (ValueError, selected_graph_policy.PolicyError) as error:
         print(f"Release selected graph is unsafe: {error}", file=sys.stderr)
         return 1
-    print("Release selected graph: clean; "
+    print("Release selected graph: accepted by policy; "
           f"tracked fetched {report['tracked']['advisory_fetched_at']}; "
           f"generated fetched {report['generated']['advisory_fetched_at']}")
     return 0

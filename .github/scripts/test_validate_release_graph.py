@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime, timezone
 import io
 import json
 from pathlib import Path
@@ -31,6 +32,18 @@ import validate_release_graph as policy
 
 class ReleaseGraphTests(unittest.TestCase):
     def invoke(self, tracked: dict, generated: dict) -> tuple[int, dict]:
+        for comparison in (tracked, generated):
+            findings = [*comparison["introduced"], *comparison["persistent"]]
+            candidate = {"findings": findings, "modules": sorted({item["scope"] for item in findings}) or ["."],
+                         "selected": [{"scope": item["scope"], "path": item["module"],
+                                       "selected_path": item.get("selected_path"),
+                                       "selected_version": item.get("version")}
+                                      for item in findings],
+                         "advisory_fetched_at": datetime.now(timezone.utc).isoformat(),
+                         "advisories": {item["advisory"]: {"modified": item.get("modified")}
+                                        for item in findings}}
+            candidate["applicability"] = policy.selected_graph_policy._applicability(candidate)
+            comparison["candidate"] = candidate
         with tempfile.TemporaryDirectory() as temporary:
             report = Path(temporary) / "report.json"
             with mock.patch.object(sys, "argv", ["validate_release_graph.py",
