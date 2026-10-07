@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 import unittest
@@ -36,6 +37,22 @@ SPEC.loader.exec_module(policy)
 def manifest(requirement: str, extra: str = "") -> str:
     return ("module example.com/library/v2\n\ngo 1.27.0\n\n"
             f"require example.com/dependency {requirement}\n{extra}")
+
+
+def comparison(introduced=None, persistent=None, resolved=None) -> dict:
+    introduced, persistent = introduced or [], persistent or []
+    findings = [*introduced, *persistent]
+    candidate = {"findings": findings, "modules": sorted({item["scope"] for item in findings}) or ["."],
+                 "selected": [{"scope": item["scope"], "path": item["module"],
+                               "selected_path": item.get("selected_path"),
+                               "selected_version": item.get("version")}
+                              for item in findings],
+                 "advisory_fetched_at": datetime.now(timezone.utc).isoformat(),
+                 "advisories": {item["advisory"]: {"modified": item.get("modified")}
+                                for item in findings}}
+    candidate["applicability"] = policy.graph._applicability(candidate)
+    return {"candidate": candidate, "introduced": introduced,
+            "persistent": persistent, "resolved": resolved or []}
 
 
 class SecurityGraphPolicyTests(unittest.TestCase):
@@ -57,12 +74,12 @@ class SecurityGraphPolicyTests(unittest.TestCase):
 
     def test_no_new_findings_and_real_root_resolution_are_required(self) -> None:
         repaired = {"scope": ".", "module": "example.com/dependency", "advisory": "GO-1"}
-        policy.validate_graph_delta({"persistent": [], "introduced": [], "resolved": [repaired]})
+        policy.validate_graph_delta(comparison(resolved=[repaired]))
         with self.assertRaisesRegex(ValueError, "did not resolve"):
-            policy.validate_graph_delta({"persistent": [], "introduced": [], "resolved": [
-                {**repaired, "scope": ".github/tools"}]})
-        with self.assertRaisesRegex(ValueError, "introduced"):
-            policy.validate_graph_delta({"persistent": [], "introduced": [repaired], "resolved": [repaired]})
+            policy.validate_graph_delta(comparison(resolved=[
+                {**repaired, "scope": ".github/tools"}]))
+        with self.assertRaisesRegex(ValueError, "GO-1"):
+            policy.validate_graph_delta(comparison(introduced=[repaired], resolved=[repaired]))
 
     def test_generated_consumer_introduction_blocks_root_repair(self) -> None:
         repaired = {"scope": ".", "module": "example.com/dependency", "advisory": "GO-1"}
@@ -72,10 +89,10 @@ class SecurityGraphPolicyTests(unittest.TestCase):
                                return_value="security_patch"), \
              mock.patch.object(policy.candidate_policy, "git", side_effect=[
                  "a" * 40, manifest("v1.0.0"), manifest("v1.1.0")]), \
-             mock.patch.object(policy.graph, "compare_git", return_value={
-                 "persistent": [], "introduced": [], "resolved": [repaired]}), \
+             mock.patch.object(policy.graph, "compare_git",
+                               return_value=comparison(resolved=[repaired])), \
              mock.patch.object(policy.generated_graph, "compare_generated_git",
-                               return_value={"persistent": [], "introduced": [new]}):
+                               return_value=comparison(introduced=[new])):
             _, report = policy.assess({}, "b" * 40, Path("."))
         self.assertEqual(report["introduced"][0]["scope"],
                          ".e2e/generated/services/e2e-harness")

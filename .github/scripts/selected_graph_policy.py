@@ -22,7 +22,7 @@ evaluation. A checksum or an unselected go.mod graph edge is not a selection.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -40,6 +40,29 @@ import urllib.request
 API = "https://api.osv.dev/v1"
 MAX_BATCH = 100
 MAX_PAGES = 20
+
+# These are supported package-closure targets, not claims that binaries were tested.
+PACKAGE_TARGETS = (
+    {"goos": "linux", "goarch": "amd64", "goamd64": "v1", "goarm64": None,
+     "cgo": "0", "tags": []},
+    {"goos": "linux", "goarch": "amd64", "goamd64": "v1", "goarm64": None,
+     "cgo": "1", "tags": []},
+    {"goos": "linux", "goarch": "arm64", "goamd64": None, "goarm64": "v8.0",
+     "cgo": "0", "tags": []},
+)
+OPENPGP_ADVISORY = "GO-2026-5932"
+OPENPGP_MODIFIED = "2026-07-10T05:44:31.101996029Z"
+OPENPGP_SHA256 = "9357dd8ad55a6647c5a18fca61887c547549786d960a41de5f1038c979f573b1"
+OPENPGP_MODULE = "golang.org/x/crypto"
+OPENPGP_IMPORTS = (
+    "golang.org/x/crypto/openpgp",
+    "golang.org/x/crypto/openpgp/armor",
+    "golang.org/x/crypto/openpgp/clearsign",
+    "golang.org/x/crypto/openpgp/elgamal",
+    "golang.org/x/crypto/openpgp/errors",
+    "golang.org/x/crypto/openpgp/packet",
+    "golang.org/x/crypto/openpgp/s2k",
+)
 
 
 class PolicyError(Exception):
@@ -80,7 +103,7 @@ def json_stream(source: str) -> list[dict]:
 
 
 def selected_modules(module_dir: Path) -> list[dict]:
-    env = {**os.environ, "GOWORK": "off", "GOFLAGS": "-mod=readonly", "GOTOOLCHAIN": "local"}
+    env = _base_go_env("local")
     result = subprocess.run(
         ["go", "-C", str(module_dir), "list", "-m", "-json", "all"],
         capture_output=True, text=True, encoding="utf-8", env=env,
@@ -91,6 +114,252 @@ def selected_modules(module_dir: Path) -> list[dict]:
     if sum(entry.get("Main") is True for entry in values) != 1:
         raise PolicyError(f"Expected one main module in {module_dir}")
     return values
+
+
+def _base_go_env(toolchain: str) -> dict[str, str]:
+    env = dict(os.environ)
+    for key in ("GOROOT", "GOOS", "GOARCH", "CGO_ENABLED", "GOAMD64", "GOARM64"):
+        env.pop(key, None)
+    env.update({"GOWORK": "off", "GO111MODULE": "on", "GOENV": "off",
+                "GOFLAGS": "-mod=readonly", "GOTOOLCHAIN": toolchain,
+                "GOEXPERIMENT": ""})
+    return env
+
+
+def _native_go_version() -> str:
+    try:
+        result = subprocess.run(["go", "env", "GOVERSION"], check=True,
+                                capture_output=True, text=True, encoding="utf-8",
+                                env=_base_go_env("local"), cwd=tempfile.gettempdir(),
+                                timeout=60)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise PolicyError("Cannot identify the configured current Go compiler") from error
+    version = result.stdout.strip()
+    if not re.fullmatch(r"go1\.\d+\.\d+", version):
+        raise PolicyError("Configured current Go compiler version is unsupported")
+    return version
+
+
+def _latest_stable_go_version() -> str:
+    request = urllib.request.Request("https://go.dev/dl/?mode=json",
+                                     headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise PolicyError("Official Go release list exceeded its size bound")
+        releases = json.loads(raw)
+    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as error:
+        raise PolicyError("Cannot retrieve the official Go stable release list") from error
+    if not isinstance(releases, list):
+        raise PolicyError("Official Go release list is malformed")
+    stable_versions = []
+    for item in releases:
+        if not isinstance(item, dict) or item.get("stable") is not True:
+            continue
+        version = item.get("version")
+        if isinstance(version, str) and re.fullmatch(r"go1\.\d+\.\d+", version):
+            match = re.fullmatch(r"go1\.(\d+)\.(\d+)", version)
+            stable_versions.append((int(match.group(1)), int(match.group(2)), version))
+    if stable_versions:
+        return max(stable_versions)[2]
+    raise PolicyError("Official Go release list has no recognized stable release")
+
+
+def _normalize_go_floor(value: object, scope: str) -> str:
+    if not isinstance(value, str):
+        raise PolicyError(f"Go compatibility floor is missing in {scope}")
+    match = re.fullmatch(r"(\d+)\.(\d+)(?:\.(\d+))?", value)
+    if not match:
+        raise PolicyError(f"Go compatibility floor is malformed in {scope}")
+    major, minor, patch = match.groups()
+    return f"go{major}.{minor}.{patch or '0'}"
+
+
+def _resolve_go_binary(version: str) -> Path:
+    if not re.fullmatch(r"go1\.\d+\.\d+", version):
+        raise PolicyError("Refusing to resolve an unpinned Go compiler")
+    env = _base_go_env(version)
+    try:
+        root = subprocess.run(["go", "env", "GOROOT"], check=True,
+                              capture_output=True, text=True, encoding="utf-8",
+                              env=env, cwd=tempfile.gettempdir(), timeout=180).stdout.strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise PolicyError(f"Cannot provision required Go compiler {version}") from error
+    goroot = Path(root).resolve()
+    executable = goroot / "bin" / ("go.exe" if os.name == "nt" else "go")
+    if not executable.is_file():
+        raise PolicyError(f"Pinned Go compiler executable is missing: {version}")
+    verify_env = _base_go_env("local")
+    verify_env["GOROOT"] = str(goroot)
+    try:
+        actual = subprocess.run([str(executable), "env", "GOVERSION"], check=True,
+                                capture_output=True, text=True, encoding="utf-8",
+                                env=verify_env, cwd=tempfile.gettempdir(),
+                                timeout=60).stdout.strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise PolicyError(f"Cannot verify pinned Go compiler {version}") from error
+    if actual != version:
+        raise PolicyError(f"Pinned Go compiler mismatch: requested {version}, got {actual}")
+    return executable
+
+
+def _run_go(go_binary: Path, module_dir: Path, args: list[str],
+            profile: dict | None = None) -> str:
+    env = _base_go_env("local")
+    env["GOROOT"] = str(go_binary.parent.parent)
+    if profile is not None:
+        env.update({"GOOS": profile["goos"], "GOARCH": profile["goarch"],
+                    "CGO_ENABLED": profile["cgo"],
+                    "GOAMD64": profile["goamd64"] or "",
+                    "GOARM64": profile["goarm64"] or ""})
+    try:
+        result = subprocess.run([str(go_binary), "-C", str(module_dir), *args], check=False,
+                                capture_output=True, text=True, encoding="utf-8", env=env,
+                                timeout=180)
+    except subprocess.TimeoutExpired as error:
+        raise PolicyError(f"Go command exceeded its time bound in {module_dir}") from error
+    if result.returncode:
+        detail = result.stderr.strip()[-2000:]
+        raise PolicyError(f"Cannot inventory package closure in {module_dir}: {detail}")
+    return result.stdout
+
+
+def _package_source_digest(root: Path, module_files: list[Path]) -> str:
+    root = root.resolve()
+    files: set[Path] = set()
+    for manifest in module_files:
+        files.update(_module_go_sources(manifest))
+        files.add(manifest.resolve())
+        sum_file = manifest.with_name("go.sum")
+        if sum_file.is_file():
+            files.add(sum_file.resolve())
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError as error:
+            raise PolicyError("Package source input escapes the audited root") from error
+        digest.update(relative.encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def _module_go_sources(manifest: Path) -> set[Path]:
+    module_root = manifest.parent.resolve()
+    nested_manifests = {path.resolve() for path in module_root.rglob("go.mod")
+                        if path.resolve() != manifest.resolve()}
+    nested_roots = {path.parent for path in nested_manifests}
+    return {source.resolve() for source in module_root.rglob("*.go")
+            if not any(parent in source.resolve().parents for parent in nested_roots) and
+            ".git" not in source.resolve().parts and "vendor" not in source.resolve().parts}
+
+
+def package_closure_evidence(root: Path, module_files: list[Path],
+                             inventory_sha256: str) -> dict:
+    """Capture package closures at each module floor and current stable toolchain."""
+    if not module_files or not all(path.is_file() for path in module_files):
+        raise PolicyError("Package closure module inventory is empty or incomplete")
+    root = root.resolve()
+    scopes = [path.parent.resolve().relative_to(root).as_posix() or "."
+              for path in module_files]
+    if len(scopes) != len(set(scopes)):
+        raise PolicyError("Package closure module scopes are duplicated")
+    if not re.fullmatch(r"[a-f0-9]{64}", inventory_sha256):
+        raise PolicyError("Selected inventory digest is malformed")
+    source_before = _package_source_digest(root, module_files)
+    current = _native_go_version()
+    latest = _latest_stable_go_version()
+    binaries = {version: _resolve_go_binary(version)
+                for version in sorted({current, latest})}
+    scope_floors: dict[str, str] = {}
+    scope_tool_roots: dict[str, list[str]] = {}
+    tool_only_scopes = []
+    profiles = []
+    for manifest, scope in zip(module_files, scopes, strict=True):
+        manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        try:
+            module_edit = json.loads(_run_go(binaries[current], manifest.parent,
+                                             ["mod", "edit", "-json"]))
+        except json.JSONDecodeError as error:
+            raise PolicyError(f"Malformed go.mod metadata in {scope}") from error
+        if not isinstance(module_edit, dict):
+            raise PolicyError(f"Malformed go.mod metadata in {scope}")
+        tools = module_edit.get("Tool", [])
+        if not isinstance(tools, list) or any(not isinstance(tool, dict) or
+                                               not isinstance(tool.get("Path"), str) or
+                                               not tool["Path"] for tool in tools):
+            raise PolicyError(f"Malformed Go tool roots in {scope}")
+        tool_paths = sorted({tool["Path"] for tool in tools})
+        if len(tool_paths) != len(tools):
+            raise PolicyError(f"Duplicate Go tool roots in {scope}")
+        scope_tool_roots[scope] = tool_paths
+        floor = _normalize_go_floor(module_edit.get("Go"), scope)
+        scope_floors[scope] = floor
+        tool_only = bool(tools) and not _module_go_sources(manifest)
+        if tool_only:
+            tool_only_scopes.append(scope)
+            compiler_axes = _compiler_axes(floor, current, latest, True)
+        else:
+            compiler_axes = _compiler_axes(floor, current, latest, False)
+        test_patterns = [] if tool_only else ["./..."]
+        for profile in PACKAGE_TARGETS:
+            for compiler_axis in compiler_axes:
+                version = compiler_axis["compiler"]
+                if version not in binaries:
+                    binaries[version] = _resolve_go_binary(version)
+                compiler_profile = {**profile, **compiler_axis}
+                packages = []
+                if test_patterns:
+                    raw = _run_go(binaries[version], manifest.parent,
+                                  ["list", "-buildvcs=false", "-deps", "-test", "-json",
+                                   *test_patterns], compiler_profile)
+                    test_packages = json_stream(raw)
+                    if not any(package.get("DepOnly") is not True
+                               for package in test_packages):
+                        raise PolicyError(f"Package closure has no main-root test packages in {scope}")
+                    packages.extend(test_packages)
+                if tool_paths:
+                    raw = _run_go(binaries[version], manifest.parent,
+                                  ["list", "-buildvcs=false", "-deps", "-json",
+                                   *tool_paths], compiler_profile)
+                    tool_packages = json_stream(raw)
+                    tool_roots = {package.get("ImportPath") for package in tool_packages
+                                  if package.get("DepOnly") is not True}
+                    if not set(tool_paths).issubset(tool_roots):
+                        raise PolicyError(f"Go tool closure omits declared roots in {scope}")
+                    packages.extend(tool_packages)
+                if not packages:
+                    raise PolicyError(f"Package closure has no roots in {scope}")
+                imports = []
+                for package in packages:
+                    if package.get("Error") or package.get("Incomplete"):
+                        raise PolicyError(f"Incomplete package closure in {scope}")
+                    import_path = package.get("ImportPath")
+                    if not isinstance(import_path, str) or not import_path:
+                        raise PolicyError(f"Malformed package closure in {scope}")
+                    imports.append(import_path)
+                imports = sorted(set(imports))
+                if not imports:
+                    raise PolicyError(f"Empty package closure in {scope}")
+                identity = {"scope": scope, "manifest_sha256": manifest_hash,
+                            "inventory_sha256": inventory_sha256,
+                            "source_sha256": source_before,
+                            "test_patterns": test_patterns, "tool_paths": tool_paths,
+                            "imports": imports, **compiler_profile}
+                digest = hashlib.sha256(json.dumps(
+                    identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                profiles.append({**identity, "sha256": digest})
+    source_after = _package_source_digest(root, module_files)
+    if source_before != source_after:
+        raise PolicyError("Go source or module manifests changed during package inventory")
+    return {"schema": 1, "scopes": sorted(scopes),
+            "scope_go_floors": scope_floors,
+            "scope_tool_roots": scope_tool_roots,
+            "tool_only_scopes": sorted(tool_only_scopes),
+            "current_compiler": current, "latest_stable_compiler": latest,
+            "inventory_sha256": inventory_sha256, "source_sha256": source_before,
+            "profiles": profiles}
 
 
 def inventory(root: Path, module_files: list[Path],
@@ -228,7 +497,7 @@ def report_for(root: Path, module_files: list[Path], selected: list[dict],
                 continue
             findings.append({"scope": row["scope"], "module": row["path"],
                              "selected_path": key[0], "version": key[1],
-                             "advisory": item["id"], "modified": item["modified"]})
+                             "advisory": item["id"], "modified": record["modified"]})
     findings = list({(item["scope"], item["module"], item["selected_path"],
                       item["version"], item["advisory"]): item
                      for item in findings}.values())
@@ -242,6 +511,8 @@ def report_for(root: Path, module_files: list[Path], selected: list[dict],
             "sha256": hashlib.sha256(content).hexdigest(),
             "aliases": sorted(record.get("aliases", [])),
             "withdrawn": record.get("withdrawn"),
+            "affected": record["affected"],
+            "raw_record": record,
         }
     return {"schema": 2, "result": "affected" if findings else "clean",
             "advisory_fetched_at": fetched_at,
@@ -252,29 +523,334 @@ def report_for(root: Path, module_files: list[Path], selected: list[dict],
             "selected": selected, "findings": findings}
 
 
+def _reviewed_openpgp_record(candidate: dict) -> bool:
+    provenance = candidate.get("advisories", {}).get(OPENPGP_ADVISORY)
+    if not isinstance(provenance, dict):
+        return False
+    record = provenance.get("raw_record")
+    if not isinstance(record, dict) or record.get("id") != OPENPGP_ADVISORY or \
+            record.get("modified") != OPENPGP_MODIFIED:
+        return False
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+    record_hash = hashlib.sha256(canonical).hexdigest()
+    if record_hash != OPENPGP_SHA256 or provenance.get("sha256") != record_hash or \
+            provenance.get("modified") != record.get("modified") or \
+            provenance.get("affected") != record.get("affected") or \
+            provenance.get("aliases") != sorted(record.get("aliases", [])) or \
+            provenance.get("withdrawn") != record.get("withdrawn") or record.get("withdrawn"):
+        return False
+    affected = record.get("affected")
+    if not isinstance(affected, list) or len(affected) != 1:
+        return False
+    item = affected[0]
+    if not isinstance(item, dict) or item.get("package") != {
+            "ecosystem": "Go", "name": OPENPGP_MODULE,
+            "purl": "pkg:golang/golang.org/x/crypto"}:
+        return False
+    ranges = item.get("ranges")
+    if ranges != [{"type": "SEMVER", "events": [{"introduced": "0"}]}]:
+        return False
+    imports = item.get("ecosystem_specific", {}).get("imports")
+    if not isinstance(imports, list):
+        return False
+    paths = [entry.get("path") for entry in imports
+             if isinstance(entry, dict) and set(entry) == {"path"}]
+    return len(paths) == len(imports) and sorted(paths) == list(OPENPGP_IMPORTS)
+
+
+def _target_key(target: dict) -> tuple[str, str, str, str | None, str | None, tuple[str, ...]]:
+    return (target["goos"], target["goarch"], target["cgo"], target["goamd64"],
+            target["goarm64"], tuple(target["tags"]))
+
+
+def _compiler_axes(floor: str, current: str, latest: str,
+                   tool_only: bool) -> list[dict]:
+    if tool_only:
+        roles = {current: ["current"]}
+        if latest != current:
+            roles.setdefault(latest, []).append("latest_stable")
+        return [{"compiler": version, "compiler_roles": sorted(version_roles)}
+                for version, version_roles in sorted(roles.items())]
+    roles: dict[str, list[str]] = {}
+    roles.setdefault(floor, []).append("module_floor")
+    roles.setdefault(current, []).append("current")
+    if latest != current:
+        roles.setdefault(latest, []).append("latest_stable")
+    return [{"compiler": version, "compiler_roles": sorted(version_roles)}
+            for version, version_roles in sorted(roles.items())]
+
+
+def _verified_profiles(candidate: dict) -> tuple[dict[tuple[object, ...], dict], str | None]:
+    evidence = candidate.get("package_profiles")
+    if not isinstance(evidence, dict) or evidence.get("schema") != 1:
+        return {}, "package closure evidence is missing or unsupported"
+    scopes = candidate.get("modules")
+    current = evidence.get("current_compiler")
+    latest = evidence.get("latest_stable_compiler")
+    profiles = evidence.get("profiles")
+    if not isinstance(scopes, list) or not scopes or sorted(set(scopes)) != sorted(scopes) or \
+            evidence.get("scopes") != sorted(scopes) or \
+            not isinstance(current, str) or not re.fullmatch(r"go1\.\d+\.\d+", current) or \
+            not isinstance(latest, str) or not re.fullmatch(r"go1\.\d+\.\d+", latest) or \
+            not isinstance(profiles, list):
+        return {}, "package closure scope or compiler evidence is malformed"
+    if evidence.get("inventory_sha256") != candidate.get("inventory_sha256") or \
+            not re.fullmatch(r"[a-f0-9]{64}", str(evidence.get("source_sha256", ""))):
+        return {}, "package closure evidence is not bound to the candidate inventory"
+    floors = evidence.get("scope_go_floors")
+    tool_roots = evidence.get("scope_tool_roots")
+    tool_only = evidence.get("tool_only_scopes")
+    if not isinstance(floors, dict) or set(floors) != set(scopes) or \
+            any(not isinstance(floor, str) or not re.fullmatch(r"go1\.\d+\.\d+", floor)
+                for floor in floors.values()) or \
+            not isinstance(tool_roots, dict) or set(tool_roots) != set(scopes) or \
+            any(not isinstance(roots, list) or roots != sorted(set(roots)) or
+                any(not isinstance(path, str) or not path for path in roots)
+                for roots in tool_roots.values()) or \
+            not isinstance(tool_only, list) or tool_only != sorted(set(tool_only)) or \
+            not set(tool_only).issubset(scopes):
+        return {}, "package closure Go-floor or tool-module evidence is malformed"
+    if any(scope != ".github/tools" for scope in tool_only):
+        return {}, "unreviewed tool-only module scope cannot omit its declared Go floor"
+    if any(not tool_roots[scope] for scope in tool_only):
+        return {}, "Tool-only scope has no declared executable roots"
+    expected: set[tuple[object, ...]] = set()
+    for scope in scopes:
+        for target in PACKAGE_TARGETS:
+            for compiler_axis in _compiler_axes(floors[scope], current, latest,
+                                                scope in tool_only):
+                expected.add((scope, *_target_key(target), compiler_axis["compiler"],
+                              tuple(compiler_axis["compiler_roles"])))
+    indexed: dict[tuple[object, ...], dict] = {}
+    for item in profiles:
+        if not isinstance(item, dict):
+            return {}, "package closure profile is malformed"
+        try:
+            target = {field: item[field] for field in
+                      ("goos", "goarch", "cgo", "goamd64", "goarm64", "tags")}
+            roles = item["compiler_roles"]
+            key = (item["scope"], *_target_key(target), item["compiler"], tuple(roles))
+        except (KeyError, TypeError):
+            return {}, "package closure profile is incomplete"
+        if key not in expected or key in indexed or not isinstance(roles, list) or \
+                roles != sorted(set(roles)):
+            return {}, "package closure profile coverage is duplicated or unsupported"
+        imports, digest, manifest_hash = (item.get("imports"), item.get("sha256"),
+                                          item.get("manifest_sha256"))
+        test_patterns, item_tool_roots = item.get("test_patterns"), item.get("tool_paths")
+        expected_test_patterns = [] if item["scope"] in tool_only else ["./..."]
+        if not isinstance(imports, list) or not imports or \
+                any(not isinstance(path, str) or not path for path in imports) or \
+                imports != sorted(set(imports)) or \
+                not isinstance(manifest_hash, str) or not re.fullmatch(r"[a-f0-9]{64}", manifest_hash) or \
+                test_patterns != expected_test_patterns or item_tool_roots != tool_roots[item["scope"]]:
+            return {}, "package closure import or manifest evidence is malformed"
+        identity = {"scope": item["scope"], "manifest_sha256": manifest_hash,
+                    "compiler": item["compiler"], "compiler_roles": roles,
+                    "inventory_sha256": evidence["inventory_sha256"],
+                    "source_sha256": evidence["source_sha256"],
+                    **target, "test_patterns": test_patterns,
+                    "tool_paths": item_tool_roots,
+                    "imports": imports}
+        expected_digest = hashlib.sha256(json.dumps(
+            identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if digest != expected_digest:
+            return {}, "package closure profile digest does not match its contents"
+        indexed[key] = item
+    if set(indexed) != expected:
+        return {}, "package closure evidence does not cover every module, target, and compiler role"
+    return indexed, None
+
+
+def _applicability(candidate: dict) -> list[dict]:
+    profiles, profile_error = _verified_profiles(candidate)
+    evidence = []
+    findings = candidate.get("findings")
+    if not isinstance(findings, list) or any(not isinstance(item, dict) for item in findings):
+        raise PolicyError("Candidate advisory findings are malformed")
+    scopes = candidate.get("modules")
+    selected = candidate.get("selected")
+    if not isinstance(scopes, list) or any(not isinstance(scope, str) for scope in scopes) or \
+            sorted(set(scopes)) != sorted(scopes) or \
+            not isinstance(selected, list) or any(not isinstance(item, dict) or
+                item.get("scope") not in scopes or not isinstance(item.get("path"), str)
+                for item in selected):
+        raise PolicyError("Candidate module or selected package inventory is malformed")
+    selected_identities = {(item.get("scope"), item.get("path"),
+                            item.get("selected_path"), item.get("selected_version"))
+                           for item in selected if isinstance(item, dict)}
+    for finding in findings:
+        if finding.get("scope") not in scopes or (finding.get("scope"), finding.get("module"),
+                finding.get("selected_path"), finding.get("version")) not in selected_identities:
+            raise PolicyError("Candidate advisory finding is not backed by selected inventory")
+        provenance = candidate.get("advisories", {}).get(finding.get("advisory"))
+        if not isinstance(provenance, dict) or finding.get("modified") != provenance.get("modified"):
+            raise PolicyError("Candidate finding and retained advisory record disagree")
+        finding_identity = {key: finding.get(key) for key in
+                            ("scope", "module", "selected_path", "version", "advisory", "modified")}
+        reason = None
+        profile_refs = []
+        if finding.get("advisory") != OPENPGP_ADVISORY:
+            reason = "advisory is outside the single reviewed exception"
+        elif not _reviewed_openpgp_record(candidate):
+            reason = "reviewed advisory identity or affected-package facts changed"
+        elif finding.get("module") != OPENPGP_MODULE or \
+                finding.get("selected_path") != OPENPGP_MODULE:
+            reason = "finding does not select the reviewed Go module"
+        elif finding.get("modified") != OPENPGP_MODIFIED:
+            reason = "finding modification timestamp differs from the reviewed record"
+        elif profile_error:
+            reason = profile_error
+        else:
+            for key, item in sorted(profiles.items()):
+                profile_refs.append({"scope": key[0], "goos": key[1], "goarch": key[2],
+                                     "cgo": key[3], "goamd64": key[4],
+                                     "goarm64": key[5], "tags": list(key[6]),
+                                     "compiler": key[7], "compiler_roles": list(key[8]),
+                                     "sha256": item["sha256"]})
+            present = sorted({path for item in profiles.values()
+                              for path in item["imports"] if path in OPENPGP_IMPORTS})
+            if present:
+                reason = "affected OpenPGP package is present in a supported package closure: " + \
+                    ", ".join(present)
+        evidence.append({"finding": finding_identity,
+                         "decision": "admissible_with_exception" if reason is None else "blocking",
+                         "reason": ("all reviewed OpenPGP imports are absent from every supported "
+                                   "module/profile package closure" if reason is None else reason),
+                         "profile_evidence": profile_refs})
+    return evidence
+
+
+def _comparison_blockers(comparison: dict) -> list[dict]:
+    candidate = comparison.get("candidate")
+    if not isinstance(candidate, dict):
+        raise PolicyError("Selected graph comparison has no candidate evidence")
+    fetched = candidate.get("advisory_fetched_at")
+    try:
+        fetched_at = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        if fetched_at.tzinfo is None or fetched_at > now + timedelta(minutes=5) or \
+                now - fetched_at > timedelta(hours=1):
+            raise ValueError("stale or future OSV timestamp")
+    except (AttributeError, TypeError, ValueError) as error:
+        raise PolicyError("Candidate OSV evidence is missing, stale, or future dated") from error
+    expected_evidence = _applicability(candidate)
+    if candidate.get("applicability") != expected_evidence:
+        raise PolicyError("Candidate applicability evidence is absent or does not verify")
+    by_identity = {json.dumps(item["finding"], sort_keys=True): item
+                   for item in expected_evidence}
+    finding_identities = {json.dumps({key: item.get(key) for key in
+                           ("scope", "module", "selected_path", "version", "advisory", "modified")},
+                           sort_keys=True) for item in candidate["findings"]}
+    comparison_identities = []
+    for field in ("introduced", "persistent"):
+        rows = comparison.get(field)
+        if not isinstance(rows, list):
+            raise PolicyError(f"Incomplete selected graph comparison: {field}")
+        comparison_identities.extend(json.dumps({key: item.get(key) for key in
+            ("scope", "module", "selected_path", "version", "advisory", "modified")},
+            sort_keys=True) for item in rows if isinstance(item, dict))
+        if any(not isinstance(item, dict) for item in rows):
+            raise PolicyError("Comparison contains a malformed raw finding")
+    if len(comparison_identities) != len(set(comparison_identities)) or \
+            set(comparison_identities) != finding_identities:
+        raise PolicyError("Introduced/persistent findings do not cover the complete candidate inventory")
+    blockers = []
+    for field in ("introduced", "persistent"):
+        findings = comparison[field]
+        for finding in findings:
+            identity = {key: finding.get(key) for key in
+                        ("scope", "module", "selected_path", "version", "advisory", "modified")}
+            decision = by_identity.get(json.dumps(identity, sort_keys=True))
+            if decision is None:
+                raise PolicyError("Comparison finding is not backed by candidate evidence")
+            if decision["decision"] != "admissible_with_exception":
+                blockers.append(finding)
+    return blockers
+
+
+def blocking_findings(report: dict) -> list[dict]:
+    """Return every raw introduced/persistent finding that lacks reviewed applicability proof."""
+    if report.get("schema") == 2 and isinstance(report.get("modules"), list) and \
+            "candidate" not in report:
+        fetched = report.get("advisory_fetched_at")
+        try:
+            fetched_at = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            if fetched_at.tzinfo is None or fetched_at > now + timedelta(minutes=5) or \
+                    now - fetched_at > timedelta(hours=1):
+                raise ValueError("stale or future OSV timestamp")
+        except (AttributeError, TypeError, ValueError) as error:
+            raise PolicyError("Snapshot OSV evidence is missing, stale, or future dated") from error
+        expected = _applicability(report)
+        if report.get("applicability") != expected:
+            raise PolicyError("Snapshot applicability evidence is absent or does not verify")
+        return [item["finding"] for item in expected
+                if item["decision"] != "admissible_with_exception"]
+    generated = report.get("generated")
+    tracked = report.get("tracked")
+    if isinstance(tracked, dict):
+        if not isinstance(generated, dict):
+            raise PolicyError("Aggregate graph report is missing generated evidence")
+        _verify_aggregate_findings(report, tracked, generated)
+        return blocking_findings(tracked) + blocking_findings(generated)
+    if isinstance(report.get("candidate"), dict):
+        if isinstance(generated, dict) and isinstance(generated.get("candidate"), dict):
+            prefix = ".e2e/generated/"
+            tracked_part = {**report,
+                            "introduced": [item for item in report.get("introduced", [])
+                                           if not item.get("scope", "").startswith(prefix)],
+                            "persistent": [item for item in report.get("persistent", [])
+                                           if not item.get("scope", "").startswith(prefix)]}
+            _verify_aggregate_findings(report, tracked_part, generated)
+            return (_comparison_blockers(tracked_part) +
+                    blocking_findings(generated))
+        return _comparison_blockers(report)
+    raise PolicyError("Selected graph comparison evidence is incomplete")
+
+
+def _verify_aggregate_findings(report: dict, tracked: dict, generated: dict) -> None:
+    """Ensure aggregate raw findings are exactly the two retained source comparisons."""
+    prefix = ".e2e/generated/"
+    for field in ("introduced", "persistent"):
+        tracked_items, generated_items = tracked.get(field), generated.get(field)
+        combined = report.get(field)
+        if not isinstance(tracked_items, list) or not isinstance(generated_items, list) or \
+                not isinstance(combined, list):
+            raise PolicyError(f"Aggregate selected graph comparison is incomplete: {field}")
+        if any(not isinstance(item, dict) or not isinstance(item.get("scope"), str)
+               for item in [*tracked_items, *generated_items]):
+            raise PolicyError(f"Aggregate selected graph findings are malformed: {field}")
+        expected = [*tracked_items, *({**item, "scope": prefix + item["scope"]}
+                                      for item in generated_items)]
+        if combined != expected:
+            raise PolicyError("Aggregate selected graph findings do not match retained evidence")
+
+
 def evaluate(root: Path, module_files: list[Path],
              known_modules: list[Path] | None = None) -> dict:
     selected, queries = inventory(root, module_files, known_modules)
     matches = query_osv(queries)
     details = advisory_records(matches)
-    return report_for(root, module_files, selected, matches, details,
-                      datetime.now(timezone.utc).isoformat())
+    report = report_for(root, module_files, selected, matches, details,
+                        datetime.now(timezone.utc).isoformat())
+    if any(item.get("advisory") == OPENPGP_ADVISORY for item in report["findings"]):
+        report["package_profiles"] = package_closure_evidence(
+            root, module_files, report["inventory_sha256"])
+    report["applicability"] = _applicability(report)
+    return report
 
 
 def require_clean_comparison(report: dict) -> None:
-    """Reject affected candidate selections, including unchanged findings."""
-    for field in ("introduced", "persistent"):
-        findings = report.get(field)
-        if not isinstance(findings, list):
-            raise PolicyError(f"Incomplete selected graph comparison: {field}")
-        if findings:
-            details = ", ".join(
-                f"{item['scope']} {item['module']} {item['advisory']}"
-                for item in findings
-            )
-            if field == "introduced":
-                raise PolicyError(f"Selected graph introduced affected modules: {details}")
-            raise PolicyError(f"Selected graph still contains affected modules: {details}")
+    """Reject affected selections except the reviewed package-absence case."""
+    findings = blocking_findings(report)
+    if findings:
+        details = ", ".join(
+            f"{item.get('scope', '?')} {item.get('module', '?')} "
+            f"{item.get('advisory', '?')}"
+            for item in findings
+        )
+        raise PolicyError(f"Selected graph contains blocking affected modules: {details}")
 
 
 def compare_explicit(base_root: Path, base_files: list[Path], candidate_root: Path,
@@ -294,6 +870,10 @@ def compare_explicit(base_root: Path, base_files: list[Path], candidate_root: Pa
     base = report_for(base_root, base_files, base_selected, matches, details, fetched_at)
     candidate = report_for(candidate_root, candidate_files, candidate_selected,
                            matches, details, fetched_at)
+    if any(item.get("advisory") == OPENPGP_ADVISORY for item in candidate["findings"]):
+        candidate["package_profiles"] = package_closure_evidence(
+            candidate_root, candidate_files, candidate["inventory_sha256"])
+    candidate["applicability"] = _applicability(candidate)
 
     def indexed(report: dict) -> dict[tuple[str, str, str], dict]:
         return {(item["scope"], item["module"], item["advisory"]): item
@@ -373,7 +953,14 @@ def main() -> int:
     for item in candidate["findings"]:
         print(f"  {item['scope']}: {item['selected_path']}@{item['version']} "
               f"{item['advisory']}")
-    return 1 if candidate["findings"] else 0
+    try:
+        blockers = blocking_findings(report)
+    except PolicyError as error:
+        print(f"Selected package policy indeterminate: {error}", file=sys.stderr)
+        return 2
+    print(f"  Blocking findings: {len(blockers)}; "
+          f"package-absence exceptions: {len(candidate['findings']) - len(blockers)}")
+    return 1 if blockers else 0
 
 
 if __name__ == "__main__":
