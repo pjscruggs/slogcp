@@ -29,6 +29,9 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / ".github/workflows/validation_pipeline.yml").read_text(
     encoding="utf-8"
 )
+REPAIR_WORKFLOW = (ROOT / ".github/workflows/license-repair.yml").read_text(
+    encoding="utf-8"
+)
 
 
 def step_body(name, key):
@@ -623,7 +626,29 @@ class LicensePolicyTests(unittest.TestCase):
         self.assertNotIn("steps.year.outputs.YEAR", WORKFLOW)
         self.assertNotRegex(WORKFLOW, r"sed[^\n]*copyright-year:")
         self.assertIn("header check", WORKFLOW)
+        self.assertIn('tool -n header)', WORKFLOW)
+        self.assertNotIn('tool -n license-eye)', WORKFLOW)
         self.assertIn(".licenserc.yaml", WORKFLOW)
+
+    def test_license_tool_root_is_header_only(self):
+        tools_mod = (ROOT / ".github/tools/go.mod").read_text(encoding="utf-8")
+        self.assertIn(
+            "github.com/pjscruggs/slogcp/v2/.github/tools/cmd/header", tools_mod
+        )
+        self.assertIn("go 1.27.0", tools_mod)
+        self.assertNotIn("github.com/apache/skywalking-eyes/cmd/license-eye", tools_mod)
+
+    def test_trusted_repair_path_uses_the_header_only_tool(self):
+        self.assertIn("tool -n header)", REPAIR_WORKFLOW)
+        self.assertNotIn("license-eye", REPAIR_WORKFLOW)
+        capture = (ROOT / ".github/scripts/capture_license_repairs.py").read_text(
+            encoding="utf-8"
+        )
+        validator = (ROOT / ".github/scripts/validate_license_repairs.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('[args.fixer, "header", "fix", "-c", ".licenserc.yaml"]', capture)
+        self.assertIn('args.fixer.resolve()), "header", "fix", "-c"', validator)
 
 
 if __name__ == "__main__":

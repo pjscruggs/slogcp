@@ -46,11 +46,11 @@ jobs:
           check-latest: true
           cache: false
 
-      - name: Build trusted license formatter
+      - name: Resolve trusted header repair tool
         shell: bash
         run: |
           set -euo pipefail
-          echo "LICENSE_FIXER=$(go -C .github/tools tool -n license-eye)" >> "$GITHUB_ENV"
+          echo "LICENSE_FIXER=$(go -C .github/tools tool -n header)" >> "$GITHUB_ENV"
 
       - name: Authorize and independently reproduce proposed repairs
         id: prepare

@@ -489,6 +489,7 @@ jobs:
             golang.org/x/tools \
             golang.org/x/tools/gopls \
             golang.org/x/vuln
+          GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" test -mod=readonly ./cmd/header
           "$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n golangci-lint)" version
           "$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n govulncheck)" -version
 
@@ -501,7 +502,7 @@ jobs:
         id: fix-license
         run: |
           python3 .github/scripts/capture_license_repairs.py \
-            --fixer "$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n license-eye)" \
+            --fixer "$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n header)" \
             --output "$RUNNER_TEMP/license-repair-${{ github.run_id }}-${{ github.run_attempt }}"
 
       - name: Retain proposed license repairs
@@ -579,7 +580,7 @@ jobs:
             "$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n godoclint)"
       
       - name: 📄✅ Verify License Headers
-        run: '"$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n license-eye)" header check -c .licenserc.yaml'
+        run: '"$(GOTOOLCHAIN="$TOOLS_GOTOOLCHAIN" go -C "$TOOLS_MODULE" tool -n header)" header check -c .licenserc.yaml'
 
       - name: ♻️ Restore Go toolchain (pre-tests)
         id: restore-pre-tests-go
