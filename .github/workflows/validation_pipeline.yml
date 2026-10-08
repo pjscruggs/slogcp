@@ -266,6 +266,7 @@ jobs:
           import os
           import re
           import subprocess
+          import urllib.request
           from collections import defaultdict
           from pathlib import Path
 
@@ -317,14 +318,29 @@ jobs:
               raise SystemExit("expected exactly one tracked benchmark go.mod")
 
           latest = os.environ["LATEST_GO"].lower() == "true"
+          latest_version = None
+          if latest:
+              with urllib.request.urlopen("https://go.dev/dl/?mode=json", timeout=20) as response:
+                  content = response.read(1024 * 1024 + 1)
+              if len(content) > 1024 * 1024:
+                  raise SystemExit("official Go release list exceeded its size bound")
+              releases = json.loads(content)
+              if not isinstance(releases, list):
+                  raise SystemExit("official Go release list is malformed")
+              stable = [item["version"].removeprefix("go") for item in releases
+                        if isinstance(item, dict) and item.get("stable") is True and
+                        re.fullmatch(r"go\d+\.\d+\.\d+", str(item.get("version", "")))]
+              if not stable:
+                  raise SystemExit("official Go release list has no stable compiler")
+              latest_version = max(stable, key=lambda value: tuple(map(int, value.split("."))))
           root_go, root_toolchain = directives("go.mod")
           root_floor_version = minor_spec(root_go)
-          root_version = "stable" if latest else setup_spec(root_toolchain or root_go)
+          root_version = latest_version if latest else setup_spec(root_toolchain or root_go)
           tools_go, tools_toolchain = directives(".github/tools/go.mod")
           compiler_requirements = [root_toolchain or root_go, tools_go, tools_toolchain or tools_go]
           benchmark_go, benchmark_toolchain = directives(".benchmarks/go.mod")
           compiler_requirements.append(benchmark_toolchain or benchmark_go)
-          benchmark_version = "stable" if latest else setup_spec(benchmark_toolchain or benchmark_go)
+          benchmark_version = latest_version if latest else setup_spec(benchmark_toolchain or benchmark_go)
 
           grouped_examples: dict[str, list[str]] = defaultdict(list)
           for path in paths:
@@ -332,7 +348,7 @@ jobs:
                   continue
               go_version, _ = directives(path)
               compiler_requirements.append(go_version)
-              selected = "stable" if latest else setup_spec(go_version)
+              selected = latest_version if latest else setup_spec(go_version)
               grouped_examples[selected].append(path.removesuffix("/go.mod"))
 
           matrix = {
@@ -348,7 +364,9 @@ jobs:
                   raise SystemExit(f"invalid Go version: {version!r}")
               return tuple(int(part or 0) for part in match.groups())
 
-          tools_version = "stable" if latest else setup_spec(max(compiler_requirements, key=version_tuple))
+          if latest and version_tuple(latest_version) < max(map(version_tuple, compiler_requirements)):
+              raise SystemExit("official latest stable compiler is below a declared module requirement")
+          tools_version = latest_version if latest else setup_spec(max(compiler_requirements, key=version_tuple))
           print(f"Validation mode: {mode}")
           print(f"Root compatibility runtime: {root_floor_version}")
           print(f"Root selected runtime: {root_version}")

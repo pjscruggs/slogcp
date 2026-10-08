@@ -55,6 +55,13 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_actual_planner_separates_tool_compiler_from_module_runtimes(self):
         shell = step_body("Plan Go validation", "run")
         script = shell.split("python3 <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        # Pin the authoritative response; neither tests nor setup-go's cached
+        # stable alias should decide which compiler this planner requests.
+        script = ("import io, urllib.request\n"
+                  "urllib.request.urlopen = lambda *a, **k: io.BytesIO("
+                  "b'[{\"version\":\"go1.29.5\",\"stable\":true},"
+                  "{\"version\":\"go1.30.1\",\"stable\":true},"
+                  "{\"version\":\"go1.31rc1\",\"stable\":false}]')\n" + script)
         for latest in (False, True):
             with (
                 self.subTest(latest=latest),
@@ -91,21 +98,43 @@ class WorkflowPolicyTests(unittest.TestCase):
                 )
                 self.assertEqual(planned["root_floor_version"], "1.26.x")
                 self.assertEqual(
-                    planned["root_version"], "stable" if latest else "1.27.1"
+                    planned["root_version"], "1.30.1" if latest else "1.27.1"
                 )
                 self.assertEqual(
-                    planned["tools_version"], "stable" if latest else "1.28.1"
+                    planned["tools_version"], "1.30.1" if latest else "1.28.1"
                 )
                 self.assertEqual(planned["has_benchmark"], "true")
                 self.assertEqual(
                     planned["benchmark_version"],
-                    "stable" if latest else "1.27.2",
+                    "1.30.1" if latest else "1.27.2",
                 )
                 self.assertEqual(
                     json.loads(planned["example_matrix"])["include"][0]["go_version"],
-                    "stable" if latest else "1.28.0",
+                    "1.30.1" if latest else "1.28.0",
                 )
                 self.assertIn("CI tools compiler:", result.stdout)
+
+    def test_latest_planner_fails_closed_on_missing_or_stale_release_metadata(self):
+        shell = step_body("Plan Go validation", "run")
+        script = shell.split("python3 <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        fixtures = (
+            ([], "no stable compiler"),
+            ({"version": "go1.30.1"}, "malformed"),
+            ([{"version": "go1.31rc1", "stable": False}], "no stable compiler"),
+            ([{"version": "go1.0.0", "stable": True}], "below a declared module requirement"),
+        )
+        for payload, reason in fixtures:
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as temporary:
+                prefix = ("import io, urllib.request\n"
+                          "urllib.request.urlopen = lambda *a, **k: io.BytesIO("
+                          + repr(json.dumps(payload).encode()) + ")\n")
+                output = Path(temporary) / "outputs"
+                result = subprocess.run([sys.executable, "-c", prefix + script], cwd=ROOT,
+                    env={**os.environ, "LATEST_GO": "true", "GITHUB_OUTPUT": str(output)},
+                    capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(reason, result.stderr)
+                self.assertFalse(output.exists())
 
     def classify(
         self,
