@@ -217,45 +217,11 @@ class RenovatePolicyTests(unittest.TestCase):
             descriptions.index("Preserve the locally replaced benchmark self-requirement"),
         )
 
-    def test_affected_grpc_and_its_api_parent_are_held_in_examples(self) -> None:
-        for description, package, allowed in (
-            (
-                "Exclude gRPC v1.84.0 affected by GO-2026-6443",
-                "google.golang.org/grpc",
-                "!/^v?1\\.84\\.0$/",
-            ),
-            (
-                "Hold example API before its dependency on affected gRPC v1.84.0",
-                "google.golang.org/api",
-                "<0.299.0",
-            ),
-        ):
-            with self.subTest(package=package):
-                candidate = rule(description)
-                self.assertEqual(candidate["matchManagers"], ["gomod"])
-                self.assertEqual(candidate["matchDatasources"], ["go"])
-                self.assertEqual(candidate["matchFileNames"], [".examples/**/go.mod"])
-                self.assertEqual(candidate["matchPackageNames"], [package])
-                self.assertEqual(candidate["allowedVersions"], allowed)
-                self.assertNotIn("matchUpdateTypes", candidate)
-
-    def test_unsafe_examples_digest_filter_is_exact_and_does_not_cap_versions(self) -> None:
-        candidate = rule("Filter the known affected gRPC examples digest")
-        self.assertEqual(candidate["matchManagers"], ["gomod"])
-        self.assertEqual(candidate["matchDatasources"], ["go"])
-        self.assertEqual(candidate["matchFileNames"], [".examples/**/go.mod"])
-        self.assertEqual(
-            candidate["matchPackageNames"], ["google.golang.org/grpc/examples"]
-        )
-        self.assertEqual(candidate["matchUpdateTypes"], ["digest"])
-        self.assertEqual(
-            candidate["matchJsonata"],
-            ['$exists(newDigest) and $substring(newDigest,0,12) = "6c0c296ea81d"'],
-        )
-        self.assertFalse(candidate["enabled"])
-        # This filter runs after lookup when Renovate has a proposed digest; it does not
-        # cap the module version list during lookup.
-        self.assertNotIn("allowedVersions", candidate)
+    def test_obsolete_example_security_caps_are_removed(self) -> None:
+        descriptions = {item.get("description") for item in RULES}
+        self.assertNotIn("Exclude gRPC v1.84.0 affected by GO-2026-6443", descriptions)
+        self.assertNotIn("Hold example API before its dependency on affected gRPC v1.84.0", descriptions)
+        self.assertNotIn("Filter the known affected gRPC examples digest", descriptions)
 
 
 if __name__ == "__main__":
