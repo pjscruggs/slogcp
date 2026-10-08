@@ -494,6 +494,25 @@ class SelectedGraphPolicyTests(unittest.TestCase):
         candidate, finding = self._generic_candidate({".": ["golang.org/x/crypto/ssh"]})
         self.assertEqual(policy.blocking_findings(candidate), [finding])
 
+    def test_other_scope_using_fixed_version_does_not_contaminate_absence_proof(self):
+        candidate, finding = self._generic_candidate()
+        candidate["modules"] = [".", "example"]
+        candidate["selected"].append({**candidate["selected"][0], "scope": "example",
+                                      "selected_version": "v0.58.0"})
+        candidate["package_profiles"] = self._profile_evidence(
+            candidate["modules"], candidate["inventory_sha256"],
+            {"example": ["golang.org/x/crypto/ssh"]})
+        candidate["applicability"] = policy._applicability(candidate)
+        self.assertEqual(policy.blocking_findings(candidate), [])
+        self.assertEqual({item["scope"] for item in
+                          candidate["applicability"][0]["profile_evidence"]}, {"."})
+        # A separate affected selection in that scope still blocks.
+        candidate["selected"][1]["selected_version"] = finding["version"]
+        example_finding = {**finding, "scope": "example"}
+        candidate["findings"].append(example_finding)
+        candidate["applicability"] = policy._applicability(candidate)
+        self.assertEqual(policy.blocking_findings(candidate), [example_finding])
+
     def test_generic_incomplete_or_changed_advisory_blocks(self):
         for imports in (None, [], [{"path": "golang.org/x/crypto/..."}],
                         [{"path": "unrelated.test/package"}], [None]):

@@ -22,7 +22,9 @@ gate can classify that finding as `not_affected`, with the VEX justification
 - Go advisory metadata identifies every affected package in the selected module.
   Missing metadata or unsupported package patterns cannot authorize an exemption.
 - Complete package inventories, including tests and declared tool entry points,
-  exclude every affected package across all audited modules and build profiles.
+  exclude every affected package across every build profile of the finding's
+  module scope. Other scopes can select different versions of the same dependency;
+  each scope's findings receive their own applicability decision.
 - The evidence is bound to the source, manifests, selected inventory, compiler
   versions, build configuration, and profile hashes. Publication refreshes
   advisory evidence; evidence more than one hour old cannot authorize release.

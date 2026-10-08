@@ -766,13 +766,15 @@ def _applicability(candidate: dict) -> list[dict]:
         if reason is None and profile_error:
             reason = profile_error
         if reason is None:
-            for key, item in sorted(profiles.items()):
+            scope_profiles = {key: item for key, item in profiles.items()
+                              if key[0] == finding["scope"]}
+            for key, item in sorted(scope_profiles.items()):
                 profile_refs.append({"scope": key[0], "goos": key[1], "goarch": key[2],
                                      "cgo": key[3], "goamd64": key[4],
                                      "goarm64": key[5], "tags": list(key[6]),
                                      "compiler": key[7], "compiler_roles": list(key[8]),
                                      "sha256": item["sha256"]})
-            present = sorted({path for item in profiles.values()
+            present = sorted({path for item in scope_profiles.values()
                               for path in item["imports"] if path in affected_imports})
             if present:
                 reason = "affected package is present in a supported package closure: " + \
@@ -780,7 +782,8 @@ def _applicability(candidate: dict) -> list[dict]:
         evidence.append({"finding": finding_identity,
                          "decision": "admissible_with_exception" if reason is None else "blocking",
                          "reason": ("all affected imports are absent from every supported "
-                                   "module/profile package closure" if reason is None else reason),
+                                   "package closure of the finding's module scope"
+                                   if reason is None else reason),
                          "affected_imports": affected_imports,
                          "status": "not_affected" if reason is None else "under_investigation",
                          "justification": "vulnerable_code_not_present" if reason is None else None,
