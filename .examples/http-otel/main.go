@@ -83,7 +83,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/widgets/", middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		slogcp.Logger(r.Context()).Info("handling request")
+		slogcp.Logger(r.Context()).InfoContext(r.Context(), "handling request")
 		w.WriteHeader(http.StatusNoContent)
 	})))
 	mux.Handle("/healthz", middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -7,8 +7,11 @@ job under the worker's cancellation context with its own trace and a link to
 that origin. OpenTelemetry documents [span links][links] for relationships
 between causally connected operations, including long-running asynchronous work.
 
-This is a choice for independent jobs. Work that remains part of a request and
-must stop with it can use a child span and the request context directly.
+This is a choice for independent jobs. To keep the initiating trace while
+dropping request cancellation and values, use the
+[same-trace detached-work recipe](detached-work-same-trace.md). Work that remains
+part of a request and must stop with it can use a child span and the request
+context directly.
 
 ## Carry identity across the queue, and use the worker's lifetime
 

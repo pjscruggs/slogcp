@@ -80,7 +80,7 @@ func TestMiddlewareUsesCustomOTelOptions(t *testing.T) {
 	)
 
 	appHandler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		slogcp.Logger(r.Context()).Info("handled request")
+		slogcp.Logger(r.Context()).InfoContext(r.Context(), "handled request")
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	healthHandler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
