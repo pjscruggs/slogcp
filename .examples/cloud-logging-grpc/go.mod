@@ -1,18 +1,18 @@
 module github.com/pjscruggs/slogcp/v2/examples/cloud-logging-grpc
 
-go 1.27.1
+go 1.27.2
 
 require (
 	cloud.google.com/go/logging v1.20.0
 	github.com/pjscruggs/slogcp-grpc v1.0.1
-	github.com/pjscruggs/slogcp/v2 v2.0.0
-	google.golang.org/api v0.298.0
-	google.golang.org/grpc v1.83.2
+	github.com/pjscruggs/slogcp/v2 v2.0.2
+	google.golang.org/api v0.301.0
+	google.golang.org/grpc v1.84.0
 )
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
-	cloud.google.com/go/auth v0.24.0 // indirect
+	cloud.google.com/go/auth v0.24.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
 	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	cloud.google.com/go/longrunning v1.3.0 // indirect
@@ -32,7 +32,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect

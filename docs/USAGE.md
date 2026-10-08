@@ -190,6 +190,12 @@ ctx = slogcp.ContextWithLogger(ctx, requestLogger)
 slogcp.Logger(ctx).InfoContext(ctx, "order accepted")
 ```
 
+For queued work, choose between [continuing the initiating trace while dropping
+request values](recipes/detached-work-same-trace.md) and [starting an independent
+trace with an origin link](recipes/background-job-tracing.md). The [executable
+correlation recipe](recipes/trace-correlation-regression.md) tests all three
+logger selection styles.
+
 A child context does not modify its parent. An outer middleware or interceptor
 that retained the earlier context will not automatically see this later logger.
 Derive related loggers from a common base when they should share attributes,

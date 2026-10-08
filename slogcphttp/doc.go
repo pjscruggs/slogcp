@@ -45,7 +45,7 @@
 //
 //	mux := http.NewServeMux()
 //	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-//	    slogcp.Logger(r.Context()).Info("health probe")
+//	    slogcp.Logger(r.Context()).InfoContext(r.Context(), "health probe")
 //	    w.WriteHeader(http.StatusNoContent)
 //	})
 //

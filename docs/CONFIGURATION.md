@@ -295,7 +295,7 @@ Important options:
 | `WithProjectID(string)` | Overrides the project ID used for Cloud Trace correlation. |
 | `WithPropagators(propagation.TextMapPropagator)` | Customizes the propagator used to extract trace context when no span exists. Passing `nil` is treated the same as omitting the option (use the global propagator); disable propagation with `WithTracePropagation(false)`. |
 | `WithTracePropagation(bool)` | Enables or disables extraction of incoming trace headers. Defaults to `true`. |
-| `WithTracerProvider(trace.TracerProvider)` | Supplies the tracer provider passed to `otelhttp`. |
+| `WithTracerProvider(trace.TracerProvider)` | Overrides the global provider selected when the `otelhttp` handler is composed. Install the SDK before wrapping handlers. |
 | `WithPublicEndpoint(bool)` | Forwards the public-endpoint hint to `otelhttp`. |
 | `WithRemoteTrace(bool)` | When `WithPublicEndpoint(true)` and `WithOTel(false)`, controls whether logs correlate to inbound trace headers (disabled by default). Also reads `SLOGCP_TRUST_REMOTE_TRACE` when unset. |
 | `WithOTel(bool)` | Enables or disables wrapping with `otelhttp`. |

@@ -1,9 +1,9 @@
 module github.com/pjscruggs/slogcp/v2/examples/http-otel
 
-go 1.27.1
+go 1.27.2
 
 require (
-	github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
+	github.com/pjscruggs/slogcp/v2 v2.0.2
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
 )

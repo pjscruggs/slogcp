@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -459,6 +460,109 @@ class SelectedGraphPolicyTests(unittest.TestCase):
         candidate["applicability"] = policy._applicability(candidate)
         self.assertEqual(policy.blocking_findings(
             {"candidate": candidate, "introduced": [finding], "persistent": []}), [finding])
+
+    def _generic_candidate(self, imports_by_scope=None):
+        candidate, finding = self._openpgp_candidate(imports_by_scope)
+        record = copy.deepcopy(candidate["advisories"][policy.OPENPGP_ADVISORY]["raw_record"])
+        record["id"] = "GO-2026-9999"
+        record["aliases"] = ["GHSA-example"]
+        record["affected"][0]["ecosystem_specific"]["imports"] = [
+            {"path": "golang.org/x/crypto/ssh", "symbols": ["SomeFunction"]}]
+        finding["advisory"] = record["id"]
+        candidate["advisories"] = {}
+        self._retain_record(candidate, record)
+        candidate["applicability"] = policy._applicability(candidate)
+        return candidate, finding
+
+    def _retain_record(self, candidate, record):
+        content = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+        candidate["advisories"][record["id"]] = {
+            "raw_record": record, "sha256": hashlib.sha256(content).hexdigest(),
+            "modified": record["modified"], "affected": record["affected"],
+            "aliases": sorted(record.get("aliases", [])), "withdrawn": record.get("withdrawn")}
+
+    def test_generic_package_absence_preserves_raw_finding_and_vex_justification(self):
+        candidate, finding = self._generic_candidate()
+        self.assertEqual(policy.blocking_findings(candidate), [])
+        decision = candidate["applicability"][0]
+        self.assertEqual(decision["status"], "not_affected")
+        self.assertEqual(decision["justification"], "vulnerable_code_not_present")
+        self.assertEqual(decision["affected_imports"], ["golang.org/x/crypto/ssh"])
+        self.assertEqual(candidate["findings"], [finding])
+
+    def test_generic_affected_package_blocks_without_call_graph_exemption(self):
+        candidate, finding = self._generic_candidate({".": ["golang.org/x/crypto/ssh"]})
+        self.assertEqual(policy.blocking_findings(candidate), [finding])
+
+    def test_other_scope_using_fixed_version_does_not_contaminate_absence_proof(self):
+        candidate, finding = self._generic_candidate()
+        candidate["modules"] = [".", "example"]
+        candidate["selected"].append({**candidate["selected"][0], "scope": "example",
+                                      "selected_version": "v0.58.0"})
+        candidate["package_profiles"] = self._profile_evidence(
+            candidate["modules"], candidate["inventory_sha256"],
+            {"example": ["golang.org/x/crypto/ssh"]})
+        candidate["applicability"] = policy._applicability(candidate)
+        self.assertEqual(policy.blocking_findings(candidate), [])
+        self.assertEqual({item["scope"] for item in
+                          candidate["applicability"][0]["profile_evidence"]}, {"."})
+        # A separate affected selection in that scope still blocks.
+        candidate["selected"][1]["selected_version"] = finding["version"]
+        example_finding = {**finding, "scope": "example"}
+        candidate["findings"].append(example_finding)
+        candidate["applicability"] = policy._applicability(candidate)
+        self.assertEqual(policy.blocking_findings(candidate), [example_finding])
+
+    def test_generic_incomplete_or_changed_advisory_blocks(self):
+        for imports in (None, [], [{"path": "golang.org/x/crypto/..."}],
+                        [{"path": "unrelated.test/package"}], [None]):
+            with self.subTest(imports=imports):
+                candidate, finding = self._generic_candidate({".": ["golang.org/x/crypto/ssh"]})
+                record = candidate["advisories"][finding["advisory"]]["raw_record"]
+                record["affected"][0]["ecosystem_specific"]["imports"] = imports
+                self._retain_record(candidate, record)
+                candidate["applicability"] = policy._applicability(candidate)
+                self.assertEqual(policy.blocking_findings(candidate), [finding])
+        candidate, finding = self._generic_candidate()
+        candidate["advisories"][finding["advisory"]]["raw_record"]["summary"] = "changed"
+        candidate["applicability"] = policy._applicability(candidate)
+        self.assertEqual(policy.blocking_findings(candidate), [finding])
+
+    def test_missing_package_metadata_requires_entire_module_code_absence(self):
+        for imports_by_scope, blocked in (({}, False),
+                ({".": ["golang.org/x/crypto"]}, True),
+                ({".": ["golang.org/x/crypto/ssh"]}, True),
+                ({".": ["golang.org/x/crypto-extra/ssh"]}, False)):
+            with self.subTest(imports=imports_by_scope):
+                candidate, finding = self._generic_candidate(imports_by_scope)
+                record = candidate["advisories"][finding["advisory"]]["raw_record"]
+                record["affected"][0]["ecosystem_specific"] = {}
+                self._retain_record(candidate, record)
+                candidate["applicability"] = policy._applicability(candidate)
+                self.assertEqual(policy.blocking_findings(candidate), [finding] if blocked else [])
+
+    def test_alias_requires_verified_reciprocal_exact_version_go_finding(self):
+        candidate, finding = self._generic_candidate()
+        alias_finding = {**finding, "advisory": "GHSA-example"}
+        alias_record = {"id": "GHSA-example", "modified": finding["modified"],
+                        "aliases": [finding["advisory"]], "affected": []}
+        self._retain_record(candidate, alias_record)
+        candidate["findings"].append(alias_finding)
+        candidate["applicability"] = policy._applicability(candidate)
+        self.assertEqual(policy.blocking_findings(candidate), [])
+        candidate["findings"] = [alias_finding]
+        candidate["applicability"] = policy._applicability(candidate)
+        self.assertEqual(policy.blocking_findings(candidate), [alias_finding])
+
+    def test_generic_missing_profiles_and_stale_evidence_block(self):
+        candidate, finding = self._generic_candidate()
+        candidate["package_profiles"]["profiles"].pop()
+        candidate["applicability"] = policy._applicability(candidate)
+        self.assertEqual(policy.blocking_findings(candidate), [finding])
+        candidate, _ = self._generic_candidate()
+        candidate["advisory_fetched_at"] = "2000-01-01T00:00:00Z"
+        with self.assertRaisesRegex(policy.PolicyError, "stale"):
+            policy.blocking_findings(candidate)
 
     def test_generated_aggregate_requires_and_uses_generated_candidate_proof(self):
         tracked_candidate, finding = self._openpgp_candidate()

@@ -158,7 +158,9 @@ func WithPropagators(p propagation.TextMapPropagator) Option {
 }
 
 // WithTracerProvider installs the OpenTelemetry tracer provider used when
-// composing the otelhttp handler.
+// composing the otelhttp handler. Without a non-nil override, Middleware uses
+// the global provider when composing the handler. Install the application's
+// provider before wrapping handlers.
 func WithTracerProvider(tp trace.TracerProvider) Option {
 	return func(cfg *config) {
 		cfg.tracerProvider = tp

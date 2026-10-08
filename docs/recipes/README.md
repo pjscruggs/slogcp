@@ -19,6 +19,12 @@ what the application already owns and the behavior you want to add.
 - [Correlate queued background jobs](background-job-tracing.md) when work can
   outlive its originating request and needs its own cancellation lifetime and
   trace linked to that request.
+- [Continue a trace in detached work](detached-work-same-trace.md) when a job
+  belongs to the initiating trace but must drop request cancellation and values.
+- [Test trace correlation](trace-correlation-regression.md) with an executable
+  fixture covering global, injected, and contextual logging plus span export.
+- [Follow shared-work consumption](shared-work-consumption.md) across requests
+  using explicit origin identity, consumer links, and matching job fields.
 - [Redact sensitive structured fields](redact-sensitive-fields.md) when domain
   objects and request attributes need an explicit logging representation and a
   policy for sensitive keys.

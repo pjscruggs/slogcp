@@ -192,9 +192,14 @@ func wrapWithOTel(cfg *config, handler http.Handler) http.Handler {
 // otelOptions builds OpenTelemetry handler options from configuration.
 func otelOptions(cfg *config) []otelhttp.Option {
 	var otelOpts []otelhttp.Option
-	if cfg.tracerProvider != nil {
-		otelOpts = append(otelOpts, otelhttp.WithTracerProvider(cfg.tracerProvider))
+	provider := cfg.tracerProvider
+	if provider == nil {
+		// Extracted remote contexts carry a non-recording span. Passing the
+		// provider explicitly prevents otelhttp from selecting that span's
+		// no-op provider instead of the application's global provider.
+		provider = otel.GetTracerProvider()
 	}
+	otelOpts = append(otelOpts, otelhttp.WithTracerProvider(provider))
 	if cfg.propagateTrace {
 		if cfg.propagatorsSet && cfg.propagators != nil {
 			otelOpts = append(otelOpts, otelhttp.WithPropagators(cfg.propagators))
