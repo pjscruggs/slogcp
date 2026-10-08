@@ -2,7 +2,7 @@ module github.com/pjscruggs/slogcp/v2/examples/dynamic-level
 
 go 1.27.1
 
-require github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
+require github.com/pjscruggs/slogcp/v2 v2.0.2
 
 require (
 	cloud.google.com/go/compute/metadata v0.10.0 // indirect

@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/m-mizutani/masq v0.2.3
-	github.com/pjscruggs/slogcp/v2 v2.0.0-unpublished
+	github.com/pjscruggs/slogcp/v2 v2.0.2
 )
 
 require (
