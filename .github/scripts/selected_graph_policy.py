@@ -623,8 +623,13 @@ def _affected_imports(candidate: dict, finding: dict) -> tuple[list[str], str | 
         for item in matching:
             specific = item.get("ecosystem_specific")
             imports = specific.get("imports") if isinstance(specific, dict) else None
-            if not isinstance(imports, list) or not imports:
-                return [], "Go advisory has no complete affected-package inventory"
+            if imports is None or imports == []:
+                # Without package facts, require absence of every package in the
+                # affected module. Never infer a narrower list from its summary.
+                paths.add(finding["selected_path"] + "/...")
+                continue
+            if not isinstance(imports, list):
+                return [], "Go advisory affected-package inventory is malformed"
             for entry in imports:
                 path = entry.get("path") if isinstance(entry, dict) else None
                 if not isinstance(path, str) or not re.fullmatch(r"[A-Za-z0-9._~+/-]+", path) or \
@@ -775,7 +780,10 @@ def _applicability(candidate: dict) -> list[dict]:
                                      "compiler": key[7], "compiler_roles": list(key[8]),
                                      "sha256": item["sha256"]})
             present = sorted({path for item in scope_profiles.values()
-                              for path in item["imports"] if path in affected_imports})
+                              for path in item["imports"] if any(
+                                  path == affected or (affected.endswith("/...") and
+                                  (path == affected[:-4] or path.startswith(affected[:-3])))
+                                  for affected in affected_imports)})
             if present:
                 reason = "affected package is present in a supported package closure: " + \
                     ", ".join(present)

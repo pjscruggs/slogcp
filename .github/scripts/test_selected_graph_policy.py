@@ -517,7 +517,7 @@ class SelectedGraphPolicyTests(unittest.TestCase):
         for imports in (None, [], [{"path": "golang.org/x/crypto/..."}],
                         [{"path": "unrelated.test/package"}], [None]):
             with self.subTest(imports=imports):
-                candidate, finding = self._generic_candidate()
+                candidate, finding = self._generic_candidate({".": ["golang.org/x/crypto/ssh"]})
                 record = candidate["advisories"][finding["advisory"]]["raw_record"]
                 record["affected"][0]["ecosystem_specific"]["imports"] = imports
                 self._retain_record(candidate, record)
@@ -527,6 +527,19 @@ class SelectedGraphPolicyTests(unittest.TestCase):
         candidate["advisories"][finding["advisory"]]["raw_record"]["summary"] = "changed"
         candidate["applicability"] = policy._applicability(candidate)
         self.assertEqual(policy.blocking_findings(candidate), [finding])
+
+    def test_missing_package_metadata_requires_entire_module_code_absence(self):
+        for imports_by_scope, blocked in (({}, False),
+                ({".": ["golang.org/x/crypto"]}, True),
+                ({".": ["golang.org/x/crypto/ssh"]}, True),
+                ({".": ["golang.org/x/crypto-extra/ssh"]}, False)):
+            with self.subTest(imports=imports_by_scope):
+                candidate, finding = self._generic_candidate(imports_by_scope)
+                record = candidate["advisories"][finding["advisory"]]["raw_record"]
+                record["affected"][0]["ecosystem_specific"] = {}
+                self._retain_record(candidate, record)
+                candidate["applicability"] = policy._applicability(candidate)
+                self.assertEqual(policy.blocking_findings(candidate), [finding] if blocked else [])
 
     def test_alias_requires_verified_reciprocal_exact_version_go_finding(self):
         candidate, finding = self._generic_candidate()

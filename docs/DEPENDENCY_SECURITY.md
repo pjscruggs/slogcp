@@ -20,7 +20,10 @@ gate can classify that finding as `not_affected`, with the VEX justification
   affected-package facts verify. Non-Go advisory aliases require a verified,
   reciprocal Go advisory that is also a finding for the exact selected version.
 - Go advisory metadata identifies every affected package in the selected module.
-  Missing metadata or unsupported package patterns cannot authorize an exemption.
+  If package metadata is missing, the gate requires the stronger proof that no
+  package from the entire affected module is imported. It never guesses package
+  names from an advisory summary. Malformed metadata and unsupported package
+  patterns cannot authorize an exemption.
 - Complete package inventories, including tests and declared tool entry points,
   exclude every affected package across every build profile of the finding's
   module scope. Other scopes can select different versions of the same dependency;
@@ -52,6 +55,8 @@ The automatic release workflow retains `release-selected-graph.json`, identifyin
 the candidate commit, base, tracked and generated dependency inventories, raw
 advisories, and applicability decisions. Decisions include affected imports,
 status, justification, and references to the verified package-profile hashes.
+An affected-import entry ending in `/...` denotes the conservative whole-module
+check used when the advisory lacks package metadata.
 This JSON uses the VEX status and justification vocabulary; it is supporting
 audit evidence, not a standalone standards-conformant VEX document or SBOM.
 Workflow artifacts have limited retention, so organizations needing longer
