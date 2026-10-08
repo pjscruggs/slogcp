@@ -7,6 +7,10 @@ an intentional Go compatibility floor and dependency minimums. Security repairs
 can advance those minimums through automated patch releases. Examples and
 development tools update independently.
 
+[Dependency vulnerability evidence](DEPENDENCY_SECURITY.md) describes the release
+gate's package-applicability checks, retained advisory evidence, supported build
+profiles, and the scope of its claims for consuming applications.
+
 A release identifies an exact source commit, passes local validation, and
 requires matching cloud test evidence when the release affects library or E2E
 inputs. The release check covers changes since the previous verified published

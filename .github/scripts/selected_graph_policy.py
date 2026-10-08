@@ -563,6 +563,79 @@ def _target_key(target: dict) -> tuple[str, str, str, str | None, str | None, tu
             target["goarm64"], tuple(target["tags"]))
 
 
+def _verified_advisory(candidate: dict, advisory_id: str) -> dict | None:
+    """Verify retained OSV provenance before using any package or alias facts."""
+    provenance = candidate.get("advisories", {}).get(advisory_id)
+    if not isinstance(provenance, dict):
+        return None
+    record = provenance.get("raw_record")
+    if not isinstance(record, dict) or record.get("id") != advisory_id or record.get("withdrawn"):
+        return None
+    aliases = record.get("aliases", [])
+    if not isinstance(aliases, list) or any(not isinstance(alias, str) for alias in aliases):
+        return None
+    content = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+    if provenance.get("sha256") != hashlib.sha256(content).hexdigest() or \
+            provenance.get("modified") != record.get("modified") or \
+            provenance.get("affected") != record.get("affected") or \
+            provenance.get("aliases") != sorted(aliases) or \
+            provenance.get("withdrawn") != record.get("withdrawn"):
+        return None
+    return record
+
+
+def _affected_imports(candidate: dict, finding: dict) -> tuple[list[str], str | None]:
+    """Require complete Go package facts; other databases need a reciprocal Go alias."""
+    advisory_id = finding["advisory"]
+    record = _verified_advisory(candidate, advisory_id)
+    if record is None:
+        return [], "retained advisory provenance does not verify"
+    if advisory_id == OPENPGP_ADVISORY:
+        if not _reviewed_openpgp_record(candidate):
+            return [], "reviewed advisory identity or affected-package facts changed"
+        if finding["module"] != OPENPGP_MODULE or finding["selected_path"] != OPENPGP_MODULE:
+            return [], "finding does not select the reviewed Go module"
+        return list(OPENPGP_IMPORTS), None
+    records = [record] if re.fullmatch(r"GO-\d{4}-\d+", advisory_id) else []
+    if not records:
+        for alias in record.get("aliases", []):
+            if not re.fullmatch(r"GO-\d{4}-\d+", alias):
+                continue
+            linked = _verified_advisory(candidate, alias)
+            # The Go record must also be an exact-version finding in this scope.
+            if linked and advisory_id in linked.get("aliases", []) and any(
+                    item.get("advisory") == alias and all(item.get(field) == finding.get(field)
+                    for field in ("scope", "module", "selected_path", "version"))
+                    for item in candidate["findings"]):
+                records.append(linked)
+    if not records:
+        return [], "complete Go affected-package metadata or reciprocal alias is unavailable"
+    paths = set()
+    for go_record in records:
+        affected = go_record.get("affected")
+        if not isinstance(affected, list):
+            return [], "Go affected-package metadata is malformed"
+        matching = [item for item in affected if isinstance(item, dict) and
+                    item.get("package", {}).get("ecosystem") == "Go" and
+                    item.get("package", {}).get("name") == finding["selected_path"]]
+        if not matching:
+            return [], "Go advisory does not describe the selected module"
+        for item in matching:
+            specific = item.get("ecosystem_specific")
+            imports = specific.get("imports") if isinstance(specific, dict) else None
+            if not isinstance(imports, list) or not imports:
+                return [], "Go advisory has no complete affected-package inventory"
+            for entry in imports:
+                path = entry.get("path") if isinstance(entry, dict) else None
+                if not isinstance(path, str) or not re.fullmatch(r"[A-Za-z0-9._~+/-]+", path) or \
+                        any(part in ("", ".", "..", "...") for part in path.split("/")) or \
+                        not (path == finding["selected_path"] or
+                             path.startswith(finding["selected_path"] + "/")):
+                    return [], "Go advisory has an unsupported affected-package path"
+                paths.add(path)
+    return sorted(paths), None
+
+
 def _compiler_axes(floor: str, current: str, latest: str,
                    tool_only: bool) -> list[dict]:
     if tool_only:
@@ -688,20 +761,11 @@ def _applicability(candidate: dict) -> list[dict]:
             raise PolicyError("Candidate finding and retained advisory record disagree")
         finding_identity = {key: finding.get(key) for key in
                             ("scope", "module", "selected_path", "version", "advisory", "modified")}
-        reason = None
+        affected_imports, reason = _affected_imports(candidate, finding)
         profile_refs = []
-        if finding.get("advisory") != OPENPGP_ADVISORY:
-            reason = "advisory is outside the single reviewed exception"
-        elif not _reviewed_openpgp_record(candidate):
-            reason = "reviewed advisory identity or affected-package facts changed"
-        elif finding.get("module") != OPENPGP_MODULE or \
-                finding.get("selected_path") != OPENPGP_MODULE:
-            reason = "finding does not select the reviewed Go module"
-        elif finding.get("modified") != OPENPGP_MODIFIED:
-            reason = "finding modification timestamp differs from the reviewed record"
-        elif profile_error:
+        if reason is None and profile_error:
             reason = profile_error
-        else:
+        if reason is None:
             for key, item in sorted(profiles.items()):
                 profile_refs.append({"scope": key[0], "goos": key[1], "goarch": key[2],
                                      "cgo": key[3], "goamd64": key[4],
@@ -709,14 +773,17 @@ def _applicability(candidate: dict) -> list[dict]:
                                      "compiler": key[7], "compiler_roles": list(key[8]),
                                      "sha256": item["sha256"]})
             present = sorted({path for item in profiles.values()
-                              for path in item["imports"] if path in OPENPGP_IMPORTS})
+                              for path in item["imports"] if path in affected_imports})
             if present:
-                reason = "affected OpenPGP package is present in a supported package closure: " + \
+                reason = "affected package is present in a supported package closure: " + \
                     ", ".join(present)
         evidence.append({"finding": finding_identity,
                          "decision": "admissible_with_exception" if reason is None else "blocking",
-                         "reason": ("all reviewed OpenPGP imports are absent from every supported "
+                         "reason": ("all affected imports are absent from every supported "
                                    "module/profile package closure" if reason is None else reason),
+                         "affected_imports": affected_imports,
+                         "status": "not_affected" if reason is None else "under_investigation",
+                         "justification": "vulnerable_code_not_present" if reason is None else None,
                          "profile_evidence": profile_refs})
     return evidence
 
@@ -834,7 +901,7 @@ def evaluate(root: Path, module_files: list[Path],
     details = advisory_records(matches)
     report = report_for(root, module_files, selected, matches, details,
                         datetime.now(timezone.utc).isoformat())
-    if any(item.get("advisory") == OPENPGP_ADVISORY for item in report["findings"]):
+    if report["findings"]:
         report["package_profiles"] = package_closure_evidence(
             root, module_files, report["inventory_sha256"])
     report["applicability"] = _applicability(report)
@@ -870,7 +937,7 @@ def compare_explicit(base_root: Path, base_files: list[Path], candidate_root: Pa
     base = report_for(base_root, base_files, base_selected, matches, details, fetched_at)
     candidate = report_for(candidate_root, candidate_files, candidate_selected,
                            matches, details, fetched_at)
-    if any(item.get("advisory") == OPENPGP_ADVISORY for item in candidate["findings"]):
+    if candidate["findings"]:
         candidate["package_profiles"] = package_closure_evidence(
             candidate_root, candidate_files, candidate["inventory_sha256"])
     candidate["applicability"] = _applicability(candidate)
