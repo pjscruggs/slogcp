@@ -38,6 +38,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// requestValueKey identifies a request-only value that detached jobs must discard.
 type requestValueKey struct{}
 
 // TestCorrelation exercises each logger selection style, with a deterministic
