@@ -28,7 +28,7 @@ logger := slog.New(handler)
 
 mux := http.NewServeMux()
 mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-	slogcp.Logger(r.Context()).Info("health probe")
+	slogcp.Logger(r.Context()).InfoContext(r.Context(), "health probe")
 	w.WriteHeader(http.StatusNoContent)
 })
 
@@ -43,7 +43,11 @@ _ = http.ListenAndServe(":8080", wrapped)
 
 `Middleware` wraps the handler with `otelhttp.NewHandler` by default so spans
 are created automatically and `slogcp` can correlate logs with traces when trace
-context exists.
+context exists. The default tracer provider is the global provider selected when
+the handler is composed. Install your SDK provider before wrapping handlers, or
+pass `WithTracerProvider(provider)` explicitly. Replacing the global SDK later
+does not replace the provider captured by an existing handler. A provider without
+a recording SDK does not export spans, and sampling still controls recording.
 
 By default:
 
