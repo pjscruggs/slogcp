@@ -1,5 +1,7 @@
 {
   "module_path": "github.com/pjscruggs/slogcp-e2e-internal/services/traceproto",
-  "seed_requirements": {},
+  "seed_requirements": {
+    "golang.org/x/net": "v0.60.0"
+  },
   "pinned_modules": []
 }

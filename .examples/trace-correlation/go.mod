@@ -3,7 +3,7 @@ module github.com/pjscruggs/slogcp/v2/examples/trace-correlation
 go 1.27.2
 
 require (
-	github.com/pjscruggs/slogcp/v2 v2.0.2
+	github.com/pjscruggs/slogcp/v2 v2.0.3
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0

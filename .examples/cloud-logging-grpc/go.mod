@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	cloud.google.com/go/logging v1.20.0
 	github.com/pjscruggs/slogcp-grpc v1.0.1
-	github.com/pjscruggs/slogcp/v2 v2.0.2
+	github.com/pjscruggs/slogcp/v2 v2.0.3
 	google.golang.org/api v0.301.0
 	google.golang.org/grpc v1.84.0
 )

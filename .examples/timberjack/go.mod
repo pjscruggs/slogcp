@@ -4,7 +4,7 @@ go 1.27.2
 
 require (
 	github.com/DeRuina/timberjack v1.4.8
-	github.com/pjscruggs/slogcp/v2 v2.0.2
+	github.com/pjscruggs/slogcp/v2 v2.0.3
 )
 
 require (
