@@ -2,7 +2,7 @@ module github.com/pjscruggs/slogcp/v2/benchmarks
 
 go 1.27.0
 
-toolchain go1.27.1
+toolchain go1.27.2
 
 require (
 	cloud.google.com/go/logging v1.20.0
