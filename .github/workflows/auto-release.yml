@@ -87,10 +87,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up declared Go toolchain for release graph
+      - name: Set up latest stable Go for release graph
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
           cache: false
 
       - name: Refresh selected graph before publication
