@@ -238,7 +238,7 @@ jobs:
 
       - name: Retain automated security graph evidence
         if: always() && github.event_name == 'pull_request'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: renovate-selected-graph
           path: ${{ runner.temp }}/renovate-selected-graph.json
@@ -525,7 +525,7 @@ jobs:
 
       - name: Retain proposed license repairs
         if: always() && steps.fix-license.outcome != 'skipped'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: license-repair-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.go_validation_plan.outputs.mode }}
           path: ${{ runner.temp }}/license-repair-${{ github.run_id }}-${{ github.run_attempt }}/license-repair.json
