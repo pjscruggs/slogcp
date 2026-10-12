@@ -22,10 +22,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up the declared Go toolchain
+      - name: Set up latest stable Go for all tracked modules
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
           cache: false
 
       - name: Resolve and audit all tracked modules
