@@ -3,7 +3,7 @@ module github.com/pjscruggs/slogcp/v2/examples/timberjack
 go 1.27.2
 
 require (
-	github.com/DeRuina/timberjack v1.4.8
+	github.com/DeRuina/timberjack v1.4.9
 	github.com/pjscruggs/slogcp/v2 v2.0.3
 )
 
