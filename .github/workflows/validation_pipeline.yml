@@ -292,17 +292,6 @@ jobs:
                   raise SystemExit(f"invalid Go version: {version!r}")
               return f"{match.group(1)}.{match.group(2)}.x"
 
-          def setup_spec(version: str) -> str:
-              match = version_re.fullmatch(version)
-              if not match:
-                  raise SystemExit(f"invalid Go version: {version!r}")
-              patch = match.group(3)
-              return (
-                  f"{match.group(1)}.{match.group(2)}.{patch}"
-                  if patch is not None
-                  else f"{match.group(1)}.{match.group(2)}.x"
-              )
-
           tracked = subprocess.run(
               [
                   "git", "ls-files", "-z", "--", "go.mod",
@@ -336,12 +325,13 @@ jobs:
               latest_version = max(stable, key=lambda value: tuple(map(int, value.split("."))))
           root_go, root_toolchain = directives("go.mod")
           root_floor_version = minor_spec(root_go)
-          root_version = latest_version if latest else setup_spec(root_toolchain or root_go)
+          # Follow security patches within each module's declared Go series.
+          root_version = latest_version if latest else minor_spec(root_toolchain or root_go)
           tools_go, tools_toolchain = directives(".github/tools/go.mod")
           compiler_requirements = [root_toolchain or root_go, tools_go, tools_toolchain or tools_go]
           benchmark_go, benchmark_toolchain = directives(".benchmarks/go.mod")
           compiler_requirements.append(benchmark_toolchain or benchmark_go)
-          benchmark_version = latest_version if latest else setup_spec(benchmark_toolchain or benchmark_go)
+          benchmark_version = latest_version if latest else minor_spec(benchmark_toolchain or benchmark_go)
 
           grouped_examples: dict[str, list[str]] = defaultdict(list)
           for path in paths:
@@ -349,7 +339,7 @@ jobs:
                   continue
               go_version, _ = directives(path)
               compiler_requirements.append(go_version)
-              selected = latest_version if latest else setup_spec(go_version)
+              selected = latest_version if latest else minor_spec(go_version)
               grouped_examples[selected].append(path.removesuffix("/go.mod"))
 
           matrix = {
@@ -367,7 +357,7 @@ jobs:
 
           if latest and version_tuple(latest_version) < max(map(version_tuple, compiler_requirements)):
               raise SystemExit("official latest stable compiler is below a declared module requirement")
-          tools_version = latest_version if latest else setup_spec(max(compiler_requirements, key=version_tuple))
+          tools_version = latest_version if latest else minor_spec(max(compiler_requirements, key=version_tuple))
           print(f"Validation mode: {mode}")
           print(f"Root compatibility runtime: {root_floor_version}")
           print(f"Root selected runtime: {root_version}")
