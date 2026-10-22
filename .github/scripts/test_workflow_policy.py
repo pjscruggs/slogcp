@@ -98,19 +98,19 @@ class WorkflowPolicyTests(unittest.TestCase):
                 )
                 self.assertEqual(planned["root_floor_version"], "1.26.x")
                 self.assertEqual(
-                    planned["root_version"], "1.30.1" if latest else "1.27.1"
+                    planned["root_version"], "1.30.1" if latest else "1.27.x"
                 )
                 self.assertEqual(
-                    planned["tools_version"], "1.30.1" if latest else "1.28.1"
+                    planned["tools_version"], "1.30.1" if latest else "1.28.x"
                 )
                 self.assertEqual(planned["has_benchmark"], "true")
                 self.assertEqual(
                     planned["benchmark_version"],
-                    "1.30.1" if latest else "1.27.2",
+                    "1.30.1" if latest else "1.27.x",
                 )
                 self.assertEqual(
                     json.loads(planned["example_matrix"])["include"][0]["go_version"],
-                    "1.30.1" if latest else "1.28.0",
+                    "1.30.1" if latest else "1.28.x",
                 )
                 self.assertIn("CI tools compiler:", result.stdout)
 
