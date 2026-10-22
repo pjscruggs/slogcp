@@ -106,6 +106,52 @@ class SweepTests(unittest.TestCase):
                 sweep.sweep("project", "us-central1", BUILD, RUN,
                             "topic", "sub")
 
+    def test_job_termination_refreshes_scenario_resources(self):
+        job = "e2e-hjob-" + SHORT + "-1790783406"
+        early = "core-log-app-" + SHORT
+        late = "scenario-" + SHORT + "-abc123"
+        found = {"service": {early}, "job": {job},
+                 "subscription": set(), "topic": set()}
+        refreshed = {**found, "service": {early, late}, "job": set()}
+        empty = {kind: set() for kind in found}
+        with mock.patch.object(sweep, "gcloud_json", return_value={
+                 "id": BUILD, "status": "CANCELLED",
+                 "substitutions": {"_E2E_RUN_ID": RUN}}), \
+             mock.patch.object(sweep, "owned_resources", side_effect=[
+                 found, refreshed, empty]), \
+             mock.patch.object(sweep, "cloud_delete") as delete:
+            removed = sweep.sweep("project", "us-central1", BUILD, RUN,
+                                  "topic", "sub")
+        self.assertEqual(removed["job"], 1)
+        self.assertEqual(removed["service"], 2)
+        self.assertEqual(delete.call_args_list, [
+            mock.call("run", "jobs", "delete", job,
+                      "--project=project", "--region=us-central1"),
+            *[mock.call("run", "services", "delete", name,
+                        "--platform=managed", "--project=project",
+                        "--region=us-central1") for name in (early, late)],
+        ])
+
+    def test_followup_resources_are_retried_and_counted_once(self):
+        early = "core-log-app-" + SHORT
+        late = "scenario-" + SHORT + "-abc123"
+        found = {"service": {early}, "job": set(),
+                 "subscription": set(), "topic": set()}
+        remaining = {**found, "service": {early, late}}
+        empty = {kind: set() for kind in found}
+        with mock.patch.object(sweep, "gcloud_json", return_value={
+                 "id": BUILD, "status": "FAILURE",
+                 "substitutions": {"_E2E_RUN_ID": RUN}}), \
+             mock.patch.object(sweep, "owned_resources", side_effect=[
+                 found, remaining, empty]), \
+             mock.patch.object(sweep, "cloud_delete") as delete, \
+             mock.patch.object(sweep.time, "sleep") as sleep:
+            removed = sweep.sweep("project", "us-central1", BUILD, RUN,
+                                  "topic", "sub")
+        self.assertEqual(removed["service"], 2)
+        self.assertEqual(delete.call_count, 3)
+        sleep.assert_called_once_with(3)
+
 
 if __name__ == "__main__":
     unittest.main()
