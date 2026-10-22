@@ -140,25 +140,35 @@ def sweep(project: str, region: str, build_id: str, run_id: str,
     if build.get("substitutions", {}).get("_E2E_RUN_ID") != run_id:
         raise SweepError("Cloud Build does not own the requested E2E run ID")
     found = owned_resources(project, region, run_id, topic_base, subscription_base)
-    for kind in ("job", "service", "subscription", "topic"):
-        for name in sorted(found[kind]):
-            if kind == "job":
-                cloud_delete("run", "jobs", "delete", name,
-                             f"--project={project}", f"--region={region}")
-            elif kind == "service":
-                cloud_delete("run", "services", "delete", name,
-                             "--platform=managed", f"--project={project}",
-                             f"--region={region}")
-            else:
-                cloud_delete("pubsub", kind + "s", "delete", name,
-                             f"--project={project}")
+    removed = {kind: set() for kind in found}
     for attempt in range(3):
+        for name in sorted(found["job"]):
+            cloud_delete("run", "jobs", "delete", name,
+                         f"--project={project}", f"--region={region}")
+            removed["job"].add(name)
+        if found["job"]:
+            # Terminating harnesses can finish creating scenario resources.
+            refreshed = owned_resources(project, region, run_id,
+                                        topic_base, subscription_base)
+            for kind in found:
+                found[kind] = found[kind] | refreshed[kind]
+        for kind in ("service", "subscription", "topic"):
+            for name in sorted(found[kind]):
+                if kind == "service":
+                    cloud_delete("run", "services", "delete", name,
+                                 "--platform=managed", f"--project={project}",
+                                 f"--region={region}")
+                else:
+                    cloud_delete("pubsub", kind + "s", "delete", name,
+                                 f"--project={project}")
+                removed[kind].add(name)
         remaining = owned_resources(project, region, run_id,
                                     topic_base, subscription_base)
         if not any(remaining.values()):
-            return {kind: len(names) for kind, names in found.items()}
+            return {kind: len(names) for kind, names in removed.items()}
         if attempt < 2:
             time.sleep(3)
+            found = remaining
     raise SweepError("E2E owned resources remain after cleanup")
 
 
