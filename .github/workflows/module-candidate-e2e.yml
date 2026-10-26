@@ -73,6 +73,8 @@ jobs:
           DISPATCH_PR_NUMBER: ${{ inputs.pr_number }}
           EXPECTED_PROJECT: ${{ inputs.expected_gcp_project_id }}
         with:
+          retries: 3
+          retry-exempt-status-codes: 400,401,403,404
           script: |
             const repositories = {
               adapter: 'pjscruggs/slogcp-grpc-adapter',
@@ -258,6 +260,8 @@ jobs:
           EXPECTED_BASE: ${{ steps.subject.outputs.base }}
           PR_NUMBER: ${{ steps.subject.outputs.pr_number }}
         with:
+          retries: 3
+          retry-exempt-status-codes: 400,401,403,404
           script: |
             const {owner, repo} = context.repo;
             const [{data: pr}, {data: base}] = await Promise.all([
