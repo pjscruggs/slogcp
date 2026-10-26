@@ -3,7 +3,7 @@ module github.com/pjscruggs/slogcp/v2/examples/cloud-logging-grpc
 go 1.27.3
 
 require (
-	cloud.google.com/go/logging v1.20.0
+	cloud.google.com/go/logging v1.21.0
 	github.com/pjscruggs/slogcp-grpc v1.0.2
 	github.com/pjscruggs/slogcp/v2 v2.0.3
 	google.golang.org/api v0.308.0
@@ -15,7 +15,7 @@ require (
 	cloud.google.com/go/auth v0.24.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
 	cloud.google.com/go/compute/metadata v0.10.0 // indirect
-	cloud.google.com/go/longrunning v1.3.0 // indirect
+	cloud.google.com/go/longrunning v1.4.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.62.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect

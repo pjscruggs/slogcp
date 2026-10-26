@@ -8,10 +8,10 @@ cloud.google.com/go/compute/metadata v0.10.0 h1:pyKMUQSwchgkIBBJGdILqQbs/BNJXqwS
 cloud.google.com/go/compute/metadata v0.10.0/go.mod h1:rGFHRrIif570kSibjFTMbt6/4/tzgJWFGI/HVol4GIk=
 cloud.google.com/go/iam v1.14.0 h1:YRIB1/4xxwJ+NfI6RQr1WaOoHHeV0MizJEj940nBXJA=
 cloud.google.com/go/iam v1.14.0/go.mod h1:JTPZfbHdGXJrOYREtkRoFzCDGaBdbA7ILLKO/DDuav0=
-cloud.google.com/go/logging v1.20.0 h1:l7yzCB8/JSY5PHT9RsaqdT1jaBGbM6KlSJDX210HlXM=
-cloud.google.com/go/logging v1.20.0/go.mod h1:ALUaJQZM691Eeujy9kFx0xREq3AMPuGd+pTRZuTYv+w=
-cloud.google.com/go/longrunning v1.3.0 h1:lZ6c8SJJBmILp/Wnr3vGnBLa0q+cYfSHRCcUfVI2hpI=
-cloud.google.com/go/longrunning v1.3.0/go.mod h1:wpgLxCn+UA3/TZ1bj/fW39mfDpwVlMPu1xKJyoMt7V0=
+cloud.google.com/go/logging v1.21.0 h1:Grn9NZsh87BO5+CEtZFFdj5mXEAnrlPFEdHDMVo9p8Y=
+cloud.google.com/go/logging v1.21.0/go.mod h1:4foM+ucR/w1KQrJOh4tDr14iHUIt0MLh2cL8094/LZs=
+cloud.google.com/go/longrunning v1.4.0 h1:l53OXv/ZAQCvATPqdYIqxruIUa1+eeX3Ckg0EBMpZLM=
+cloud.google.com/go/longrunning v1.4.0/go.mod h1:HAJuq0kD9eDyV6DtaN+0b6niPzFFFf9QMMHkHD7DvMc=
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.62.0 h1:TCUUWzznY+7/4H4vGZv78RVJp+A2VACkBBg9tlbMeSw=
 github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.62.0/go.mod h1:AdkhdCuEn0PHN0/RiyworzQZlk33fJJDalyZSdOXcm4=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
