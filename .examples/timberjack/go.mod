@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/v2/examples/timberjack
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/DeRuina/timberjack v1.4.9

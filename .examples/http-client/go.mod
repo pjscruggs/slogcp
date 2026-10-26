@@ -1,6 +1,6 @@
 module github.com/pjscruggs/slogcp/v2/examples/http-client
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/pjscruggs/slogcp/v2 v2.0.3
