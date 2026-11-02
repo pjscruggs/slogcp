@@ -17,8 +17,11 @@ gate can classify that finding as `not_affected`, with the VEX justification
 `vulnerable_code_not_present`, only when:
 
 - The retained advisory's identity, modification timestamp, content hash, and
-  affected-package facts verify. Non-Go advisory aliases require a verified,
-  reciprocal Go advisory that is also a finding for the exact selected version.
+  affected-package facts verify. Package-level facts from non-Go advisory aliases
+  require a verified, reciprocal Go advisory that is also a finding for the exact
+  selected version. A GitHub-reviewed Go advisory without that alias can authorize
+  only a whole-module absence check, with an exact matching module name and Go
+  package URL. Its optional package hints cannot narrow that check.
 - Go advisory metadata identifies every affected package in the selected module.
   If package metadata is missing, the gate requires the stronger proof that no
   package from the entire affected module is imported. It never guesses package

@@ -585,7 +585,7 @@ def _verified_advisory(candidate: dict, advisory_id: str) -> dict | None:
 
 
 def _affected_imports(candidate: dict, finding: dict) -> tuple[list[str], str | None]:
-    """Require complete Go package facts; other databases need a reciprocal Go alias."""
+    """Use Go package facts, or conservatively require whole-module absence."""
     advisory_id = finding["advisory"]
     record = _verified_advisory(candidate, advisory_id)
     if record is None:
@@ -609,6 +609,25 @@ def _affected_imports(candidate: dict, finding: dict) -> tuple[list[str], str | 
                     for item in candidate["findings"]):
                 records.append(linked)
     if not records:
+        # Reviewed GitHub Go advisories identify modules, but may have no Go
+        # alias or affected-package inventory. In that case every package in
+        # the exact affected module must be absent from every supported
+        # profile. Never use their optional package facts to narrow this proof.
+        specific = record.get("database_specific")
+        selected_path = finding["selected_path"]
+        affected = record.get("affected")
+        if re.fullmatch(r"GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}", advisory_id) and \
+                isinstance(specific, dict) and specific.get("github_reviewed") is True and \
+                finding["module"] == selected_path and \
+                re.fullmatch(r"[A-Za-z0-9._~+/-]+", selected_path) and \
+                not any(part in ("", ".", "..", "...") for part in selected_path.split("/")) and \
+                isinstance(affected, list) and any(
+                    isinstance(item, dict) and isinstance(item.get("package"), dict) and
+                    item["package"].get("ecosystem") == "Go" and
+                    item["package"].get("name") == selected_path and
+                    item["package"].get("purl") == "pkg:golang/" + selected_path
+                    for item in affected):
+            return [selected_path + "/..."], None
         return [], "complete Go affected-package metadata or reciprocal alias is unavailable"
     paths = set()
     for go_record in records:
