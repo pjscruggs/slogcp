@@ -6,7 +6,7 @@ require (
 	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.4
 	github.com/pjscruggs/slogcp-grpc-adapter/v2 v2.0.2
 	github.com/pjscruggs/slogcp/v2 v2.0.3
-	google.golang.org/grpc v1.84.0
+	google.golang.org/grpc v1.85.0
 )
 
 require (
