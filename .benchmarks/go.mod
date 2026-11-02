@@ -6,7 +6,7 @@ toolchain go1.27.3
 
 require (
 	cloud.google.com/go/logging v1.21.1
-	github.com/pjscruggs/slogcp-grpc v1.0.2
+	github.com/pjscruggs/slogcp-grpc v1.0.3
 	github.com/pjscruggs/slogcp/v2 v2.0.3
 	google.golang.org/api v0.310.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e
