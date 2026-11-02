@@ -541,6 +541,78 @@ class SelectedGraphPolicyTests(unittest.TestCase):
                 candidate["applicability"] = policy._applicability(candidate)
                 self.assertEqual(policy.blocking_findings(candidate), [finding] if blocked else [])
 
+    def _reviewed_github_candidate(self, imports_by_scope=None):
+        candidate, finding = self._generic_candidate(imports_by_scope)
+        record = copy.deepcopy(candidate["advisories"][finding["advisory"]]["raw_record"])
+        record["id"] = "GHSA-2345-6789-cfgh"
+        record["aliases"] = ["CVE-2026-12345"]
+        record["database_specific"] = {"github_reviewed": True}
+        record["affected"][0].pop("ecosystem_specific")
+        finding["advisory"] = record["id"]
+        candidate["advisories"] = {}
+        self._retain_record(candidate, record)
+        candidate["applicability"] = policy._applicability(candidate)
+        return candidate, finding
+
+    def test_reviewed_github_go_advisory_requires_whole_module_absence(self):
+        for imports, blocked in (([], False), (["golang.org/x/crypto"], True),
+                (["golang.org/x/crypto/ssh"], True),
+                (["golang.org/x/crypto-extra/ssh"], False)):
+            with self.subTest(imports=imports):
+                candidate, finding = self._reviewed_github_candidate({".": imports})
+                self.assertEqual(policy.blocking_findings(candidate), [finding] if blocked else [])
+                self.assertEqual(candidate["findings"], [finding])
+                self.assertEqual(candidate["applicability"][0]["affected_imports"],
+                                 ["golang.org/x/crypto/..."])
+                if not blocked:
+                    self.assertEqual(candidate["applicability"][0]["justification"],
+                                     "vulnerable_code_not_present")
+
+    def test_github_package_hints_cannot_narrow_the_module_absence_proof(self):
+        candidate, finding = self._reviewed_github_candidate({".": ["golang.org/x/crypto/ssh"]})
+        record = candidate["advisories"][finding["advisory"]]["raw_record"]
+        record["affected"][0]["ecosystem_specific"] = {
+            "imports": [{"path": "golang.org/x/crypto/unimported"}]}
+        self._retain_record(candidate, record)
+        candidate["applicability"] = policy._applicability(candidate)
+        self.assertEqual(policy.blocking_findings(candidate), [finding])
+
+    def test_github_absence_rejects_unreviewed_or_mismatched_module_metadata(self):
+        changes = [
+            lambda r: r.pop("database_specific"),
+            lambda r: r.update(database_specific={"github_reviewed": False}),
+            lambda r: r.update(database_specific={"github_reviewed": "true"}),
+            lambda r: r.update(withdrawn=r["modified"]),
+            lambda r: r.update(affected=None),
+            lambda r: r.update(affected=[None]),
+            lambda r: r["affected"][0].update(package=None),
+            lambda r: r["affected"][0]["package"].update(ecosystem="npm"),
+            lambda r: r["affected"][0]["package"].update(name="unrelated.test/module"),
+            lambda r: r["affected"][0]["package"].update(purl="pkg:golang/unrelated.test/module"),
+        ]
+        for index, change in enumerate(changes):
+            with self.subTest(change=index):
+                candidate, finding = self._reviewed_github_candidate()
+                record = candidate["advisories"][finding["advisory"]]["raw_record"]
+                change(record)
+                self._retain_record(candidate, record)
+                candidate["applicability"] = policy._applicability(candidate)
+                self.assertEqual(policy.blocking_findings(candidate), [finding])
+
+    def test_github_absence_requires_bound_complete_profiles_and_advisory(self):
+        for change in ("missing_profile", "tampered_profile", "tampered_advisory"):
+            with self.subTest(change=change):
+                candidate, finding = self._reviewed_github_candidate()
+                if change == "missing_profile":
+                    candidate["package_profiles"]["profiles"].pop()
+                elif change == "tampered_profile":
+                    candidate["package_profiles"]["profiles"][0]["imports"].append(
+                        "golang.org/x/crypto/ssh")
+                else:
+                    candidate["advisories"][finding["advisory"]]["raw_record"]["summary"] = "changed"
+                candidate["applicability"] = policy._applicability(candidate)
+                self.assertEqual(policy.blocking_findings(candidate), [finding])
+
     def test_alias_requires_verified_reciprocal_exact_version_go_finding(self):
         candidate, finding = self._generic_candidate()
         alias_finding = {**finding, "advisory": "GHSA-example"}
