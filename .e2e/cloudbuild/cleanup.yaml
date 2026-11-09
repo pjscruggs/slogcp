@@ -20,7 +20,8 @@ steps:
       - -c
       - |
         test -n "${_CALLER_SERVICE_ACCOUNT}"
-        python3 cloudbuild/build-tools/sweep_e2e_resources.py \
+        cleanup_python="$$(gcloud info --project "${PROJECT_ID}" --format='value(basic.python_location)')"
+        "$$cleanup_python" cloudbuild/build-tools/sweep_e2e_resources.py \
           --project "${PROJECT_ID}" --region "${_GCP_REGION}" \
           --build-id "${_ORIGINAL_BUILD_ID}" --run-id "${_E2E_RUN_ID}" \
           --topic-base "${_TRACE_PUBSUB_TOPIC}" \

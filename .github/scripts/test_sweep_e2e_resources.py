@@ -20,7 +20,13 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 import importlib.util
+import os
 from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
+import textwrap
 
 SOURCE = (Path(__file__).resolve().parents[2] / ".e2e/cloudbuild/build-tools" /
           "sweep_e2e_resources.py")
@@ -36,6 +42,46 @@ SHORT = "r-20260930t153909-25844"
 
 
 class SweepTests(unittest.TestCase):
+    def test_cleanup_uses_sdk_interpreter_without_python_on_path(self):
+        config = SOURCE.parents[1] / "cleanup.yaml"
+        script = textwrap.dedent(config.read_text(encoding="utf-8").split(
+            "      - |\n", 1)[1]).replace("$$", "$")
+        values = {"PROJECT_ID": "cleanup-project", "_GCP_REGION": "test-region",
+                  "_CALLER_SERVICE_ACCOUNT": "test-caller", "_ORIGINAL_BUILD_ID": BUILD,
+                  "_E2E_RUN_ID": RUN, "_TRACE_PUBSUB_TOPIC": "test-topic",
+                  "_TRACE_PUBSUB_SUBSCRIPTION": "test-subscription"}
+        script = re.sub(r"\$\{([A-Z0-9_]+)\}", lambda match: values[match[1]], script)
+        bash = (str(Path(os.environ["ProgramFiles"]) / "Git/bin/bash.exe")
+                if os.name == "nt" else shutil.which("bash"))
+        if not bash or not Path(bash).is_file():
+            self.skipTest("Bash is required to exercise the Cloud Build entry point")
+        with tempfile.TemporaryDirectory() as directory:
+            interpreter = Path(directory) / "SDK Python with spaces"
+            output = Path(directory) / "arguments"
+            interpreter.write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$@" > "$CLEANUP_ARGUMENTS"\n',
+                encoding="utf-8", newline="\n")
+            interpreter.chmod(0o755)
+            environment = {**os.environ, "SDK_PYTHON": interpreter.as_posix(),
+                           "CLEANUP_ARGUMENTS": output.as_posix()}
+            # Shadow any host Python so the original image assumption fails.
+            bootstrap = '''
+                python3() { return 127; }
+                gcloud() {
+                    [[ "$*" == 'info --project cleanup-project --format=value(basic.python_location)' ]] || return 1
+                    printf '%s\\n' "$SDK_PYTHON"
+                }
+            '''
+            result = subprocess.run([bash, "-euo", "pipefail", "-c",
+                                     textwrap.dedent(bootstrap) + script],
+                                    env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text().splitlines(), [
+                "cloudbuild/build-tools/sweep_e2e_resources.py",
+                "--project", "cleanup-project", "--region", "test-region",
+                "--build-id", BUILD, "--run-id", RUN, "--topic-base", "test-topic",
+                "--subscription-base", "test-subscription"])
+
     def test_waiting_runner_sweeps_before_reporting_success(self):
         runner = Path(__file__).with_name("run_e2e_cloud_build.sh").read_text(
             encoding="utf-8")
