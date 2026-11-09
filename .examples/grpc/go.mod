@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/pjscruggs/slogcp/v2 v2.0.3
 	google.golang.org/grpc v1.85.0
-	google.golang.org/grpc/examples v0.0.0-20261102195513-9a547278ce78
+	google.golang.org/grpc/examples v0.0.0-20261104142343-cbf30c413099
 )
 
 require (
@@ -21,9 +21,9 @@ require (
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261026165753-2ffab32bce7e // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261104224025-d1e00e9f33ab // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
