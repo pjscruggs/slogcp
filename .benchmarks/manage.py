@@ -42,6 +42,15 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def module_toolchain():
+    """Use the release toolchain maintained in the benchmark module."""
+    manifest = (HERE / "go.mod").read_text(encoding="utf-8")
+    match = re.search(r"(?m)^toolchain[ \t]+(go[1-9][0-9]*\.[0-9]+\.[0-9]+)[ \t]*$", manifest)
+    if match is None:
+        raise ValueError("Benchmark go.mod must declare a release toolchain")
+    return match.group(1)
+
+
 def freeze(args):
     """Require a committed source snapshot before producing a baseline."""
     if not re.fullmatch(r"[a-z][a-z0-9-]*", args.name):
@@ -55,7 +64,7 @@ def freeze(args):
         raise FileExistsError("Refusing to overwrite a nonempty archive")
     revision = execute(["git", "rev-parse", "HEAD"], REPO)
     env = dict(os.environ, GOOS="linux", GOARCH="amd64", CGO_ENABLED="0",
-               GOTOOLCHAIN="go1.27.1", GOEXPERIMENT="")
+               GOTOOLCHAIN=module_toolchain(), GOEXPERIMENT="")
     execute(["go", "build", "-mod=readonly", "-trimpath", "-buildvcs=false",
              "-o", binary, "."], HERE, env)
     execute(["git", "archive", "--format=tar.gz", "-o", archive / "source.tar.gz", "HEAD"], REPO)

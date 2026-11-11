@@ -29,6 +29,51 @@ import run_matrix
 
 
 class FreezeTests(unittest.TestCase):
+    def test_freeze_uses_module_toolchain_for_build_and_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            benchmark = repo / "benchmarks"
+            benchmark.mkdir()
+            (benchmark / "go.mod").write_text(
+                "module example.org/benchmarks\ngo 1.27.0\ntoolchain go1.27.99\n",
+                encoding="utf-8")
+            for name in ("main.go", "run_matrix.py", "Dockerfile"):
+                (benchmark / name).write_text("fixture", encoding="utf-8")
+            archive = repo / "archive"
+            go_commands = []
+
+            def execute(command, cwd=None, env=None):
+                if command[0] == "go":
+                    go_commands.append(command)
+                    self.assertEqual(env["GOTOOLCHAIN"], "go1.27.99")
+                if command[:2] == ["go", "build"]:
+                    Path(command[command.index("-o") + 1]).write_bytes(b"binary")
+                if command[:2] == ["git", "archive"]:
+                    Path(command[command.index("-o") + 1]).write_bytes(b"source")
+                return "" if command[:2] == ["git", "status"] else "fixture"
+
+            with patch.object(manage, "HERE", benchmark), \
+                    patch.object(manage, "REPO", repo), \
+                    patch.object(manage, "execute", side_effect=execute), \
+                    patch.dict(manage.os.environ, {"GOTOOLCHAIN": "go1.27.1"}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                manage.freeze(Namespace(archive=archive, name="baseline"))
+            provenance = json.loads((archive / "provenance.json").read_text())
+            self.assertEqual(provenance["environment"]["GOTOOLCHAIN"], "go1.27.99")
+            self.assertEqual(len(go_commands), 4)
+
+    def test_freeze_rejects_missing_or_nonrelease_module_toolchain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            benchmark = Path(directory)
+            with patch.object(manage, "HERE", benchmark):
+                for directive in ("", "toolchain go1.28rc1\n", "toolchain default\n"):
+                    with self.subTest(directive=directive):
+                        (benchmark / "go.mod").write_text(
+                            "module example.org/benchmarks\ngo 1.27.0\n" + directive,
+                            encoding="utf-8")
+                        with self.assertRaisesRegex(ValueError, "release toolchain"):
+                            manage.module_toolchain()
+
     def test_dirty_source_is_rejected_before_archiving_or_building(self):
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "new-archive"
