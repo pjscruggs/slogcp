@@ -53,8 +53,8 @@ jobs:
 
     steps:
       - name: Verify Authorization
-        # actions/github-script v8 (pinned)
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        # actions/github-script v9.0.0 (pinned)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const actor = context.actor;
@@ -118,8 +118,8 @@ jobs:
       - name: Get PR Information
         if: ${{ inputs.mode == 'pr' }}
         id: pr_info
-        # actions/github-script v8 (pinned)
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        # actions/github-script v9.0.0 (pinned)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const rawPullNumber = process.env.PR_NUMBER || '';
@@ -147,8 +147,8 @@ jobs:
       - name: Resolve latest main SHA
         if: ${{ inputs.mode == 'main_latest' }}
         id: main_sha
-        # actions/github-script v8 (pinned)
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        # actions/github-script v9.0.0 (pinned)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { data: ref } = await github.rest.git.getRef({
@@ -179,8 +179,8 @@ jobs:
       - name: Require successful local validation before manual PR E2E
         if: ${{ steps.target.outputs.pr_number != '' }}
         id: local_validation_gate
-        # actions/github-script v8 (pinned)
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        # actions/github-script v9.0.0 (pinned)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ github.token }}
           script: |
@@ -376,8 +376,8 @@ jobs:
 
       - name: Create or Update Stable E2E Check
         id: create_check
-        # actions/github-script v8 (pinned)
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        # actions/github-script v9.0.0 (pinned)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ steps.app_token.outputs.token }}
           script: |
@@ -484,7 +484,7 @@ jobs:
       - name: Revalidate PR authority after E2E
         if: ${{ always() && steps.target.outputs.pr_number != '' && steps.local_validation_gate.outputs.ok == 'true' && steps.cloud_build.outputs.build_status == 'SUCCESS' && steps.cleanup.outcome == 'success' }}
         id: post_build_validation
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ github.token }}
           script: |
@@ -624,8 +624,8 @@ jobs:
       - name: Finalize E2E Check
         if: ${{ always() && steps.create_check.outputs.check_run_id != '' && (steps.target.outputs.pr_number == '' || steps.local_validation_gate.outputs.ok == 'true') }}
         id: finalize_check
-        # actions/github-script v8 (pinned)
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        # actions/github-script v9.0.0 (pinned)
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ steps.final_app_token.outputs.token }}
           script: |
