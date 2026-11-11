@@ -6,13 +6,13 @@ require (
 	cloud.google.com/go/logging v1.21.1
 	github.com/pjscruggs/slogcp-grpc v1.0.3
 	github.com/pjscruggs/slogcp/v2 v2.0.3
-	google.golang.org/api v0.311.0
+	google.golang.org/api v0.313.0
 	google.golang.org/grpc v1.85.0
 )
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
-	cloud.google.com/go/auth v0.24.3 // indirect
+	cloud.google.com/go/auth v0.24.4 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.3.1 // indirect
 	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	cloud.google.com/go/longrunning v1.5.0 // indirect
