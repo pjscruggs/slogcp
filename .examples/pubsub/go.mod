@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	cloud.google.com/go/pubsub/v2 v2.9.0
-	github.com/pjscruggs/slogcp-pubsub v1.0.5
+	github.com/pjscruggs/slogcp-pubsub v1.0.6
 	github.com/pjscruggs/slogcp/v2 v2.0.3
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
