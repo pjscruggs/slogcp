@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	cloud.google.com/go/pubsub/v2 v2.9.0
-	github.com/pjscruggs/slogcp-pubsub v1.0.6
+	github.com/pjscruggs/slogcp-pubsub v1.0.7
 	github.com/pjscruggs/slogcp/v2 v2.0.3
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
@@ -39,7 +39,7 @@ require (
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	google.golang.org/api v0.314.0 // indirect
+	google.golang.org/api v0.315.0 // indirect
 	google.golang.org/genproto v0.0.0-20261110000943-09e21b237f2c // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261110000943-09e21b237f2c // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261110000943-09e21b237f2c // indirect
