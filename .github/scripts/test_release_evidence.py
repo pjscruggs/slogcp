@@ -186,7 +186,8 @@ class CloudEvidenceTests(unittest.TestCase):
                    "base": {"ref": "main"}, "head": {"sha": self.head}}
         self.client = Mock(spec=policy.GitHub)
 
-    def execute(self, *, tree=None, infrastructure_diff="", raw_receipt=None, extra_checks=()):
+    def execute(self, *, tree=None, infrastructure_diff="", raw_receipt=None, extra_checks=(),
+                git_command=None):
         self.client.pages.return_value = [self.pr]
         check = {**self.check, "output": {"text": raw_receipt if raw_receipt is not None else json.dumps(self.receipt)}}
         self.client.get.side_effect = lambda path: {
@@ -194,11 +195,52 @@ class CloudEvidenceTests(unittest.TestCase):
             f"/commits/{self.head}/check-runs?per_page=100": {"check_runs": [check, *extra_checks]},
             "/actions/runs/10": self.run,
         }[path]
-        with patch.object(policy, "git", return_value=infrastructure_diff):
+        with patch.object(policy, "git", side_effect=git_command, return_value=infrastructure_diff):
             policy.require_cloud_evidence(self.client, self.scope, 99)
 
     def test_equal_tree_squash_reuses_success(self):
         self.execute()
+
+    def test_squashed_runner_is_fetched_in_a_main_only_release_checkout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            remote = Path(temporary) / "remote"
+            checkout = Path(temporary) / "release"
+            remote.mkdir()
+
+            def command(directory, *args):
+                return subprocess.run(["git", *args], cwd=directory, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            def source(*args):
+                return command(remote, *args)
+
+            source("init", "--quiet", "--initial-branch=main")
+            source("config", "user.name", "Fixture")
+            source("config", "user.email", "fixture@example.invalid")
+            source("config", "commit.gpgsign", "false")
+            (remote / "runner.txt").write_text("before\n", encoding="utf-8")
+            source("add", "runner.txt")
+            source("commit", "--quiet", "-m", "base")
+            source("checkout", "--quiet", "-b", "reviewed-runner")
+            (remote / "runner.txt").write_text("reviewed\n", encoding="utf-8")
+            source("commit", "--quiet", "-am", "reviewed runner")
+            self.head = source("rev-parse", "HEAD")
+            self.tree = source("rev-parse", "HEAD^{tree}")
+            source("checkout", "--quiet", "main")
+            source("merge", "--squash", "reviewed-runner")
+            source("commit", "--quiet", "-m", "squashed release")
+            self.sha = source("rev-parse", "HEAD")
+            source("clone", "--quiet", "--no-local", "--single-branch", "--branch", "main",
+                   str(remote), str(checkout))
+            absent = subprocess.run(["git", "cat-file", "-e", self.head], cwd=checkout,
+                                    capture_output=True, check=False)
+            self.assertNotEqual(absent.returncode, 0)
+            self.scope.update(candidate_sha=self.sha, candidate_tree=self.tree)
+            self.pr.update(merge_commit_sha=self.sha, head={"sha": self.head})
+            self.receipt.update(root_sha=self.head, infrastructure_sha=self.head)
+            self.check["head_sha"] = self.head
+            self.execute(git_command=lambda *args: command(checkout, *args))
+            self.assertEqual(command(checkout, "rev-parse", f"{self.head}^{{tree}}"), self.tree)
 
     def test_changed_tree_or_infrastructure_cannot_reuse(self):
         for args in ({"tree": "f" * 40}, {"infrastructure_diff": ".e2e/cloudbuild/cloudbuild.yaml"}):
