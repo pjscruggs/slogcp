@@ -253,12 +253,6 @@ def require_cloud_evidence(client: GitHub, scope: dict[str, str], app_id: int) -
         infrastructure = receipt.get("infrastructure_sha", "")
         if not re.fullmatch(r"[0-9a-f]{40}", infrastructure):
             continue
-        changed = git("diff", "--name-only", infrastructure, sha, "--", ".e2e/cloudbuild",
-                      ".e2e/scripts", ".github/scripts/run_e2e_cloud_build.sh",
-                      ".github/workflows/validation_pipeline.yml",
-                      ".github/workflows/manual-e2e-trigger.yml")
-        if changed:
-            continue
         run_id = receipt.get("run_id")
         if not isinstance(run_id, int) or run_id <= 0:
             continue
@@ -271,6 +265,15 @@ def require_cloud_evidence(client: GitHub, scope: dict[str, str], app_id: int) -
                 run.get("run_attempt") != receipt.get("run_attempt") or
                 check.get("head_sha") != head or
                 check.get("details_url") != run.get("html_url")):
+            continue
+        # A reviewed PR runner may be absent after its branch is squash-merged
+        # and deleted. Fetch its exact authenticated revision before comparing.
+        git("fetch", "--no-tags", "origin", infrastructure)
+        changed = git("diff", "--name-only", infrastructure, sha, "--", ".e2e/cloudbuild",
+                      ".e2e/scripts", ".github/scripts/run_e2e_cloud_build.sh",
+                      ".github/workflows/validation_pipeline.yml",
+                      ".github/workflows/manual-e2e-trigger.yml")
+        if changed:
             continue
         return
     raise ValueError("Release requires successful exact-content cloud evidence from the trusted runner")
