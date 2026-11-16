@@ -65,33 +65,9 @@ class SelectedGraphPolicyTests(unittest.TestCase):
                    "selected_path": policy.OPENPGP_MODULE, "version": "v0.57.0",
                    "advisory": policy.OPENPGP_ADVISORY,
                    "modified": policy.OPENPGP_MODIFIED}
-        affected = [{"package": {"ecosystem": "Go", "name": policy.OPENPGP_MODULE,
-                                   "purl": "pkg:golang/golang.org/x/crypto"},
-                     "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}]}],
-                     "ecosystem_specific": {"imports": [
-                         {"path": item} for item in (
-                             "golang.org/x/crypto/openpgp",
-                             "golang.org/x/crypto/openpgp/packet",
-                             "golang.org/x/crypto/openpgp/armor",
-                             "golang.org/x/crypto/openpgp/clearsign",
-                             "golang.org/x/crypto/openpgp/errors",
-                             "golang.org/x/crypto/openpgp/elgamal",
-                             "golang.org/x/crypto/openpgp/s2k")]},
-                     "database_specific": {
-                         "source": "https://vuln.go.dev/ID/GO-2026-5932.json"}}]
-        raw_record = {
-            "id": policy.OPENPGP_ADVISORY,
-            "summary": "The golang.org/x/crypto/openpgp package is unmaintained, unsafe by design, and has known security issues",
-            "details": "The golang.org/x/crypto/openpgp package is unsafe by design, has numerous known security issues, is not maintained, and should not be used.\n\nIf you are required to interoperate with OpenPGP systems and need a maintained package, consider github.com/ProtonMail/go-crypto/openpgp which is a maintained fork that aims to be a drop-in replacement for this package.",
-            "modified": policy.OPENPGP_MODIFIED,
-            "published": "2026-07-07T22:15:29Z",
-            "related": ["CGA-485h-x96h-hqh7"],
-            "database_specific": {"url": "https://pkg.go.dev/vuln/GO-2026-5932",
-                                  "review_status": "REVIEWED"},
-            "references": [{"type": "REPORT", "url": "https://go.dev/issue/44226"}],
-            "affected": affected,
-            "schema_version": "1.7.5",
-        }
+        raw_record = json.loads((Path(__file__).parent / "fixtures" /
+                                 "GO-2026-5932.json").read_text(encoding="utf-8"))
+        affected = raw_record["affected"]
         raw_hash = hashlib.sha256(json.dumps(
             raw_record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         candidate = {"schema": 2, "modules": ["."], "findings": [finding],
@@ -423,6 +399,14 @@ class SelectedGraphPolicyTests(unittest.TestCase):
         self.assertEqual(candidate["findings"], [finding])
         self.assertEqual(candidate["applicability"][0]["decision"],
                          "admissible_with_exception")
+
+    def test_standalone_openpgp_module_is_not_covered_by_legacy_module_exception(self):
+        candidate, finding = self._openpgp_candidate()
+        finding.update(module="golang.org/x/crypto/openpgp",
+                       selected_path="golang.org/x/crypto/openpgp")
+        imports, error = policy._affected_imports(candidate, finding)
+        self.assertEqual(imports, [])
+        self.assertEqual(error, "finding does not select the reviewed Go module")
 
     def test_present_affected_import_blocks_and_raw_finding_remains_visible(self):
         candidate, finding = self._openpgp_candidate(

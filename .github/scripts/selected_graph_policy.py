@@ -51,8 +51,8 @@ PACKAGE_TARGETS = (
      "cgo": "0", "tags": []},
 )
 OPENPGP_ADVISORY = "GO-2026-5932"
-OPENPGP_MODIFIED = "2026-07-10T05:44:31.101996029Z"
-OPENPGP_SHA256 = "9357dd8ad55a6647c5a18fca61887c547549786d960a41de5f1038c979f573b1"
+OPENPGP_MODIFIED = "2026-11-02T22:15:06.677088389Z"
+OPENPGP_SHA256 = "3f77acff51e4d6961753672166bd1b18fbaa3b5a69fcc7e003367a44bfa925da"
 OPENPGP_MODULE = "golang.org/x/crypto"
 OPENPGP_IMPORTS = (
     "golang.org/x/crypto/openpgp",
@@ -540,22 +540,28 @@ def _reviewed_openpgp_record(candidate: dict) -> bool:
             provenance.get("withdrawn") != record.get("withdrawn") or record.get("withdrawn"):
         return False
     affected = record.get("affected")
-    if not isinstance(affected, list) or len(affected) != 1:
+    if not isinstance(affected, list) or len(affected) != 2:
         return False
-    item = affected[0]
-    if not isinstance(item, dict) or item.get("package") != {
-            "ecosystem": "Go", "name": OPENPGP_MODULE,
-            "purl": "pkg:golang/golang.org/x/crypto"}:
-        return False
-    ranges = item.get("ranges")
-    if ranges != [{"type": "SEMVER", "events": [{"introduced": "0"}]}]:
-        return False
-    imports = item.get("ecosystem_specific", {}).get("imports")
-    if not isinstance(imports, list):
-        return False
-    paths = [entry.get("path") for entry in imports
-             if isinstance(entry, dict) and set(entry) == {"path"}]
-    return len(paths) == len(imports) and sorted(paths) == list(OPENPGP_IMPORTS)
+    reviewed = (
+        (OPENPGP_MODULE, [{"introduced": "0"},
+                          {"fixed": "0.58.1-0.20261009181718-2f1f834330b2"}]),
+        ("golang.org/x/crypto/openpgp", [{"introduced": "0"}]),
+    )
+    for item, (module, events) in zip(affected, reviewed):
+        if not isinstance(item, dict) or item.get("package") != {
+                "ecosystem": "Go", "name": module, "purl": "pkg:golang/" + module}:
+            return False
+        if item.get("ranges") != [{"type": "SEMVER", "events": events}]:
+            return False
+        imports = item.get("ecosystem_specific", {}).get("imports")
+        if not isinstance(imports, list):
+            return False
+        paths = [entry.get("path") for entry in imports
+                 if isinstance(entry, dict) and set(entry) == {"path"}]
+        if len(paths) != len(imports) or sorted(paths) != list(OPENPGP_IMPORTS):
+            return False
+    return True
+
 
 
 def _target_key(target: dict) -> tuple[str, str, str, str | None, str | None, tuple[str, ...]]:
