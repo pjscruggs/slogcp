@@ -9,7 +9,7 @@ require (
 	github.com/pjscruggs/slogcp-grpc v1.0.6
 	github.com/pjscruggs/slogcp/v2 v2.0.5
 	google.golang.org/api v0.316.0
-	google.golang.org/genproto/googleapis/api v0.0.0-20261116203732-fd2c7689a808
+	google.golang.org/genproto/googleapis/api v0.0.0-20261118221215-c8830f628b3f
 )
 
 require (
