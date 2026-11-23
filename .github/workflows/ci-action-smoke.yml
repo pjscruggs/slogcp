@@ -65,6 +65,19 @@ jobs:
 
       - name: Exercise Artifact Download
         id: artifact_download
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ steps.artifact_upload.outputs.artifact-id }}
+          path: ${{ runner.temp }}/action-artifact-smoke/download
+
+      - name: Wait For Artifact Visibility
+        if: steps.artifact_download.outcome == 'failure'
+        run: sleep 5
+
+      - name: Retry Artifact Download
+        id: artifact_download_retry
+        if: steps.artifact_download.outcome == 'failure'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ steps.artifact_upload.outputs.artifact-id }}
@@ -156,7 +169,7 @@ jobs:
         id: policy
         if: always()
         env:
-          RESULTS: ${{ steps.gcloud_setup.outcome }} ${{ steps.gcloud_smoke.outcome }} ${{ steps.artifact_fixture.outcome }} ${{ steps.artifact_upload.outcome }} ${{ steps.artifact_download.outcome }} ${{ steps.artifact_verify.outcome }} ${{ steps.fixture.outcome }} ${{ steps.app_token.outcome }} ${{ steps.auth.outcome }} ${{ steps.verify.outcome }} ${{ steps.cleanup.outcome }}
+          RESULTS: ${{ steps.gcloud_setup.outcome }} ${{ steps.gcloud_smoke.outcome }} ${{ steps.artifact_fixture.outcome }} ${{ steps.artifact_upload.outcome }} ${{ (steps.artifact_download.outcome == 'success' || steps.artifact_download_retry.outcome == 'success') && 'success' || 'failure' }} ${{ steps.artifact_verify.outcome }} ${{ steps.fixture.outcome }} ${{ steps.app_token.outcome }} ${{ steps.auth.outcome }} ${{ steps.verify.outcome }} ${{ steps.cleanup.outcome }}
         run: |
           set -euo pipefail
           read -r -a results <<< "$RESULTS"

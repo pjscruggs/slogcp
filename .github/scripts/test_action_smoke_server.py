@@ -217,13 +217,19 @@ class ArtifactRoundTripTests(unittest.TestCase):
     def test_artifact_storage_is_bounded_and_download_is_bound_to_upload(self):
         upload = self.step("Exercise Artifact Upload")
         download = self.step("Exercise Artifact Download")
+        retry = self.step("Retry Artifact Download")
         self.assertIn("retention-days: 1\n", upload)
         self.assertIn("if-no-files-found: error\n", upload)
         self.assertIn("path: ${{ runner.temp }}/action-artifact-smoke/source/result.txt\n", upload)
-        self.assertIn("artifact-ids: ${{ steps.artifact_upload.outputs.artifact-id }}\n", download)
-        for body in (upload, download):
+        for attempt in (download, retry):
+            self.assertIn("artifact-ids: ${{ steps.artifact_upload.outputs.artifact-id }}\n", attempt)
+            self.assertIn("path: ${{ runner.temp }}/action-artifact-smoke/download\n", attempt)
+        self.assertIn("continue-on-error: true\n", download)
+        self.assertIn("if: steps.artifact_download.outcome == 'failure'\n", retry)
+        self.assertNotIn("continue-on-error:", retry)
+        for body in (upload, download, retry):
             self.assertNotIn("github-token:", body)
-            self.assertNotIn("continue-on-error:", body)
+        for body in (upload, download):
             self.assertNotIn("        if:", body)
         cleanup = self.step("Stop Local Protocol Fixtures")
         self.assertIn("if: always()", cleanup)
@@ -236,7 +242,8 @@ class ActionResultGuardTests(unittest.TestCase):
         step = workflow.split("      - name: Require Successful Action Execution\n", 1)[1]
         self.assertCountEqual(re.findall(r"steps\.([a-z_]+)\.outcome", step), [
             "gcloud_setup", "gcloud_smoke", "artifact_fixture", "artifact_upload",
-            "artifact_download", "artifact_verify", "fixture", "app_token", "auth", "verify", "cleanup",
+            "artifact_download", "artifact_download_retry", "artifact_verify",
+            "fixture", "app_token", "auth", "verify", "cleanup",
         ])
         body = textwrap.dedent(step.split("        run: |\n", 1)[1])
         git_bash = Path("C:/Program Files/Git/bin/bash.exe")
