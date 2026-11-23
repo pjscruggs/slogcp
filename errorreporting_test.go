@@ -152,8 +152,7 @@ func (h *recordingHandler) WithGroup(string) slog.Handler { return h }
 
 // TestErrorReportingAttrsUsesRuntimeContext verifies runtime service context data is applied.
 func TestErrorReportingAttrsUsesRuntimeContext(t *testing.T) {
-	t.Parallel()
-
+	// The runtime override is shared by the whole test process.
 	t.Cleanup(resetRuntimeInfoCache)
 
 	stubRuntimeInfo(RuntimeInfo{
@@ -228,7 +227,7 @@ func TestBuildErrorMessageAttrCoversNonEmpty(t *testing.T) {
 
 // TestBuildErrorReportingConfigSkipsEmptyRuntimeContext ensures runtime info without service context leaves config untouched.
 func TestBuildErrorReportingConfigSkipsEmptyRuntimeContext(t *testing.T) {
-	t.Parallel()
+	// The runtime override is shared by the whole test process.
 	t.Cleanup(resetRuntimeInfoCache)
 
 	stubRuntimeInfo(RuntimeInfo{ServiceContext: nil})
