@@ -222,7 +222,7 @@ jobs:
 
       - name: Set up Go for selected graph validation
         if: github.event_name == 'pull_request'
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: stable
           check-latest: true
@@ -398,7 +398,7 @@ jobs:
 
       - name: Set up root compatibility Go runtime
         id: setup-floor-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ needs.go_validation_plan.outputs.root_floor_version }}
           check-latest: true
@@ -447,7 +447,7 @@ jobs:
 
       - name: Set up CI tools compiler
         id: setup-tools-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ needs.go_validation_plan.outputs.tools_version }}
           check-latest: true
@@ -465,7 +465,7 @@ jobs:
 
       - name: 🏗️ Set up Go
         id: setup-root-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ needs.go_validation_plan.outputs.root_version }}
           check-latest: true
@@ -548,7 +548,7 @@ jobs:
 
       - name: ♻️ Restore Go toolchain (post-license-fix)
         id: restore-post-license-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ needs.go_validation_plan.outputs.root_version }}
           check-latest: true
@@ -592,7 +592,7 @@ jobs:
 
       - name: ♻️ Restore Go toolchain (pre-tests)
         id: restore-pre-tests-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ needs.go_validation_plan.outputs.root_version }}
           check-latest: true
@@ -660,7 +660,7 @@ jobs:
 
       - name: Set up harness Go runtime
         id: setup-harness-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ needs.go_validation_plan.outputs.root_version }}
           check-latest: true
@@ -732,7 +732,7 @@ jobs:
 
       - name: Set up CI tools compiler
         id: setup-tools-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ needs.go_validation_plan.outputs.tools_version }}
           check-latest: true
@@ -750,7 +750,7 @@ jobs:
 
       - name: Set up example Go runtime
         id: setup-example-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ matrix.go_version }}
           check-latest: true
@@ -841,7 +841,7 @@ jobs:
 
       - name: Set up CI tools compiler
         id: setup-benchmark-tools-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ needs.go_validation_plan.outputs.tools_version }}
           check-latest: true
@@ -858,7 +858,7 @@ jobs:
 
       - name: Set up benchmark Go runtime
         id: setup-benchmark-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version: ${{ needs.go_validation_plan.outputs.benchmark_version }}
           check-latest: true
@@ -1259,7 +1259,7 @@ jobs:
         if: |
           steps.app_token_secrets.outputs.available == 'true'
         id: check_start_token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -1876,7 +1876,7 @@ jobs:
           steps.wait_validation.outputs.ok == 'true' &&
           steps.have_secrets.outputs.ok == 'true'
         id: cloud_finalize_token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -1971,7 +1971,7 @@ jobs:
           (steps.pr_scope.outputs.mode == 'readme_only' || steps.pr_scope.outputs.mode == 'ci_tools' || steps.pr_scope.outputs.mode == 'ci_only' || steps.pr_scope.outputs.mode == 'automation_config_only' || steps.pr_scope.outputs.mode == 'examples_dependency' || steps.pr_scope.outputs.mode == 'benchmark_maintenance' || steps.pr_scope.outputs.mode == 'toolchain_update') &&
           steps.wait_validation.outputs.ok == 'true'
         id: no_cloud_finalize_token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
@@ -2041,7 +2041,7 @@ jobs:
           (steps.wait_validation.outputs.ok != 'true' ||
            ((steps.pr_scope.outputs.mode == 'security_floor' || steps.pr_scope.outputs.mode == 'renovate_cloud_e2e') && steps.have_secrets.outputs.ok != 'true'))
         id: blocked_finalize_token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         with:
           app-id: ${{ secrets.E2E_APP_ID }}
           private-key: ${{ secrets.E2E_APP_PRIVATE_KEY }}
